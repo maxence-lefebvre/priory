@@ -1,9 +1,9 @@
 use super::gh::{Login, gh};
-use super::{CHECK_RUNS, CHECKED, COMMENTED, Merge, Observed, REVIEWED, Red, RedCheck};
+use super::{CHECK_RUNS, CHECKED, COMMENTED, Merge, Observed, Passed, REVIEWED, Red, RedCheck};
 use herdr_bus::Timestamp;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// GitHub creates check runs seconds after a push, and a push updates the pull request.
 const GRACE_SECONDS: i64 = 5 * 60;
@@ -465,30 +465,57 @@ fn later_run(repo: &str, merge: &Merge, name: &str, fresh: bool) -> Result<Later
     })
 }
 
-/// Whether every check that failed on `red`'s merge commit passed later on a commit of the base
-/// branch that contains the merge. A read that fails, as for a deleted base branch, says no.
-pub(super) fn recovered(red: &Red) -> bool {
-    !red.checks.is_empty()
-        && red.checks.iter().all(|check| {
-            let tip = passed_tip(red, check).unwrap_or_default();
-            tip.iter()
-                .chain(&check.passed)
-                .any(|sha| contains(red, sha).unwrap_or_default())
-        })
+/// What GitHub answered that never changes, kept for the life of the process.
+#[derive(Default)]
+pub(super) struct Known {
+    /// Whether a commit descends from a merge commit, by repository, merge commit and commit.
+    contains: HashMap<(String, String, String), bool>,
+    /// The workflow of an Actions run, by repository and run id.
+    workflows: HashMap<(String, u64), u64>,
 }
 
-/// The tip of `red`'s base branch, when every run of `check` there succeeded, later than the red one.
-fn passed_tip(red: &Red, check: &RedCheck) -> Result<Option<String>, String> {
+/// Whether every check that failed on `red`'s merge commit passed later on a commit of the base
+/// branch that contains the merge.
+pub(super) fn recovered(red: &Red, known: &mut Known) -> Result<bool, String> {
+    for check in &red.checks {
+        if !passes(red, check, known)? {
+            return Ok(false);
+        }
+    }
+    Ok(!red.checks.is_empty())
+}
+
+fn passes(red: &Red, check: &RedCheck, known: &mut Known) -> Result<bool, String> {
+    let tip = passed_tip(red, check)?;
+    for passed in tip.iter().chain(&check.passed) {
+        if same_check(red, check, &passed.urls, known)? && contains(red, &passed.sha, known)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// GitHub's answer, or none when it has no such branch, commit or run.
+fn found<T>(answer: Result<T, String>) -> Result<Option<T>, String> {
+    match answer {
+        Err(error) if error.contains("(HTTP 404)") || error.contains("(HTTP 422)") => Ok(None),
+        answer => answer.map(Some),
+    }
+}
+
+/// The tip of `red`'s base branch, when every run of `check`'s name and app there succeeded, later
+/// than the red one.
+fn passed_tip(red: &Red, check: &RedCheck) -> Result<Option<Passed>, String> {
     let path = format!(
         "repos/{}/commits/heads/{}/check-runs",
         red.repo,
         encoded(&red.base_branch)
     );
     let check_name = format!("check_name={}", check.name);
-    let found: CommitRuns = gh(
-        &path,
-        &["-X", "GET", "-f", &check_name, "-f", "per_page=100"],
-    )?;
+    let fields = ["-X", "GET", "-f", &check_name, "-f", "per_page=100"];
+    let Some(found) = found(gh::<CommitRuns>(&path, &fields))? else {
+        return Ok(None);
+    };
     let runs: Vec<&Run> = found
         .check_runs
         .iter()
@@ -500,20 +527,80 @@ fn passed_tip(red: &Red, check: &RedCheck) -> Result<Option<String>, String> {
                 && run.status == "completed"
                 && run.conclusion.as_deref() == Some("success")
         });
-    Ok(runs
-        .first()
-        .filter(|_| passed)
-        .map(|run| run.head_sha.clone()))
+    Ok(runs.first().filter(|_| passed).map(|tip| Passed {
+        sha: tip.head_sha.clone(),
+        urls: runs.iter().map(|run| run.html_url.clone()).collect(),
+    }))
+}
+
+/// Whether one of the runs at `urls`, of `check`'s name and app, is a run of the same check. Two
+/// workflows can name a job alike, so a GitHub Actions run must be of the same workflow.
+fn same_check(
+    red: &Red,
+    check: &RedCheck,
+    urls: &[String],
+    known: &mut Known,
+) -> Result<bool, String> {
+    match check.app.as_deref() {
+        None => return Ok(false),
+        Some("github-actions") => {}
+        Some(_) => return Ok(true),
+    }
+    let Some(workflow) = workflow(&red.repo, &check.url, known)? else {
+        return Ok(false);
+    };
+    for url in urls {
+        if self::workflow(&red.repo, url, known)? == Some(workflow) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[derive(Deserialize)]
+struct ActionsRun {
+    workflow_id: u64,
+}
+
+/// The workflow of the Actions run whose job's page is `url`.
+fn workflow(repo: &str, url: &str, known: &mut Known) -> Result<Option<u64>, String> {
+    let run = url
+        .split_once("/actions/runs/")
+        .and_then(|(_, rest)| rest.split('/').next()?.parse::<u64>().ok());
+    let Some(run) = run else {
+        return Ok(None);
+    };
+    let key = (repo.to_owned(), run);
+    if let Some(workflow) = known.workflows.get(&key) {
+        return Ok(Some(*workflow));
+    }
+    let Some(answer) = found(gh::<ActionsRun>(
+        &format!("repos/{repo}/actions/runs/{run}"),
+        &[],
+    ))?
+    else {
+        return Ok(None);
+    };
+    known.workflows.insert(key, answer.workflow_id);
+    Ok(Some(answer.workflow_id))
 }
 
 /// Whether the commit `sha` is `red`'s merge commit or descends from it.
-fn contains(red: &Red, sha: &str) -> Result<bool, String> {
+fn contains(red: &Red, sha: &str, known: &mut Known) -> Result<bool, String> {
     if sha == red.commit {
         return Ok(true);
     }
+    let key = (red.repo.clone(), red.commit.clone(), sha.to_owned());
+    if let Some(contains) = known.contains.get(&key) {
+        return Ok(*contains);
+    }
     let path = format!("repos/{}/compare/{}...{sha}", red.repo, red.commit);
-    let compare: Compare = gh(&path, &["-X", "GET", "-f", "per_page=1"])?;
-    Ok(compare.status == "ahead")
+    let Some(compare) = found(gh::<Compare>(&path, &["-X", "GET", "-f", "per_page=1"]))? else {
+        return Ok(false);
+    };
+    let ahead = compare.status == "ahead";
+    known.contains.insert(key, ahead);
+    Ok(ahead)
 }
 
 /// `text` percent-encoded as one URL path segment, so a branch such as `release/x` stays one.

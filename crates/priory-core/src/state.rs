@@ -2000,7 +2000,8 @@ CREATE INDEX sweeps_by_script ON sweeps (script, started);
 "
 );
 
-// Marks read each report of a red merge whose every failing check was only cancelled.
+// Marks read each report of a red merge whose checks all completed and whose every failing one was
+// only cancelled.
 const SCHEMA_113: &str = "
 UPDATE inbox SET read = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
 WHERE type = 'priory.report' AND subject = 'priory' AND read IS NULL
@@ -2012,7 +2013,11 @@ AND (SELECT min(json_extract(run.data, '$.conclusion') IS 'cancelled')
     AND coalesce(json_extract(run.data, '$.conclusion'), '') NOT IN ('success', 'neutral', 'skipped')
   WHERE closed.type = 'github.pull_request.closed' AND json_extract(closed.data, '$.merged') = 1
   AND instr(json_extract(inbox.data, '$.line'), 'landed wrong: ' || json_extract(closed.data, '$.repo')
-    || '#' || json_extract(closed.data, '$.pull_request') || ' of task') = 1) = 1;
+    || '#' || json_extract(closed.data, '$.pull_request') || ' of task') = 1
+  AND EXISTS (SELECT 1 FROM inbox AS last WHERE last.type = 'github.check_run.completed'
+    AND json_extract(last.data, '$.repo') = json_extract(closed.data, '$.repo')
+    AND json_extract(last.data, '$.head_sha') = json_extract(closed.data, '$.merge_commit')
+    AND json_extract(last.data, '$.pending') = 0)) = 1;
 PRAGMA user_version = 113;
 ";
 

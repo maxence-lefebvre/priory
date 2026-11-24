@@ -309,13 +309,13 @@ fn merged(since: &str) -> Result<Vec<intake::Merge>, String> {
     state::merges(&db, since).map_err(|error| format!("merged pull requests: {error}"))
 }
 
-/// The unread reports of red merges; none when the intake runs without a state file.
-fn red() -> Result<Vec<intake::Red>, String> {
+/// The unread reports of merges since `since` that are red; none when the intake runs without a state file.
+fn red(since: &str) -> Result<Vec<intake::Red>, String> {
     if std::env::var_os("PRIORY_DB").is_none() {
         return Ok(Vec::new());
     }
     let db = state::open()?;
-    grades::red(&db).map_err(|error| format!("red merges: {error}"))
+    grades::red(&db, since).map_err(|error| format!("red merges: {error}"))
 }
 
 /// Marks read the report of a red merge whose checks passed again.

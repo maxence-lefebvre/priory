@@ -297,8 +297,16 @@ pub struct RedCheck {
     pub app: Option<String>,
     /// The check run's id.
     pub id: u64,
-    /// The merge commits where a later run of the check succeeded, newest first.
-    pub passed: Vec<String>,
+    /// The check run's page.
+    pub url: String,
+    /// The other merge commits where every later run of that name and app succeeded, newest first.
+    pub passed: Vec<Passed>,
+}
+
+/// A commit where every later run of a check's name and app succeeded, with those runs' pages.
+pub struct Passed {
+    pub sha: String,
+    pub urls: Vec<String>,
 }
 
 /// What one poll found of each source it polled, `github`, `linear` or `slack`: none when the poll
@@ -312,7 +320,7 @@ pub type Ended = fn(&str) -> Result<u64, String>;
 /// the intake polls the Slack threads, Linear issues and pull request repositories they name.
 /// `merged` reads the task pull requests merged since the time it is given, to read their merge
 /// commits' check runs.
-/// `red` reads the unread reports of red merges, and `recovered` marks one read.
+/// `red` reads the unread reports of red merges since the time it is given, and `recovered` marks one read.
 /// `health` records each poll's outcomes at the poll's time, and how long a source fails before it
 /// reports: `[intake] alarm_after` for a poll, none for a source that cannot start.
 /// `ended` lets the Slack shortcut queue a thread again once its task ended.
@@ -323,7 +331,7 @@ pub fn run(
     once: bool,
     watched: fn() -> Result<Vec<Watch>, String>,
     merged: fn(&str) -> Result<Vec<Merge>, String>,
-    red: fn() -> Result<Vec<Red>, String>,
+    red: fn(&str) -> Result<Vec<Red>, String>,
     recovered: fn(i64) -> Result<(), String>,
     health: fn(&Outcomes, Timestamp, Duration) -> Result<(), String>,
     ended: Ended,
@@ -412,6 +420,7 @@ pub fn run(
     let mut published = HashSet::new();
     // Merge commits that have no check runs past the grace period, so they are not read again.
     let mut unchecked = HashSet::new();
+    let mut known = pulls::Known::default();
     let mut first = true;
     loop {
         let tick = std::time::Instant::now();
@@ -447,12 +456,13 @@ pub fn run(
         first = false;
         let waited = watching.iter().filter_map(pull_request_repo);
         let polled: BTreeSet<&str> = repos.iter().copied().chain(waited).collect();
-        let merges = match merged(&since(now()?)) {
-            Ok(merges) => merges,
+        let since = since(now()?);
+        let (merges, merges_read) = match merged(&since) {
+            Ok(merges) => (merges, true),
             Err(error) if once => return Err(error),
             Err(error) => {
                 eprintln!("{error}");
-                Vec::new()
+                (Vec::new(), false)
             }
         };
         let (found, errors) = fetch(&polled, &cursors, &merges, &mut unchecked);
@@ -462,15 +472,21 @@ pub fn run(
         failed.entry("github").or_default().extend(errors);
         // A commit still read may turn another check red, which posts no second report.
         let settled = |red: &Red| {
-            polled.contains(red.repo.as_str())
+            merges_read
+                && polled.contains(red.repo.as_str())
                 && !merges
                     .iter()
                     .any(|merge| merge.repo == red.repo && merge.commit == red.commit)
         };
-        let cleared = red().and_then(|reds| {
-            reds.iter()
-                .filter(|red| settled(red) && pulls::recovered(red))
-                .try_for_each(|red| recovered(red.report))
+        let cleared = red(&since).and_then(|reds| {
+            for red in reds.iter().filter(|red| settled(red)) {
+                match pulls::recovered(red, &mut known) {
+                    Ok(true) => recovered(red.report)?,
+                    Ok(false) => {}
+                    Err(error) => failed.entry("github").or_default().push(error),
+                }
+            }
+            Ok(())
         });
         if let Err(error) = cleared {
             if once {

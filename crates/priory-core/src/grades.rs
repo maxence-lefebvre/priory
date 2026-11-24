@@ -3,7 +3,7 @@
 
 use crate::trace::{self, Trace};
 use herdr_bus::Message;
-use priory_intake::intake::{CHECKED, PASSING, PR_CLOSED, REVIEWED, Red, RedCheck};
+use priory_intake::intake::{CHECKED, PASSING, PR_CLOSED, Passed, REVIEWED, Red, RedCheck};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 
@@ -302,15 +302,16 @@ fn report(tx: &Transaction, line: &str) -> rusqlite::Result<()> {
         .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()))
 }
 
-/// The unread reports of merges that are red on their base branch, with each check that failed at
-/// the merge commit. A revert's report is none.
-pub fn red(db: &Connection) -> rusqlite::Result<Vec<Red>> {
-    let mut reds: Vec<Red> = db
+/// The unread reports of merges since `since` that are red on their base branch, with each check that
+/// failed at the merge commit. A revert's report is none, nor is one with a failing run without an id.
+pub fn red(db: &Connection, since: &str) -> rusqlite::Result<Vec<Red>> {
+    let reds: Vec<Red> = db
         .prepare(
             "SELECT DISTINCT report.seq, json_extract(closed.data, '$.repo'),
                json_extract(closed.data, '$.base_branch'), json_extract(closed.data, '$.merge_commit')
              FROM inbox AS report CROSS JOIN inbox AS closed
-               ON closed.type = ?1 AND json_extract(closed.data, '$.merged') = 1
+               ON closed.type = ?1 AND julianday(closed.time) >= julianday(?4)
+               AND json_extract(closed.data, '$.merged') = 1
                AND json_extract(closed.data, '$.merge_commit') IS NOT NULL
                AND json_extract(closed.data, '$.base_branch') IS NOT NULL
                AND instr(json_extract(report.data, '$.line'), ?2 || json_extract(closed.data, '$.repo')
@@ -318,7 +319,7 @@ pub fn red(db: &Connection) -> rusqlite::Result<Vec<Red>> {
              WHERE report.type = ?3 AND report.subject = 'priory' AND report.read IS NULL
              AND instr(json_extract(report.data, '$.line'), ' is red on ') > 0",
         )?
-        .query_map(params![PR_CLOSED, LANDED, crate::post::REPORT], |row| {
+        .query_map(params![PR_CLOSED, LANDED, crate::post::REPORT, since], |row| {
             Ok(Red {
                 report: row.get(0)?,
                 repo: row.get(1)?,
@@ -328,20 +329,40 @@ pub fn red(db: &Connection) -> rusqlite::Result<Vec<Red>> {
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
-    for red in &mut reds {
-        red.checks = red_checks(db, &red.repo, &red.commit)?;
+    let mut complete = Vec::new();
+    for mut red in reds {
+        let Some(checks) = red_checks(db, &red.repo, &red.commit)? else {
+            continue;
+        };
+        red.checks = checks;
         for check in &mut red.checks {
-            check.passed = passed(db, red.repo.as_str(), &red.base_branch, check)?;
+            check.passed = passed(
+                db,
+                &red.repo,
+                &red.base_branch,
+                &red.commit,
+                since,
+                &check.name,
+                check.app.as_deref(),
+                check.id,
+            )?;
         }
+        complete.push(red);
     }
-    Ok(reds)
+    Ok(complete)
 }
 
-/// The checks of `repo` that failed at `commit`, each with its latest failing run.
-fn red_checks(db: &Connection, repo: &str, commit: &str) -> rusqlite::Result<Vec<RedCheck>> {
+/// The checks of `repo` that failed at `commit`, each with its latest failing run. None when a
+/// failing run has no id, since no run can then be later than it.
+fn red_checks(
+    db: &Connection,
+    repo: &str,
+    commit: &str,
+) -> rusqlite::Result<Option<Vec<RedCheck>>> {
     db.prepare(
         "SELECT coalesce(json_extract(data, '$.name'), ''), json_extract(data, '$.app'),
-           max(json_extract(data, '$.github_id'))
+           max(json_extract(data, '$.github_id')), coalesce(json_extract(data, '$.url'), ''),
+           count(*) = count(json_extract(data, '$.github_id'))
          FROM inbox WHERE type = ?1 AND json_extract(data, '$.repo') = ?2
          AND json_extract(data, '$.head_sha') = ?3
          AND coalesce(json_extract(data, '$.conclusion'), '') NOT IN ('success', 'neutral', 'skipped')
@@ -349,49 +370,69 @@ fn red_checks(db: &Connection, repo: &str, commit: &str) -> rusqlite::Result<Vec
          GROUP BY 1, 2",
     )?
     .query_map(params![CHECKED, repo, commit], |row| {
-        Ok(RedCheck {
+        if !row.get::<_, bool>(4)? {
+            return Ok(None);
+        }
+        Ok(Some(RedCheck {
             name: row.get(0)?,
             app: row.get(1)?,
             id: row.get::<_, i64>(2)? as u64,
+            url: row.get(3)?,
             passed: Vec::new(),
-        })
+        }))
     })?
     .collect()
 }
 
-/// The merge commits of `repo` into `base` where a run of `check` after the red one succeeded, the
-/// 5 newest first.
+/// The merge commits of `repo` into `base` since `since`, other than `commit`, whose checks all
+/// completed and where every run of the check `name` of `app` after the run `id` succeeded, the 5
+/// newest first.
+#[allow(clippy::too_many_arguments)]
 fn passed(
     db: &Connection,
     repo: &str,
     base: &str,
-    check: &RedCheck,
-) -> rusqlite::Result<Vec<String>> {
+    commit: &str,
+    since: &str,
+    name: &str,
+    app: Option<&str>,
+    id: u64,
+) -> rusqlite::Result<Vec<Passed>> {
+    // A crash may have stored the passing events of a commit and not the failing ones.
     db.prepare(
-        "SELECT json_extract(data, '$.head_sha') FROM inbox AS run
-         WHERE type = ?1 AND json_extract(data, '$.repo') = ?2
-         AND json_extract(data, '$.base_branch') = ?3
-         AND json_extract(data, '$.name') = ?4 AND json_extract(data, '$.app') IS ?5
-         AND json_extract(data, '$.github_id') > ?6
-         AND json_extract(data, '$.conclusion') = 'success'
-         AND EXISTS (SELECT 1 FROM inbox AS closed WHERE closed.type = ?7
-           AND json_extract(closed.data, '$.merged') = 1
-           AND json_extract(closed.data, '$.repo') = ?2
-           AND json_extract(closed.data, '$.base_branch') = ?3
-           AND json_extract(closed.data, '$.merge_commit') = json_extract(run.data, '$.head_sha'))
-         GROUP BY 1 ORDER BY max(json_extract(data, '$.github_id')) DESC LIMIT 5",
+        "WITH landed AS MATERIALIZED (
+           SELECT DISTINCT json_extract(data, '$.merge_commit') AS sha FROM inbox
+           WHERE type = ?1 AND julianday(time) >= julianday(?2)
+           AND json_extract(data, '$.merged') = 1 AND json_extract(data, '$.repo') = ?3
+           AND json_extract(data, '$.base_branch') = ?4
+           AND json_extract(data, '$.merge_commit') != ?5),
+         runs AS MATERIALIZED (
+           SELECT json_extract(data, '$.head_sha') AS sha, json_extract(data, '$.github_id') AS id,
+             json_extract(data, '$.conclusion') AS conclusion, json_extract(data, '$.url') AS url,
+             json_extract(data, '$.pending') AS pending, json_extract(data, '$.failing') AS failing,
+             json_extract(data, '$.superseded_by') AS superseded,
+             json_extract(data, '$.name') = ?6 AND json_extract(data, '$.app') IS ?7
+               AND coalesce(json_extract(data, '$.github_id') > ?8, 1) AS later
+           FROM inbox WHERE type = ?9 AND julianday(time) >= julianday(?2)
+           AND json_extract(data, '$.repo') = ?3)
+         SELECT sha, json_group_array(url) FILTER (WHERE later) FROM landed JOIN runs USING (sha)
+         GROUP BY sha
+         HAVING min(conclusion IS 'success' AND id IS NOT NULL) FILTER (WHERE later) = 1
+         AND min(CASE WHEN pending = 0 THEN failing END) <= sum(superseded IS NULL
+           AND coalesce(conclusion, '') NOT IN ('success', 'neutral', 'skipped'))
+         ORDER BY max(id) FILTER (WHERE later) DESC LIMIT 5",
     )?
     .query_map(
         params![
-            CHECKED,
-            repo,
-            base,
-            check.name,
-            check.app,
-            check.id as i64,
-            PR_CLOSED
+            PR_CLOSED, since, repo, base, commit, name, app, id as i64, CHECKED
         ],
-        |row| row.get(0),
+        |row| {
+            let urls: String = row.get(1)?;
+            Ok(Passed {
+                sha: row.get(0)?,
+                urls: serde_json::from_str(&urls).unwrap_or_default(),
+            })
+        },
     )?
     .collect()
 }
