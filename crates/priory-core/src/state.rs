@@ -4344,6 +4344,16 @@ pub(crate) struct LiveRun {
     pub prompted: Option<String>,
 }
 
+/// How many seconds a run may take to send `SessionStart`: longer under direnv, whose `.envrc` may
+/// build a cold nix shell first, and while the 1-minute load exceeds the machine's cores.
+pub(crate) fn ready_within(direnv: i64, load: Option<(f64, usize)>) -> i64 {
+    match load {
+        _ if direnv != 0 => 600,
+        Some((load, cpus)) if load > cpus as f64 => 180,
+        _ => 60,
+    }
+}
+
 /// Marks run `run` as started under direnv (1), or as started without its `.envrc` after direnv
 /// failed (2).
 pub(crate) fn direnv(db: &Connection, run: i64, state: i64) -> rusqlite::Result<()> {
@@ -4919,7 +4929,10 @@ mod ready_within {
         let late: Vec<(i64, bool, i64)> = live(&db)
             .unwrap()
             .into_iter()
-            .map(|run| (run.task, run.late, run.direnv))
+            .map(|run| {
+                let late = run.waited.unwrap() >= ready_within(run.direnv, None);
+                (run.task, late, run.direnv)
+            })
             .collect();
 
         assert_eq!(late, [(1, true, 0), (2, false, 1), (3, true, 1)]);

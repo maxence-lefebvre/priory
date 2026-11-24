@@ -1434,7 +1434,7 @@ fn tend(
                 _ => None,
             };
             if let Some(cause) = restart {
-                let repair = (!tools::spent(db, run.id)?).then(|| Repair {
+                let repair = (!tools::spent(db, run.id)?).then_some(Repair {
                     cause,
                     action: "restart",
                     gone: true,
@@ -1627,16 +1627,6 @@ enum After {
     Slow(String),
 }
 
-/// How many seconds a run may take to send `SessionStart`: longer under direnv, whose `.envrc` may
-/// build a cold nix shell first, and while the 1-minute load exceeds the machine's cores.
-fn ready_within(direnv: i64, load: Option<(f64, usize)>) -> i64 {
-    match load {
-        _ if direnv != 0 => 600,
-        Some((load, cpus)) if load > cpus as f64 => 180,
-        _ => 60,
-    }
-}
-
 /// ` under a load of L on C cores` when the load exceeds the cores, or nothing.
 fn under(load: Option<(f64, usize)>) -> String {
     load.filter(|(load, cpus)| *load > *cpus as f64)
@@ -1696,10 +1686,10 @@ fn verdict(
     }
     let late = run
         .waited
-        .filter(|waited| *waited >= ready_within(run.direnv, None))
+        .filter(|waited| *waited >= state::ready_within(run.direnv, None))
         .and_then(|waited| {
             let load = load();
-            let within = ready_within(run.direnv, load);
+            let within = state::ready_within(run.direnv, load);
             (waited >= within).then_some((within, load))
         });
     if let Some((within, load)) = late {
@@ -3097,12 +3087,12 @@ mod tests {
 
     #[test]
     fn a_start_waits_three_times_longer_only_while_the_load_exceeds_the_cores() {
-        assert_eq!(ready_within(0, Some((4.0, 22))), 60);
-        assert_eq!(ready_within(0, Some((22.0, 22))), 60);
-        assert_eq!(ready_within(0, Some((78.0, 22))), 180);
-        assert_eq!(ready_within(0, None), 60);
-        assert_eq!(ready_within(1, Some((78.0, 22))), 600);
-        assert_eq!(ready_within(2, None), 600);
+        assert_eq!(state::ready_within(0, Some((4.0, 22))), 60);
+        assert_eq!(state::ready_within(0, Some((22.0, 22))), 60);
+        assert_eq!(state::ready_within(0, Some((78.0, 22))), 180);
+        assert_eq!(state::ready_within(0, None), 60);
+        assert_eq!(state::ready_within(1, Some((78.0, 22))), 600);
+        assert_eq!(state::ready_within(2, None), 600);
         assert_eq!(under(Some((4.0, 22))), "");
         assert_eq!(under(Some((77.6, 22))), " under a load of 78 on 22 cores");
         assert_eq!(under(None), "");
