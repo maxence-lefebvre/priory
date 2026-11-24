@@ -32861,6 +32861,86 @@ fn a_parked_task_ends_on_a_close_that_arrived_before_its_adopt_request() {
     }
 }
 
+/// A review on alice's pull request 7 that saw it `open` at its poll.
+fn polled_review(open: bool, id: u64) -> Message {
+    on_alice_pull(
+        "github.pull_request_review.submitted",
+        json!({
+            "actor": "bob", "state": "commented", "body": "Late note", "github_id": id,
+            "open": open,
+            "url": format!("https://github.com/owner/repo/pull/7#pullrequestreview-{id}")
+        }),
+    )
+}
+
+#[test]
+fn a_parked_task_waits_for_the_close_after_a_review_that_saw_its_pull_request_closed() {
+    let setup = adopting("adopt-review-before-close", &[7]);
+    adopt(&setup, &["my-prs", "7"]);
+    all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == "held");
+
+    setup.publish(&polled_review(false, 801));
+
+    setup.until("inbox", |rows| rows.len() == 2);
+    std::thread::sleep(Duration::from_millis(1100));
+    assert_eq!(setup.listed(&["tasks", "--all"])[0][4], "held");
+
+    setup.publish(&on_alice_pull(
+        "github.pull_request.closed",
+        json!({ "merged": true, "github_id": 400 }),
+    ));
+
+    all_tasks_until(&setup, |rows| rows[0][4] == "done");
+    assert!(setup.rows("runs").is_empty());
+}
+
+#[test]
+fn a_parked_task_stays_parked_when_its_pull_request_reopened_after_a_close() {
+    let setup = adopting("adopt-reopened", &[7]);
+    setup.publish(&on_alice_pull(
+        "github.pull_request.closed",
+        json!({ "merged": false, "open": false, "github_id": 400 }),
+    ));
+    setup.publish(&polled_review(true, 801));
+    setup.until("inbox", |rows| rows.len() == 2);
+
+    adopt(&setup, &["my-prs", "7"]);
+
+    all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == "held");
+    std::thread::sleep(Duration::from_millis(1100));
+    assert_eq!(setup.listed(&["tasks", "--all"])[0][4], "held");
+
+    setup.publish(&polled_review(false, 802));
+
+    setup.until("inbox", |rows| rows.len() == 4);
+    std::thread::sleep(Duration::from_millis(1100));
+    assert_eq!(setup.listed(&["tasks", "--all"])[0][4], "held");
+}
+
+#[test]
+fn adopt_skips_a_pull_request_whose_head_branch_an_active_task_owns() {
+    let mut setup = Setup::new("adopt-branch-owner");
+    fs::write(setup.dir.join("factory/triggers/my-prs.toml"), MY_PRS).unwrap();
+    fs::write(
+        setup.dir.join("fake/prs"),
+        r#"[{"number":7,"title":"Own","url":"https://github.com/owner/repo/pull/7",
+             "headRefName":"priory/1","isCrossRepository":false},
+            {"number":8,"title":"Fork","url":"https://github.com/owner/repo/pull/8",
+             "headRefName":"priory/1","isCrossRepository":true}]"#,
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    let adopted = adopt(&setup, &["my-prs"]);
+
+    assert_eq!(
+        adopted,
+        "github:owner/repo#7: task 1 owns it\nadopted github:owner/repo#8\n"
+    );
+}
+
 #[test]
 fn a_parked_task_is_left_out_of_the_queue_and_the_task_list() {
     let setup = adopting("adopt-hidden", &[7]);
