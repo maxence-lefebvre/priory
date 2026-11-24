@@ -1,6 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { addBody, addOutcome } from "./add.js";
+import { addBody, addOutcome, swapLine, withDefaults } from "./add.js";
+
+test("the swap line names the default, or asks for a pick without one", () => {
+  assert.equal(swapLine("sweep", "implement"), "Workflow sweep is not requestable, so this starts the default, implement.");
+  assert.equal(swapLine("sweep", null), "Workflow sweep is not requestable. Pick one.");
+});
+
+test("a chip nobody picked follows the factory's current default, and a pick stays", () => {
+  const draft = { text: "Fix it", band: "" };
+  assert.deepEqual(withDefaults(draft, { workflow: "review", band: "today" }), { text: "Fix it", workflow: "review", band: "" });
+  assert.equal(withDefaults({ text: "", workflow: "sweep" }, { workflow: "review" }).workflow, "sweep");
+  assert.deepEqual(addBody(withDefaults(draft, null)), { text: "Fix it" });
+});
 
 test("the request sends the trimmed text and only the chips that hold a value", () => {
   assert.deepEqual(addBody({ text: "  Fix the docs \n", workflow: "implement", band: "", lane: null }), { text: "Fix the docs", workflow: "implement" });

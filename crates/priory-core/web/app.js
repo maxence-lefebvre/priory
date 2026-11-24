@@ -2,13 +2,13 @@
 // Agent text is untrusted: every value goes through `html`, which escapes it.
 import { ARM_MS, ASK_VIEWS, answeredAsks, answeredBy, askBody, askGroups, askHeading, confidenceNote, openAsksOf, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, optionKey, press, runsCommand, submitted, takesText, writeNote } from "./asks.js";
 import { SPLITS, attentionView, costTiles, dayBars, money, scoreTable, splitTable } from "./costs.js";
-import { addBody, addOutcome } from "./add.js";
+import { addBody, addOutcome, swapLine, withDefaults } from "./add.js";
 import { linked } from "./links.js";
 import { markdown } from "./markdown.js";
 import { around, dossier, nextPick, refusal } from "./reports.js";
 import { checkState, prStack, stateWords } from "./stack.js";
 import { KINDS, edgeStyle, historyRows, lockBadge, nodeShape, timeline, ungatedPairs } from "./flows.js";
-import { droppedNote, droppedWhy, emptyDetail, eventWords, handled, neverOwned, sinceWords, routeAction, unheardActs, unheardNote, unroutedNote } from "./inbox.js";
+import { droppedNote, droppedWhy, emptyDetail, eventWords, handled, neverOwned, requestedWorkflow, sinceWords, routeAction, unheardActs, unheardNote, unroutedNote } from "./inbox.js";
 import { editBody, issueName, laneLayout, momentWords, stages, successors } from "./batches.js";
 import { EARLIER_CAP, KEYS, keyboardSession, paintRows, sayLine, screenRows, screenWatch } from "./terminal.js";
 import { actionNote, arrivalAsk, batchParts, capsuleWords, countHead, countWords, deskBanners, dueParts, plural, memoryNote, memoryTag, mergeSince, nextLink, onRoom, progressView, rowAction, sectionInView, sinceGroups, taskRepo } from "./desk.js";
@@ -810,9 +810,16 @@ async function subscribeTask(resource, task) {
 }
 
 // The Add sheet with the server's text, whose URL keys the new task by the group's resource.
-function requestTask(text, workflow) {
-  state.add.draft.text = text;
-  if (workflow) state.add.draft.workflow = workflow;
+async function requestTask(text, workflow) {
+  await readAddDefaults();
+  // The person may have opened the sheet and typed while the read ran.
+  if (addSheet().open) return renderAdd();
+  const { draft, defaults } = state.add;
+  draft.text = text;
+  const offered = requestedWorkflow(workflow, defaults?.opted_out);
+  if (offered === undefined) delete draft.workflow;
+  else draft.workflow = offered;
+  state.add.swapped = offered === undefined ? workflow : null;
   keepDraft();
   openAdd();
 }
@@ -2380,17 +2387,25 @@ const keepDraft = () => localStorage.setItem(DRAFT_KEY, JSON.stringify({ draft: 
 // Lanes have no list of their own: the chip offers each lane a listed task carries.
 const knownLanes = () => [...new Set([...state.data.tasks, ...state.data.queue.waiting].map((task) => task.lane).filter(Boolean))].sort();
 
+// The factory may reload while the page is open; a read that fails keeps the last one.
+async function readAddDefaults() {
+  state.add.defaults = await api("/api/request").catch(() => state.add.defaults);
+}
+
 async function openAdd() {
   if (!state.data || addSheet().open) return;
   if (state.add.phase === "added") Object.assign(state.add, { phase: "empty", task: null });
-  if (!state.add.defaults) {
-    state.add.defaults = await api("/api/request").catch(() => null);
-    const { draft, defaults } = state.add;
-    if (defaults && draft.workflow === undefined) Object.assign(draft, { workflow: defaults.workflow || "", band: defaults.band || "" });
-  }
+  const before = state.add.defaults;
+  const read = readAddDefaults();
+  if (!before) await read;
+  const { defaults } = state.add;
+  if (addSheet().open) return renderAdd();
   renderAdd();
   addSheet().showModal();
   document.getElementById("add-text")?.focus();
+  await read;
+  // A redraw closes an open picker, so only a changed list draws again.
+  if (addSheet().open && JSON.stringify(state.add.defaults) !== JSON.stringify(defaults)) renderAdd();
 }
 
 function closeAdd() {
@@ -2444,7 +2459,8 @@ const ADD_LINES = {
 function renderAdd() {
   const sheet = addSheet();
   if (!sheet) return;
-  const { draft, phase, error, defaults } = state.add;
+  const { phase, error, defaults, swapped } = state.add;
+  const draft = withDefaults(state.add.draft, defaults);
   const sending = phase === "sending";
   const back = !state.failed && ["offline", "unsure"].includes(phase);
   const status = phase === "refused"
@@ -2458,8 +2474,8 @@ function renderAdd() {
   const label = sending ? "Adding…" : back ? "Send" : state.failed ? "Keep draft" : "Add";
   const body = phase === "added" ? addedTask() : html`<form data-action="add" ${sending ? raw('aria-busy="true"') : ""}>
     <label class="sr" for="add-text">What should the factory do?</label>
-    <input id="add-text" name="text" autocomplete="off" enterkeyhint="send" placeholder="What should the factory do?" value="${draft.text}" ${sending ? raw("readonly") : ""} ${status ? raw('aria-describedby="add-status"') : ""}>
-    ${status}
+    <input id="add-text" name="text" autocomplete="off" enterkeyhint="send" placeholder="What should the factory do?" value="${draft.text}" ${sending ? raw("readonly") : ""} ${status || swapped ? raw('aria-describedby="add-status add-swapped"') : ""}>
+    ${status}${swapped ? html`<p class="warnline" id="add-swapped">${icon("circle-alert", "s15")}<span>${swapLine(swapped, defaults?.workflow)}</span></p>` : ""}
     <div class="chips">${chip("workflow", "Workflow", draft.workflow, defaults?.workflows || [], defaults?.workflow ? `default (${defaults.workflow})` : "pick one")}
       ${chip("band", "Band", draft.band, defaults?.bands || state.data?.bands || [], "default")}
       ${chip("lane", "Lane", draft.lane, state.data ? knownLanes() : [], "routed")}</div>
@@ -2475,7 +2491,7 @@ function renderAdd() {
 
 async function submitAdd() {
   const { draft, phase } = state.add;
-  const body = addBody(draft);
+  const body = addBody(withDefaults(draft, state.add.defaults));
   if (!body || phase === "sending") return;
   // Offline, Enter only keeps the draft; it goes once the person confirms it after reconnecting.
   if (state.failed) {
@@ -2496,8 +2512,8 @@ async function submitAdd() {
     return signOut("The daemon refused this token. Paste the current one.");
   }
   if (outcome.state === "added") {
-    const { defaults } = state.add;
-    state.add.draft = { text: "", workflow: defaults?.workflow || "", band: defaults?.band || "", lane: "" };
+    state.add.draft = { text: "" };
+    state.add.swapped = null;
     state.add.task = { key: outcome.key, id: outcome.id, body: null };
     localStorage.removeItem(DRAFT_KEY);
     if (outcome.id !== null) api(`/api/tasks/${outcome.id}`).then((task) => { if (state.add.task?.id === outcome.id) { state.add.task.body = task; renderAdd(); } }, () => {});
@@ -2510,8 +2526,7 @@ async function submitAdd() {
 }
 
 function discardAdd() {
-  const { defaults } = state.add;
-  Object.assign(state.add, { phase: "empty", error: null, draft: { text: "", workflow: defaults?.workflow || "", band: defaults?.band || "", lane: "" } });
+  Object.assign(state.add, { phase: "empty", error: null, swapped: null, draft: { text: "" } });
   localStorage.removeItem(DRAFT_KEY);
   renderAdd();
   document.getElementById("add-text")?.focus();
@@ -3224,6 +3239,10 @@ document.addEventListener("input", (event) => {
   if (event.target.id === "add-text" || event.target.dataset.addChip) {
     state.add.draft[event.target.dataset.addChip || "text"] = event.target.value;
     keepDraft();
+    if (event.target.dataset.addChip === "workflow") {
+      state.add.swapped = null;
+      document.getElementById("add-swapped")?.remove();
+    }
     // Only the button's state changes; a full redraw would reset the caret on every letter.
     addSheet().querySelector("form .btn.primary")?.setAttribute("aria-disabled", String(!state.add.draft.text.trim() || state.add.phase === "sending"));
     return;

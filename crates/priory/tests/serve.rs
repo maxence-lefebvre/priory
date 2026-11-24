@@ -2035,19 +2035,25 @@ fn the_queue_lists_the_factorys_bands_in_order_even_an_empty_one() {
 }
 
 #[test]
-fn the_queue_lists_the_factorys_workflows_so_a_view_can_offer_them() {
+fn the_queue_lists_the_factorys_requestable_workflows_so_a_view_can_offer_them() {
     let mut setup = Setup::new("queue-workflows", SERVE);
     fs::write(setup.dir.join("factory/workflows/review.toml"), WORKFLOW).unwrap();
+    let scheduled = format!("requestable = false\n{WORKFLOW}");
+    fs::write(setup.dir.join("factory/workflows/sweep.toml"), scheduled).unwrap();
     let address = setup.start(&["serve", &setup.factory()]);
 
     let queue = api(&address, "/api/queue");
 
     assert_eq!(queue["workflows"], json!(["implement", "review"]));
-    assert_eq!(json_of(&setup, "queue")["workflows"], queue["workflows"]);
+    assert_eq!(queue["opted_out"], json!(["sweep"]));
+    let cli = json_of(&setup, "queue");
+    assert_eq!(cli["workflows"], queue["workflows"]);
+    assert_eq!(cli["opted_out"], queue["opted_out"]);
     let output = setup.priory(&["queue", "--json"]);
     succeeded(&output);
     let without_factory: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(without_factory["workflows"], json!([]));
+    assert_eq!(without_factory["workflows"], Value::Null);
+    assert_eq!(without_factory["opted_out"], Value::Null);
 }
 
 #[test]
@@ -4683,8 +4689,90 @@ fn a_request_without_a_daemon_gets_503() {
 }
 
 #[test]
+fn a_request_for_a_workflow_that_is_not_requestable_gets_400_before_it_reaches_the_daemon() {
+    let mut setup = Setup::new("web-request-scheduled", DEFAULTS);
+    let scheduled = format!("requestable = false\n{WORKFLOW}");
+    fs::write(setup.dir.join("factory/workflows/sweep.toml"), scheduled).unwrap();
+    // No daemon runs: a request that got past the check would get 503.
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let (status, body) = post(
+        &address,
+        "/api/request",
+        "",
+        r#"{"text": "Sweep now", "workflow": "sweep"}"#,
+    );
+
+    assert_eq!(status, 400, "{body}");
+    assert!(
+        body.contains("workflow `sweep` is not requestable"),
+        "{body}"
+    );
+    for workflow in ["implement", "nope"] {
+        let body = json!({"text": "Fix it", "workflow": workflow}).to_string();
+        let (status, body) = post(&address, "/api/request", "", &body);
+        assert_eq!(status, 503, "{workflow}: {body}");
+    }
+}
+
+#[test]
+fn the_request_default_stays_requestable_when_its_workflow_opts_out() {
+    let mut setup = Setup::new("web-request-default-out", DEFAULTS);
+    let opted_out = format!("requestable = false\n{WORKFLOW}");
+    fs::write(
+        setup.dir.join("factory/workflows/implement.toml"),
+        opted_out,
+    )
+    .unwrap();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let offered = api(&address, "/api/request")["workflows"].clone();
+    let (status, body) = post(
+        &address,
+        "/api/request",
+        "",
+        r#"{"text": "Fix it", "workflow": "implement"}"#,
+    );
+
+    assert_eq!(offered, json!(["implement"]));
+    assert_eq!(status, 503, "{body}");
+}
+
+#[test]
+fn editing_requestable_under_a_running_serve_changes_what_it_offers_and_refuses() {
+    let mut setup = Setup::new("reload-requestable", DEFAULTS);
+    let sweep = setup.dir.join("factory/workflows/sweep.toml");
+    fs::write(&sweep, WORKFLOW).unwrap();
+    let address = setup.start(&["serve", &setup.factory()]);
+    let request = r#"{"text": "Sweep now", "workflow": "sweep"}"#;
+    assert_eq!(
+        api(&address, "/api/request")["workflows"],
+        json!(["implement", "sweep"])
+    );
+
+    fs::write(&sweep, format!("requestable = false\n{WORKFLOW}")).unwrap();
+    eventually("the opt-out", || {
+        api(&address, "/api/request")["opted_out"] == json!(["sweep"])
+    });
+    assert_eq!(
+        api(&address, "/api/queue")["workflows"],
+        json!(["implement"])
+    );
+    assert_eq!(post(&address, "/api/request", "", request).0, 400);
+
+    fs::write(&sweep, WORKFLOW).unwrap();
+    eventually("the opt-in", || {
+        api(&address, "/api/request")["opted_out"] == json!([])
+    });
+    // No daemon runs, so a request that passes the check gets 503.
+    assert_eq!(post(&address, "/api/request", "", request).0, 503);
+}
+
+#[test]
 fn the_request_endpoint_reads_the_defaults_and_choices_the_add_control_offers() {
     let mut setup = Setup::new("web-request-defaults", DEFAULTS);
+    let scheduled = format!("requestable = false\n{WORKFLOW}");
+    fs::write(setup.dir.join("factory/workflows/sweep.toml"), scheduled).unwrap();
     let address = setup.start(&["serve", &setup.factory()]);
     let mut bare = Setup::new("web-request-no-defaults", SERVE);
     let bare_address = bare.start(&["serve", &bare.factory()]);
@@ -4695,6 +4783,7 @@ fn the_request_endpoint_reads_the_defaults_and_choices_the_add_control_offers() 
             "workflow": "implement",
             "band": "today",
             "workflows": ["implement"],
+            "opted_out": ["sweep"],
             "bands": ["blocker", "now", "today", "later"],
         })
     );
