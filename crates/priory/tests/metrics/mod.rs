@@ -1213,6 +1213,67 @@ fn a_room_that_cannot_be_measured_counts_its_waiting_task_as_unmeasured_and_logs
     );
 }
 
+/// Waits until the daemon's log holds `text`.
+fn until_logged(setup: &Setup, text: &str) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+        if log.contains(text) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "no {text:?} in {log}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn a_df_that_hangs_is_killed_and_the_daemon_works_on() {
+    let collector = Collector::start();
+    let mut setup = Setup::new("metrics-room-df-hangs");
+    setup.metrics(&collector, ROOM);
+    fs::write(setup.dir.join("fake/hang-df"), "").unwrap();
+
+    setup.start();
+
+    until_logged(
+        &setup,
+        "priory daemon: metrics: cannot measure the room: df -Pk",
+    );
+    until_logged(&setup, ": timed out after 5s");
+    fs::remove_file(setup.dir.join("fake/hang-df")).unwrap();
+    setup.publish(&requested(42));
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "running")
+    });
+}
+
+#[test]
+fn a_room_sample_the_state_refuses_is_logged_and_skipped() {
+    let collector = Collector::start();
+    let mut setup = Setup::new("metrics-room-refused");
+    setup.metrics(&collector, ROOM);
+    // Its start time keeps the daemon from removing the grant as a dead process's.
+    let stat = fs::read_to_string("/proc/self/stat").unwrap();
+    let started = stat.rsplit_once(')').unwrap().1;
+    let started: i64 = started.split_whitespace().nth(19).unwrap().parse().unwrap();
+    // Only the metrics read a waiting grant's bytes, and a fraction is no integer.
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute(
+            "INSERT INTO grants (bytes, pid, started, command) VALUES (1.5, ?1, ?2, 'build')",
+            rusqlite::params![std::process::id(), started],
+        )
+        .unwrap();
+
+    setup.start();
+
+    until_logged(&setup, "priory daemon: metrics: cannot sample the room: ");
+    setup.publish(&requested(42));
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "running")
+    });
+}
+
 #[test]
 fn a_daemon_sends_the_grants_by_state_and_the_runs_promise_without_the_held_memory() {
     let collector = Collector::start();
