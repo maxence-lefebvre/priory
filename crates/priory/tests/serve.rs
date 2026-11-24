@@ -4926,8 +4926,21 @@ fn decrypt(body: &[u8], key: &p256::SecretKey, auth: &[u8]) -> Vec<u8> {
 impl Setup {
     /// Subscribes a browser at `endpoint` through the API, and returns its private key and auth.
     fn subscribe(&self, address: &str, endpoint: &str) -> (p256::SecretKey, Vec<u8>) {
+        self.subscribe_to(address, endpoint, None)
+    }
+
+    /// As `subscribe`, with the kinds the browser chose.
+    fn subscribe_to(
+        &self,
+        address: &str,
+        endpoint: &str,
+        kinds: Option<Value>,
+    ) -> (p256::SecretKey, Vec<u8>) {
         use base64ct::{Base64UrlUnpadded, Encoding};
-        let (browser, key) = subscription(endpoint);
+        let (mut browser, key) = subscription(endpoint);
+        if let Some(kinds) = kinds {
+            browser["kinds"] = kinds;
+        }
         let (status, body) = post(address, "/api/push/subscribe", "", &browser.to_string());
         assert_eq!(status, 200, "{body}");
         let auth = Base64UrlUnpadded::decode_vec(browser["keys"]["auth"].as_str().unwrap());
@@ -5050,6 +5063,62 @@ fn a_new_ask_pushes_one_notification_per_subscription_with_only_its_title_and_ur
         !get(&address, "/api/push/key", Some(TOKEN))
             .1
             .contains(secret)
+    );
+}
+
+#[test]
+fn each_subscription_gets_the_kinds_it_chose() {
+    const PHONE: &str = "https://web.push.apple.com/phone";
+    const LAPTOP: &str = "https://fcm.googleapis.com/laptop";
+    const DESKTOP: &str = "https://fcm.googleapis.com/desktop";
+    let mut setup = Setup::new("push-kinds", SERVE);
+    setup.seed();
+    // No task starts, so none turns blocked and sends an alarm of its own.
+    succeeded(&setup.priory(&["pause"]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+    setup.subscribe_to(&address, PHONE, Some(json!(["ask"])));
+    // A page that knows no kinds sends the subscription again, and the choice stays.
+    setup.subscribe(&address, PHONE);
+    setup.subscribe(&address, LAPTOP);
+    let (mut unknown, _) = subscription(DESKTOP);
+    unknown["kinds"] = json!(["ask", "weather"]);
+    let refused = post(&address, "/api/push/subscribe", "", &unknown.to_string());
+    assert_eq!(refused.0, 400, "{}", refused.1);
+    let urls = |from: usize, count: usize| {
+        setup.until_pushes(from + count);
+        std::thread::sleep(Duration::from_millis(1500));
+        let mut urls: Vec<String> = setup.pushes()[from..]
+            .iter()
+            .map(|push| push["url"].as_str().unwrap().to_owned())
+            .collect();
+        urls.sort();
+        urls
+    };
+    let db = setup.db();
+
+    setup.ask_more(&db, "Merge it?");
+    db.execute("UPDATE tasks SET state = 'blocked' WHERE id = 1", [])
+        .unwrap();
+    assert_eq!(urls(0, 3), [LAPTOP, LAPTOP, PHONE]);
+
+    setup.subscribe_to(&address, DESKTOP, Some(json!(["landed", "stall"])));
+    db.execute(
+        "INSERT INTO inbox (id, time, type, subject, data, links, outcome)
+         VALUES ('r900', '2026-11-17T09:00:00Z', 'priory.report', 'priory',
+           '{\"line\":\"landed wrong: o/r#4 of task 1 is red on main\"}', '[]', 'report')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO stalls (resource, missing, task) VALUES ('disk', '3 GB', 1)",
+        [],
+    )
+    .unwrap();
+    assert_eq!(urls(3, 1)[0], DESKTOP);
+    assert!(
+        setup.pushes()[3..]
+            .iter()
+            .all(|push| push["url"] == DESKTOP)
     );
 }
 
