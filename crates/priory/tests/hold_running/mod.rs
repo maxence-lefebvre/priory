@@ -353,7 +353,7 @@ fn hold_now_before_the_session_starts_keeps_the_step_prompt() {
 
 #[test]
 fn hold_now_before_a_budgeted_steps_first_tokens_holds_it() {
-    let mut setup = Setup::with_workflow("hold-now-budget", &budgeted("$5.00"));
+    let mut setup = Setup::with_workflow("hold-now-budget", &budgeted("5.00"));
     fs::write(setup.dir.join("factory/prices.toml"), DEAR).unwrap();
     fs::write(setup.dir.join("fake/silent"), "Starting").unwrap();
     setup.publish(&requested(42));
