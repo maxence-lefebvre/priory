@@ -7688,7 +7688,12 @@ fn a_written_answer_on_a_human_step_with_no_model_step_before_it_is_refused() {
 
 /// The stderr of a refused `priory answer` to ask 1.
 fn refused_answer(setup: &Setup, text: &str) -> String {
-    let answered = setup.priory(&["answer", "1", text, "--revision", "1"]);
+    refused_answer_to(setup, "1", text)
+}
+
+/// The stderr of a refused `priory answer` to `ask`.
+fn refused_answer_to(setup: &Setup, ask: &str, text: &str) -> String {
+    let answered = setup.priory(&["answer", ask, text, "--revision", "1"]);
     assert!(!answered.status.success(), "{text:?}: {answered:?}");
     String::from_utf8(answered.stderr).unwrap()
 }
@@ -7820,26 +7825,73 @@ fn a_written_answer_after_an_irreversible_step_goes_back_before_its_approval() {
     assert_eq!(ships(&setup), 1);
 }
 
+/// Waits until the approval of ask 1 is asked again at `revision`, which `ship` waits for.
+fn reasked(setup: &Setup, revision: &str) {
+    setup.until("asks", |rows| {
+        rows.iter().any(|row| row[0] == "1" && row[2] == revision)
+    });
+    let task = debate::until_state(setup, "asleep");
+    assert_eq!(task[3], "approve-pr");
+}
+
 #[test]
-fn a_written_answer_that_would_run_an_approved_step_again_is_refused() {
+fn a_written_answer_voids_the_approval_so_the_approved_step_asks_again() {
     let setup = shipped(
         "written-shipped",
         APPROVE_THEN_SHIP,
         &[passed_with_evidence(), passed_with_evidence()],
     );
+    setup.gone("priory-1");
+    assert_eq!(
+        refused_answer_to(&setup, "2", "Fine"),
+        "priory answer: ask 2 takes one of: fine, undo; did you mean fine?\n"
+    );
+    setup.calls(&[passed_with_evidence()]);
 
     let answered = setup.priory(&["answer", "2", "fix the typo first", "--revision", "1"]);
 
     assert_eq!(
-        String::from_utf8_lossy(&answered.stderr),
-        "priory answer: ask 2 takes one of: fine, undo; a written answer goes back to step polish, from which irreversible step ship runs again on its earlier approval\n"
+        String::from_utf8_lossy(&answered.stdout),
+        "ask 2 answered: back to step polish\n",
+        "{answered:?}"
     );
-    assert_eq!(setup.rows("tasks")[0][3], "confirm");
+    reasked(&setup, "2");
     assert_eq!(ships(&setup), 1);
+    let asks = asks_json(&setup);
+    let question = asks["asks"][0]["question"].as_str().unwrap();
+    assert!(
+        question.ends_with("asked again: a person wrote an answer since this was answered, or the branch had no commit then"),
+        "{question}"
+    );
+    let outbox = setup.rows("outbox");
+    assert!(
+        outbox.iter().all(|row| row[3] != "queued"),
+        "the step's prompt is taken back: {outbox:?}"
+    );
+    let trace = setup.priory(&["trace"]);
+    assert!(trace.status.success(), "{trace:?}");
+
+    setup.gone("priory-1");
+    setup.calls(&[passed_with_evidence()]);
+    let written = setup.priory(&["answer", "1", "and the changelog", "--revision", "2"]);
+    assert_eq!(
+        String::from_utf8_lossy(&written.stdout),
+        "ask 1 answered: back to step polish\n",
+        "{written:?}"
+    );
+    reasked(&setup, "3");
+    assert_eq!(ships(&setup), 1);
+
+    setup.calls(&[passed_with_evidence(), passed_with_evidence()]);
+    let approved = setup.priory(&["answer", "1", "open", "--revision", "3"]);
+    assert!(approved.status.success(), "{approved:?}");
+    setup.until("runs", |rows| {
+        rows.iter().filter(|run| run[2] == "ship").count() == 2
+    });
 }
 
 #[test]
-fn a_written_answer_is_refused_when_a_person_decides_the_route_to_an_approved_step() {
+fn a_written_answer_voids_an_approval_a_person_s_edge_leads_to() {
     let workflow = APPROVE_THEN_SHIP.replace(
         "next = { passed = \"ship\" }",
         "next = { passed = \"ship\" }\nby = { passed = \"human\" }",
@@ -7849,19 +7901,18 @@ fn a_written_answer_is_refused_when_a_person_decides_the_route_to_an_approved_st
         &workflow,
         &[passed_with_evidence(), passed_with_evidence()],
     );
+    setup.gone("priory-1");
+    setup.calls(&[passed_with_evidence()]);
 
     let answered = setup.priory(&["answer", "2", "fix the typo first", "--revision", "1"]);
 
-    assert_eq!(
-        String::from_utf8_lossy(&answered.stderr),
-        "priory answer: ask 2 takes one of: fine, undo; a written answer goes back to step polish, from which irreversible step ship runs again on its earlier approval\n"
-    );
-    assert_eq!(setup.rows("tasks")[0][3], "confirm");
+    assert!(answered.status.success(), "{answered:?}");
+    reasked(&setup, "2");
     assert_eq!(ships(&setup), 1);
 }
 
 #[test]
-fn a_written_answer_is_refused_when_a_human_step_that_approves_nothing_leads_to_an_approved_step() {
+fn a_written_answer_voids_an_approval_past_a_human_step_that_approves_nothing() {
     let workflow = APPROVE_THEN_SHIP.replace(
         "next = { passed = \"ship\" }",
         r#"next = { passed = "check" }
@@ -7880,15 +7931,162 @@ next = { go = "ship", halt = "stop" }"#,
     assert!(answered.status.success(), "{answered:?}");
     setup.until("asks", |rows| rows.iter().any(|row| row[0] == "3"));
     debate::until_state(&setup, "asleep");
+    setup.gone("priory-1");
+    setup.calls(&[passed_with_evidence()]);
 
     let answered = setup.priory(&["answer", "3", "fix the typo first", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("asks", |rows| rows.iter().any(|row| row[0] == "4"));
+    let answered = setup.priory(&["answer", "4", "go", "--revision", "1"]);
 
-    assert_eq!(
-        String::from_utf8_lossy(&answered.stderr),
-        "priory answer: ask 3 takes one of: fine, undo; a written answer goes back to step polish, from which irreversible step ship runs again on its earlier approval\n"
-    );
-    assert_eq!(setup.rows("tasks")[0][3], "confirm");
+    assert!(answered.status.success(), "{answered:?}");
+    reasked(&setup, "2");
     assert_eq!(ships(&setup), 1);
+}
+
+#[test]
+fn an_edit_after_a_written_answer_cannot_reach_a_step_on_its_old_approval() {
+    let ships_first =
+        then_confirm(&APPROVE_THEN_SHIP.replace("open = \"polish\"", "open = \"ship\""))
+            .replace(
+                "next = { passed = \"ship\" }",
+                "next = { passed = \"confirm\" }",
+            )
+            .replace("undo = \"stop\"", "undo = \"polish\"");
+    let setup = asked_to_open("written-edited", &ships_first);
+    for (ask, option) in [("1", "open"), ("2", "undo")] {
+        setup.calls(&[passed_with_evidence()]);
+        let answered = setup.priory(&["answer", ask, option, "--revision", "1"]);
+        assert!(answered.status.success(), "{answered:?}");
+        let next = (ask.parse::<u32>().unwrap() + 1).to_string();
+        setup.until("asks", |rows| rows.iter().any(|row| row[0] == next));
+        debate::until_state(&setup, "asleep");
+        setup.gone("priory-1");
+    }
+    setup.calls(&[passed_with_evidence()]);
+    setup.hold("hold-stop");
+    let answered = setup.priory(&["answer", "3", "fix the typo first", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+    let edited = ships_first.replace(
+        "effect = \"reversible\"\nnext = { passed = \"confirm\" }",
+        "effect = \"reversible\"\nnext = { passed = \"ship\" }",
+    );
+    assert_ne!(edited, ships_first);
+
+    write_atomic(&setup.dir.join("factory/workflows/implement.toml"), &edited);
+    until_record(&setup, "factory.config.reloaded");
+    setup.release("hold-stop");
+
+    reasked(&setup, "2");
+    assert_eq!(ships(&setup), 1);
+}
+
+#[test]
+fn a_written_answer_voids_both_approvals_one_answer_gave() {
+    let workflow = APPROVE_THEN_SHIP
+        .replace(
+            "approves = [\"ship\"]",
+            "approves = [\"ship\", \"announce\"]",
+        )
+        .replace(
+            "effect = \"irreversible\"\nnext = { passed = \"done\" }",
+            "effect = \"irreversible\"\nnext = { passed = \"announce\" }",
+        )
+        + r#"
+[[steps]]
+id = "announce"
+decides = "model"
+agent = "implementer"
+prompt = "Announce it."
+effect = "irreversible"
+next = { passed = "done" }
+"#;
+    let setup = shipped(
+        "written-two",
+        &workflow,
+        &[
+            passed_with_evidence(),
+            passed_with_evidence(),
+            passed_with_evidence(),
+        ],
+    );
+    setup.gone("priory-1");
+    setup.calls(&[passed_with_evidence()]);
+
+    let answered = setup.priory(&["answer", "2", "fix the typo first", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    reasked(&setup, "2");
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    let voided: i64 = db
+        .query_row(
+            "SELECT count(*) FROM approvals WHERE commit_sha IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(voided, 2);
+    setup.gone("priory-1");
+    setup.calls(&[
+        passed_with_evidence(),
+        passed_with_evidence(),
+        passed_with_evidence(),
+    ]);
+    let approved = setup.priory(&["answer", "1", "open", "--revision", "2"]);
+    assert!(approved.status.success(), "{approved:?}");
+    setup.until("runs", |rows| {
+        rows.iter().filter(|run| run[2] == "announce").count() == 2
+    });
+    assert_eq!(ships(&setup), 2);
+}
+
+#[test]
+fn text_on_a_hold_s_ask_voids_the_approval_of_the_held_step() {
+    let setup = asked_to_open("hold-approved", APPROVE_THEN_SHIP);
+    setup.calls(&[passed_with_evidence()]);
+    setup.hold("hold-stop");
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+    setup.written("fake/tools.log");
+    setup.memory(0);
+    std::thread::sleep(Duration::from_millis(2100));
+    setup.release("hold-stop");
+    setup.until("tasks", |rows| {
+        rows[0][3] == "ship" && rows[0][4] == "ready"
+    });
+    person(
+        &setup,
+        "hold",
+        &[
+            "1",
+            "--reason",
+            "b",
+            "--merge",
+            "owner/repo#7",
+            "--if-closed",
+            "ask",
+        ],
+    );
+    setup.publish(&closed_7(false, 400));
+    setup.until("asks", |rows| rows.iter().any(|row| row[0] == "2"));
+    person(
+        &setup,
+        "answer",
+        &["2", "use the new schema", "--revision", "1"],
+    );
+
+    person(&setup, "answer", &["2", "release", "--revision", "1"]);
+    setup.memory(60);
+
+    reasked(&setup, "2");
+    assert_eq!(ships(&setup), 0);
+    let queued: Vec<String> = setup
+        .rows("outbox")
+        .into_iter()
+        .filter(|row| row[3] == "queued")
+        .map(|row| row[4].clone())
+        .collect();
+    assert_eq!(queued, ["A person wrote on ask 2: use the new schema"]);
 }
 
 #[test]
@@ -13091,19 +13289,20 @@ fn a_written_answer_on_a_hold_s_ask_keeps_the_hold_and_waits_for_the_task_s_next
         "ask 1: the text waits for the task's next run; its hold still takes one of: release, drop\n"
     );
     assert_eq!(held_as(&setup, "1")[0], "held");
-    let outbox = setup.rows("outbox");
-    assert!(
-        outbox.iter().any(
-            |row| row[4] == "A person wrote on ask 1: use the new schema" && row[3] == "queued"
-        ),
-        "{outbox:?}"
-    );
     person(
         &setup,
         "answer",
         &[&asks[0][0], "release", "--revision", "1"],
     );
     assert_eq!(held_as(&setup, "1")[0], "queued");
+    setup.memory(60);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let typed = setup.typed();
+    assert!(
+        typed[0].starts_with("Implement the issue.\n")
+            && typed[0].contains("\nA person wrote on ask 1: use the new schema"),
+        "{typed:?}"
+    );
 }
 
 /// A Linear event about ENG-7 whose open blockers are `blockers`.

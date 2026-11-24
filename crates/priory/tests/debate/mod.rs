@@ -669,3 +669,34 @@ fn an_event_and_a_say_during_a_debate_turn_reach_the_step_after_the_debate_and_n
         typed[2]
     );
 }
+
+#[test]
+fn a_debate_reads_no_note_and_no_written_answer() {
+    let workflow = debate_workflow(2, "$5.00", "15m")
+        .replace("daemon = \"done\"", "daemon = \"check\"")
+        + r#"
+[[steps]]
+id = "check"
+decides = "human"
+effect = "none"
+options = ["go", "halt"]
+next = { go = "debate", halt = "stop" }
+"#;
+    let mut setup = debating("debate-written", &workflow);
+    setup.calls(&[position("daemon", "a"), position("daemon", "b")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+    until_state(&setup, "asleep");
+
+    assert_eq!(
+        refused_answer(&setup, "weigh latency"),
+        "priory answer: ask 1 takes one of: go, halt; no earlier model step reads a written answer\n"
+    );
+    assert_eq!(
+        refused_answer(&setup, "go: weigh latency"),
+        "priory answer: ask 1 answered go leads to debate, which reads no note: answer go alone\n"
+    );
+    assert_eq!(asks_json(&setup)["asks"][0]["state"], "open");
+    assert_eq!(with(&setup.rows("outbox"), 3, "queued"), 0);
+}
