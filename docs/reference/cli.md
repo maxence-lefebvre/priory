@@ -97,7 +97,8 @@ a group. `PRIORY_METRICS` replaces that list for one process, such as `process,l
   error ends with the command to run, the current revision filled in:
   `; run: priory answer --revision 1 smoke.1 ok`. See [waits.md](../daemon/waits.md#asks-and-answers),
   [tools.md](tools.md#commands-an-answer-runs) and
-  [runners.md](../daemon/runners.md#answering-another-runners-ask).
+  [runners.md](../daemon/runners.md#answering-another-runners-ask). It shows no plan: see
+  [The plan an ask approves](../daemon/asks.md#the-plan-an-ask-approves).
 - `priory dismiss [--revision N | --expected N] [DIR] [RUNNER:]ASK`: closes an ask with no answer.
   `RUNNER:ASK` needs a revision too, and exits 2 without it, as `answer` does, with the command to
   run when this machine's mirror holds the ask open.
