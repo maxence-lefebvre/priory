@@ -97,14 +97,14 @@ hang, and how long each part of a worktree's start takes.
 
 - **The start.** `priory.run.start.duration` counts each run's start, from the second its row
   records as `started` to its `SessionStart`, by harness and by `first` or `resume`: whether the
-  run resumed a session. A run that ends before any `SessionStart`, on the trust dialog, after 60
-  seconds with none, or because its harness exited, counts as `error`, up to its end
+  run resumed a session. A run that ends before any `SessionStart`, on the trust dialog, after its
+  window with none, or because its harness exited, counts as `error`, up to its end
   ([sessions.md](sessions.md#trusting-the-worktrees-and-the-clone)). A run that carries its process
   into the next step has no start, and counts nothing.
 - **The hung start.** `priory.run.starts.active` counts the live runs with no `SessionStart` yet,
   and `priory.run.start.oldest.age` gives the oldest one's age. Each harness the factory's agents
   use has a point, 0 with none. A start that hangs on a dialog the screen check does not know climbs
-  to 60 seconds every time.
+  to its window every time: 60 seconds, 180 with recorded trust, or 600 under direnv.
 - **The worktree.** `priory.worktree.phase.duration` times each phase of a task's start:
   `clone`, `fetch` and `checkout` around their `git` commands, and the repository's `setup`,
   `resume` and `teardown` recipes ([runs.md](runs.md#recipes)) from their start to their end. A
