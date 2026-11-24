@@ -8374,7 +8374,7 @@ fn text_on_a_hold_s_ask_voids_the_approval_of_the_held_step() {
     setup.hold("hold-stop");
     let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
     assert!(answered.status.success(), "{answered:?}");
-    setup.written("fake/tools.log");
+    setup.replied(2);
     setup.memory(0);
     std::thread::sleep(Duration::from_millis(2100));
     setup.release("hold-stop");
