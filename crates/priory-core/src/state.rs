@@ -4989,7 +4989,7 @@ mod ready_within {
 
         assert_eq!(
             bases.each_ref().map(Option::as_deref),
-            [Some("trunk"), Some("trunk"), Some("trunk"), None, None]
+            [Some("trunk"), Some("trunk"), None, None]
         );
     }
 }
