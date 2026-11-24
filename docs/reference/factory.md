@@ -36,6 +36,7 @@ one: [reload.md](../daemon/reload.md#what-a-reload-changes) lists them.
 | `request` | table | no | `priory add` needs `--workflow` | The defaults of `priory add` and `POST /api/request`. See [`[request]`](#request) | |
 | `batch` | table | no | `priory batch add` is refused | How `priory batch add` plans batches. See [`[batch]`](#batch) | |
 | `caps` | table | no | no cap | Spend caps in dollars for every task and each lane. See [`[caps]`](#caps) | |
+| `cloud` | table | no | 4 cloud runs at once | The bounds of cloud runs. See [`[cloud]`](#cloud) | |
 | `decisions` | table | no | no decision model | A decision model for each decision point. See [`[decisions.triage]`](#decisionstriage) | |
 | `consult` | table | no | no agent consults | Who may consult which investigator, and the bounds of one consult. See [`[consult]`](#consult) | |
 | `mcp` | table of tables | no | | A person's statement about each MCP server or connector an investigator names. See [`[mcp.<name>]`](#mcpname) | |
@@ -61,6 +62,14 @@ See [runs.md](../daemon/runs.md#overlapping-files) for how the overlap hold work
 | `age` | duration | no | none: no task moves | How long a task waits in the queue for each band it moves up in start order, up to the highest band not in `preempt` | `"24h"` |
 | `review_limit` | integer, at least 1 | no | no limit | How many pull requests of a lane, or of a batch, may wait for a person before its new tasks wait to start. A task of the first band never waits | `5` |
 | `fair` | `lane` | no | oldest first | What the queue takes turns between inside a band, among the tasks no person ordered | `"lane"` |
+
+## `[cloud]`
+
+See [cloud.md](../daemon/cloud.md) for what a cloud run is.
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `max` | integer, at least 1 | no | `4` | How many cloud runs a runner has at once. Past it, a task waits to start one | `2` |
 
 ## `[intake]`
 

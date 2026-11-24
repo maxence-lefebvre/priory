@@ -23,7 +23,9 @@ const DEADLINE: Duration = Duration::from_secs(2 * 60 * 60);
 const POLL: Duration = Duration::from_secs(60);
 
 /// The run whose session a thread starts. One at a time: a repository has one folder for them.
-static STARTING: Mutex<Option<(i64, Receiver<Result<Started, NotStarted>>)>> = Mutex::new(None);
+static STARTING: Mutex<Option<(i64, Starting)>> = Mutex::new(None);
+
+type Starting = Receiver<Result<Started, NotStarted>>;
 
 /// What the daemon knows of each live cloud run past what the state holds.
 static WATCHED: Mutex<BTreeMap<i64, Watch>> = Mutex::new(BTreeMap::new());

@@ -21,9 +21,10 @@ Checked against Claude Code 2.1.331 and its docs on 2026-11-24
 - `claude -p MSG --cloud ID --output-format json` queues a message into a session and prints
   `{ok, session_id, url}`.
 - No command reads a session's state or transcript, lists sessions, or stops or archives one.
-- `--cloud` takes one repository. A session clones the GitHub remote, not the local checkout. One
-  whose GitHub connection could not reach the repository started anyway, with the files and no
-  `origin`, and could not push.
+- `--cloud` takes one repository. A session clones the GitHub remote, not the local checkout, when
+  the Claude GitHub App is installed on it. Without the App, even after `/web-setup`, the CLI uploads
+  the local repository: its history across all branches and the uncommitted changes to tracked
+  files. No command says which one it will do. A real session of that kind could not push.
 - `claude --cloud` shows the trust dialog in a folder Claude does not trust, and refuses a linked
   worktree under a temporary folder.
 - Inside the session, a GitHub proxy allows branch pushes only, and blocks GraphQL, so `gh pr
@@ -45,7 +46,7 @@ belongs to the agent, as `claude-code` and `codex` do, so one workflow mixes loc
 
 | Priory duty | Local run | Cloud run |
 | ----------- | --------- | --------- |
-| Start | the harness in tmux, in the worktree | `claude --cloud PROMPT` in tmux, in the worktree, for the seconds it takes |
+| Start | the harness in tmux, in the worktree | `claude --cloud PROMPT` in tmux, in an isolated clone of the pushed task branch, for the seconds it takes |
 | Room | the agent's `memory` and `disk` | none |
 | Prompt | typed when idle, confirmed by a hook | passed on the command line, confirmed by the printed id |
 | Result | the `result` tool | the daemon stores `pushed` when the session's branch arrives |
@@ -59,18 +60,19 @@ belongs to the agent, as `claude-code` and `codex` do, so one workflow mixes loc
 
 On `main` with this note:
 
-1. `harness = "claude-cloud"`, and `priory check` rules: a cloud agent takes no `session =
-   "shared"`, `mcpServers`, `connectors`, `permissions`, `memory`, `disk` or `compactAt`. A cloud
-   step takes no `proof`, `guard`, `plan_requires` or `gate`, and routes only `pushed` and `failed`.
-   A debate names no cloud agent. Handler, summarizer, lead and investigator already need
+1. `harness = "claude-cloud"`, and `priory check` rules: a cloud agent takes no `model`,
+   `effort`, `session = "shared"`, `mcpServers`, `connectors`, `permissions`, `memory`, `disk` or
+   `compactAt`. A cloud step takes no `proof`, `guard`, `plan_requires`, `gate`, `budget` or
+   `attach`, and routes only `pushed` and `failed`. Its workflow takes no `sandbox`. A debate names no cloud agent. Handler, summarizer, lead and investigator already need
    `claude-code`.
-2. Dispatch: the worktree, the recorded run, the prompt with the push rules, `claude --cloud` in
-   tmux, and the session id in the run's `thread` column, which `priory runs` shows.
+2. Dispatch, off the tick: the worktree, the recorded run, the push of the task branch, the isolated
+   clone, the whole prompt with the push rules, `claude --cloud` in tmux, and the session id in the
+   run's `thread` column, which `priory runs` shows.
 3. The branch poll with `git ls-remote`, the result `pushed` with the head commit, and the turn end,
    so `open-pr` behind a person's approval opens the pull request.
-4. The deadline, and a failed start, as outcome `failed`. A daemon stopped during dispatch blocks
-   the task and never dispatches the run again.
-5. No room for a cloud run, and no health verdict on it.
+4. The deadline, and a start that made no session, as outcome `failed`. A start that may have made
+   one blocks the task, and the daemon never dispatches the run again.
+5. No room for a cloud run, and no health verdict on it. `[cloud] max` bounds the live ones.
 6. `[repos."owner/name"] cloud_setup` and `priory cloud setup-script`.
 
 ## Later slices
@@ -79,18 +81,16 @@ On `main` with this note:
    text, and send a person's answer back with `claude -p MSG --cloud ID`, then wait for a new push.
 2. **Feedback.** Send review comments and red checks on the pull request with `claude -p`, through
    the outbox's states, and poll for the next push.
-3. **A spend cap.** `[cloud] max` bounds the live cloud runs, since room does not.
-4. **A merge gate.** The session holds the person's GitHub access. Before a dispatch, check that the
+3. **A merge gate.** The session holds the person's GitHub access. Before a dispatch, check that the
    default branch's rules refuse a merge without a status Priory sets.
-5. **Drift.** Record the pushed branch's files for the overlap hold, and check that it merges into
+4. **Drift.** Record the pushed branch's files for the overlap hold, and check that it merges into
    the default branch before the human step.
-6. **Branch cleanup.** Delete `claude/priory-*` branches once `open-pr` pushed the task's own.
-7. **A silent session.** One nudge with `claude -p` before the deadline fails the step.
-8. **Several repositories and the kit.** A session with the kit repository beside the task's, once
+5. **Branch cleanup.** Delete `claude/priory-*` branches once `open-pr` pushed the task's own.
+6. **A silent session.** One nudge with `claude -p` before the deadline fails the step.
+7. **Several repositories and the kit.** A session with the kit repository beside the task's, once
    the CLI can start one. Until then the setup script carries the kit.
-9. **Usage.** Tokens per session, once the CLI or an API reports them.
-10. **A dispatch off the tick.** Run `claude --cloud` off the daemon's thread, if a slow start
-    delays other runs.
+8. **Usage.** Tokens per session, once the CLI or an API reports them.
+9. **An authenticated push.** More than the branch name that ties a push to its run.
 
 ## Open questions
 

@@ -9,13 +9,16 @@ how a cloud run works and what it gives up.
 
 1. Sign in to Claude Code with your Claude account: `claude auth login`. A cloud session needs a
    Claude subscription, not an API key.
-2. Give cloud sessions access to the repository. Install the Claude GitHub App on it from
-   claude.ai/code, or run `/web-setup` in Claude Code to use your `gh` login.
+2. Install the Claude GitHub App on the repository from claude.ai/code, so a session clones it from
+   GitHub. `/web-setup` alone gives a session your `gh` login's access, and Claude Code still uploads
+   the clone it starts from: see [Secrets](daemon/cloud.md#secrets) for what that clone holds.
 3. Protect the repository's default branch, so a session cannot push to it. A session can push any
    other branch.
-4. Check it by hand from your clone of the repository:
+4. Check it by hand from a new clone, since without the App the command uploads every branch of the
+   clone it runs in:
 
    ```sh
+   git clone --single-branch https://github.com/owner/name.git access-check && cd access-check
    claude --cloud "Push an empty commit to the branch claude/access-check. Open no pull request."
    ```
 
@@ -73,10 +76,13 @@ Print and paste the script again after the kit or the factory's skills change.
    next = { pushed = "approve-pr", failed = "stop" }
    ```
 
-3. Let Priory trust the task's worktree for Claude, since `claude --cloud` shows Claude's trust
-   dialog in a folder it does not trust. Set `trust_worktrees = true` in `factory.toml`, and name
-   the repository in a trigger or in `[repos]`.
-4. Run `priory check`. It names any key a cloud agent or step cannot take.
+3. Let Priory trust the folder `claude --cloud` runs in, `cloud/owner/name` under Priory's home,
+   since the command shows Claude's trust dialog in a folder it does not trust. Set
+   `trust_worktrees = true` in `factory.toml`, and name the repository in a trigger or in `[repos]`.
+4. Make sure no setup recipe leaves untracked files that the repository does not ignore: a worktree
+   with changes starts no session.
+5. To change how many cloud runs a runner has at once, 4 when unset, set `max` under `[cloud]`.
+6. Run `priory check`. It names any key a cloud agent or step cannot take.
 
 ## See the run
 

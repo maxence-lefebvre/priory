@@ -97,6 +97,22 @@
       },
       "type": "object"
     },
+    "Cloud": {
+      "additionalProperties": false,
+      "description": "`[cloud]`: the bounds of cloud runs, which take no room and whose cost Priory cannot read.",
+      "properties": {
+        "max": {
+          "description": "How many cloud runs a runner has at once, 4 when unset. Past it, a task waits to start one.",
+          "format": "uint32",
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "CloudwatchWebhook": {
       "additionalProperties": false,
       "description": "CloudWatch alarm state changes, from an EventBridge API destination at `POST /hooks/cloudwatch`.",
@@ -1151,6 +1167,9 @@
         }
       ],
       "description": "Spend caps in dollars for every task, and for each lane by its name."
+    },
+    "cloud": {
+      "$ref": "#/definitions/Cloud"
     },
     "command_timeout": {
       "default": null,

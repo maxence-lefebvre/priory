@@ -33125,6 +33125,15 @@ impl Setup {
         .unwrap();
     }
 
+    /// Requests a task whose source is issue 42's label event.
+    fn request_with_issue(&self) {
+        let source = labeled(42);
+        let mut request = requested(42);
+        request.data["source"] = json!(source.id.to_string());
+        self.publish(&source);
+        self.publish(&request);
+    }
+
     /// Makes each cloud session push a commit with `message`.
     fn cloud_pushes(&self, message: &str) {
         fs::write(self.dir.join("fake/cloud-push"), message).unwrap();
@@ -33217,7 +33226,7 @@ fn pushed_branch(prompt: &str) -> String {
 fn each_cloud_step_of_one_agent_starts_its_own_session_with_the_whole_prompt() {
     let mut setup = cloud("cloud-fix", &cloud_then_fix());
     setup.cloud_pushes("Add the widget\n");
-    setup.publish(&labeled(42));
+    setup.request_with_issue();
     setup.hold("cloud-orphan");
 
     setup.start();
@@ -33362,7 +33371,7 @@ fn a_start_that_may_have_made_a_session_blocks_the_task_and_a_resume_sends_the_w
         let mut setup = cloud(name, CLOUD);
         setup.settings("command_timeout = \"8s\"\n");
         fs::write(setup.dir.join("fake").join(file), text).unwrap();
-        setup.publish(&labeled(42));
+        setup.request_with_issue();
 
         setup.start();
 
@@ -33633,11 +33642,9 @@ fn a_cloud_agent_never_starts_in_a_sandboxed_workflow() {
 
     setup.start();
 
-    let reason = setup.blocked();
-    assert!(
-        reason.contains("needs sandbox jail, and a cloud run cannot be jailed"),
-        "{reason}"
-    );
+    setup.logged("runs in the cloud, so the workflow cannot have `sandbox`");
+    let code = setup.daemon.as_mut().unwrap().wait().unwrap().code();
+    assert_eq!(code, Some(1));
     assert_eq!(setup.cloud_prompts().len(), 0);
 }
 

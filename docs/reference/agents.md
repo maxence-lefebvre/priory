@@ -232,7 +232,7 @@ Answer in one short paragraph.
 | `` `connectors` names `claude.ai <name>`: write the connector's name as claude.ai shows it, `<name>`, since Claude Code adds `claude.ai ` itself `` | A name with Claude Code's prefix |
 | `` `connectors` names `<a>` and `<b>`, whose tools Claude Code names alike, mcp__claude_ai_<server>__<tool>: keep one `` | Two names that give one tool prefix, such as `Google Drive` and `Google_Drive` |
 | `` a codex agent cannot take `connectors`: claude.ai connectors reach Claude Code alone `` | A Codex agent with `connectors` |
-| `` harness = "claude-cloud" cannot take `<key>`: <why> `` | A cloud agent with `session = "shared"`, `mcpServers`, `connectors`, `permissions`, `memory`, `disk` or `compactAt`. See [cloud.md](../daemon/cloud.md) |
+| `` harness = "claude-cloud" cannot take `<key>`: <why> `` | A cloud agent with `model`, `effort`, `session = "shared"`, `mcpServers`, `connectors`, `permissions`, `memory`, `disk` or `compactAt`. See [cloud.md](../daemon/cloud.md) |
 | `` investigator `<name>` needs a `model` with a price in prices.toml, so its cap can be enforced `` | No `model`. With a model `prices.toml` lacks: `` runs model `<model>`, which prices.toml does not price, so its cap cannot be enforced `` |
 | `invalid value: integer `0`, expected a nonzero u64` | `compactAt = 0` or `idleCompactAt = 0`. A negative or non-integer value gets serde's matching message |
 
