@@ -8921,7 +8921,9 @@ fn a_run_learns_to_push_only_when_its_factory_or_runner_file_sets_a_limit() {
         setup.publish(&requested(42));
         setup.start();
         let runs = setup.until("runs", |rows| !rows.is_empty());
-        let config = setup.written(&format!("home/prompts/{}.mcp.json", runs[0][4]));
+        let file = format!("home/prompts/{}.mcp.json", runs[0][4]);
+        setup.written(&file);
+        let config = fs::read_to_string(setup.dir.join(file)).unwrap();
         assert_eq!(config.contains("--gives-up"), told, "{name}: {config}");
     }
 }
