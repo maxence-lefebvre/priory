@@ -394,6 +394,7 @@ struct Served {
     /// The gates of each irreversible step, for the flows' `risk_estimate`.
     gates: crate::risk::Gates,
     schedules: Vec<(String, Trigger)>,
+    /// The requestable workflows: the Add controls' choices, and all `POST /api/request` takes.
     workflows: Vec<String>,
     /// `GET /api/request`: what the Add control prefills and offers.
     request: String,
@@ -421,11 +422,11 @@ impl Served {
             flows: listing::flows(factory),
             gates: crate::risk::Gates::of(factory),
             schedules: listing::schedule_triggers(factory),
-            workflows: factory.workflows.keys().cloned().collect(),
+            workflows: factory.requestable(),
             request: serde_json::json!({
                 "workflow": factory.request().map(|defaults| &defaults.workflow),
                 "band": factory.request().and_then(|defaults| defaults.band.as_ref()),
-                "workflows": factory.workflows.keys().collect::<Vec<_>>(),
+                "workflows": factory.requestable(),
                 "bands": factory.bands(),
             })
             .to_string(),
@@ -613,7 +614,7 @@ fn route(
         },
         "/api/queue" => match intake::now() {
             Ok(now) => listing::revised(db, "queue", |db| {
-                listing::queue(db, &served.schedules, &served.workflows, now).map(Some)
+                listing::queue(db, &served.schedules, Some(&served.workflows), now).map(Some)
             }),
             Err(error) => return Reply::error(500, &error),
         },
@@ -986,7 +987,7 @@ fn write(
     if let Write::Memory(id, accept) = write {
         return decide_memory(db, remote, id, accept, request.body);
     }
-    let (line, sent) = match write_line(db, &write, request.body) {
+    let (line, sent) = match write_line(db, &write, request.body, &served.workflows) {
         Ok(line) => line,
         Err(reply) => return reply,
     };
@@ -1366,7 +1367,12 @@ enum Sent {
 }
 
 /// The socket line of `write`, and the revision it was made on.
-fn write_line(db: &Connection, write: &Write, body: &[u8]) -> Result<(String, Sent), Reply> {
+fn write_line(
+    db: &Connection,
+    write: &Write,
+    body: &[u8],
+    requestable: &[String],
+) -> Result<(String, Sent), Reply> {
     let bad = |error: serde_json::Error| Reply::error(400, &error.to_string());
     match write {
         Write::Answer(ask) => {
@@ -1453,6 +1459,12 @@ fn write_line(db: &Connection, write: &Write, body: &[u8]) -> Result<(String, Se
         }
         Write::Add => {
             let add: priory_intake::request::Add = serde_json::from_slice(body).map_err(bad)?;
+            if let Some(workflow) = add.workflow.as_ref().filter(|w| !requestable.contains(w)) {
+                let message = format!(
+                    "workflow `{workflow}` is not requestable: its file under workflows/ needs `requestable = true`"
+                );
+                return Err(Reply::error(400, &message));
+            }
             Ok((line(&serde_json::json!({ "add": add })), Sent::Nothing))
         }
         Write::Act(task, act) => {
@@ -1951,7 +1963,7 @@ mod tests {
             body in r#"\{("revision": ?[0-9]{1,3}|"band": ?"[a-z]{0,6}"|"top": ?(true|false)|"before": ?[0-9]|"after": ?[0-9]|"x": ?1)(, ?("band": ?"[a-z]{0,6}"|"top": ?(true|false)|"before": ?[0-9]|"after": ?[0-9])){0,3}\}|.{0,40}"#
         ) {
             // A move reads nothing, so one migrated state serves every case.
-            let written = DB.with(|db| write_line(db, &Write::Move("2"), body.as_bytes()));
+            let written = DB.with(|db| write_line(db, &Write::Move("2"), body.as_bytes(), &[]));
             if let Ok((line, _)) = written {
                 let line: crate::state::MoveLine = serde_json::from_str(&line).unwrap();
                 prop_assert!(line.r#move.band.is_some() || line.r#move.place.is_some());
@@ -1963,7 +1975,7 @@ mod tests {
         fn a_label_body_becomes_one_mark_or_one_clear_or_is_refused(
             body in r#"\{("evidence": ?"[a-z:/.]{0,12}"|"happened": ?"[0-9-]{0,10}"|"clear": ?(true|false)|"x": ?1)(, ?("evidence": ?"[a-z:/]{0,8}"|"happened": ?"[0-9-]{0,10}"|"clear": ?(true|false))){0,2}\}|.{0,40}"#
         ) {
-            let written = DB.with(|db| write_line(db, &Write::Label("3"), body.as_bytes()));
+            let written = DB.with(|db| write_line(db, &Write::Label("3"), body.as_bytes(), &[]));
             if let Ok((line, _)) = written {
                 let line: crate::label::Line = serde_json::from_str(&line).unwrap();
                 prop_assert_eq!(line.label.clear, line.label.evidence.is_none());

@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use tmux_dir::TmuxDir;
 
 const WORKFLOW: &str = r#"
+requestable = true
 start = "implement"
 
 [[steps]]
@@ -2035,9 +2036,11 @@ fn the_queue_lists_the_factorys_bands_in_order_even_an_empty_one() {
 }
 
 #[test]
-fn the_queue_lists_the_factorys_workflows_so_a_view_can_offer_them() {
+fn the_queue_lists_the_factorys_requestable_workflows_so_a_view_can_offer_them() {
     let mut setup = Setup::new("queue-workflows", SERVE);
     fs::write(setup.dir.join("factory/workflows/review.toml"), WORKFLOW).unwrap();
+    let scheduled = WORKFLOW.replace("requestable = true\n", "");
+    fs::write(setup.dir.join("factory/workflows/sweep.toml"), scheduled).unwrap();
     let address = setup.start(&["serve", &setup.factory()]);
 
     let queue = api(&address, "/api/queue");
@@ -2047,7 +2050,7 @@ fn the_queue_lists_the_factorys_workflows_so_a_view_can_offer_them() {
     let output = setup.priory(&["queue", "--json"]);
     succeeded(&output);
     let without_factory: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(without_factory["workflows"], json!([]));
+    assert_eq!(without_factory["workflows"], Value::Null);
 }
 
 #[test]
@@ -4567,8 +4570,39 @@ fn a_request_without_a_daemon_gets_503() {
 }
 
 #[test]
+fn a_request_for_a_workflow_that_is_not_requestable_gets_400_before_it_reaches_the_daemon() {
+    let mut setup = Setup::new("web-request-scheduled", DEFAULTS);
+    let scheduled = WORKFLOW.replace("requestable = true\n", "");
+    fs::write(setup.dir.join("factory/workflows/sweep.toml"), scheduled).unwrap();
+    // No daemon runs: a request that got past the check would get 503.
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let (status, body) = post(
+        &address,
+        "/api/request",
+        "",
+        r#"{"text": "Sweep now", "workflow": "sweep"}"#,
+    );
+
+    assert_eq!(status, 400, "{body}");
+    assert!(
+        body.contains("workflow `sweep` is not requestable"),
+        "{body}"
+    );
+    let (status, _) = post(
+        &address,
+        "/api/request",
+        "",
+        r#"{"text": "Fix it", "workflow": "implement"}"#,
+    );
+    assert_eq!(status, 503);
+}
+
+#[test]
 fn the_request_endpoint_reads_the_defaults_and_choices_the_add_control_offers() {
     let mut setup = Setup::new("web-request-defaults", DEFAULTS);
+    let scheduled = WORKFLOW.replace("requestable = true\n", "");
+    fs::write(setup.dir.join("factory/workflows/sweep.toml"), scheduled).unwrap();
     let address = setup.start(&["serve", &setup.factory()]);
     let mut bare = Setup::new("web-request-no-defaults", SERVE);
     let bare_address = bare.start(&["serve", &bare.factory()]);

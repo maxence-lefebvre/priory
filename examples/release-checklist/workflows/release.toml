@@ -1,4 +1,5 @@
 #:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/workflow.json
+requestable = true             # the web view's Add control offers it
 # A runbook: every step is a person's, and no agent runs.
 start = "changelog"
 

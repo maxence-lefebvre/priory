@@ -328,9 +328,20 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
         }
         if let Some(request) = &settings.value.request {
             let line = settings.lines.field("request");
-            if !factory.workflows.contains_key(&request.workflow) {
-                let message = format!("`[request] workflow` `{}` does not exist", request.workflow);
-                problems.push(problem(settings, line, message));
+            match factory.workflows.get(&request.workflow) {
+                None => {
+                    let message =
+                        format!("`[request] workflow` `{}` does not exist", request.workflow);
+                    problems.push(problem(settings, line, message));
+                }
+                Some(workflow) if !workflow.value.requestable => {
+                    let name = &request.workflow;
+                    let message = format!(
+                        "`[request] workflow` `{name}` is not requestable: add `requestable = true` to its file under workflows/"
+                    );
+                    problems.push(problem(settings, line, message));
+                }
+                Some(_) => {}
             }
             if let Some(band) = request.band.as_deref().filter(|band| !bands.contains(band)) {
                 let message = format!(

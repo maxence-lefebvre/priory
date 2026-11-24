@@ -59,6 +59,9 @@ holds only GitHub's characters: an owner of letters, digits and `-`, a name of l
 factory's [`[request]`](../reference/factory.md#request) table, makes up the key, and prints it.
 `POST /api/request` does the same (see [serve.md](../reference/serve.md#writes)), and so do the
 web view's Add control and the Add action of the Herdr Desk and Queue panels.
+Those controls offer only the workflows with
+[`requestable = true`](../reference/workflows.md#top-level-keys), and `POST /api/request` refuses
+any other with `400`. `priory add`, `priory request` and triggers start any workflow.
 
 ```sh
 priory add ./factory "Fix the docs"

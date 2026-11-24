@@ -21205,6 +21205,7 @@ fn a_task_keyed_on_the_open_pull_request_it_overlaps_is_not_held_on_it() {
 }
 
 const FIX: &str = r#"
+requestable = true
 start = "triage"
 
 [[steps]]

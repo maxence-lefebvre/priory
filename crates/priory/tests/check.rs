@@ -1882,7 +1882,11 @@ fn check_refuses_a_bad_link_regex_a_missing_group_and_a_non_https_template() {
 #[test]
 fn a_request_table_passes_and_an_unknown_workflow_or_band_is_refused() {
     let good = "name = \"demo\"\n\n[request]\nworkflow = \"implement\"\nband = \"today\"\n";
-    let ok = check(&factory("request-ok", &with("factory.toml", good)));
+    let requestable = format!("requestable = true\n{WORKFLOW}");
+    let mut files = with("factory.toml", good);
+    files.retain(|(path, _)| *path != "workflows/implement.toml");
+    files.push(("workflows/implement.toml", &requestable));
+    let ok = check(&factory("request-ok", &files));
     let unknown = good
         .replace("\"implement\"", "\"groom\"")
         .replace("\"today\"", "\"someday\"");
@@ -1894,6 +1898,19 @@ fn a_request_table_passes_and_an_unknown_workflow_or_band_is_refused() {
         bad.stderr,
         "factory.toml:3: `[request] workflow` `groom` does not exist\n\
          factory.toml:3: `[request] band` `someday` is not one of blocker, now, today, later\n"
+    );
+}
+
+#[test]
+fn a_request_default_that_is_not_requestable_is_refused_with_the_key_to_add() {
+    let good = "name = \"demo\"\n\n[request]\nworkflow = \"implement\"\n";
+
+    let outcome = check(&factory("request-scheduled", &with("factory.toml", good)));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "factory.toml:3: `[request] workflow` `implement` is not requestable: add `requestable = true` to its file under workflows/\n"
     );
 }
 

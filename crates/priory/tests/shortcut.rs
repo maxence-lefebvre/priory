@@ -21,6 +21,7 @@ const CHANNEL: &str = "C0123";
 const THREAD: &str = "1763500000.000100";
 
 const WORKFLOW: &str = r#"
+requestable = true
 start = "implement"
 
 [[steps]]

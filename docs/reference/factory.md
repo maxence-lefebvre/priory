@@ -385,7 +385,7 @@ What `priory add` and `POST /api/request` use when a request names no workflow o
 
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
-| `workflow` | string | yes | | The workflow a request starts when it names none, by file name | `"groom"` |
+| `workflow` | string | yes | | The workflow a request starts when it names none, by file name. It must be [requestable](workflows.md#top-level-keys) | `"groom"` |
 | `band` | string | no | none, as `priory request` without `--band` | The band of a request that names none | `"today"` |
 
 ## `[batch]`
@@ -690,6 +690,7 @@ day = 10.0                                     # dollars the lane may spend in a
 | `` `[links]` `<regex>` links to `<url>`: a link starts with `https://` `` | A template that is not an `https://` URL |
 | `` `[links]` `<regex>` links to `<url>`: a link's host is fixed, with no group or `{repo}` in it `` | A template whose host is empty or holds anything but letters, digits, `.`, `-` and a `:port`, such as `$1` or `{repo}`, so the linked text could pick the site |
 | `` `[request] workflow` `<name>` does not exist `` | `[request] workflow` names no file under `workflows/` |
+| `` `[request] workflow` `<name>` is not requestable: add `requestable = true` to its file under workflows/ `` | `[request] workflow` names a workflow without `requestable = true` |
 | `` `[request] band` `<band>` is not one of <bands> `` | `[request] band` names a band the factory lacks |
 | `<n> is not a spend cap: give dollars above zero` | A `[caps]` value of zero or less, or not finite |
 | `` `[caps.lanes]` `<lane>` is not a lane such as `team/theme` `` | A `[caps.lanes]` key that is not `<team>/<theme>` |

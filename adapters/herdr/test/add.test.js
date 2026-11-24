@@ -25,6 +25,11 @@ test("the Add line says what to type, that it sends, why priory refused, or the 
   assert.deepEqual(addStatus({ text: "", sending: false, error: null, key: "cli:2026-11-21-1" }), { text: "Added cli:2026-11-21-1.", tone: "ok", ready: false });
 });
 
+test("a factory with no requestable workflow offers none, not the workflows the tasks carry", () => {
+  const tasks = [{ workflow: "bonjour", lane: null }];
+  assert.deepEqual(addChoices({ ...fixture("queue.json"), workflows: [] }, tasks).workflow, []);
+});
+
 test("without the factory's workflows, an older priory's queue, the Add chips offer each workflow the tasks carry", () => {
   const tasks = [{ workflow: "review", lane: null }, { workflow: "implement", lane: null }];
   assert.deepEqual(addChoices(fixture("queue.json"), tasks).workflow, ["implement", "review"]);
