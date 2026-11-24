@@ -1839,6 +1839,56 @@ fn a_sweep_script_runs_every_10_seconds_at_most_and_every_36500_days_at_least() 
 }
 
 #[test]
+fn a_memory_gate_limit_passes_in_both_files_and_a_bad_one_names_its_line() {
+    let gate = |file: &str, line: &str| match file {
+        "factory.toml" => format!("name = \"demo\"\n\n[memory]\n{line}\n"),
+        _ => format!("platform = {{ os = \"linux\" }}\n\n[memory]\n{line}\n"),
+    };
+    for (file, name) in [
+        ("factory.toml", "factory"),
+        ("runners/laptop.toml", "runner"),
+    ] {
+        let run = |case: &str, line: &str| {
+            let text = gate(file, line);
+            let mut files = valid();
+            files.retain(|(path, _)| *path != file);
+            files.push((file, &text));
+            check(&factory(&format!("give-up-{name}-{case}"), &files))
+        };
+
+        for limit in ["10m", "59m"] {
+            let ok = run("ok", &format!("give_up_after = \"{limit}\""));
+            assert_eq!((ok.code, ok.stderr.as_str()), (0, ""), "{file}");
+        }
+        let long = run("long", "give_up_after = \"1h\"");
+        assert_eq!(
+            (long.code, long.stderr),
+            (
+                1,
+                format!(
+                    "{file}:3: `[memory] give_up_after` is below 1h, the default timeout of a gated command\n"
+                )
+            )
+        );
+        let bad = run("bad", "give_up_after = \"soon\"");
+        assert_eq!(bad.code, 1);
+        assert!(
+            bad.stderr
+                .contains("\"soon\" is not a duration such as 90s, 15m or 2h"),
+            "{}",
+            bad.stderr
+        );
+        let unknown = run("unknown", "give_up = \"10m\"");
+        assert_eq!(unknown.code, 1);
+        assert!(
+            unknown.stderr.contains("unknown field `give_up`"),
+            "{}",
+            unknown.stderr
+        );
+    }
+}
+
+#[test]
 fn repository_recipes_pass_and_a_bad_one_names_its_line() {
     let good = "name = \"demo\"\n\n[repos.\"owner/repo\"]\nsetup = { argv = [\"npm\", \"ci\"], timeout = \"15m\" }\nresume = { shell = \"npm ci --prefer-offline\" }\nteardown = { shell = \"docker compose down\" }\n";
     let ok = check(&factory("recipes-ok", &with("factory.toml", good)));

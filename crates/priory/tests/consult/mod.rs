@@ -404,7 +404,10 @@ fn mcp_with(setup: &Setup, flag: &str, lines: &[serde_json::Value]) -> Vec<serde
 #[test]
 fn an_investigators_server_lists_result_and_the_read_tools_and_knows_no_other() {
     let setup = Setup::new("consult-tools");
-    let mut lines = vec![json!({"jsonrpc": "2.0", "id": 0, "method": "tools/list"})];
+    let mut lines = vec![
+        json!({"jsonrpc": "2.0", "id": 0, "method": "tools/list"}),
+        json!({"jsonrpc": "2.0", "id": 100, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}}),
+    ];
     let refused = ["consult", "ask", "wait", "finding", "remember", "add"];
     for (id, tool) in refused.iter().enumerate() {
         lines.push(
@@ -422,7 +425,10 @@ fn an_investigators_server_lists_result_and_the_read_tools_and_knows_no_other() 
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
     assert_eq!(names, ["result", "memory", "search"]);
-    for (tool, reply) in refused.iter().zip(&replies[1..]) {
+    let instructions = replies[1]["result"]["instructions"].as_str().unwrap();
+    assert!(instructions.contains("memory acquire"), "{instructions}");
+    assert!(!instructions.contains("push"), "{instructions}");
+    for (tool, reply) in refused.iter().zip(&replies[2..]) {
         assert_eq!(
             super::reply(reply),
             (format!("unknown tool {tool}"), true),
@@ -930,6 +936,7 @@ fn touch_with_real_claude(home: &Path, project: &Path, investigator: bool) -> bo
         scope: &[],
         env: &[],
         debate: false,
+        gives_up: false,
         servers: &servers,
         tools: priory_runtime::mcp::Tools::Investigator,
         jail: None,
