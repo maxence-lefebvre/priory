@@ -55,7 +55,7 @@ key = "issue.number"
 
 const OUTPUT: &str = "factory.intake";
 
-/// Undoes migrations 110, a run under direnv, 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
+/// Undoes migrations 111, memory lapses, 110, a run under direnv, 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
 /// `auto_answer` level, 97, the task's `added_by`, and 93: the `pre` script's task columns and the
 /// pending requests.
 macro_rules! undo_pre {
@@ -72,7 +72,7 @@ macro_rules! undo_pre {
   ALTER TABLE tasks DROP COLUMN pre_context; ALTER TABLE tasks DROP COLUMN pre_script; DROP TABLE pending_requests;
   ALTER TABLE memory_candidates DROP COLUMN step; ALTER TABLE gates DROP COLUMN lessons; ALTER TABLE gates DROP COLUMN ask; ALTER TABLE gates DROP COLUMN judges;
   ALTER TABLE runs DROP COLUMN session_started; ALTER TABLE runs DROP COLUMN harness;
-  ALTER TABLE runs DROP COLUMN resumes; ALTER TABLE runs DROP COLUMN sandbox; ALTER TABLE runs DROP COLUMN direnv;
+  ALTER TABLE runs DROP COLUMN resumes; ALTER TABLE runs DROP COLUMN sandbox; ALTER TABLE runs DROP COLUMN direnv; DROP TABLE lapses;
   "
     };
 }
@@ -3733,6 +3733,351 @@ fn the_agents_slice_takes_its_name_from_priory_slice_and_its_caps_from_the_runne
     );
 }
 
+/// Writes the slice's cgroup files that the fake `systemctl show` leads to.
+fn slice_file(setup: &Setup, file: &str, text: &str) {
+    let dir = setup.dir.join("cgroup/priory-agents.slice");
+    fs::create_dir_all(&dir).unwrap();
+    write_atomic(&dir.join(file), text);
+}
+
+#[test]
+fn the_slices_quota_counts_the_machines_cpus_not_the_daemons_own_limit() {
+    let mut setup = Setup::new("slice-online-cpus");
+    let stat: String = (0..22).map(|cpu| format!("cpu{cpu} 1 2 3\n")).collect();
+    fs::write(
+        setup.dir.join("proc/stat"),
+        format!("cpu  1 2 3\n{stat}intr 1\n"),
+    )
+    .unwrap();
+    // One CPU for the daemon, as under a one-CPU quota.
+    let status = fs::read_to_string("/proc/self/status").unwrap();
+    let allowed = status
+        .lines()
+        .find_map(|line| line.strip_prefix("Cpus_allowed_list:"))
+        .unwrap();
+    let cpu = allowed.trim().split([',', '-']).next().unwrap();
+    let pinned = setup.dir.join("pinned");
+    fs::write(
+        &pinned,
+        format!(
+            "#!/bin/sh\nexec taskset -c {cpu} '{}' \"$@\"\n",
+            env!("CARGO_BIN_EXE_priory")
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&pinned, fs::Permissions::from_mode(0o755)).unwrap();
+    setup.publish(&requested(42));
+
+    setup.start_as(&pinned);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    assert_eq!(
+        fake_log(&setup, "systemctl.log")[1],
+        "--user set-property --runtime priory-agents.slice CPUQuota=1980% MemoryHigh=90%"
+    );
+}
+
+/// The daemon left the slice's limits alone, logged `why`, and started its run in the slice.
+fn left_alone(setup: &Setup, why: &str) {
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    assert!(fake_log(setup, "systemctl.log").is_empty());
+    assert_eq!(
+        fake_log(setup, "systemd-run.log"),
+        ["--user --scope --quiet --collect --expand-environment=no --slice=priory-agents.slice"]
+    );
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    let line = format!("left the limits of priory-agents.slice alone: {why}");
+    assert!(log.contains(&line), "daemon log: {log}");
+}
+
+#[test]
+fn a_daemon_inside_the_agents_slice_leaves_its_limits_alone() {
+    let mut setup = Setup::new("slice-nested");
+    fs::create_dir_all(setup.dir.join("proc/self")).unwrap();
+    fs::write(
+        setup.dir.join("proc/self/cgroup"),
+        "0::/user.slice/user@1000.service/priory.slice/priory-agents.slice/run-r1.scope/inner\n",
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    left_alone(&setup, "this daemon runs inside it");
+}
+
+/// Another home whose daemon runs until the returned lock drops, as the slice's owner.
+fn owned_by_another(setup: &Setup) -> (PathBuf, fs::File) {
+    let owner = setup.dir.join("other-home");
+    fs::create_dir_all(&owner).unwrap();
+    let lock = fs::File::create(owner.join("daemon.lock")).unwrap();
+    lock.lock().unwrap();
+    fs::create_dir_all(setup.tmux.path().join("priory")).unwrap();
+    let file = setup.tmux.path().join("priory/priory-agents.slice.owner");
+    write_atomic(&file, owner.to_str().unwrap());
+    (owner, lock)
+}
+
+fn every_second(setup: &Setup) {
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\n\n[sweep]\nevery = \"1s\"\n",
+    )
+    .unwrap();
+}
+
+fn desk_text(setup: &Setup) -> String {
+    String::from_utf8(setup.priory(&["desk"]).stdout).unwrap()
+}
+
+/// Waits until `setup`'s fake systemctl got `calls` calls.
+fn capped(setup: &Setup, calls: usize) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while fake_log(setup, "systemctl.log").len() < calls {
+        assert!(Instant::now() < deadline, "the slice was not capped");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_daemon_takes_the_slice_once_the_daemon_of_its_owner_is_gone() {
+    let mut setup = Setup::new("slice-owner");
+    every_second(&setup);
+    let (owner, lock) = owned_by_another(&setup);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let why = format!("the daemon of {} set them", owner.display());
+    left_alone(&setup, &why);
+    std::thread::sleep(Duration::from_millis(2500));
+    assert!(fake_log(&setup, "systemctl.log").is_empty());
+    let said = format!("left the limits of priory-agents.slice alone: {why}");
+    assert_eq!(desk_text(&setup).matches(&said).count(), 1);
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    assert_eq!(log.matches(&said).count(), 1, "daemon log: {log}");
+
+    drop(lock);
+    capped(&setup, 2);
+
+    let home = fs::canonicalize(setup.dir.join("home")).unwrap();
+    let file = setup.tmux.path().join("priory/priory-agents.slice.owner");
+    assert_eq!(fs::read_to_string(&file).unwrap(), home.to_str().unwrap());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while desk_text(&setup).contains("the limits of") {
+        assert!(Instant::now() < deadline, "{}", desk_text(&setup));
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(!desk_text(&setup).contains("another process set"));
+}
+
+#[test]
+fn a_daemon_whose_bus_is_not_its_runtime_directorys_leaves_the_limits_alone() {
+    let mut setup = Setup::new("slice-foreign-bus");
+    setup.publish(&requested(42));
+
+    setup.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/bus")],
+    );
+
+    left_alone(&setup, "DBUS_SESSION_BUS_ADDRESS is not the bus of");
+}
+
+#[test]
+fn a_daemon_whose_socket_falls_back_to_tmp_still_claims_the_slice() {
+    let mut setup = Setup::new("slice-long-run");
+    let run = setup.dir.join("r".repeat(100));
+    fs::create_dir_all(&run).unwrap();
+
+    setup.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("XDG_RUNTIME_DIR", run.to_str().unwrap())],
+    );
+
+    capped(&setup, 2);
+    let home = fs::canonicalize(setup.dir.join("home")).unwrap();
+    let owner = fs::read_to_string(run.join("priory/priory-agents.slice.owner")).unwrap();
+    assert_eq!(owner, home.to_str().unwrap());
+    let socket = priory_runtime::runtime::socket_in(Some(&run), &home);
+    assert!(socket.starts_with("/tmp"));
+    setup.crash();
+    let _ = fs::remove_file(socket);
+}
+
+#[test]
+fn the_sweep_restores_the_quota_of_a_slice_with_no_memory_limit() {
+    let mut setup = Setup::new("slice-no-memory");
+    every_second(&setup);
+    let stat: String = (0..22).map(|cpu| format!("cpu{cpu} 1 2 3\n")).collect();
+    fs::write(setup.dir.join("proc/stat"), stat).unwrap();
+    slice_file(&setup, "cpu.max", "90000 100000\n");
+    fs::write(setup.dir.join("fake/capped"), "90000 100000\n").unwrap();
+    setup.start();
+    capped(&setup, 2);
+    fs::write(setup.dir.join("fake/capped"), "1980000 100000\n").unwrap();
+
+    capped(&setup, 4);
+
+    let said = "another process set priory-agents.slice to CPUQuota=90%; the sweep restored";
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !desk_text(&setup).contains(said) {
+        assert!(Instant::now() < deadline, "{}", desk_text(&setup));
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn the_sweep_restores_the_slices_limits_another_process_changed_and_says_so_once() {
+    let mut setup = Setup::new("slice-restored");
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\n\n[sweep]\nevery = \"1s\"\n",
+    )
+    .unwrap();
+    let stat: String = (0..22).map(|cpu| format!("cpu{cpu} 1 2 3\n")).collect();
+    fs::write(setup.dir.join("proc/stat"), stat).unwrap();
+    let high = |share: f64| format!("{}\n", ((64u64 << 30) as f64 * share) as u64);
+    slice_file(&setup, "cpu.max", "1980000 100000\n");
+    slice_file(&setup, "memory.high", &high(0.9));
+    setup.start();
+    listening(&setup);
+    std::thread::sleep(Duration::from_millis(2500));
+    assert_eq!(fake_log(&setup, "systemctl.log").len(), 2);
+
+    fs::write(setup.dir.join("fake/capped"), "1980000 100000\n").unwrap();
+    slice_file(&setup, "cpu.max", "90000 100000\n");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while fake_log(&setup, "systemctl.log").len() < 4 {
+        assert!(Instant::now() < deadline, "nothing restored the slice");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(2500));
+
+    let calls = fake_log(&setup, "systemctl.log");
+    assert_eq!(calls.len(), 4, "{calls:?}");
+    assert_eq!(
+        calls[3],
+        "--user set-property --runtime priory-agents.slice CPUQuota=1980% MemoryHigh=90%"
+    );
+    let said = "another process set priory-agents.slice to CPUQuota=90% MemoryHigh=90%; the sweep restored its limits";
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    assert_eq!(log.matches(said).count(), 1, "daemon log: {log}");
+    let desk = setup.priory(&["desk"]);
+    let desk = String::from_utf8(desk.stdout).unwrap();
+    assert_eq!(desk.matches(said).count(), 1, "{desk}");
+
+    // Another home takes the slice, so this daemon's next sweep leaves a change alone.
+    let _owner = owned_by_another(&setup);
+    slice_file(&setup, "cpu.max", "90000 100000\n");
+    std::thread::sleep(Duration::from_millis(2500));
+    assert_eq!(fake_log(&setup, "systemctl.log").len(), 4);
+}
+
+/// Claude Code 2.1.331 at its prompt, as a run whose hook came late showed it.
+const READY_PROMPT: &str = "Claude Code v2.1.331
+────────────────────────────────────────
+❯ Try \"how does main.rs work?\"
+────────────────────────────────────────
+  auto mode on (shift+tab to cycle)
+";
+
+/// The slice's counters before a run, then those after its quota held it back to 12 %, under
+/// `quota`.
+fn throttle(setup: &Setup, quota: &str) {
+    // `show` runs at the daemon's start, at its first sweep, then for the run's first counters.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while fake_log(setup, "shown.log").len() < 3 {
+        assert!(Instant::now() < deadline, "the counters were never read");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_secs(1));
+    slice_file(setup, "cpu.max", quota);
+    slice_file(
+        setup,
+        "cpu.stat",
+        "usage_usec 1012000\nnr_throttled 600\nthrottled_usec 9088000\n",
+    );
+}
+
+/// The reason a run that never reports `SessionStart` and shows `screen` blocks its task with, in a
+/// slice throttled under `quota`, if any.
+fn late(setup: &mut Setup, screen: &str, quota: Option<&str>) -> String {
+    setup.publish(&requested(42));
+    fs::write(setup.dir.join("fake/silent"), screen).unwrap();
+    slice_file(
+        setup,
+        "cpu.stat",
+        "usage_usec 1000000\nnr_throttled 500\nthrottled_usec 9000000\n",
+    );
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1);
+    if let Some(quota) = quota {
+        throttle(setup, quota);
+    }
+    let tasks = setup.within(75, "tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+    tasks[0][7].clone()
+}
+
+const THROTTLING: &str = "priory-agents.slice was throttled: its quota kept back 88% of the CPU its agents wanted since the run started, under CPUQuota=90%";
+
+#[test]
+fn a_late_run_at_a_ready_prompt_gets_no_trust_advice() {
+    let mut setup = Setup::new("late-ready");
+
+    // A quota of `max` throttles nothing, whatever the counters say.
+    let reason = late(&mut setup, READY_PROMPT, Some("max 100000\n"));
+
+    assert!(
+        reason.starts_with(
+            "claude showed no SessionStart within 60s; its prompt is ready and asks for no trust"
+        ),
+        "{reason}"
+    );
+    assert!(!reason.contains("trust the"), "{reason}");
+    assert!(!reason.contains("throttled"), "{reason}");
+}
+
+#[test]
+fn a_late_run_at_a_ready_prompt_in_a_throttled_slice_names_the_throttling() {
+    let mut setup = Setup::new("late-throttled");
+
+    let reason = late(&mut setup, READY_PROMPT, Some("90000 100000\n"));
+
+    let prefix = format!("claude showed no SessionStart within 60s; {THROTTLING}");
+    assert!(reason.starts_with(&prefix), "{reason}");
+    assert!(!reason.contains("trust the"), "{reason}");
+}
+
+#[test]
+fn a_late_run_in_a_slice_throttled_only_before_it_started_names_no_throttling() {
+    let mut setup = Setup::new("late-throttled-before");
+    slice_file(&setup, "cpu.max", "90000 100000\n");
+
+    let reason = late(&mut setup, READY_PROMPT, None);
+
+    assert!(!reason.contains("throttled"), "{reason}");
+}
+
+#[test]
+fn a_late_codex_run_in_a_throttled_slice_keeps_its_hooks_command() {
+    let mut setup = Setup::new("late-throttled-codex");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+
+    let reason = late(
+        &mut setup,
+        "  Hooks need review\n\n  3 hooks are new or changed\n",
+        Some("90000 100000\n"),
+    );
+
+    let tail = format!(
+        "type /hooks and trust Priory's hooks, then exit; {THROTTLING}. Its pane ended with: Hooks need review | 3 hooks are new or changed"
+    );
+    assert!(reason.ends_with(&tail), "{reason}");
+}
+
 #[test]
 fn a_host_without_systemd_starts_its_runs_as_before_and_logs_why() {
     let mut setup = Setup::new("no-systemd");
@@ -7224,7 +7569,7 @@ fn say_to_a_done_task_is_refused() {
     assert!(!said.status.success());
     assert_eq!(
         String::from_utf8_lossy(&said.stderr),
-        "priory say: task 1 is done\n"
+        "priory say: task 1 is done and owns no pull request\n"
     );
 }
 
@@ -9450,6 +9795,157 @@ fn a_comment_on_the_merged_pull_request_of_a_done_task_reopens_nothing() {
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(setup.rows("tasks")[0][4], "done");
     assert_eq!(setup.rows("runs").len(), 2);
+}
+
+/// Task 1 of `gated`, done at green checks with pull request 7 open, a second ago.
+fn done_with_open_pull_request(name: &str) -> Setup {
+    let setup = gated(name);
+    setup.publish(&check(1, 0));
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    std::thread::sleep(Duration::from_millis(1100));
+    setup
+}
+
+/// Asserts `say` on task 1 is refused with `why`, starting no run.
+fn say_refused(setup: &Setup, why: &str) {
+    let (runs, before) = (setup.rows("runs").len(), generation(setup));
+    let said = setup.priory(&["say", "1", "Fix the empty case."]);
+    assert!(!said.status.success(), "{said:?}");
+    let error = String::from_utf8_lossy(&said.stderr);
+    assert!(error.contains(why), "{error}");
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("runs").len(), runs);
+    assert_eq!(generation(setup), before);
+}
+
+/// The branch and worktree of task 1.
+fn branch(setup: &Setup) -> (String, String) {
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .query_row(
+            "SELECT branch, worktree FROM tasks WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+}
+
+/// The generation of task 1.
+fn generation(setup: &Setup) -> i64 {
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .query_row("SELECT generation FROM tasks WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap()
+}
+
+#[test]
+fn a_say_on_a_done_task_whose_pull_request_is_open_reopens_it_and_resumes_its_session() {
+    let setup = done_with_open_pull_request("say-reopen");
+    let before = branch(&setup);
+
+    let said = setup.priory(&["say", "1", "/fix the empty case."]);
+
+    assert!(said.status.success(), "{said:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&said.stdout).trim(),
+        "task 1 reopened at implement, generation 2"
+    );
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    assert!(
+        typed[2].starts_with(
+            "A person says: /fix the empty case.\nThis reopened your done task as generation 2: github:owner/repo#7 is still open."
+        ),
+        "{typed:?}"
+    );
+    let runs = setup.rows("runs");
+    assert_eq!(runs[2][4], runs[0][4], "the run resumes the session");
+    assert_eq!(generation(&setup), 2);
+    assert_eq!(branch(&setup), before, "the run keeps the branch");
+    assert_eq!(
+        setup
+            .trace()
+            .iter()
+            .filter(|record| record["type"] == "factory.task.reopened"
+                && record["data"]["pull_request"] == "github:owner/repo#7")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_say_on_a_done_task_whose_pull_request_merged_is_refused() {
+    let setup = gated("say-merged");
+    setup.publish(&closed());
+    setup.until("tasks", |rows| rows[0][4] == "done");
+
+    say_refused(
+        &setup,
+        "task 1 is done and its pull request github:owner/repo#7 is merged",
+    );
+}
+
+#[test]
+fn a_say_on_a_done_task_is_refused_once_its_pull_request_closed_until_it_reads_open() {
+    let setup = done_with_open_pull_request("say-closed");
+    let mut close = closed().time(herdr_bus::Timestamp::now());
+    close.data["merged"] = json!(false);
+    setup.publish(&close);
+    setup.until("inbox", |rows| rows.len() == 4);
+
+    say_refused(
+        &setup,
+        "task 1 is done and its pull request github:owner/repo#7 is closed",
+    );
+
+    let mut green = check(2, 0);
+    green.data["open"] = json!(true);
+    setup.publish(&green);
+    setup.until("inbox", |rows| rows.len() == 5);
+    let said = setup.priory(&["say", "1", "Fix the empty case."]);
+    assert!(said.status.success(), "{said:?}");
+}
+
+#[test]
+fn a_say_on_a_done_task_is_refused_once_feedback_reads_its_pull_request_closed() {
+    let setup = done_with_open_pull_request("say-read-closed");
+    let mut late = review_in("approved", 350);
+    late.data["open"] = json!(false);
+    setup.publish(&late);
+    setup.until("inbox", |rows| rows.len() == 4);
+
+    say_refused(
+        &setup,
+        "task 1 is done and its pull request github:owner/repo#7 is closed",
+    );
+}
+
+#[test]
+fn a_say_on_a_done_task_whose_pull_request_another_active_task_owns_is_refused() {
+    let setup = done_with_open_pull_request("say-rival");
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "INSERT INTO tasks (key, workflow, step, state, band, trigger, source)
+           SELECT 'cli:rival', workflow, step, 'blocked', band, trigger, source FROM tasks WHERE id = 1;
+         INSERT INTO subscriptions (task, resource) VALUES (2, 'github:owner/repo#7');",
+    )
+    .unwrap();
+
+    say_refused(&setup, "task 2 is already active on github:owner/repo#7");
+}
+
+#[test]
+fn a_say_on_a_failed_or_dropped_task_with_an_open_pull_request_is_refused() {
+    let setup = done_with_open_pull_request("say-failed");
+    for state in ["failed", "dropped"] {
+        rusqlite::Connection::open(setup.dir.join("priory.db"))
+            .unwrap()
+            .execute("UPDATE tasks SET state = ?1 WHERE id = 1", [state])
+            .unwrap();
+        say_refused(&setup, &format!("task 1 is {state}"));
+    }
 }
 
 #[test]
@@ -15542,6 +16038,140 @@ fn without_a_daemon_the_command_fails_fast_and_never_runs() {
         "{stderr}"
     );
     assert!(!setup.dir.join("fake/ran").exists());
+}
+
+/// A daemon that answers each gate message in turn, or closes the connection with no reply, and
+/// returns the messages and grants it got.
+fn scripted(
+    setup: &Setup,
+    replies: &'static [Option<&'static str>],
+) -> std::thread::JoinHandle<Vec<[serde_json::Value; 2]>> {
+    use std::io::{BufRead, Write};
+    fs::create_dir_all(setup.dir.join("home")).unwrap();
+    fs::create_dir_all(setup.socket().parent().unwrap()).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(setup.socket()).unwrap();
+    std::thread::spawn(move || {
+        let mut lines = Vec::new();
+        for reply in replies {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            std::io::BufReader::new(&stream)
+                .read_line(&mut line)
+                .unwrap();
+            let line: serde_json::Value = serde_json::from_str(&line).unwrap();
+            lines.push([line["memory"].clone(), line["grant"].clone()]);
+            if let Some(reply) = reply {
+                writeln!(stream, "{}", json!({ "Ok": reply })).unwrap();
+            }
+        }
+        lines
+    })
+}
+
+#[test]
+fn a_gated_command_runs_once_after_the_daemon_drops_any_message() {
+    for (name, replies, messages) in [
+        (
+            "gate-dropped-poll",
+            &[
+                Some("7 waiting"),
+                None,
+                Some("7 held"),
+                Some("7 held"),
+                Some("7 released"),
+            ][..],
+            ["acquire", "poll", "poll", "run", "release"],
+        ),
+        (
+            "gate-dropped-acquire",
+            &[
+                None,
+                Some("7 waiting"),
+                Some("7 held"),
+                Some("7 held"),
+                Some("7 released"),
+            ],
+            ["acquire", "acquire", "poll", "run", "release"],
+        ),
+        (
+            "gate-dropped-run",
+            &[
+                Some("7 held"),
+                None,
+                None,
+                Some("7 held"),
+                Some("7 released"),
+            ],
+            ["acquire", "run", "run", "run", "release"],
+        ),
+    ] {
+        let setup = Setup::new(name);
+        let daemon = scripted(&setup, replies);
+
+        let done = acquire(&setup, "8", "echo ran").wait_with_output().unwrap();
+
+        assert_eq!(
+            done.status.code(),
+            Some(0),
+            "{name}: {}",
+            String::from_utf8_lossy(&done.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&done.stdout), "ran\n");
+        let expected = messages.map(|message| {
+            let grant = if message == "acquire" {
+                json!(null)
+            } else {
+                json!(7)
+            };
+            [json!(message), grant]
+        });
+        assert_eq!(daemon.join().unwrap(), expected);
+    }
+}
+
+#[test]
+fn a_stale_socket_fails_the_command_fast_and_it_never_runs() {
+    let setup = Setup::new("gate-stale-socket");
+    fs::create_dir_all(setup.socket().parent().unwrap()).unwrap();
+    drop(std::os::unix::net::UnixListener::bind(setup.socket()).unwrap());
+    let start = Instant::now();
+
+    let done = acquire(&setup, "1", "echo ran > ran")
+        .wait_with_output()
+        .unwrap();
+
+    assert_eq!(done.status.code(), Some(125));
+    assert!(start.elapsed() < Duration::from_secs(10));
+    assert!(!setup.dir.join("fake/ran").exists());
+}
+
+#[test]
+fn a_daemon_restart_keeps_a_waiting_grant_with_its_id() {
+    let mut setup = Setup::new("gate-restart");
+    setup.start();
+    listening(&setup);
+    setup.hold("hold-a");
+    setup.hold("hold-b");
+    let a = acquire(&setup, "40", &held("a"));
+    setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
+    let b = acquire(&setup, "40", &held("b"));
+    let waiting = setup.until("memory", |rows| rows.len() == 2)[1][0].clone();
+
+    setup.crash();
+    setup.start();
+    once_listening(&setup, &["memory"]);
+    setup.release("hold-a");
+
+    assert!(a.wait_with_output().unwrap().status.success());
+    let rows = setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
+    assert_eq!(rows[0][0], waiting);
+    setup.release("hold-b");
+    let b = b.wait_with_output().unwrap();
+    assert!(
+        b.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&b.stderr)
+    );
 }
 
 #[test]
