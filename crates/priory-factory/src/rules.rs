@@ -65,6 +65,43 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 format!("the sweeper agent `{agent}` does not exist"),
             ));
         }
+        for script in &settings.value.sweep.scripts {
+            if script.when.is_none() && script.every.is_none() {
+                problems.push(problem(
+                    settings,
+                    settings.lines.field("sweep"),
+                    format!(
+                        "the sweep script `{}` needs `when`, `every` or both",
+                        script.run
+                    ),
+                ));
+            }
+            let least = crate::factory::SCRIPT_EVERY_LEAST;
+            if let Some(every) = script.every.filter(|every| *every < least) {
+                problems.push(problem(
+                    settings,
+                    settings.lines.field("sweep"),
+                    format!(
+                        "the sweep script `{}` has `every` {}s: it needs to be {}s or more",
+                        script.run,
+                        every.as_secs(),
+                        least.as_secs()
+                    ),
+                ));
+            }
+            let most = crate::factory::SCRIPT_EVERY_MOST_DAYS;
+            if let Some(every) = script.every.filter(|every| every.as_secs() > most * 86400) {
+                problems.push(problem(
+                    settings,
+                    settings.lines.field("sweep"),
+                    format!(
+                        "the sweep script `{}` has `every` {}s: it needs to be {most}d or less",
+                        script.run,
+                        every.as_secs()
+                    ),
+                ));
+            }
+        }
         if let Some(kit) = &settings.value.kit {
             let at = settings.lines.field("kit");
             for message in kit_problems(kit) {

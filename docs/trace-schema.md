@@ -289,8 +289,8 @@ names the stopped run and `task` its task.
 
 ## `factory.task.reopened`
 
-Feedback on a done task's open pull request, issue, Linear issue or Slack thread moved it back to a
-step, as its next generation.
+Feedback on a done task's open pull request, issue, Linear issue or Slack thread, or a `priory say`
+to it while its pull request is open, moved it back to a step, as its next generation.
 It shares `factory`, `factory_revision`, `workflow`, `task`, `key`, `generation`, `step` and
 `machine` with `factory.step.ended`. `generation` is the new one and `step` the step it went back to.
 
@@ -319,8 +319,8 @@ It shares `factory`, `factory_revision`, `workflow`, `task`, `key`, `generation`
 
 | Field          | Required | Meaning                                               |
 | -------------- | -------- | ----------------------------------------------------- |
-| `resource`     | yes      | The pull request, issue, Linear issue or Slack thread whose feedback reopened the task |
-| `pull_request` | no       | The pull request whose feedback reopened the task; absent for other feedback |
+| `resource`     | yes      | The pull request, issue, Linear issue or Slack thread whose feedback reopened the task, or the open pull request of one a `priory say` reopened |
+| `pull_request` | no       | The pull request whose feedback reopened the task, or the open pull request of one a `priory say` reopened; absent for other feedback |
 
 ## `factory.tool.denied`
 

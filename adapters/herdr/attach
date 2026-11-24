@@ -2,22 +2,23 @@
 """Opens a Priory run in a kept hc terminal, so it waits in the hub until a person looks.
 
 Priory runs it as `attach TASK RUN` when a run of a step with `attach = true` starts. It opens one
-terminal per run that runs `priory attach --run RUN --read-only`, labelled with the Herdr space that
+terminal per run that runs the tmux command `priory attach --run RUN --read-only --print` prints,
+without TMUX, which would refuse a nested client. The terminal is labelled with the Herdr space that
 PRIORY_HERDR_SPACE names, a tab per task, and `priory.run=RUN`. A run that already has a terminal
-gets no second one. The terminal gets the daemon's PRIORY_DB, PRIORY_HOME and TMUX_TMPDIR, and
-the daemon's executable, PRIORY_EXE, so it attaches to the daemon's run. Exit 0 means the run has
-its terminal.
+gets no second one. PRIORY_EXE is the daemon's executable, and the printed command names the socket
+of the run's tmux server, so the terminal attaches to the daemon's run. Exit 0 means the run has its
+terminal.
 """
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
 
 # shortcut: the launch size of runtime.rs plus tmux's status line, change both together.
 VIEW = 'stty cols 200 rows 51; exec "$@"'
-FORWARDED = ("PRIORY_DB", "PRIORY_HOME", "TMUX_TMPDIR")
 
 
 def main(task, run):
@@ -44,23 +45,28 @@ def main(task, run):
         return 1
     if terminals:
         return 0
-    view = [priory, "attach", "--run", run, "--read-only"]
     # hc run --bg succeeds whatever its program does, so a run that cannot be attached fails here.
     try:
-        checked = subprocess.run([*view, "--print"], capture_output=True, text=True)
+        checked = subprocess.run([priory, "attach", "--run", run, "--read-only", "--print"],
+                                 capture_output=True, text=True)
     except OSError as error:
         print(f"attach: {priory}: {error}", file=sys.stderr)
         return 1
     if checked.returncode != 0:
         sys.stderr.write(checked.stderr)
         return 1
-    # The hc core starts the terminal with its own environment, not the daemon's.
-    env = [f"{name}={os.environ[name]}" for name in FORWARDED if os.environ.get(name)]
+    try:
+        view = shlex.split(checked.stdout)
+    except ValueError:
+        view = []
+    if not view:
+        print(f"attach: priory attach printed no command: {checked.stdout.strip()[:200]}", file=sys.stderr)
+        return 1
     started = subprocess.run(
         ["hc", "run", "--bg", "--keep", "--no-parent", "--no-notify",
          "--label", f"herdr.space={space}", "--label", f"herdr.tab=task-{task}",
          "--label", f"priory.task={task}", "--label", label,
-         "--", "env", *env, "sh", "-c", VIEW, "sh", *view],
+         "--", "env", "-u", "TMUX", "sh", "-c", VIEW, "sh", *view],
         capture_output=True, text=True)
     sys.stderr.write(started.stderr)
     return started.returncode

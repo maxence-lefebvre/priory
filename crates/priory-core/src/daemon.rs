@@ -232,12 +232,22 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     }
     let share = Share::of(factory, trace.machine.as_deref());
     let slice = slice::name();
-    let scope = slice::scope(&slice, share.cpu, share.memory).unwrap_or_else(|error| {
-        eprintln!(
-            "priory daemon: no systemd user manager, so runs start outside {slice} and only the room check caps them: {error}"
-        );
-        Vec::new()
-    });
+    let claimed = slice::claim(&slice, &home);
+    let scope = slice::control_group(&slice)
+        .and_then(|_| match &claimed {
+            Ok(()) => slice::cap(&slice, share.cpu, share.memory),
+            Err(_) => Ok(()),
+        })
+        .and_then(|()| slice::scope(&slice))
+        .unwrap_or_else(|error| {
+            eprintln!(
+                "priory daemon: no systemd user manager, so runs start outside {slice} and only the room check caps them: {error}"
+            );
+            Vec::new()
+        });
+    sweep::clear_refusal(&home);
+    let mut limits = (!scope.is_empty()).then(|| sweep::Limits::new(&slice, &home, claimed.err()));
+    let mut starting = HashMap::new();
     // Checked once, as the slice is: a jailed task never starts unjailed where this fails.
     let probe = || {
         priory_runtime::jail::probe().inspect_err(|error| {
@@ -445,6 +455,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             fetched,
             &mut entering,
             &mut attaching,
+            &mut starting,
         )?;
         // Committed first, so a crash before the kill leaves an ended run, not a lost one.
         for tmux in tools::over_budget_in_turn(&mut db, &trace, &mut peeked, &watched)? {
@@ -486,6 +497,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         if swept.is_none_or(|at| at.elapsed() >= every) {
             swept = Some(Instant::now());
             sweep::run(&db, factory, &home)?;
+            if let Some(limits) = &mut limits {
+                limits.check(&slice, &share, &home);
+            }
             sweep::measure(&home);
             let short = || room::measure(&home).is_ok_and(|room| crate::room::short_of_disk(&room));
             sweep::retire(&db, factory, &home, short)?;
@@ -891,7 +905,8 @@ fn send_spans(
 }
 
 /// Records the sweep scripts that ended, then starts the scripts of a stall that just opened, for
-/// its resource. Returns whether that stall is short of disk, which the built-in sweep frees too.
+/// its resource, and the scripts due on their `every`. Returns whether that stall is short of disk,
+/// which the built-in sweep frees too.
 fn sweep_scripts(
     db: &Connection,
     factory: &Factory,
@@ -906,28 +921,52 @@ fn sweep_scripts(
         }
     }
     *running = still;
-    let Some((stall, resource)) = stall::unswept(db)? else {
-        return Ok(false);
-    };
-    for script in factory
-        .sweep()
-        .scripts
-        .iter()
-        .filter(|script| script.when.name() == resource)
-    {
-        let id = stall::started(db, stall, &script.run)?;
-        let log = log_of(home, id);
-        let timeout = script.timeout.unwrap_or(SCRIPT_TIMEOUT);
-        match script::spawn(&script.run, home, &log, timeout) {
-            Ok(child) => {
-                stall::spawned(db, id, child.pid(), memory::started(child.pid()))?;
-                running.push((id, child));
+    let scripts = &factory.sweep().scripts;
+    let scheduled = scripts.iter().filter(|script| script.every.is_some());
+    stall::prune(db, scheduled.map(|script| script.run.as_str()))?;
+    let swept = match stall::unswept(db)? {
+        Some((stall, resource)) => {
+            for script in scripts
+                .iter()
+                .filter(|script| script.when.is_some_and(|when| when.name() == resource))
+            {
+                if !stall::adopt(db, stall, &script.run)? {
+                    start_script(db, home, Some(stall), script, running)?;
+                }
             }
-            Err(error) => stall::ended(db, id, &format!("cannot start: {error}"), "")?,
+            stall::swept(db)?;
+            resource == "disk"
+        }
+        None => false,
+    };
+    for script in scripts {
+        if let Some(every) = script.every
+            && stall::due(db, &script.run, every)?
+        {
+            start_script(db, home, None, script, running)?;
         }
     }
-    stall::swept(db)?;
-    Ok(resource == "disk")
+    Ok(swept)
+}
+
+/// Starts a sweep script for `stall`, or on its schedule without one.
+fn start_script(
+    db: &Connection,
+    home: &Path,
+    stall: Option<i64>,
+    script: &factory::Script,
+    running: &mut Vec<(i64, Script)>,
+) -> Result<(), Error> {
+    let id = stall::started(db, stall, &script.run)?;
+    let timeout = script.timeout.unwrap_or(SCRIPT_TIMEOUT);
+    match script::spawn(&script.run, home, &log_of(home, id), timeout) {
+        Ok(child) => {
+            stall::spawned(db, id, child.pid(), memory::started(child.pid()))?;
+            running.push((id, child));
+        }
+        Err(error) => stall::ended(db, id, &format!("cannot start: {error}"), "")?,
+    }
+    Ok(())
 }
 
 /// Where sweep script `id` writes its output.
@@ -1292,7 +1331,7 @@ fn take(
             Ok((replied(tools::dismiss(db, &dismiss, trace.factory)?), None))
         }
         Ok(Input::Act(act)) => {
-            let (reply, kill) = tools::act(db, &act, trace.factory)?;
+            let (reply, kill) = tools::act(db, &act, trace)?;
             Ok((replied(reply), kill))
         }
         Ok(Input::Snooze(snooze)) => Ok((replied(snooze::snooze(db, &snooze, trace)?), None)),
@@ -1344,9 +1383,17 @@ fn tend(
     kit: crate::kit::Current<'_>,
     entering: &mut Entering,
     attaching: &mut Vec<crate::attach::Attaching>,
+    starting: &mut HashMap<i64, Option<slice::Cpu>>,
 ) -> Result<(), Error> {
     let factory = trace.factory;
-    for mut run in state::live(db)? {
+    let live = state::live(db)?;
+    starting.retain(|id, _| live.iter().any(|run| run.id == *id && !run.ready));
+    for mut run in live {
+        if !run.ready && !scope.is_empty() {
+            starting
+                .entry(run.id)
+                .or_insert_with(|| slice::cpu(&slice::name()));
+        }
         if run.direnv == 1
             && let Some(error) = runtime::direnv_failed(home, &run.session)
         {
@@ -1376,9 +1423,13 @@ fn tend(
                 Some(diagnose(db, factory, share, home, &run.agent)?)
             };
             tools::fail(db, trace, run.task, run.id, &reason, repair.as_ref())?;
-        } else if let Some((ended_as, reason, missed)) =
-            verdict(&run, factory, home, &|| crate::trace::granted(db, run.id))
-        {
+        } else if let Some((ended_as, reason, missed)) = verdict(
+            &run,
+            factory,
+            home,
+            &|| crate::trace::granted(db, run.id),
+            &|| slice::throttled(&slice::name(), starting.get(&run.id).copied()??),
+        ) {
             let worktree = run.worktree.as_deref().unwrap_or_default();
             let harness = harness_of(factory, &run.agent);
             // The harness may have rewritten its config from an older copy, dropping the grant.
@@ -1456,12 +1507,14 @@ fn tend(
     }
     // Before admission, so a run's slow start never delays another run's Enter.
     entering.tick(db)?;
-    loop {
+    // The last measurement of this tick, for the metrics.
+    let mut last = None;
+    let (promised, waiting) = loop {
         // Measured again after each start, since its clone and worktree take disk.
         let measured = OnceCell::new();
         let room = || measured.get_or_init(|| room::measure(home));
         let checking = |task| probes.checking(task);
-        let Some(admission) = state::admissible(
+        let pass = state::admissible(
             db,
             factory,
             trace.runner.as_deref(),
@@ -1469,16 +1522,18 @@ fn tend(
             room,
             &watched,
             &checking,
-        )?
-        else {
-            break;
+        )?;
+        last = measured.into_inner().or(last);
+        let Some(admission) = pass.admission else {
+            break (pass.promised, Some(pass.waiting));
         };
         if let Some(me) = &trace.runner {
             match runners::cleared(db, me, admission.task)? {
                 Some(true) => {}
                 Some(false) => continue,
-                // Its claim is not on the log yet: the next tick tries again.
-                None => break,
+                // Its claim is not on the log yet: the next tick tries again. The pass stopped
+                // short of the tasks behind it, so it counts no waiting task.
+                None => break (pass.promised, None),
             }
         }
         if let Err(reason) = start(
@@ -1496,6 +1551,10 @@ fn tend(
         )? {
             state::block(db, trace, admission.task, "failed", &reason)?;
         }
+    };
+    if metrics::wants_room(last.is_some()) {
+        let room = last.unwrap_or_else(|| room::measure(home));
+        metrics::sample_room(db, share, &room, promised.memory, waiting);
     }
     // A marked run idle between turns has no turn end to wait for.
     for session in crate::preempt::idle(db)? {
@@ -1602,12 +1661,13 @@ fn direnv_failed(
 
 /// Why a live run must end: its harness's trust dialog, no `SessionStart`, a permission prompt, or
 /// a turn past its step's timeout. The flag says the dialog asked for trust that `granted`, the
-/// run's own grant, had recorded.
+/// run's own grant, had recorded. `throttled` says what the slice's CPU quota kept back.
 fn verdict(
     run: &state::LiveRun,
     factory: &Factory,
     home: &Path,
     granted: &dyn Fn() -> bool,
+    throttled: &dyn Fn() -> Option<String>,
 ) -> Option<(&'static str, String, bool)> {
     // Claude and Codex ask whether to trust a folder, and Codex its hooks, before any hook; Priory
     // never answers.
@@ -1660,11 +1720,22 @@ fn verdict(
                 0 => state::READY_WITHIN,
                 _ => state::DIRENV_READY_WITHIN,
             };
+            let ready = rows.as_deref().is_some_and(|rows| harness.at_prompt(rows));
+            let advice = match (ready, throttled()) {
+                (true, Some(throttled)) => throttled,
+                (true, None) => {
+                    "its prompt is ready and asks for no trust, so its SessionStart hook is late \
+                     or never reached the daemon. Resume the task to try again"
+                        .to_owned()
+                }
+                (false, Some(throttled)) => format!("{}; {throttled}", trust()),
+                (false, None) => trust(),
+            };
             format!(
                 "{} showed no SessionStart within {}; {}",
                 harness.program(),
                 within.replace(" seconds", "s"),
-                trust()
+                advice
             )
         };
         let rows = rows.unwrap_or_default();
@@ -1912,10 +1983,11 @@ fn restore_worktree(
 ) -> Result<Restored, Error> {
     // A resurrected task goes through the room check, which a code step otherwise skips.
     let waits = match room::measure(home) {
-        Err(error) => Some(format!("waits for room: {error}")),
-        Ok(room) if crate::room::short_of_disk(&room) => {
-            Some("waits for room to add back its worktree".to_owned())
-        }
+        Err(error) => Some(format!(
+            "{}: cannot measure it: {error}",
+            crate::room::RESTORES
+        )),
+        Ok(room) if crate::room::short_of_disk(&room) => Some(crate::room::RESTORES.to_owned()),
         Ok(_) => None,
     };
     if let Some(reason) = waits {
@@ -1928,6 +2000,10 @@ fn restore_worktree(
     match runtime::worktree(home, repo, &worktree_name(db, runner, task)?, None) {
         Ok((worktree, _, added)) => {
             state::set_base(db, task, added.base())?;
+            db.execute(
+                "UPDATE tasks SET reason = NULL WHERE id = ?1 AND substr(reason, 1, length(?2)) = ?2",
+                rusqlite::params![task, crate::room::RESTORES],
+            )?;
             // The code step needs no resume; the task's next run starts it first.
             let resume = factory.recipe(repo, factory::Moment::Resume);
             if let (runtime::Added::Restored, Some(recipe)) = (&added, resume) {
@@ -3066,7 +3142,8 @@ mod tests {
             prompted: None,
         };
 
-        let (ended_as, reason, _) = verdict(&run, &Factory::default(), &home, &|| false).unwrap();
+        let (ended_as, reason, _) =
+            verdict(&run, &Factory::default(), &home, &|| false, &|| None).unwrap();
 
         assert_eq!(ended_as, "exited");
         assert!(
