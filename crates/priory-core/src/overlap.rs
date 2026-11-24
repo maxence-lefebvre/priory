@@ -6,7 +6,8 @@ use std::path::Path;
 
 /// Records the files each task's branch changed at the end of its latest run, then holds each
 /// queued or ready task that changes files an earlier, unfinished task changes, until that task's
-/// pull request merges or, with none, the task ends. A person's release of the hold stays final for
+/// pull request merges or, with none, the task ends. A task never waits on a pull request that is
+/// its own work, even while the task that opened it is active: only it can get that one merged. A person's release of the hold stays final for
 /// that earlier task. Tasks in other repositories never overlap, a task never waits on one that
 /// waits on it, and a stacked batch entry never waits on a task it is stacked on.
 pub(crate) fn tick(db: &mut Connection, factory: &Factory, home: &Path) -> rusqlite::Result<()> {

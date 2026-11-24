@@ -20660,32 +20660,52 @@ fn a_task_overlapping_one_with_an_open_pull_request_is_held_until_it_merges() {
     );
 }
 
-#[test]
-fn a_task_working_on_the_open_pull_request_it_overlaps_is_not_held_on_it() {
-    let setup = overlapping_after("overlap-own-pr", "shared.txt", "name = \"demo\"", |setup| {
+/// Task 1 opened a pull request, and task 2, requested next, works on it. `rows` records
+/// that pull request.
+fn own_pull_request(name: &str, rows: &'static str) -> Setup {
+    overlapping_after(name, "shared.txt", "name = \"demo\"", move |setup| {
         let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
-        // Task 1 opened #7; task 2, requested next, updates that same pull request.
-        db.execute_batch(
+        db.execute_batch(&format!(
             "PRAGMA foreign_keys = OFF;
-             INSERT INTO pull_requests (task, resource, branch, base)
-             VALUES (1, 'github:owner/repo#7', 'priory/1', 'main'),
-                    (2, 'github:owner/repo#7', 'priory/1', 'main');",
-        )
+             INSERT INTO pull_requests (task, resource, branch, base) VALUES {rows};"
+        ))
         .unwrap();
-    });
+    })
+}
 
+fn assert_runs_its_check(setup: &Setup) {
     setup.until("tasks", |rows| {
         rows.iter().any(|row| {
             row[0] == "2" && (row[4] == "held" || row[3] == "check" && row[4] == "running")
         })
     });
-
     assert_eq!(
-        state_of(&setup, "2").0,
+        state_of(setup, "2").0,
         "running",
         "{:?}",
-        state_of(&setup, "2")
+        state_of(setup, "2")
     );
+}
+
+#[test]
+fn a_task_working_on_the_open_pull_request_it_overlaps_is_not_held_on_it() {
+    let setup = own_pull_request(
+        "overlap-own-pr",
+        "(1, 'github:owner/repo#7', 'priory/1', 'main'), (2, 'github:owner/repo#7', 'priory/1', 'main')",
+    );
+
+    assert_runs_its_check(&setup);
+}
+
+#[test]
+fn a_task_keyed_on_the_open_pull_request_it_overlaps_is_not_held_on_it() {
+    // Task 2's key is `github:owner/repo#43`, as for a task requested on pull request 43.
+    let setup = own_pull_request(
+        "overlap-own-key",
+        "(1, 'github:owner/repo#43', 'priory/1', 'main')",
+    );
+
+    assert_runs_its_check(&setup);
 }
 
 const FIX: &str = r#"
