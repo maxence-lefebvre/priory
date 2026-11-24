@@ -46,11 +46,11 @@ pub struct Settings {
     pub handler: Option<String>,
     /// How long a run goes without a hook event or a change on its pane before it counts as stalled.
     #[serde(default, deserialize_with = "duration")]
-    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smhd]$"))]
     pub stalled: Option<Duration>,
     /// How long one git, gh or tmux command may run before Priory kills it.
     #[serde(default, deserialize_with = "duration")]
-    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smhd]$"))]
     pub command_timeout: Option<Duration>,
     /// The project's gate: the command `priory gate` runs with `sh -c` in a task's worktree.
     pub gate: Option<String>,
@@ -142,7 +142,7 @@ pub enum SandboxKind {
 pub struct Consult {
     /// How long from the `consult` call to its report, the wait for room included; 15m when unset.
     #[serde(default, deserialize_with = "duration")]
-    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smhd]$"))]
     pub deadline: Option<Duration>,
     /// What one consult may cost, in dollars; 0.50 when unset.
     #[serde(default, deserialize_with = "cap")]
@@ -210,7 +210,7 @@ pub struct Decision {
     pub threshold: Option<f64>,
     /// How long one call may run; 5s when unset, 30s at most.
     #[serde(default, deserialize_with = "duration")]
-    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smhd]$"))]
     pub timeout: Option<Duration>,
     /// The most calls the daemon makes in a day; 200 when unset.
     #[schemars(range(min = 1))]
@@ -326,7 +326,7 @@ pub struct Recipe {
     /// How long it may run before Priory kills it with its process group; `command_timeout` when
     /// unset.
     #[serde(default, deserialize_with = "duration")]
-    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smhd]$"))]
     pub timeout: Option<Duration>,
 }
 
@@ -414,7 +414,7 @@ pub struct Kit {
     pub memories: Option<String>,
     /// How often a runner fetches the ref again; every 5 minutes when unset.
     #[serde(default, deserialize_with = "duration")]
-    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smhd]$"))]
     pub every: Option<Duration>,
 }
 
@@ -435,7 +435,7 @@ pub struct MemoriesRepo {
     pub path: Option<String>,
     /// How often a runner fetches the ref again; every 5 minutes when unset.
     #[serde(default, deserialize_with = "duration")]
-    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smhd]$"))]
     pub every: Option<Duration>,
 }
 
@@ -896,11 +896,11 @@ pub struct Telemetry {
     pub headers_env: Option<String>,
     /// The metric groups each process sends to the endpoint's `/v1/metrics`; none sends no metric.
     #[serde(default)]
-    #[schemars(extend("items" = { "enum": ["process", "log", "runs", "intake", "work"] }))]
+    #[schemars(extend("items" = { "enum": ["process", "log", "runs", "intake", "work", "room"] }))]
     pub metrics: Vec<String>,
     /// How often a process samples its groups and sends one request, at least 10s; 60s when unset.
     #[serde(default, deserialize_with = "duration")]
-    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smhd]$"))]
     pub metrics_every: Option<Duration>,
     /// The data points a process sends per minute at most, over a rolling minute; 1000 when unset.
     #[schemars(range(min = 1))]
@@ -908,10 +908,16 @@ pub struct Telemetry {
 }
 
 /// The metric groups a process can send, by name.
-pub const METRIC_GROUPS: &[&str] = &["process", "log", "runs", "intake", "work"];
+pub const METRIC_GROUPS: &[&str] = &["process", "log", "runs", "intake", "work", "room"];
 
 /// The least `metrics_every`.
 pub const METRICS_EVERY_LEAST: Duration = Duration::from_secs(10);
+
+/// The least `every` of a sweep script.
+pub const SCRIPT_EVERY_LEAST: Duration = Duration::from_secs(10);
+
+/// The most days of a sweep script's `every`. SQLite's dates turn null far above it.
+pub const SCRIPT_EVERY_MOST_DAYS: u64 = 36500;
 
 /// Where the daemon tells a person that the desk's next item changed, besides Web Push.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -951,7 +957,7 @@ pub struct EventLog {
     /// How long one Postgres call may wait on the database before the log counts as unreachable;
     /// 10 seconds when unset.
     #[serde(default, deserialize_with = "duration")]
-    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smhd]$"))]
     pub timeout: Option<Duration>,
 }
 
@@ -1005,7 +1011,7 @@ impl Search {
 pub struct Sweep {
     /// How often the built-in worktree sweep runs; every 10 minutes when unset.
     #[serde(default, deserialize_with = "duration")]
-    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smhd]$"))]
     pub every: Option<Duration>,
     /// Scripts run when the resource they name stalls the queue.
     #[serde(default)]
@@ -1013,7 +1019,7 @@ pub struct Sweep {
     /// How long the queue stays stalled after its scripts ran before the sweeper starts; 30 minutes
     /// when unset.
     #[serde(default, deserialize_with = "duration")]
-    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smhd]$"))]
     pub after: Option<Duration>,
     /// The agent of the built-in `sweep` workflow; no sweeper starts without one.
     pub agent: Option<String>,
@@ -1028,7 +1034,7 @@ pub struct IntakeSettings {
     /// How long a source's polls fail before the intake posts its report, which the desk ranks as
     /// an alarm; 15 minutes when unset. Until then the desk shows only its banner.
     #[serde(default, deserialize_with = "duration")]
-    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smhd]$"))]
     pub alarm_after: Option<Duration>,
 }
 
@@ -1050,7 +1056,7 @@ pub struct Queue {
     /// How long a task waits in the queue for each band it moves up in start order, up to the
     /// highest band not in `preempt`; no task moves when unset.
     #[serde(default, deserialize_with = "duration")]
-    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smhd]$"))]
     pub age: Option<Duration>,
     /// `lane` makes the queue take turns between lanes inside a band; oldest first when unset.
     pub fair: Option<Fair>,
@@ -1090,11 +1096,16 @@ impl Sweep {
 pub struct Script {
     /// A shell command, run by `sh -c` in `PRIORY_HOME`.
     pub run: String,
-    /// The resource whose shortage runs the script.
-    pub when: Resource,
+    /// The resource whose shortage runs the script; it runs only on its `every` when unset.
+    pub when: Option<Resource>,
+    /// How often the script runs, at least 10s, counted from its last run, a stall's run included;
+    /// only when `when` stalls the queue when unset.
+    #[serde(default, deserialize_with = "duration")]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smhd]$"))]
+    pub every: Option<Duration>,
     /// How long it may run before Priory kills it; 5 minutes when unset.
     #[serde(default, deserialize_with = "duration")]
-    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smhd]$"))]
     pub timeout: Option<Duration>,
 }
 
@@ -1444,7 +1455,7 @@ pub struct Scorer {
     /// For `command` and `intent`, how long it may run before Priory kills it; 20 minutes for
     /// `command` and 30 seconds for `intent` when unset.
     #[serde(default, deserialize_with = "duration")]
-    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smhd]$"))]
     pub timeout: Option<Duration>,
     /// For `intent`, the environment variable that holds the decision model's key, never the key
     /// itself. `run` sees it, `PATH` and `HOME`, and no other variable.
@@ -1669,13 +1680,13 @@ pub struct Trigger {
     pub days: Option<Vec<jiff::civil::Weekday>>,
     /// How often a schedule fires again after `at`, the same day; once a day when unset.
     #[serde(default, deserialize_with = "duration")]
-    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smhd]$"))]
     pub every: Option<Duration>,
     /// When a schedule's day of firings ends; the end of the day when unset.
     #[serde(default, deserialize_with = "until")]
     #[schemars(
         with = "String",
-        regex(pattern = r"^(([01]?[0-9]|2[0-3]):[0-5][0-9]|0*[1-9][0-9]*[smh])$")
+        regex(pattern = r"^(([01]?[0-9]|2[0-3]):[0-5][0-9]|0*[1-9][0-9]*[smhd])$")
     )]
     pub until: Option<Until>,
     /// The IANA zone `at` is read in, such as `Europe/Paris`; the machine's own when unset.
@@ -1727,7 +1738,7 @@ pub struct Pre {
     pub argv: Vec<String>,
     /// How long it may run, at most `60s`; 10 seconds when unset.
     #[serde(default, deserialize_with = "duration")]
-    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smhd]$"))]
     pub timeout: Option<Duration>,
     /// Environment variables copied from the process that runs it, beside `PATH`, `LANG` and
     /// `HOME`.
@@ -2021,7 +2032,7 @@ pub struct Step {
     /// How long one turn of a model step, a `run` action's command, or the command a human step's
     /// answer runs, may run before Priory ends it.
     #[serde(default, deserialize_with = "duration")]
-    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smhd]$"))]
     pub timeout: Option<Duration>,
     /// Model steps only: the dollars the task may spend at this step, such as `"1.00"`, priced
     /// with `prices.toml` at each turn end.
@@ -2090,7 +2101,7 @@ pub struct StepCommand {
 /// A duration such as `90s`, `15m` or `2h`.
 fn duration<'de, D: serde::Deserializer<'de>>(input: D) -> Result<Option<Duration>, D::Error> {
     let text = String::deserialize(input)?;
-    [("s", 1), ("m", 60), ("h", 3600)]
+    [("s", 1), ("m", 60), ("h", 3600), ("d", 86400)]
         .into_iter()
         .find_map(|(unit, scale)| {
             text.strip_suffix(unit)?
@@ -2720,13 +2731,19 @@ impl Factory {
     /// stores it.
     pub fn deliver(&self) -> Option<PathBuf> {
         let deliver = self.settings.as_ref()?.value.asks.deliver.as_ref()?;
-        Some(self.dir.join(deliver))
+        Some(self.program(deliver))
     }
 
     /// The command that opens a new run of a step with `attach = true`, under the factory folder.
     pub fn attach(&self) -> Option<PathBuf> {
         let attach = self.settings.as_ref()?.value.runs.attach.as_ref()?;
-        Some(self.dir.join(attach))
+        Some(self.program(attach))
+    }
+
+    /// `path` under the factory folder, absolute: a command runs in another folder than the daemon.
+    fn program(&self, path: &Path) -> PathBuf {
+        let path = self.dir.join(path);
+        std::path::absolute(&path).unwrap_or(path)
     }
 
     /// The folder of the ask command target `name`, under the factory folder when relative.

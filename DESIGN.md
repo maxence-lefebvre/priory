@@ -1328,7 +1328,8 @@ with no change shows its line without an icon.
 
 - **Empty**: one sentence that says what appears here and what makes it appear, plus the action
   or CLI command. "No open asks. Agents ask here when they need you."
-- **Loading**: until the first listing arrives, the frame shows nothing. A page then shows one
+- **Loading**: until the first listing arrives, the frame says "Loading the desk…", or shows the
+  listing this device kept. A page then shows one
   sentence in the empty state's place, with the one verb "Loading" and what loads: "Loading task
   7…", "Loading the flows…". A list that loads its older rows ends with "Loading older runs…". The
   terminal says "Loading the screen…", and Herdr's panels say the same as the web. The ask's plan

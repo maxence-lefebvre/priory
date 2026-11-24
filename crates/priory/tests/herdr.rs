@@ -184,8 +184,6 @@ fn attach(
         .args(["7", "12"])
         .env("PATH", path)
         .env("PRIORY_HERDR_SPACE", "main")
-        .env("PRIORY_DB", "/state/priory.db")
-        .env("TMUX_TMPDIR", "/tmp/t")
         .env("FAKE_DIR", dir.join("fake"))
         .output()
         .unwrap();
@@ -221,7 +219,11 @@ fn faked_path(dir: &Path) -> std::ffi::OsString {
 #[test]
 fn attach_opens_one_kept_terminal_per_run_in_the_space_and_a_tab_per_task() {
     let dir = setup("attach");
-    let priory = daemon_exe(&dir, "[ \"$*\" = 'attach --run 12 --read-only --print' ]");
+    let priory = daemon_exe(
+        &dir,
+        "[ \"$*\" = 'attach --run 12 --read-only --print' ] && \
+         echo \"tmux -S '/tmp/t 1/default' attach-session -f read-only,ignore-size -t '=priory-7'\"",
+    );
     let path = faked_path(&dir);
 
     let opened = attach(&dir, &path, Some(&priory));
@@ -233,7 +235,6 @@ fn attach_opens_one_kept_terminal_per_run_in_the_space_and_a_tab_per_task() {
     let again = attach(&dir, &path, Some(&priory));
 
     let listed = ["ls", "--json", "--label", "priory.run=12"].map(String::from);
-    let priory = priory.display().to_string();
     assert_eq!(opened.0, Some(0), "{}", opened.1);
     assert_eq!(
         opened.2,
@@ -255,17 +256,20 @@ fn attach_opens_one_kept_terminal_per_run_in_the_space_and_a_tab_per_task() {
                 "priory.run=12",
                 "--",
                 "env",
-                "PRIORY_DB=/state/priory.db",
-                "TMUX_TMPDIR=/tmp/t",
+                "-u",
+                "TMUX",
                 "sh",
                 "-c",
                 "stty cols 200 rows 51; exec \"$@\"",
                 "sh",
-                priory.as_str(),
-                "attach",
-                "--run",
-                "12",
-                "--read-only",
+                "tmux",
+                "-S",
+                "/tmp/t 1/default",
+                "attach-session",
+                "-f",
+                "read-only,ignore-size",
+                "-t",
+                "=priory-7",
             ]
             .map(String::from)
             .to_vec(),
@@ -309,6 +313,25 @@ fn attach_to_a_run_without_a_tagged_pane_opens_nothing_and_says_why() {
         (Some(1), "priory attach: no live pane\n")
     );
     assert!(calls.iter().all(|call| call[0] != "run"), "{calls:?}");
+}
+
+#[test]
+fn attach_opens_nothing_when_the_printed_command_is_empty_or_unreadable() {
+    let dir = setup("attach-no-command");
+    for printed in ["", "tmux 'unclosed"] {
+        let exe = daemon_exe(&dir, &format!("echo \"{printed}\""));
+
+        let (code, stderr, calls) = attach(&dir, &faked_path(&dir), Some(&exe));
+
+        assert_eq!(
+            (code, stderr),
+            (
+                Some(1),
+                format!("attach: priory attach printed no command: {printed}\n")
+            )
+        );
+        assert!(calls.iter().all(|call| call[0] != "run"), "{calls:?}");
+    }
 }
 
 #[test]

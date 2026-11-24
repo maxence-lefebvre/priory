@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 112;
+const VERSION: i64 = 114;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1964,9 +1964,45 @@ ALTER TABLE runs ADD COLUMN direnv INTEGER;
 PRAGMA user_version = 110;
 ";
 
+// A memory grant that timed out, whose request time a retry of its task's command keeps.
+const SCHEMA_111: &str = "
+CREATE TABLE lapses (
+  task    INTEGER NOT NULL REFERENCES tasks (id),
+  command TEXT NOT NULL,
+  bytes   INTEGER NOT NULL,
+  created TEXT NOT NULL,
+  lapsed  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+PRAGMA user_version = 111;
+";
+
+// A scheduled sweep script runs outside any stall.
+const SCHEMA_112: &str = concat!(
+    "CREATE TABLE sweeps_112 (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  stall   INTEGER REFERENCES stalls (id),
+  script  TEXT NOT NULL,
+  started TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  ended   TEXT,
+  status  TEXT,
+  output  TEXT,
+  pid     INTEGER,
+  pid_started INTEGER
+);
+INSERT INTO sweeps_112 SELECT id, stall, script, started, ended, status, output, pid, pid_started
+  FROM sweeps;
+DROP TABLE sweeps;
+ALTER TABLE sweeps_112 RENAME TO sweeps;
+CREATE INDEX sweeps_by_script ON sweeps (script, started);
+",
+    bumps!("sweeps"),
+    "PRAGMA user_version = 112;
+"
+);
+
 // News that may end a task's work, kept for its live run: shown to its next call, and read once a
 // held call takes it.
-const SCHEMA_111: &str = "
+const SCHEMA_113: &str = "
 CREATE TABLE news (
   id   INTEGER PRIMARY KEY,
   run  INTEGER NOT NULL REFERENCES runs (id),
@@ -1976,12 +2012,12 @@ CREATE TABLE news (
   read TEXT,
   UNIQUE (run, seq)
 );
-PRAGMA user_version = 111;
+PRAGMA user_version = 113;
 ";
 
 // The prompt that carries a message after the turn, withdrawn once a call shows the message, the
 // pairs a duplicate lets talk, and each message a pair sent. Not `relations`, which agents write.
-const SCHEMA_112: &str = "
+const SCHEMA_114: &str = "
 ALTER TABLE news ADD COLUMN outbox INTEGER;
 CREATE TABLE pairs (
   task  INTEGER NOT NULL REFERENCES tasks (id),
@@ -1993,7 +2029,7 @@ CREATE TABLE messages (
   other INTEGER NOT NULL REFERENCES tasks (id),
   at    TEXT NOT NULL
 );
-PRAGMA user_version = 112;
+PRAGMA user_version = 114;
 ";
 
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
@@ -2011,7 +2047,8 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
-    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112,
+    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112, SCHEMA_113,
+    SCHEMA_114,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -3395,6 +3432,16 @@ pub(crate) struct Admission {
     pub lane: Option<String>,
 }
 
+/// One pass over the queue.
+pub(crate) struct Pass {
+    /// The task to start, if any. The pass stops at it.
+    pub admission: Option<Admission>,
+    /// What live runs and held grants reserved in this pass.
+    pub promised: room::Need,
+    /// The tasks passed that wait for room, by what their queue's head lacks.
+    pub waiting: BTreeMap<&'static str, u64>,
+}
+
 /// The first queued or ready task at a model step, in start order, that fits in the runner's room.
 /// Each one before it gets the reason it waits.
 pub(crate) fn admissible<'r>(
@@ -3405,7 +3452,7 @@ pub(crate) fn admissible<'r>(
     room: impl Fn() -> &'r Result<Room, String>,
     watched: &dyn Fn(&str) -> bool,
     checking: &dyn Fn(i64) -> bool,
-) -> rusqlite::Result<Option<Admission>> {
+) -> rusqlite::Result<Pass> {
     let mut statement = db.prepare(&format!(
         "SELECT id, workflow, step, trigger, state = 'queued', repo, preempted, lane FROM tasks
              WHERE state IN ('queued', 'ready')
@@ -3439,6 +3486,7 @@ pub(crate) fn admissible<'r>(
     let book = crate::spend::Book::new(factory);
     // The first task that waits for room: no task behind it starts, so it is never starved.
     let mut head = None;
+    let mut waiting = BTreeMap::new();
     let mut stall = None;
     let mut planned = false;
     for admission in queued {
@@ -3500,7 +3548,10 @@ pub(crate) fn admissible<'r>(
             (Some(reason), _) => Some(reason),
             // The sweeper frees the room the queue waits for, so it never waits for room itself.
             (None, _) if admission.trigger == crate::stall::TRIGGER => None,
-            (None, Some(head)) => Some(format!("waits behind task {head}, which waits for room")),
+            (None, Some((head, cause))) => {
+                *waiting.entry(cause).or_default() += 1;
+                Some(format!("waits behind task {head}, which waits for room"))
+            }
             (None, None) => {
                 let need = room::need(agent.map(|(_, agent)| agent));
                 match room() {
@@ -3518,14 +3569,20 @@ pub(crate) fn admissible<'r>(
                             )?;
                             continue;
                         }
+                        if let Some(short) = &short {
+                            *waiting.entry(short.cause()).or_default() += 1;
+                        }
                         // A task that can never fit would hold the queue forever.
-                        if short.is_some() && room::fits_ever(measured, share, need) {
-                            head = Some(admission.task);
+                        if let Some(short) = short
+                            .as_ref()
+                            .filter(|_| room::fits_ever(measured, share, need))
+                        {
+                            head = Some((admission.task, short.cause()));
                             // Waiting only for live runs to end is backpressure, not a stall.
                             stall = room::wait(measured, share, room::Need::default(), need)
                                 .map(|short| (admission.task, short));
                             // Only memory and declared disk are promises a stop gives back.
-                            if short.as_ref().is_some_and(|short| short.resource != "CPU") {
+                            if short.resource != "CPU" {
                                 planned = true;
                                 let urgent = crate::preempt::Head {
                                     task: admission.task,
@@ -3543,14 +3600,19 @@ pub(crate) fn admissible<'r>(
                         reason
                     }
                     Err(error) => {
-                        head = Some(admission.task);
+                        head = Some((admission.task, room::UNMEASURED));
+                        *waiting.entry(room::UNMEASURED).or_default() += 1;
                         Some(format!("waits for room: cannot measure it: {error}"))
                     }
                 }
             }
         };
         let Some(mut reason) = waits else {
-            return Ok(Some(admission));
+            return Ok(Pass {
+                admission: Some(admission),
+                promised,
+                waiting,
+            });
         };
         // A stopped task waits for the room its stop made; its own plan, if any, says more.
         if let Some(head) = admission.preempted
@@ -3569,7 +3631,11 @@ pub(crate) fn admissible<'r>(
         crate::preempt::withdraw(db)?;
     }
     crate::stall::record(db, stall.as_ref().map(|(task, short)| (*task, short)))?;
-    Ok(None)
+    Ok(Pass {
+        admission: None,
+        promised,
+        waiting,
+    })
 }
 
 /// Why a task waits for its lane's or trigger's `max_running`: `waits: lane core/intake has 2
