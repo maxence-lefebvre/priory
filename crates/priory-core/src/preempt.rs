@@ -108,7 +108,8 @@ pub(crate) fn plan(
         "SELECT runs.id, runs.task, runs.step, coalesce(runs.agent, ''), runs.tmux, tasks.band,
            tasks.workflow, tasks.trigger, tasks.preempted IS NOT NULL, {KEYBOARD_HELD},
            tasks.position, runs.session
-         FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.ended IS NULL"
+         FROM runs JOIN tasks ON tasks.id = runs.task
+         WHERE runs.ended IS NULL AND runs.harness IS NOT 'claude-cloud'"
     ))?;
     let mut rows = statement.query([])?;
     let mut candidates = Vec::new();

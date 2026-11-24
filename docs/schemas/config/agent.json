@@ -5,11 +5,20 @@
   "definitions": {
     "Harness": {
       "description": "The coding agent CLI that runs an agent.",
-      "enum": [
-        "claude-code",
-        "codex"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "claude-code",
+            "codex"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "claude-cloud",
+          "description": "A Claude cloud session on Anthropic's machines, which reports by pushing a branch.",
+          "type": "string"
+        }
+      ]
     },
     "OnChange": {
       "description": "`tell`: a resumed shared session's first prompt names what changed in its agent. `fresh`: the\ntask starts a new session instead.",

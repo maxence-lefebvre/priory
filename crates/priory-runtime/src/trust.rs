@@ -63,6 +63,27 @@ pub fn grant(harness: &dyn Harness, home: &Path, repo: &str, worktree: &Path) ->
     }
 }
 
+/// Records Claude Code's trust in the folder `claude --cloud` runs in for `repo` under Priory `home`,
+/// which keeps its path from start to start. A folder that a symlink leads elsewhere gets a refused
+/// grant only.
+pub fn grant_cloud(home: &Path, repo: &str) -> Vec<Grant> {
+    let folder = crate::cloud::folder(home, repo);
+    let own = fs::create_dir_all(&folder)
+        .and_then(|()| Ok((fs::canonicalize(&folder)?, fs::canonicalize(home)?)))
+        .map_err(|error| format!("{}: {error}", folder.display()))
+        .and_then(|(real, home)| {
+            if real == crate::cloud::folder(&home, repo) {
+                Ok(real)
+            } else {
+                Err(format!("{} leads out of Priory home", folder.display()))
+            }
+        });
+    match own {
+        Ok(real) => claude(&crate::servers::claude_config(), &[&real]),
+        Err(why) => grants(&folder, &[&folder], Err(why)),
+    }
+}
+
 /// Whether `harness`'s config still holds the trust recorded for `worktree` and its clone.
 /// An error means Priory could not tell, as with a config it cannot read or parse.
 pub fn holds(harness: &dyn Harness, worktree: &Path) -> Result<bool, String> {

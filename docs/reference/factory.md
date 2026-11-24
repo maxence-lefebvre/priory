@@ -36,13 +36,14 @@ one: [reload.md](../daemon/reload.md#what-a-reload-changes) lists them.
 | `request` | table | no | `priory add` needs `--workflow` | The defaults of `priory add` and `POST /api/request`. See [`[request]`](#request) | |
 | `batch` | table | no | `priory batch add` is refused | How `priory batch add` plans batches. See [`[batch]`](#batch) | |
 | `caps` | table | no | no cap | Spend caps in dollars for every task and each lane. See [`[caps]`](#caps) | |
+| `cloud` | table | no | 4 cloud runs at once | The bounds of cloud runs. See [`[cloud]`](#cloud) | |
 | `decisions` | table | no | no decision model | A decision model for each decision point. See [`[decisions.triage]`](#decisionstriage) | |
 | `consult` | table | no | no agent consults | Who may consult which investigator, and the bounds of one consult. See [`[consult]`](#consult) | |
 | `mcp` | table of tables | no | | A person's statement about each MCP server or connector an investigator names. See [`[mcp.<name>]`](#mcpname) | |
 | `guard` | table | no | the built-in guards alone | Irreversible commands and MCP tools the tool guard denies on top of the built-in ones. See [`[guard]`](#guard) | |
 | `sandboxes` | table of tables | no | no sandbox | The jails a workflow can start its agents in, by name. See [`[sandboxes.<name>]`](#sandboxesname) | |
 | `trust_worktrees` | bool | no | `false`: a person trusts each folder by hand | The daemon records Claude Code's, Codex's and direnv's folder trust for each run's worktree and clone, for the repositories the factory names. When the worktree has an `.envrc` and `direnv` is installed, the run starts in its environment. See [sessions.md](../daemon/sessions.md#trusting-the-worktrees-and-the-clone) | `true` |
-| `repos` | table of tables | no | no recipe runs | The setup, resume and teardown recipes of each repository. See [`[repos]`](#repos) | |
+| `repos` | table of tables | no | no recipe runs | The setup, resume and teardown recipes and the cloud setup script of each repository. See [`[repos]`](#repos) | |
 
 A duration is a whole number followed by `s`, `m` or `h`, such as `"90s"`, `"15m"` or `"2h"`.
 
@@ -61,6 +62,14 @@ See [runs.md](../daemon/runs.md#overlapping-files) for how the overlap hold work
 | `age` | duration | no | none: no task moves | How long a task waits in the queue for each band it moves up in start order, up to the highest band not in `preempt` | `"24h"` |
 | `review_limit` | integer, at least 1 | no | no limit | How many pull requests of a lane, or of a batch, may wait for a person before its new tasks wait to start. A task of the first band never waits | `5` |
 | `fair` | `lane` | no | oldest first | What the queue takes turns between inside a band, among the tasks no person ordered | `"lane"` |
+
+## `[cloud]`
+
+See [cloud.md](../daemon/cloud.md) for what a cloud run is.
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `max` | integer, at least 1 | no | `4` | How many cloud runs a runner has at once. Past it, a task waits to start one | `2` |
 
 ## `[intake]`
 
@@ -100,6 +109,7 @@ optional. See [Recipes](../daemon/runs.md#recipes) for when each runs and what a
 | `setup` | recipe | no | none | Runs after the daemon adds a task's new worktree, before its agent starts | `{ argv = ["npm", "ci"] }` |
 | `resume` | recipe | no | none | Runs after the daemon adds back a worktree that a retirement removed, before the agent starts | `{ argv = ["npm", "ci", "--prefer-offline"] }` |
 | `teardown` | recipe | no | none | Runs before the sweep or a retirement removes the worktree | `{ shell = "docker compose down" }` |
+| `cloud_setup` | path | no | none | A script in the repository that installs what its checks need in a Claude cloud session. `priory cloud setup-script` copies it, from the default branch of Priory's clone, into the cloud environment's setup script. It holds no secret. See [cloud.md](../daemon/cloud.md#instructions-and-skills) | `"scripts/cloud-setup.sh"` |
 
 Each recipe is a table with exactly one of `argv` and `shell`:
 
@@ -640,6 +650,7 @@ day = 10.0                                     # dollars the lane may spend in a
 | `` `[guard]` command `<name>` needs a program in `run` `` | A `[guard]` command with an empty `run` |
 | `` unknown field `<key>`, expected one of ... `` | A key the tables above do not list, or a top-level key such as `gate` written below a table such as `[serve]`, which makes it that table's key |
 | `"<text>" is not a duration such as 90s, 15m or 2h` | A duration that is not a whole number and `s`, `m` or `h` |
+| `` `[repos."<repo>"]` `cloud_setup` is `<path>`: a cloud setup script is relative and stays inside the repository `` | `cloud_setup` is empty, absolute, or holds `.` or `..` |
 | `` `factory` is also defined in factory.toml `` | Both `factory.toml` and `factory.yaml` exist |
 | `` `bands` needs at least one band, each named once `` | `bands` is empty or names a band twice |
 | `` sandbox `<name>` has `read` path `<path>`, which is not absolute or under `~/` `` | A `read` or `write` path such as `cache` or `$HOME/x` |

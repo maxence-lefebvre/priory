@@ -90,6 +90,8 @@ pub struct Settings {
     pub memories: Option<MemoriesRepo>,
     /// Spend caps in dollars for every task, and for each lane by its name.
     pub caps: Option<Caps>,
+    #[serde(default)]
+    pub cloud: Cloud,
     /// Recipes by repository, each key a GitHub `owner/name`: the commands the daemon runs in a
     /// task's worktree of that repository.
     #[serde(default)]
@@ -310,6 +312,10 @@ pub struct Repo {
     pub resume: Option<Recipe>,
     /// Runs before the sweep or a retirement removes the worktree. A failure keeps the worktree.
     pub teardown: Option<Recipe>,
+    /// A script in the repository that installs what its checks need in a Claude cloud session.
+    /// `priory cloud setup-script` copies it into the cloud environment's setup script. It holds
+    /// no secret: anyone who uses the environment can read it.
+    pub cloud_setup: Option<String>,
 }
 
 /// One command of a repository's recipe: `argv`, which Priory execs as it is, or `shell`, which it
@@ -1032,6 +1038,14 @@ pub struct IntakeSettings {
     pub alarm_after: Option<Duration>,
 }
 
+/// `[cloud]`: the bounds of cloud runs, which take no room and whose cost Priory cannot read.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Cloud {
+    /// How many cloud runs a runner has at once, 4 when unset. Past it, a task waits to start one.
+    pub max: Option<std::num::NonZeroU32>,
+}
+
 /// How the queue orders tasks.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -1337,14 +1351,17 @@ fn refuse_bypass<'de, D: Deserializer<'de>>(
 pub enum Harness {
     ClaudeCode,
     Codex,
+    /// A Claude cloud session on Anthropic's machines, which reports by pushing a branch.
+    ClaudeCloud,
 }
 
 impl Harness {
-    /// Its name in an agent's file: `claude-code` or `codex`.
+    /// Its name in an agent's file: `claude-code`, `codex` or `claude-cloud`.
     pub fn name(&self) -> &'static str {
         match self {
             Harness::ClaudeCode => "claude-code",
             Harness::Codex => "codex",
+            Harness::ClaudeCloud => "claude-cloud",
         }
     }
 }
@@ -2947,6 +2964,14 @@ impl Factory {
         self.settings
             .as_ref()
             .and_then(|settings| settings.value.queue.review_limit)
+    }
+
+    /// How many cloud runs a runner has at once.
+    pub fn cloud_max(&self) -> u32 {
+        self.settings
+            .as_ref()
+            .and_then(|settings| settings.value.cloud.max)
+            .map_or(4, std::num::NonZeroU32::get)
     }
 
     /// The agent's own prompt, then the factory's writing guide.

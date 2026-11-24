@@ -389,7 +389,7 @@ fn recover(path: &Path, branch: &str, from: Option<String>) -> Result<Recovery, 
 
 /// The staged, unstaged and untracked files of `git status --porcelain=v1`, in words, or an empty
 /// string when there are none.
-fn changes(status: &str) -> String {
+pub(crate) fn changes(status: &str) -> String {
     let (mut staged, mut unstaged, mut untracked) = (0, 0, 0);
     for line in status.lines() {
         let mut codes = line.chars();
@@ -900,7 +900,7 @@ pub fn open_issue(repo: &str, title: &str, body: &str, mark: &str) -> Result<u64
         .ok_or_else(|| format!("gh issue create printed {url:?}, not an issue URL"))
 }
 
-fn tmux() -> Command {
+pub(crate) fn tmux() -> Command {
     Command::new("tmux")
 }
 
@@ -1361,7 +1361,7 @@ impl From<String> for NotStarted {
 
 /// The socket a tmux client of this process uses: the one `TMUX` names, else
 /// `$TMUX_TMPDIR/tmux-<uid>/default`, with `/tmp` when `TMUX_TMPDIR` is unset.
-fn tmux_socket() -> PathBuf {
+pub(crate) fn tmux_socket() -> PathBuf {
     let set = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
     if let Some(socket) = set("TMUX").and_then(|tmux| {
         let tmux = tmux.to_string_lossy().into_owned();
@@ -1379,7 +1379,7 @@ pub fn tmux_socket_in(dir: &Path) -> PathBuf {
 
 /// Refuses a tmux socket path that cannot be bound, before tmux fails on it at the end of a long
 /// error.
-fn tmux_socket_fits(socket: &Path) -> Result<(), String> {
+pub(crate) fn tmux_socket_fits(socket: &Path) -> Result<(), String> {
     let length = socket.as_os_str().len();
     if length < 108 {
         return Ok(());
@@ -1547,6 +1547,23 @@ pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), NotStarted> 
     } else {
         format!("tmux new-session failed: {stderr}")
     }))
+}
+
+/// The bytes of `path` on the default branch of Priory's clone of `repo`.
+pub fn repo_file(home: &Path, repo: &str, path: &str) -> Result<Vec<u8>, String> {
+    let clone = home.join("repos").join(repo);
+    let output = git(&clone)
+        .args(["show", &format!("origin/HEAD:{path}")])
+        .output()
+        .map_err(|error| format!("git show in {}: {error}", clone.display()))?;
+    if !output.status.success() {
+        return Err(format!(
+            "git show origin/HEAD:{path} in {}: {}",
+            clone.display(),
+            one_line(&String::from_utf8_lossy(&output.stderr))
+        ));
+    }
+    Ok(output.stdout)
 }
 
 /// Writes `files`, by their paths inside the plugin, into `<dir>/plugin` unless that folder holds
@@ -2231,7 +2248,7 @@ pub fn agent_screen(name: &str, session: &str) -> Vec<String> {
     pane(name, session).map_or_else(Vec::new, |pane| shown(&pane, false))
 }
 
-fn shown(target: &str, joined: bool) -> Vec<String> {
+pub(crate) fn shown(target: &str, joined: bool) -> Vec<String> {
     let mut capture = tmux();
     capture.args(["capture-pane", "-p", "-t", target]);
     if joined {

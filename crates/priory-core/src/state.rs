@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 110;
+const VERSION: i64 = 111;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1964,6 +1964,12 @@ ALTER TABLE runs ADD COLUMN direnv INTEGER;
 PRAGMA user_version = 110;
 ";
 
+// The commit a cloud run's session started from, which its push must descend from.
+const SCHEMA_111: &str = "
+ALTER TABLE runs ADD COLUMN cloud_head TEXT;
+PRAGMA user_version = 111;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1979,7 +1985,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
-    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110,
+    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -3473,10 +3479,18 @@ pub(crate) fn admissible<'r>(
             None if helper => None,
             None => crowded(db, factory, &admission)?,
         };
+        let busy = match (busy, agent) {
+            (None, Some((_, agent))) if crate::cloud::is_cloud(agent) => {
+                crate::cloud::waits(db, factory)?
+            }
+            (busy, _) => busy,
+        };
         let waits = match (busy, head) {
             (Some(reason), _) => Some(reason),
             // The sweeper frees the room the queue waits for, so it never waits for room itself.
             (None, _) if admission.trigger == crate::stall::TRIGGER => None,
+            // A cloud run takes no room here, so it never waits for it or behind a task that does.
+            (None, _) if agent.is_some_and(|(_, agent)| crate::cloud::is_cloud(agent)) => None,
             (None, Some((head, cause))) => {
                 *waiting.entry(cause).or_default() += 1;
                 Some(format!("waits behind task {head}, which waits for room"))
@@ -3712,7 +3726,8 @@ fn promised_with(
         |row| row.get(0),
     )?;
     let mut statement = db.prepare(
-        "SELECT id, agent, tmux, session FROM runs WHERE ended IS NULL AND task IS NOT ?1",
+        "SELECT id, agent, tmux, session FROM runs WHERE ended IS NULL AND task IS NOT ?1
+         AND harness IS NOT 'claude-cloud'",
     )?;
     // A run recorded before schema 5 has no agent.
     let mut runs = statement.query_map([except], |row| {
@@ -4141,6 +4156,28 @@ pub(crate) fn unread(
     Ok(events)
 }
 
+/// The line of `task`'s source event, as its first prompt had it; empty without an event.
+pub(crate) fn source(tx: &Transaction, task: i64) -> rusqlite::Result<String> {
+    let event = tx
+        .query_row(
+            "SELECT type, subject, data FROM inbox
+             WHERE id = (SELECT source FROM tasks WHERE id = ?1)",
+            [task],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    match event {
+        Some((kind, subject, data)) => requested(tx, task, &kind, subject.as_deref(), &data),
+        None => Ok(String::new()),
+    }
+}
+
 /// The line of `task`'s source event, with the title and text its trigger's `pre` script gave in
 /// place of the event's, and the context it added after it.
 fn requested(
@@ -4337,6 +4374,8 @@ pub(crate) struct LiveRun {
     /// No `SessionStart` arrived within `READY_WITHIN` of the start, or `DIRENV_READY_WITHIN` under
     /// direnv.
     pub late: bool,
+    /// The name of the harness it started in, whatever its agent's is now.
+    pub harness: Option<String>,
     /// 1 when it started under `direnv exec`, 2 once direnv failed and it started without, else 0.
     pub direnv: i64,
     /// How long its current turn has run, in seconds.
@@ -4366,7 +4405,7 @@ pub(crate) fn live(db: &Connection) -> rusqlite::Result<Vec<LiveRun>> {
          NOT runs.ready AND runs.started <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now',
            CASE WHEN runs.direnv THEN '-{DIRENV_READY_WITHIN}' ELSE '-{READY_WITHIN}' END),
          unixepoch('now') - unixepoch(runs.turn), runs.prompted, coalesce(runs.agent, ''), runs.ready,
-         coalesce(runs.direnv, 0)
+         coalesce(runs.direnv, 0), runs.harness
          FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.ended IS NULL ORDER BY runs.id"
     ))?;
     statement
@@ -4385,6 +4424,7 @@ pub(crate) fn live(db: &Connection) -> rusqlite::Result<Vec<LiveRun>> {
                 agent: row.get(10)?,
                 ready: row.get(11)?,
                 direnv: row.get(12)?,
+                harness: row.get(13)?,
             })
         })?
         .collect()
@@ -4557,7 +4597,7 @@ pub(crate) fn attempt(db: &mut Connection) -> rusqlite::Result<Option<Attempt>> 
         .query_row(
             &format!("SELECT outbox.id, runs.id, runs.tmux, runs.session, outbox.text, outbox.compact FROM runs
              JOIN outbox ON outbox.task = runs.task AND outbox.state = 'queued'
-             WHERE runs.ended IS NULL AND runs.idle = 1
+             WHERE runs.ended IS NULL AND runs.idle = 1 AND runs.harness IS NOT 'claude-cloud'
              AND (runs.session_started IS NULL
                OR julianday(runs.session_started) <= julianday('now', '-{SETTLE}'))
              AND NOT EXISTS (SELECT 1 FROM gates WHERE gates.run = runs.id AND gates.state = 'grading')

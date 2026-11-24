@@ -38,6 +38,10 @@ does and the page that describes it.
 - `priory links [DIR] [--json]`: prints the factory's link rules. See [factory.md](factory.md#links).
 - `priory schedules [DIR] [--json]`: prints each schedule trigger with its next firing. See
   [schedule.md](../intake/schedule.md#next-firing).
+- `priory cloud setup-script [DIR] [--agent NAME]`: prints a bash script for a Claude cloud
+  environment's setup script. It writes the factory's instructions and skills, the kit's first,
+  under `~/.claude`, then runs each `[repos]` `cloud_setup` script. `--agent` keeps the skills that
+  agent gets. It refuses a script over 64 KB. See [cloud.md](../daemon/cloud.md#instructions-and-skills).
 
 ## The processes
 
