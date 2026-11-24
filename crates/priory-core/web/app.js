@@ -2922,7 +2922,7 @@ function signIn() {
 function loading() {
   return state.failed
     ? html`${staleStrip()}<p class="empty">Could not load the desk: ${state.failed}. Check that <code>priory serve</code> or the daemon runs, then retry.</p>`
-    : "";
+    : html`<p class="empty" role="status">Loading the desk</p>`;
 }
 
 const routeKey = () => location.pathname + location.search;
