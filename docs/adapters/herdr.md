@@ -53,6 +53,8 @@ The adapter lives in `adapters/herdr/` at the repository root, outside the Cargo
   one color per mode. A test fails when the file and `design/tokens/` differ.
 - `adapters/herdr/deliver`: the factory's `[asks] deliver` command; see
   [Delivering answers](#delivering-answers).
+- `adapters/herdr/attach`: the factory's `[runs] attach` command; see
+  [Opening runs in Herdr](#opening-runs-in-herdr).
 
 Herdr loads a mod's imports only from the mod's own folder, and it resolves symbolic links before it
 checks. So each mod keeps a copy of `lib/priory.js` as its own `priory.js`, and a mod that draws
@@ -116,7 +118,8 @@ state database and never writes a file in the factory.
   `setShared("priory.attach", { task, at: Date.now(), readOnly })`. The bar runs
   `priory attach TASK --print`, with `--read-only` when `readOnly` is true, and opens a terminal tab
   that runs the printed command, which starts a tmux client on the task's live run (R5.6). A
-  read-only tab, named "Watch task N", cannot type and leaves the agent's window size alone. tmux stays the owner. When the task has no live run,
+  read-only tab, named "Watch task N", cannot type, and sizes the agent's window only while no
+  client that can type is attached. tmux stays the owner. When the task has no live run,
   the bar shows Priory's error instead. The tab opens in the space shown when the panel asked. When
   that space is on another machine than Priory, the bar refuses and asks for a space on Priory's
   machine.
@@ -157,6 +160,42 @@ A kept terminal whose `claude` exited runs a shell, so the script never types in
 would run the answer as a command. Nor does it type into a `claude` that runs another session,
 such as a new conversation started in the same kept terminal. The check and the send are two
 `hc` calls, so a `claude` that exits between them can still receive the text in its shell.
+
+## Opening runs in Herdr
+
+`adapters/herdr/attach` opens a run in a kept hc terminal when the run starts, as
+[sessions.md](../daemon/sessions.md#opening-a-run-when-it-starts) describes. The terminal waits in
+the hc hub even while the Herdr app is closed, and shows in the Herdr space it is labelled with.
+A factory names it with `[runs] attach = "adapters/herdr/attach"`, from a factory folder that holds
+the adapter, and sets `attach = true` on each step to open. It needs Python 3 and `hc`, and no
+other package.
+
+The daemon runs it as `attach TASK RUN`. It reads the space from `PRIORY_HERDR_SPACE` in the
+daemon's environment. Then:
+
+1. `hc ls --label priory.run=RUN`: when a live terminal already carries the run's label, it exits 0
+   and opens nothing.
+2. Otherwise `priory attach --run RUN --read-only --print` checks that the run has a live pane, and
+   prints the tmux command that attaches to it. When it fails or prints no command, the script says so
+   and exits 1. `hc run --bg` alone would hide that error.
+3. `hc run --bg --keep --no-parent --no-notify` starts the printed command, labelled `herdr.space=<space>`, `herdr.tab=task-<TASK>`, `priory.task=<TASK>` and
+   `priory.run=<RUN>`. The command names its tmux server's socket, so it needs none of the daemon's
+   environment. The script unsets `TMUX`, which would make tmux refuse a nested client.
+
+It exits 1 with `attach: hc is not on PATH; install herdr-core or fix the daemon's PATH` when the
+daemon's `PATH` has no `hc`, and with `attach: set PRIORY_HERDR_SPACE to the Herdr space that shows
+runs` or `attach: PRIORY_EXE is unset; run this from a daemon that sets it` when a variable is unset.
+The daemon records each as a `factory.run.attach_failed` record.
+
+The terminal only shows the run: use the Priory bar's attach to type. So it protects the run from no
+budget, spend cap or urgent wake. Before it attaches, it sets its own size to 200x51, which keeps
+the agent's 200x50 window under tmux's one-line status. A Herdr window that shows the terminal
+resizes it, and with it the agent's window while no other client can type.
+
+When the run ends, the terminal's program exits and leaves no shell: `--keep` gives a shell only
+to a terminal whose program is lost with the hc core. The next run of the task opens a new
+terminal in the same tab. The script does not check that `PRIORY_HERDR_SPACE` names a space that
+exists.
 
 ## Writing another adapter
 

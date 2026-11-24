@@ -358,6 +358,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut probes = crate::connectors::Probes::default();
     let mut records = crate::evidence::Records::default();
     let mut deliveries = deliver::adopt(&db)?;
+    let mut attaching = Vec::new();
     let mut pushing = push::Sending::default();
     let mut desktop = factory
         .desktop_notifications()
@@ -443,6 +444,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             &mut probes,
             fetched,
             &mut entering,
+            &mut attaching,
         )?;
         // Committed first, so a crash before the kill leaves an ended run, not a lost one.
         for tmux in tools::over_budget_in_turn(&mut db, &trace, &mut peeked, &watched)? {
@@ -456,6 +458,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             send_spans(&db, &trace, &home, export)?;
         }
         deliver::tick(&db, factory, &home, &mut deliveries)?;
+        crate::attach::tick(&mut db, &trace, &mut attaching)?;
         push::tick(&db, &home, &mut pushing)?;
         if let Some(desktop) = &mut desktop {
             notify::tick(&db, desktop)?;
@@ -483,6 +486,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         if swept.is_none_or(|at| at.elapsed() >= every) {
             swept = Some(Instant::now());
             sweep::run(&db, factory, &home)?;
+            sweep::measure(&home);
             let short = || room::measure(&home).is_ok_and(|room| crate::room::short_of_disk(&room));
             sweep::retire(&db, factory, &home, short)?;
         }
@@ -1337,6 +1341,7 @@ fn tend(
     probes: &mut crate::connectors::Probes,
     kit: crate::kit::Current<'_>,
     entering: &mut Entering,
+    attaching: &mut Vec<crate::attach::Attaching>,
 ) -> Result<(), Error> {
     let factory = trace.factory;
     for mut run in state::live(db)? {
@@ -1449,12 +1454,14 @@ fn tend(
     }
     // Before admission, so a run's slow start never delays another run's Enter.
     entering.tick(db)?;
-    loop {
+    // The last measurement of this tick, for the metrics.
+    let mut last = None;
+    let (promised, waiting) = loop {
         // Measured again after each start, since its clone and worktree take disk.
         let measured = OnceCell::new();
         let room = || measured.get_or_init(|| room::measure(home));
         let checking = |task| probes.checking(task);
-        let Some(admission) = state::admissible(
+        let pass = state::admissible(
             db,
             factory,
             trace.runner.as_deref(),
@@ -1462,16 +1469,18 @@ fn tend(
             room,
             &watched,
             &checking,
-        )?
-        else {
-            break;
+        )?;
+        last = measured.into_inner().or(last);
+        let Some(admission) = pass.admission else {
+            break (pass.promised, Some(pass.waiting));
         };
         if let Some(me) = &trace.runner {
             match runners::cleared(db, me, admission.task)? {
                 Some(true) => {}
                 Some(false) => continue,
-                // Its claim is not on the log yet: the next tick tries again.
-                None => break,
+                // Its claim is not on the log yet: the next tick tries again. The pass stopped
+                // short of the tasks behind it, so it counts no waiting task.
+                None => break (pass.promised, None),
             }
         }
         if let Err(reason) = start(
@@ -1485,9 +1494,14 @@ fn tend(
             recipes,
             probes,
             kit,
+            attaching,
         )? {
             state::block(db, trace, admission.task, "failed", &reason)?;
         }
+    };
+    if metrics::wants_room(last.is_some()) {
+        let room = last.unwrap_or_else(|| room::measure(home));
+        metrics::sample_room(db, share, &room, promised.memory, waiting);
     }
     // A marked run idle between turns has no turn end to wait for.
     for session in crate::preempt::idle(db)? {
@@ -1508,8 +1522,8 @@ fn tend(
     Ok(())
 }
 
-/// Whether a person may be watching the tmux session `name`: a client is attached, or tmux
-/// cannot tell.
+/// Whether a person may be typing in the tmux session `name`: a client that can type is attached,
+/// or tmux cannot tell. A read-only view, as Herdr opens by itself, protects nothing.
 fn watched(name: &str) -> bool {
     runtime::clients(name).is_none_or(|clients| clients > 0)
 }
@@ -1904,10 +1918,11 @@ fn restore_worktree(
 ) -> Result<Restored, Error> {
     // A resurrected task goes through the room check, which a code step otherwise skips.
     let waits = match room::measure(home) {
-        Err(error) => Some(format!("waits for room: {error}")),
-        Ok(room) if crate::room::short_of_disk(&room) => {
-            Some("waits for room to add back its worktree".to_owned())
-        }
+        Err(error) => Some(format!(
+            "{}: cannot measure it: {error}",
+            crate::room::RESTORES
+        )),
+        Ok(room) if crate::room::short_of_disk(&room) => Some(crate::room::RESTORES.to_owned()),
         Ok(_) => None,
     };
     if let Some(reason) = waits {
@@ -1920,6 +1935,10 @@ fn restore_worktree(
     match runtime::worktree(home, repo, &worktree_name(db, runner, task)?, None) {
         Ok((worktree, _, added)) => {
             state::set_base(db, task, added.base())?;
+            db.execute(
+                "UPDATE tasks SET reason = NULL WHERE id = ?1 AND substr(reason, 1, length(?2)) = ?2",
+                rusqlite::params![task, crate::room::RESTORES],
+            )?;
             // The code step needs no resume; the task's next run starts it first.
             let resume = factory.recipe(repo, factory::Moment::Resume);
             if let (runtime::Added::Restored, Some(recipe)) = (&added, resume) {
@@ -2368,6 +2387,7 @@ fn start(
     recipes: &mut crate::recipe::Running,
     probes: &mut crate::connectors::Probes,
     kit: crate::kit::Current<'_>,
+    attaching: &mut Vec<crate::attach::Attaching>,
 ) -> Result<Result<(), String>, Error> {
     let factory = trace.factory;
     let step = factory.workflows[&admission.workflow]
@@ -2619,15 +2639,11 @@ fn start(
         trust,
         direnv: direnv.as_deref(),
     };
-    Ok(launch(
-        factory,
-        &agent.value,
-        &sources,
-        home,
-        scope,
-        &env,
-        &started,
-    ))
+    let launched = launch(factory, &agent.value, &sources, home, scope, &env, &started);
+    if launched.is_ok() && step.attach {
+        crate::attach::start(db, trace, home, admission.task, run, &tmux, attaching)?;
+    }
+    Ok(launched)
 }
 
 /// What a shared session starts with: digests of its agent's prompt, tools, model and flags.

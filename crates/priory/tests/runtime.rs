@@ -272,11 +272,17 @@ impl Setup {
 
     fn start_with(&mut self, exe: &Path, env: &[(&str, &str)]) {
         let factory = self.dir.join("factory");
+        self.start_on(exe, env, &factory);
+    }
+
+    /// Starts the daemon in the test's folder on the factory folder `factory`, as typed.
+    fn start_on(&mut self, exe: &Path, env: &[(&str, &str)], factory: &Path) {
         let log = fs::File::create(self.dir.join("daemon.log")).unwrap();
         self.daemon = Some(
             self.command(exe.to_str().unwrap())
                 .envs(env.iter().copied())
                 .args(["daemon", factory.to_str().unwrap()])
+                .current_dir(&self.dir)
                 .env("CLAUDECODE", "1")
                 .env("CLAUDE_CODE_ENTRYPOINT", "cli")
                 .env("CLAUDE_CODE_USE_BEDROCK", "0")
@@ -6310,6 +6316,25 @@ fn an_answered_outside_ask_runs_the_deliver_command_once_with_its_name_revision_
 }
 
 #[test]
+fn deliver_runs_the_command_of_a_relative_factory_folder() {
+    let mut setup = delivering("deliver-relative", "exit 0");
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    setup.start_on(exe, &[], Path::new("factory"));
+    listening(&setup);
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+
+    setup.priory(&["answer", "--expected", "1", "--", "cache.ship", "ship"]);
+
+    let done = delivery(&setup, "cache.ship", |delivery| {
+        ["delivered", "failed"].contains(&delivery["state"].as_str().unwrap_or_default())
+    });
+    assert_eq!(
+        (&done["state"], &done["tries"]),
+        (&"delivered".into(), &1.into())
+    );
+}
+
+#[test]
 fn a_failing_deliver_command_is_retried_with_a_backoff_then_its_failure_shows_on_the_desk() {
     let mut setup = delivering("deliver-fails", "echo 'hc is down' >&2; exit 3");
     setup.start();
@@ -10460,15 +10485,35 @@ fn a_reopened_approval_shows_the_verification_a_later_result_sent() {
 impl Setup {
     /// A setup whose tasks 1 to `n` ran to done, with the daemon stopped.
     fn ended(name: &str, n: u64) -> Setup {
+        Setup::ended_as(name, &vec!["passed"; n as usize])
+    }
+
+    /// A setup whose task `i + 1` ended with result `outcomes[i]`, with the daemon stopped.
+    fn ended_as(name: &str, outcomes: &[&str]) -> Setup {
         let mut setup = Setup::new(name);
-        setup.calls(&vec![result("passed"); n as usize]);
+        setup.calls(
+            &outcomes
+                .iter()
+                .map(|outcome| result(outcome))
+                .collect::<Vec<_>>(),
+        );
         setup.start();
-        for issue in 1..=n {
-            setup.publish(&requested(issue));
-            setup.until("tasks", |rows| with(rows, 4, "done") == issue as usize);
+        for issue in 1..=outcomes.len() {
+            setup.publish(&requested(issue as u64));
+            setup.until("tasks", |rows| {
+                rows.len() == issue && matches!(rows[issue - 1][4].as_str(), "done" | "dropped")
+            });
         }
         setup.crash();
         setup
+    }
+
+    /// Pushes the worktree of `task` to `branch` of origin, as a task on a person's pull request does.
+    fn push_to(&self, task: u64, branch: &str) {
+        self.git(
+            &self.worktree(task),
+            &["push", "-q", "origin", &format!("HEAD:refs/heads/{branch}")],
+        );
     }
 
     fn worktree(&self, task: u64) -> PathBuf {
@@ -10571,13 +10616,35 @@ fn a_sweep_removes_the_worktree_and_branch_of_a_done_task_whose_branch_merged() 
 }
 
 impl Setup {
-    /// The reason `priory desk` gives for keeping the worktree of `task`, if it lists one.
+    /// The reason `priory desk` gives for keeping the worktree of `task`, if it lists one, without
+    /// the size a sweep measured.
     fn stays(&self, task: u64) -> Option<String> {
+        self.kept(task).map(|what| match what.rsplit_once(", ") {
+            Some((reason, size)) if size.ends_with('B') => reason.to_owned(),
+            _ => what,
+        })
+    }
+
+    /// What `priory desk` says of the worktree of `task`, if it lists one.
+    fn kept(&self, task: u64) -> Option<String> {
         let wanted = self.worktree(task).display().to_string();
         self.rows("desk")
             .into_iter()
             .find(|row| row[1] == "worktree" && row[2] == wanted)
             .map(|row| row[5].clone())
+    }
+
+    /// What `priory desk` says of the worktree of `task` once the walk after a sweep measured it.
+    fn measured(&self, task: u64) -> String {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let kept = self.kept(task);
+            if let Some(kept) = kept.filter(|kept| kept.ends_with('B')) {
+                return kept;
+            }
+            assert!(Instant::now() < deadline, "worktree {task} is not measured");
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
     /// Merges task 1, the control, starts the daemon, and waits until its sweep removed task 1.
@@ -10602,12 +10669,87 @@ fn kept_by(name: &str, spoil: impl FnOnce(&Setup)) -> (Setup, Option<String>) {
 }
 
 #[test]
-fn a_sweep_keeps_a_branch_that_is_not_merged_and_the_desk_says_so() {
-    let (_setup, reason) = kept_by("sweep-unmerged", |setup| {
-        setup.work_on(2);
-        setup.push(2);
-    });
-    assert_eq!(reason.as_deref(), Some("not merged"));
+fn a_sweep_removes_the_worktree_of_a_done_task_pushed_to_a_persons_branch_and_keeps_its_branch() {
+    let mut setup = Setup::ended("sweep-pushed", 2);
+    setup.work_on(2);
+    setup.push_to(2, "ana/fix");
+
+    setup.swept();
+
+    setup.removed(2);
+    assert!(setup.branches().contains("priory/2"));
+    assert_eq!(setup.stays(2), None);
+}
+
+#[test]
+fn a_sweep_removes_the_worktree_of_a_done_task_whose_commit_a_rebase_rewrote_on_the_remote() {
+    let mut setup = Setup::ended("sweep-rebased", 2);
+    let commit = setup.commit(2, "widget.txt");
+    let tree = format!("{commit}^{{tree}}");
+    let parent = format!("{commit}^");
+    let rebased = setup.git(
+        &setup.clone(),
+        &[
+            "-c",
+            "user.name=ana",
+            "-c",
+            "user.email=ana@a",
+            "commit-tree",
+            &tree,
+            "-p",
+            &parent,
+            "-m",
+            "widget, rebased",
+        ],
+    );
+    let rebased = rebased.trim();
+    assert_ne!(rebased, commit);
+    setup.git(
+        &setup.clone(),
+        &[
+            "push",
+            "-q",
+            "origin",
+            &format!("{rebased}:refs/heads/ana/fix"),
+        ],
+    );
+
+    setup.swept();
+
+    setup.removed(2);
+    assert!(setup.branches().contains("priory/2"));
+}
+
+#[test]
+fn a_sweep_keeps_a_dropped_task_pushed_to_a_persons_branch_as_not_merged_with_its_size() {
+    let mut setup = Setup::ended_as("sweep-dropped", &["passed", "failed"]);
+    setup.work_on(2);
+    setup.push_to(2, "ana/fix");
+
+    setup.swept();
+
+    assert!(setup.worktree(2).is_dir());
+    let kept = setup.measured(2);
+    let size = kept
+        .strip_prefix("not merged, ")
+        .and_then(|size| size.strip_suffix(" KiB"))
+        .and_then(|size| size.parse::<f64>().ok());
+    assert!(size.is_some_and(|size| size > 0.0), "{kept}");
+}
+
+#[test]
+fn the_desk_reads_why_the_last_sweep_kept_a_done_tasks_worktree_and_its_size_without_git() {
+    let setup = Setup::ended("sweep-recorded", 1);
+    assert_eq!(setup.kept(1), None, "no sweep recorded a reason yet");
+    let path = setup.worktree(1).display().to_string();
+    fs::create_dir_all(setup.dir.join("home/sweep")).unwrap();
+    fs::write(
+        setup.dir.join("home/sweep/sizes.json"),
+        json!({ path: { "reason": "not merged", "bytes": 2048 } }).to_string(),
+    )
+    .unwrap();
+
+    assert_eq!(setup.kept(1).as_deref(), Some("not merged, 2.0 KiB"));
 }
 
 #[test]
@@ -10664,9 +10806,20 @@ fn a_sweep_keeps_a_worktree_the_task_does_not_record() {
     setup.start();
     setup.removed(1);
 
-    let desk = setup.rows("desk");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let desk = loop {
+        let desk = setup.rows("desk");
+        if desk[0][5].ends_with('B') || Instant::now() > deadline {
+            break desk;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
     assert_eq!(desk[0][2], other.display().to_string());
-    assert_eq!(desk[0][5], "not recorded as the worktree of task 1");
+    assert!(
+        desk[0][5].starts_with("not recorded as the worktree of task 1, "),
+        "{}",
+        desk[0][5]
+    );
 }
 
 #[test]
@@ -10780,30 +10933,6 @@ fn a_sweep_keeps_a_worktree_a_process_runs_in_that_claims_to_be_priorys_git() {
     assert_eq!(setup.stays(2).as_deref(), Some("a process runs in it"));
     second.kill().unwrap();
     second.wait().unwrap();
-}
-
-#[test]
-fn a_sweep_removes_a_merged_worktree_while_the_desk_checks_it() {
-    let mut setup = Setup::ended("sweep-desk", 1);
-    setup.work_on(1);
-    setup.push(1);
-    setup.merge(1);
-    let hold = setup.dir.join("fake/desk-hold");
-    fs::write(&hold, "").unwrap();
-    let mut desk = setup
-        .command(env!("CARGO_BIN_EXE_priory"))
-        .arg("desk")
-        .env("FAKE_GIT_HOLD", &hold)
-        .stdout(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
-    setup.written("fake/desk-hold.held");
-
-    setup.start();
-
-    setup.removed(1);
-    fs::remove_file(&hold).unwrap();
-    desk.wait().unwrap();
 }
 
 #[test]
@@ -15522,6 +15651,51 @@ fn a_retiring_task_tears_down_first_and_resumes_when_it_resurrects_without_a_new
 }
 
 #[test]
+fn a_done_task_whose_worktree_the_sweep_removed_gets_it_back_and_resumes_when_feedback_reopens_it()
+{
+    let mut setup = Setup::new("recipe-reopen-retired");
+    setup.recipes(concat!(
+        r#"setup = { shell = "echo $PRIORY_TASK >> $FAKE_DIR/set-up" }"#,
+        "\n",
+        r#"resume = { shell = "echo $PRIORY_TASK $PWD >> $FAKE_DIR/resumed" }"#,
+    ));
+    setup.calls(&[
+        wait(on_pull_7("review")),
+        passed_at("abc0000000000000000000000000000000000000"),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.publish(&reviewed());
+    setup.until("runs", |rows| rows.len() == 2 && rows[1][7] != "-");
+    setup.gone("priory-1");
+    setup.publish(&check(1, 0));
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    setup.work_on(1);
+    setup.push(1);
+    setup.crash();
+    setup.start();
+    setup.removed(1);
+    assert!(setup.branches().contains("priory/1"));
+    // The comment comes after the task was done, to the second.
+    std::thread::sleep(Duration::from_millis(1100));
+
+    setup.publish(&commented());
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while setup.faked("resumed").is_empty() {
+        assert!(Instant::now() < deadline, "the resume recipe never ran");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(
+        setup.faked("resumed"),
+        format!("1 {}\n", setup.worktree(1).display())
+    );
+    assert_eq!(setup.faked("set-up"), "1\n");
+}
+
+#[test]
 fn a_task_that_waited_on_a_linear_issue_is_done_on_its_result_without_a_pull_request() {
     let mut setup = Setup::new("linear-done");
     setup.calls(&[
@@ -16704,7 +16878,7 @@ fn attach_read_only_adds_tmuxs_read_only_flag() {
     assert_eq!(
         String::from_utf8(printed.stdout).unwrap(),
         format!(
-            "tmux -S {} attach-session -r -t '=priory-1'\n",
+            "tmux -S {} attach-session -f read-only,ignore-size -t '=priory-1'\n",
             socket(&setup)
         )
     );
@@ -32733,4 +32907,123 @@ fn a_parked_task_is_left_out_of_the_queue_and_the_task_list() {
     assert!(task.contains("step implement, held"), "{task}");
     let found = person(&setup, "search", &["Adopted", "--state", "held"]);
     assert!(found.contains("owner/repo#7"), "{found}");
+}
+
+/// A factory whose `[runs] attach` command writes its arguments and ids to `attached`, then exits
+/// with `exit`. The review step, after implement, sets `attach = true`; with `flagged`, implement
+/// does too.
+fn attaching(name: &str, flagged: bool, exit: u8) -> Setup {
+    let mut workflow = WORKFLOW.replace("passed = \"done\"", "passed = \"review\"")
+        + "\n[[steps]]\nid = \"review\"\ndecides = \"model\"\nagent = \"reviewer\"\n\
+           prompt = \"Review the change.\"\nattach = true\neffect = \"reversible\"\n\
+           next = { passed = \"done\", failed = \"stop\" }\n";
+    if flagged {
+        workflow = workflow.replace(
+            "prompt = \"Implement the issue.\"\n",
+            "prompt = \"Implement the issue.\"\nattach = true\n",
+        );
+    }
+    let setup = Setup::with_workflow(name, &workflow);
+    let factory = setup.dir.join("factory");
+    fs::write(
+        factory.join("factory.toml"),
+        "name = \"demo\"\n[runs]\nattach = \"bin/attach\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(factory.join("bin")).unwrap();
+    let script = factory.join("bin/attach");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\necho \"$1 $2 $PRIORY_TASK $PRIORY_RUN $PRIORY_TMUX $PRIORY_EXE\" >> attached\n\
+             echo 'hc: no such space' >&2\nexit {exit}\n"
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    setup
+}
+
+/// The lines the attach command wrote, sorted, once each of `runs` has one.
+fn attached(setup: &Setup, runs: &[i64]) -> Vec<String> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let text = fs::read_to_string(setup.dir.join("factory/attached")).unwrap_or_default();
+        let mut lines: Vec<_> = text.lines().map(str::to_owned).collect();
+        lines.sort();
+        let has = |run: &i64| {
+            lines
+                .iter()
+                .any(|line| line.starts_with(&format!("1 {run} ")))
+        };
+        if runs.iter().all(has) {
+            return lines;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{lines:?}\ndaemon: {}",
+            fs::read_to_string(setup.dir.join("daemon.log")).unwrap_or_default()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// The line the attach command writes for run `run` of task 1.
+fn attach_line(run: i64) -> String {
+    format!("1 {run} 1 {run} priory-1 {}", env!("CARGO_BIN_EXE_priory"))
+}
+
+#[test]
+fn attach_runs_the_command_once_with_the_task_and_run_when_a_flagged_steps_run_starts() {
+    let mut setup = attaching("attach-flagged", true, 0);
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+
+    // The review step's line comes after any second line of the implement step's run.
+    assert_eq!(attached(&setup, &[1, 2]), [attach_line(1), attach_line(2)]);
+    assert!(traced(&setup, "factory.run.attach_failed").is_empty());
+}
+
+#[test]
+fn attach_runs_nothing_for_a_step_without_attach() {
+    let mut setup = attaching("attach-unflagged", false, 0);
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+
+    assert_eq!(attached(&setup, &[2]), [attach_line(2)]);
+}
+
+#[test]
+fn attach_runs_the_command_of_a_relative_factory_folder() {
+    let mut setup = attaching("attach-relative", true, 0);
+    setup.publish(&requested(42));
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+
+    setup.start_on(exe, &[], Path::new("factory"));
+
+    assert_eq!(attached(&setup, &[1]), [attach_line(1)]);
+}
+
+#[test]
+fn a_failing_attach_command_leaves_the_run_running_and_records_why() {
+    let mut setup = attaching("attach-failing", true, 3);
+    setup.publish(&requested(42));
+    setup.start();
+
+    let record = until_traced(&setup, "factory.run.attach_failed");
+
+    assert_eq!(
+        [
+            &record["data"]["task"],
+            &record["data"]["run"],
+            &record["data"]["step"],
+            &record["data"]["reason"],
+            &record["data"]["output"],
+        ],
+        ["1", "1", "implement", "exit 3", "hc: no such space"]
+    );
+    assert_eq!(setup.rows("tasks")[0][4], "running");
+    assert_eq!(setup.rows("runs")[0][7], "-");
 }

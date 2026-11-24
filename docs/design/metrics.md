@@ -7,7 +7,7 @@ the slices after it, what stays out, and the open questions with a recommendatio
 
 Every slice is built. [metrics.md](../daemon/metrics.md) describes the first one: the exporter,
 the keys, `PRIORY_METRICS`, the cap and the `process` group. Its tests use a fake collector on
-127.0.0.1 rather than a fake `curl`. The `log`, `runs`, `intake` and `work` groups follow in
+127.0.0.1 rather than a fake `curl`. The `log`, `runs`, `intake`, `work` and `room` groups follow in
 [metrics.md](../daemon/metrics.md#the-log-group), and [the metrics reference](../reference/metrics.md)
 lists every metric. The how-to is [How to send metrics to an OpenTelemetry backend](../sending-metrics.md).
 
@@ -87,7 +87,7 @@ off unless `factory.toml` names the groups to send:
 ```toml
 [telemetry]
 otlp = "http://127.0.0.1:4318"
-metrics = ["process", "log", "runs", "intake", "work"]   # the groups, by name
+metrics = ["process", "log", "runs", "intake", "work", "room"]   # the groups, by name
 metrics_every = "60s"                                     # how often each process sends
 metrics_cap = 1000                                        # data points per minute, per process
 ```
@@ -113,6 +113,7 @@ Each process sends only the groups it owns:
 | `runs` | the daemon |
 | `intake` | the intake, and whichever process takes webhooks for its deliveries |
 | `work` | the daemon |
+| `room` | the daemon |
 
 ### What a data point carries
 
@@ -336,6 +337,10 @@ export's tests do, and a `PRIORY_PROC` folder for `/proc/self`:
    recipe was run against `otelcol` 0.139.0. Its alerts add the lease age and the tick's p95, and
    take each threshold from a limit Priory enforces. The oldest ask's age has no such limit, so the
    page leaves its threshold to the person.
+6. **Built.** The `room` group: the machine's load, memory and disk against the room's ceilings, the
+   memory gate's grants and the tasks waiting for room by cause
+   ([the reference](../reference/metrics.md#room)). The daemon's thread hands over what its room check
+   measured, and counts the tasks as it walks the queue. It needs no migration.
 
 ## What stays out
 
