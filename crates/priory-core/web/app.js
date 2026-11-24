@@ -15,6 +15,7 @@ import { actionNote, arrivalAsk, batchParts, capsuleWords, countHead, countWords
 import { TASK_VIEWS, elsewhere, filtered, olderPart, remoteActs, remoteId, remoteSent, taskFacets, taskLabel, taskViews, triageWords, workStep } from "./tasks.js";
 import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "./runs.js";
 import { PANELS, TYPED_FIELDS, backTo, pageTitle, taskRead } from "./pages.js";
+import { confirmPush, kindBoxes, saveKinds } from "./push.js";
 import { QUEUE_VIEWS, moveOptions, queueBands, waitReason } from "./queue.js";
 
 const ICONS = {
@@ -209,7 +210,7 @@ const state = {
   // The Add sheet: its draft and chips, the server's defaults, and where the last send got to.
   // Notifications on this device: its status, a request in flight, and why the last one failed.
   // check counts status reads, so a read that a tap or a newer read overtook is dropped.
-  push: { status: null, busy: false, error: null, check: 0, checking: false },
+  push: { status: null, kinds: null, busy: false, error: null, check: 0, checking: false },
   // The browser's install prompt, kept until the person taps Install.
   install: null,
   // Since you looked: the events the Desk opened on and each newer one, the visit they start
@@ -2675,6 +2676,20 @@ const settingsScreen = () => (route()[1] === "notifications" ? notifications() :
 // iOS lets only a Home Screen web app subscribe, so Safari in a tab lacks PushManager.
 const iosTab = () => /iPhone|iPad|iPod/.test(navigator.userAgent) && !navigator.standalone;
 
+// The service worker reads the same copy when the push service replaces the subscription.
+const KEPT_KINDS = "/api/worker/kinds";
+const pushIo = {
+  send: (body) => post("/api/push/subscribe", body),
+  async kept() {
+    const hit = await (await caches.open("priory-push")).match(KEPT_KINDS);
+    return hit ? hit.json().catch(() => null) : null;
+  },
+  async keep(kinds) {
+    const cache = await caches.open("priory-push");
+    return kinds ? cache.put(KEPT_KINDS, new Response(JSON.stringify(kinds))) : cache.delete(KEPT_KINDS);
+  },
+};
+
 async function pushStatus() {
   if (!window.isSecureContext) return "insecure";
   if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) return iosTab() ? "install" : "unsupported";
@@ -2684,7 +2699,8 @@ async function pushStatus() {
   if (!subscription) return "off";
   // The browser keeps a subscription the daemon may have dropped or never stored: send it again.
   // Only the daemon's refusal ends it; a dropped connection or a stopped daemon proves nothing.
-  const { status } = await post("/api/push/subscribe", subscription.toJSON()).catch(() => ({ status: 0 }));
+  const { status, kinds } = await confirmPush(subscription.toJSON(), pushIo).catch(() => ({ status: 0, kinds: null }));
+  state.push.kinds = kinds;
   if (status === 200) return "on";
   if (status !== 422) return "unconfirmed";
   await subscription.unsubscribe().catch(() => {});
@@ -2721,9 +2737,10 @@ function notifications() {
     : "";
   return html`<div class="scroll"><div class="screen">
     <h1>Notifications</h1>
-    <p>Get a notification on this device when an agent asks you something, or when a task is blocked or failed. It shows the ask's title and opens the ask. A snoozed item sends nothing.</p>
+    <p>Get a notification on this device when something waits on you. It shows a title and opens the item. A snoozed item sends nothing.</p>
     ${PUSH_NOTES[status] ? html`<p class="note" role="status">${icon(status === "on" ? "check" : "unplug", "s15")}<span>${PUSH_NOTES[status]}</span></p>` : ""}
     ${error ? html`<p class="note warn" role="alert">${icon("unplug", "s15")}<span>${error}</span></p>` : ""}
+    ${status === "on" ? raw(kindBoxes(state.push.kinds, busy)) : ""}
     ${button ? html`<div class="push-row">${button}</div>` : ""}
     ${install}</div></div>`;
 }
@@ -2746,8 +2763,9 @@ async function turnPush(on) {
       const subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(key) });
       // A browser subscription the daemon never stored would read "On" and get nothing.
       try {
-        const { status, body } = await post("/api/push/subscribe", subscription.toJSON());
+        const { status, body, kinds } = await confirmPush(subscription.toJSON(), pushIo);
         if (status !== 200) throw new Error(body.error || `the server answered ${status}`);
+        state.push.kinds = kinds;
       } catch (error) {
         await subscription.unsubscribe().catch(() => {});
         throw error;
@@ -2766,6 +2784,26 @@ async function turnPush(on) {
     const verb = on ? "turn on" : "turn off";
     const why = error instanceof TypeError ? "the connection dropped" : error.message;
     state.push.error = `Could not ${verb} notifications: ${why}. Check that the daemon runs, then try again.`;
+  } finally {
+    state.push.busy = false;
+    render();
+  }
+}
+
+// A failed save leaves the browser subscribed and shows the choice as it was.
+async function chooseKind(kind, on) {
+  if (state.push.busy) return render();
+  const before = state.push.kinds;
+  Object.assign(state.push, { busy: true, error: null, kinds: { ...before, [kind]: on } });
+  render();
+  try {
+    const subscription = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
+    if (!subscription) throw new Error("this browser is no longer subscribed");
+    state.push.kinds = await saveKinds(subscription.toJSON(), state.push.kinds, pushIo);
+  } catch (error) {
+    state.push.kinds = before;
+    const why = error instanceof TypeError ? "the connection dropped" : error.message;
+    state.push.error = `Could not save what this device gets: ${why}. Check that the daemon runs, then try again.`;
   } finally {
     state.push.busy = false;
     render();
@@ -3215,6 +3253,8 @@ document.addEventListener("toggle", (event) => {
 }, true);
 
 document.addEventListener("change", (event) => {
+  const kind = event.target.dataset.pushKind;
+  if (kind) return chooseKind(kind, event.target.checked);
   if (event.target.dataset.action !== "costs-by") return;
   state.costs.by = event.target.value;
   loadCosts();

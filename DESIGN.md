@@ -868,9 +868,8 @@ Settings, then Notifications, reached from More on a phone and from the Appearan
 screens. It turns Web Push on or off for this device. It holds:
 
 1. A screen title, "Notifications", in `--type-screen`.
-2. One sentence in `--text-2`: "Get a notification on this device when an agent asks you
-   something, or when a task is blocked or failed. It shows the ask's title and opens the ask. A
-   snoozed item sends nothing."
+2. One sentence in `--text-2`: "Get a notification on this device when something waits on you. It
+   shows a title and opens the item. A snoozed item sends nothing."
 3. A status note, a `role="status"` line, when there is something to say:
 
    | Status      | Note |
@@ -882,11 +881,20 @@ screens. It turns Web Push on or off for this device. It holds:
    | insecure    | "Notifications need HTTPS. Open Priory at its https address, such as the one tailscale serve gives, or at localhost on this machine." |
    | unsupported | "This browser cannot get notifications from a web page." |
 
-4. One button: "Turn on notifications", primary, while they are off; "Turn off notifications",
+4. While they are on, a `fieldset` named "Notify this device about", in `--type-read-h2`, with one
+   native checkbox per kind. A row is at least 60 px tall and wholly tappable, with a hairline above
+   it: a 20 px box in `--action`, the kind's name at 600, and a sentence in `--type-caption` and
+   `--text-2`. The kinds are Asks, Stopped tasks, Intake failures, Uncertain work, Spend caps, Landed
+   wrong and Queue stalls. A change applies at once. While it saves, the boxes are `aria-disabled`.
+   A failure puts the box back and shows a `--warn-text` alert: "Could not save what this device
+   gets: why. Check that the daemon runs, then try again." With no box checked, a note says "Nothing
+   is chosen, so this device gets no notification." Under it: "Each device keeps its own choice. A
+   change applies at once."
+5. One button: "Turn on notifications", primary, while they are off; "Turn off notifications",
    secondary, while they are on or unconfirmed. The permission prompt opens only from this tap,
    as iOS requires. A failure shows a `--warn-text` alert: "Could not turn on notifications: why.
    Check that the daemon runs, then try again."
-5. "Install Priory", secondary, only when the browser offers to install the view, with the note
+6. "Install Priory", secondary, only when the browser offers to install the view, with the note
    "Installing opens Priory in its own window, so notifications reach it with no tab open."
 
 The view never asks for the permission on its own: no banner and no prompt at load.

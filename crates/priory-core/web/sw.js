@@ -52,6 +52,7 @@ function own(path) {
 const KEPT = "priory-push";
 const TOKEN = "/api/worker/token";
 const SEEN = "/api/worker/seen";
+const KINDS = "/api/worker/kinds";
 const SEEN_KEPT = 50;
 
 async function keptText(key) {
@@ -103,7 +104,11 @@ async function resubscribe(old, given) {
     fresh = await self.registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
   }
   if (!token) return;
-  await send("/api/push/subscribe", fresh.toJSON());
+  // The daemon knows the choice by the endpoint that went away, so the kept copy goes with the new one.
+  const kinds = await keptText(KINDS).then(JSON.parse).catch(() => null);
+  const stored = await send("/api/push/subscribe", { ...fresh.toJSON(), ...(kinds ? { kinds } : {}) });
+  // A daemon that does not know the kinds refuses them; it still takes the subscription.
+  if (kinds && stored.status === 400) await send("/api/push/subscribe", fresh.toJSON());
   if (old?.endpoint && old.endpoint !== fresh.endpoint) await send("/api/push/unsubscribe", { endpoint: old.endpoint });
 }
 
