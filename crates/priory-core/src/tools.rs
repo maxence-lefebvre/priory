@@ -2850,20 +2850,21 @@ pub(crate) fn stop_marked(
     }
     match why {
         Stopped::For(head) => stop_for(tx, trace, run.id, head)?,
-        Stopped::Held | Stopped::Idle => stop_held(tx, &run, false)?,
-        Stopped::Interrupted => stop_held(tx, &run, true)?,
+        Stopped::Held | Stopped::Idle | Stopped::Interrupted => stop_held(tx, &run)?,
     }
     Ok(Some(run.tmux))
 }
 
 /// Ends `run` as `held`, if it is not ended yet, and holds its task with the stop prompt ahead of
 /// its queued prompts.
-fn stop_held(tx: &Transaction, run: &Run, now: bool) -> rusqlite::Result<()> {
+fn stop_held(tx: &Transaction, run: &Run) -> rusqlite::Result<()> {
+    let text = crate::hold::prompt(tx, run)?;
+    crate::hold::forget_unprompted(tx, run.id)?;
+    crate::state::requeue_unready(tx, run.id)?;
     tx.execute(
         &format!("UPDATE runs SET ended = coalesce(ended, {NOW}), ended_as = 'held' WHERE id = ?1"),
         [run.id],
     )?;
-    let text = crate::hold::prompt(tx, run.task, now)?;
     wake(tx, run.task, &text)?;
     set(tx, run.task, "ready", None, None)?;
     crate::hold::park(tx, run.task).map(drop)
@@ -2927,9 +2928,14 @@ fn hold_now(
     else {
         return Ok((marked, None));
     };
-    // The turn is over: the verdict moves the task, and the tick then holds it.
+    // Ending the run would drop the result its gate grades: the verdict moves the task first.
     if crate::gates::grading(tx, run)?.is_some() {
-        return Ok((marked, None));
+        let until = if crate::gates::turn_over(tx, run)? {
+            "its process goes on until the gate's verdict"
+        } else {
+            "its turn still runs, and its process goes on until the turn's end and the gate's verdict"
+        };
+        return Ok((marked.map(|marked| format!("{marked}; {until}")), None));
     }
     trace::account(tx, trace, run, None)?;
     let kill = stop_marked(tx, &session, trace, Stopped::Interrupted)?;
@@ -5053,12 +5059,7 @@ pub(crate) fn lost(
     };
     trace::account(&tx, trace, run.id, None)?;
     end(&tx, run.id, "lost")?;
-    // A run that never reached SessionStart never took the prompt it was launched with.
-    tx.execute(
-        "UPDATE outbox SET state = 'queued', run = NULL, attempted = NULL
-         WHERE run = ?1 AND state IN ('attempted', 'uncertain') AND (SELECT NOT ready FROM runs WHERE id = ?1)",
-        [run.id],
-    )?;
+    crate::state::requeue_unready(&tx, run.id)?;
     let again = tx
         .query_row(
             "SELECT ended_as = 'lost' FROM runs WHERE task = ?1 AND id < ?2 ORDER BY id DESC LIMIT 1",

@@ -438,13 +438,20 @@ next run resumes the session, with a prompt that names the hold ahead of any oth
 `--now` does not wait for the turn's end, for an emergency such as a full disk. It ends the run at
 once and kills its process. The worktree is left as it is, so a file the agent was writing may be
 incomplete, and the prompt of the next run tells the agent to check. A result, ask or wait the turn
-already sent still counts. While a gate grades the result, the turn is over, so the task is held
-after the verdict instead. A prompt typed but not confirmed when the run ends stays on the desk as
-`uncertain`. On a queued or ready task, `--now` changes nothing.
+already sent still counts. While a gate grades the result, the run goes on, since ending it would drop the result: the task is
+held after the verdict, and the reply says whether the turn still runs. A prompt typed but not
+confirmed when the run ends stays on the desk as `uncertain`. A run that never took a prompt gives it
+back to the queue, and the next run starts a new session with it. On a queued or ready task, `--now`
+changes nothing.
+
+`--now` kills the run's tmux pane. A process that left the pane's session, such as a daemonized
+server, goes on, and the [memory grants](memory-gate.md) of a command that goes on stay until it
+exits.
 
 A run at an `irreversible` step, in a shared session, in a debate turn, or with a keyboard a person
 holds is not stopped. A debate turn settles as usual, and the task is held before the next one. `--now` refuses it, with the reason. A hold without `--now` keeps its mark and applies at
-the next turn end, or as soon as the run is idle and none of those is true. A tmux client attached
+the next turn end, or as soon as the run is idle and none of those is true. A run whose gate grades,
+one with a prompt that is not confirmed, and one that took no prompt yet also keep the mark. A tmux client attached
 to the run does not keep it from being held.
 
 When a task's Linear issue leaves the watched view before the task's first run, the daemon holds
@@ -481,7 +488,7 @@ Set `[queue] overlap = false` in `factory.toml` to turn this off (see
 
 Known limits:
 
-- Only a task between runs is held: a running task has a process, which a hold would have to kill.
+- Only a task between runs is held for an overlap. A running task is not marked.
   A task that overlaps while running is held at its next queued step, if it has one.
 - The files come from the end of a run. Later commits in a running task show at its next run's end.
 

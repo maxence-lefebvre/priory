@@ -128,18 +128,71 @@ fn close(tx: &Transaction, task: i64, how: &str) -> rusqlite::Result<()> {
     .map(drop)
 }
 
-/// Why `task` is held at its turn end, or interrupted `now`, as its next run's prompt.
-pub(crate) fn prompt(tx: &Transaction, task: i64, now: bool) -> rusqlite::Result<String> {
-    let (_, why) = open(tx, task)?;
-    Ok(if now {
+/// Whether the live run in scope had a prompt confirmed. A run carried from another step has no
+/// `SessionStart` of its own, and its process already took one.
+const PROMPTED: &str = "(runs.session_started IS NULL AND runs.ready = 1 OR EXISTS (
+  SELECT 1 FROM outbox AS took WHERE took.run = runs.id AND took.state = 'confirmed'))";
+
+/// Why the task of `run` is held, as its next run's prompt: inside a turn, after one, or before any.
+pub(crate) fn prompt(tx: &Transaction, run: &crate::tools::Run) -> rusqlite::Result<String> {
+    let (_, why) = open(tx, run.task)?;
+    let (inside, prompted): (bool, bool) = tx.query_row(
+        &format!("SELECT turn IS NOT NULL, {PROMPTED} FROM runs WHERE id = ?1"),
+        [run.id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    Ok(if inside {
         format!(
             "A person interrupted your last turn to hold this task: {why}. The hold is released. Your last call may not have finished.\nYour session and worktree are as you left them. Check the worktree, then continue."
         )
-    } else {
+    } else if prompted {
         format!(
             "A person held this task at the end of your turn: {why}. The hold is released.\nYour session and worktree are as you left them. Continue."
         )
+    } else {
+        format!("A person held this task before your turn started: {why}. The hold is released.")
     })
+}
+
+/// Marks `run` not ready when its session never took a prompt: Claude keeps no such session, so the
+/// next run starts a new one with the prompts of this one. An idle run with an unconfirmed prompt
+/// ended a turn, so its session took one.
+pub(crate) fn forget_unprompted(tx: &Transaction, run: i64) -> rusqlite::Result<()> {
+    tx.execute(
+        "UPDATE runs SET ready = 0 WHERE id = ?1 AND resumes IS NOT 1 AND turn IS NULL AND read = 0
+         AND NOT EXISTS (SELECT 1 FROM outbox JOIN runs AS own ON own.id = outbox.run
+           WHERE own.session = runs.session AND outbox.state = 'confirmed')
+         AND NOT (idle = 1 AND EXISTS (SELECT 1 FROM outbox WHERE outbox.run = runs.id
+           AND outbox.state IN ('attempted', 'uncertain')))",
+        [run],
+    )
+    .map(drop)
+}
+
+/// Closes the met hold `id` of a task that another hold still holds, and gives the task that
+/// hold's reason.
+pub(crate) fn leave(tx: &Transaction, id: i64) -> rusqlite::Result<()> {
+    let task: Option<i64> = tx
+        .query_row(
+            "SELECT tasks.id FROM holds JOIN tasks ON tasks.id = holds.task
+             WHERE holds.id = ?1 AND holds.released IS NULL AND tasks.state = 'held'",
+            [id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(task) = task else {
+        return Ok(());
+    };
+    tx.execute(
+        &format!("UPDATE holds SET released = {NOW}, released_as = met_as WHERE id = ?1"),
+        [id],
+    )?;
+    let (_, why) = open(tx, task)?;
+    tx.execute(
+        "UPDATE tasks SET reason = ?2 WHERE id = ?1",
+        params![task, format!("held: {why}")],
+    )
+    .map(drop)
 }
 
 /// Why no hold may stop the live run `run` now, as `preempt::guarded` says. A debate turn settles
@@ -177,12 +230,13 @@ pub(crate) fn guarded(
 }
 
 /// Whether the live run `run` stops for its task's hold at this turn end. A guarded run, one whose
-/// gate grades and one with an attempted, unconfirmed prompt keep the mark for a later turn end.
+/// gate grades, one with an unconfirmed prompt and one with no prompt yet keep the mark for a later
+/// turn end.
 pub(crate) fn stops(tx: &Connection, run: i64, factory: &Factory) -> rusqlite::Result<bool> {
     let stops: bool = tx.query_row(
         &format!(
             "SELECT count(*) > 0 FROM runs JOIN tasks ON tasks.id = runs.task
-             WHERE runs.id = ?1 AND runs.ended IS NULL AND {MARKED}
+             WHERE runs.id = ?1 AND runs.ended IS NULL AND {MARKED} AND {PROMPTED}
              AND NOT EXISTS (SELECT 1 FROM gates WHERE gates.run = runs.id AND gates.state = 'grading')
              AND NOT EXISTS (SELECT 1 FROM outbox WHERE outbox.run = runs.id
                AND outbox.state IN ('attempted', 'uncertain'))"
@@ -197,7 +251,7 @@ pub(crate) fn stops(tx: &Connection, run: i64, factory: &Factory) -> rusqlite::R
 pub(crate) fn idle(db: &Connection) -> rusqlite::Result<Vec<String>> {
     db.prepare(&format!(
         "SELECT runs.session FROM runs JOIN tasks ON tasks.id = runs.task
-         WHERE runs.ended IS NULL AND runs.idle = 1 AND runs.ready = 1 AND {MARKED}
+         WHERE runs.ended IS NULL AND runs.idle = 1 AND runs.ready = 1 AND {MARKED} AND {PROMPTED}
          ORDER BY runs.id"
     ))?
     .query_map([], |row| row.get(0))?
