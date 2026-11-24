@@ -140,10 +140,13 @@ pub(crate) fn decide(
                     "the same call also moves the branch's commit, which step `{}`'s approval is bound to: run it in a call of its own",
                     run.step
                 ),
-                Some(commit) => format!(
-                    "step `{}` was approved at commit {}, but the task's branch is now at {}",
+                Some(None) => format!(
+                    "step `{}`'s approval is void: a person wrote an answer since, or the branch had no commit then",
+                    run.step
+                ),
+                Some(Some(commit)) => format!(
+                    "step `{}` was approved at commit {commit}, but the task's branch is now at {}",
                     run.step,
-                    commit.as_deref().unwrap_or("-"),
                     head.as_deref().unwrap_or("-")
                 ),
                 None => format!("no person approved step `{}`", run.step),

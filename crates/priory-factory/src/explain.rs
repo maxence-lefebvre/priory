@@ -1,6 +1,5 @@
 use crate::factory::{By, Confidence, Decider, Effect, Factory, Harness, Proof, Step, Workflow};
-use crate::rules::reachable;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 /// A guarded call an agent can make with no human decision, in a workflow, and why.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -299,26 +298,6 @@ pub fn irreversible_step_after<'a>(workflow: &'a Workflow, ask: &str) -> Option<
         .map(|step| step.id.as_str())
 }
 
-/// The irreversible steps, in workflow order, that a task at step `start` can reach before a human
-/// step that approves them, whoever decides the edges on the way.
-pub fn irreversible_before_approval<'a>(
-    workflow: &'a Workflow,
-    start: &'a str,
-) -> impl Iterator<Item = &'a Step> {
-    let steps: BTreeMap<&str, &Step> = workflow
-        .steps
-        .iter()
-        .map(|step| (step.id.as_str(), step))
-        .collect();
-    workflow.steps.iter().filter(move |step| {
-        step.effect == Effect::Irreversible
-            && reachable(&steps, start, |other| {
-                other.decides == Decider::Human && other.approves.contains(&step.id)
-            })
-            .contains(step.id.as_str())
-    })
-}
-
 /// How a step reads in a drawing: `ask` and `answer` for a human step, which `answer`s when it
 /// approves a gate, then by effect: `irreversible`, `reversible`, `read`, and `verdict` for a step
 /// that decides without touching anything.
@@ -383,22 +362,6 @@ next = { opened = "done", failed = "stop" }
         let workflow: Workflow = toml::from_str(IMPLEMENT).unwrap();
 
         assert!(answer_lets_irreversible_run(&workflow, "approve-pr"));
-    }
-
-    #[test]
-    fn only_a_human_step_that_approves_an_irreversible_step_stops_the_way_to_it() {
-        let workflow: Workflow = toml::from_str(IMPLEMENT).unwrap();
-        let other: Workflow =
-            toml::from_str(&IMPLEMENT.replace("approves = [\"open-pr\"]", "approves = []"))
-                .unwrap();
-        let reached = |workflow: &Workflow| {
-            irreversible_before_approval(workflow, "plan")
-                .map(|step| step.id.clone())
-                .collect::<Vec<_>>()
-        };
-
-        assert!(reached(&workflow).is_empty());
-        assert_eq!(reached(&other), ["open-pr"]);
     }
 
     #[test]

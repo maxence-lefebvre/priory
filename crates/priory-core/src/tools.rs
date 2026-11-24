@@ -3938,12 +3938,24 @@ fn answer_in(
         && let Some(task) = task
     {
         let by = decider(&answer.by);
-        if hold.is_some() {
-            queue_first(
-                tx,
-                task,
-                &format!("{by} wrote on ask {label}: {}", answer.text),
+        if let Some(hold) = hold {
+            let text = format!("{by} wrote on ask {label}: {}", answer.text);
+            let unstarted: bool = tx.query_row(
+                "SELECT resume = 'queued' FROM holds WHERE id = ?1",
+                [hold],
+                |row| row.get(0),
             )?;
+            // A first run's prompt and a debate's turn are built at the start: queued text would
+            // precede them.
+            if unstarted || asked.is_some_and(|asked| asked.debate.is_some()) {
+                tx.execute(
+                    "INSERT INTO outbox (task, text, state) VALUES (?1, ?2, 'held')",
+                    params![task, text],
+                )?;
+            } else {
+                queue_first(tx, task, &text)?;
+            }
+            void_approvals(tx, task)?;
             return Ok(Ok(format!(
                 "ask {label}: the text waits for the task's next run; its hold still takes one of: {}",
                 options.join(", ")
@@ -3955,12 +3967,6 @@ fn answer_in(
                 options.join(", ")
             )));
         };
-        if let Some(again) = approved_after(tx, workflows, &workflow, task, &back)? {
-            return Ok(Err(format!(
-                "ask {label} takes one of: {}; a written answer goes back to step {back}, from which irreversible step {again} runs again on its earlier approval",
-                options.join(", ")
-            )));
-        }
         tx.execute(
             &format!(
                 "UPDATE asks SET answer = ?2, answered = {NOW}, answered_by = ?3 WHERE id = ?1"
@@ -3968,6 +3974,7 @@ fn answer_in(
             params![answer.ask, answer.text, answer.by],
         )?;
         drop_lead(tx, answer.ask, &format!("ask {label} was answered first"))?;
+        void_approvals(tx, task)?;
         trace::ended(tx, trace, task, "written", None)?;
         queue_first(
             tx,
@@ -4013,8 +4020,9 @@ fn answer_in(
     // question, or the dropped task's reason.
     let reads_note = |target: &str| {
         target == "stop"
-            || step(workflows, &workflow, target)
-                .is_some_and(|next| matches!(next.decides, Decider::Model | Decider::Human))
+            || step(workflows, &workflow, target).is_some_and(|next| {
+                next.debate.is_none() && matches!(next.decides, Decider::Model | Decider::Human)
+            })
     };
     if let (Some(_), Some(target)) = (note, target.as_deref())
         && (runs.is_some() || !reads_note(target))
@@ -4209,35 +4217,18 @@ fn distance(left: &[char], right: &[char]) -> usize {
     row[right.len()]
 }
 
-/// The irreversible step that `task`, sent back to step `back`, would run on an approval of its
-/// current generation before a person approves it again.
-fn approved_after<'a>(
-    tx: &Transaction,
-    workflows: &'a Workflows,
-    workflow: &str,
-    task: i64,
-    back: &'a str,
-) -> rusqlite::Result<Option<&'a str>> {
-    let Some(flow) = workflows.get(workflow) else {
-        return Ok(None);
-    };
-    for again in priory_factory::explain::irreversible_before_approval(&flow.value, back) {
-        let given: bool = tx.query_row(
-            "SELECT EXISTS (SELECT 1 FROM approvals JOIN tasks ON tasks.id = approvals.task
-               WHERE approvals.task = ?1 AND approvals.step = ?2
-                 AND approvals.generation IS tasks.generation)",
-            params![task, again.id],
-            |row| row.get(0),
-        )?;
-        if given && again.autonomous.is_none() {
-            return Ok(Some(again.id.as_str()));
-        }
-    }
-    Ok(None)
+/// Voids the approvals of `task`'s current generation, so each irreversible step asks again.
+fn void_approvals(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
+    tx.execute(
+        "UPDATE approvals SET commit_sha = NULL WHERE task = ?1
+           AND generation IS (SELECT generation FROM tasks WHERE id = ?1)",
+        [task],
+    )
+    .map(drop)
 }
 
-/// The reversible model step of `workflow` that `task` ran last in its current generation, which
-/// reads a written answer to a human step.
+/// The model step of `workflow`, neither irreversible nor a debate, that `task` ran last in its
+/// current generation, which reads a written answer to a human step.
 fn last_model_step(
     tx: &Transaction,
     workflows: &Workflows,
@@ -4255,8 +4246,11 @@ fn last_model_step(
         .query_map([task], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(ran.into_iter().find(|ran| {
-        step(workflows, workflow, ran)
-            .is_some_and(|ran| ran.decides == Decider::Model && ran.effect != Effect::Irreversible)
+        step(workflows, workflow, ran).is_some_and(|ran| {
+            ran.decides == Decider::Model
+                && ran.effect != Effect::Irreversible
+                && ran.debate.is_none()
+        })
     }))
 }
 
@@ -5440,13 +5434,12 @@ pub(crate) fn approved(
     if current && commit.as_deref() == Some(head) {
         return Ok(true);
     }
-    let moved = if current {
-        format!(
-            "\nasked again: the branch moved from {} to {head} since this was answered",
-            commit.as_deref().unwrap_or("-"),
-        )
-    } else {
-        "\nasked again: this was answered in an earlier generation of the task, or before Priory kept generations".to_owned()
+    let moved = match commit {
+        _ if !current => "\nasked again: this was answered in an earlier generation of the task, or before Priory kept generations".to_owned(),
+        Some(commit) => format!(
+            "\nasked again: the branch moved from {commit} to {head} since this was answered"
+        ),
+        None => "\nasked again: a person wrote an answer since this was answered, or the branch had no commit then".to_owned(),
     };
     tx.execute(
         // Asked again, an ask that a revive withdrew belongs to the current generation.
@@ -5590,20 +5583,31 @@ fn unqueue(tx: &Transaction, task: i64, prompt: &str) -> rusqlite::Result<()> {
     let Some((id, text)) = queued else {
         return Ok(());
     };
-    match text.strip_prefix(prompt) {
-        Some("") => {
-            tx.execute("UPDATE inbox SET outbox = NULL WHERE outbox = ?1", [id])?;
-            tx.execute("DELETE FROM outbox WHERE id = ?1", [id])?;
-        }
-        Some(rest) if rest.starts_with('\n') => {
-            tx.execute(
-                "UPDATE outbox SET text = ?2 WHERE id = ?1",
-                params![id, &rest[1..]],
-            )?;
-        }
-        _ => {}
+    // Text written on a hold's ask may precede the prompt.
+    let Some((before, after)) = text
+        .match_indices(prompt)
+        .map(|(at, _)| (&text[..at], &text[at + prompt.len()..]))
+        .find(|(before, after)| {
+            (before.is_empty() || before.ends_with('\n'))
+                && (after.is_empty() || after.starts_with('\n'))
+        })
+    else {
+        return Ok(());
+    };
+    let kept = match after.strip_prefix('\n') {
+        Some(after) => format!("{before}{after}"),
+        None => before.trim_end_matches('\n').to_owned(),
+    };
+    if kept.is_empty() {
+        tx.execute("UPDATE inbox SET outbox = NULL WHERE outbox = ?1", [id])?;
+        tx.execute("DELETE FROM outbox WHERE id = ?1", [id])?;
+        return Ok(());
     }
-    Ok(())
+    tx.execute(
+        "UPDATE outbox SET text = ?2 WHERE id = ?1",
+        params![id, kept],
+    )
+    .map(drop)
 }
 
 /// What an action did: its status, a key of the step's `next`, and what it opened or why it failed.

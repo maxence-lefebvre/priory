@@ -39,17 +39,16 @@ ask are refused, since they need an answer.
   dropped task's reason, both with tabs as spaces. At a step with `approves`, a note on an option
   that stops the task or leads to a model step also proposes a lesson for that step (see
   [score.md](score.md#pre-review)). An option
-  that leads anywhere else, such as `done` or a code step, or that runs a command, refuses a note:
+  that leads anywhere else, such as `done`, a code step or a debate, or that runs a command, refuses a note:
   `ask 12 answered approved leads to done, which reads no note: answer approved alone`.
 - A human step's ask also takes a written answer: text that is neither one of its options nor
   `OPTION: NOTE`. The ask keeps the text as its answer, and the task goes back to the
-  reversible model step it ran last in its current generation, with `A person answered step <step> in writing: <text>` queued as that step's prompt.
+  model step it ran last in its current generation that is neither irreversible nor a debate, with `A person answered step <step> in writing: <text>` queued as that step's prompt.
   Its next run resumes that agent's session. The step's trace record has the outcome `written`.
   When the task ran no such step, the answer is refused:
-  `ask 12 takes one of: approved, rejected; no earlier model step reads a written answer`. So is one
-  from which the task can reach an irreversible step that a person already approved without passing
-  a human step whose `approves` names it. Another person's decision on the way does not allow it. An
-  `autonomous` step does not refuse it.
+  `ask 12 takes one of: approved, rejected; no earlier model step reads a written answer`.
+  A written answer voids every approval of the task's current generation, so each irreversible step
+  that is not `autonomous` asks again before it runs (see [tools.md](tools.md#approvals)).
 - Every ask refuses a blank answer and one over 16 KiB. A human step's ask and a hold's
   ask also refuse text that looks like a mistyped option: the text, or its part before a colon,
   differs from an option only by case or whitespace, or is one word a letter or two away from an
@@ -58,7 +57,9 @@ ask are refused, since they need an answer.
   approval and a debate's pick take only their options.
 - A hold's ask takes a written answer too. The hold and its ask stay open, and the text waits as
   the task's next prompt, `A person wrote on ask <id>: <text>`, which its first run after the
-  release types. Release or drop the hold with one of its options. A dropped task never gets the
+  release types. At a debate step, the step after the debate reads it. The text also voids the
+  task's approvals, as a written answer to a step does, so a task held at an approved irreversible
+  step asks again after the release. Release or drop the hold with one of its options. A dropped task never gets the
   text.
 - An agent's ask queues the answer as the task's next prompt, after fixed words such as
   `Answer to ask 12 (revision 2): `, so an answer starting with `/` never runs as a slash command.

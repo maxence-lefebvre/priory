@@ -560,6 +560,7 @@ branch's current commit:
 | ------------------------------ | ------------------------------------------------------------------- |
 | at the same commit             | the step runs                                                       |
 | at another commit              | the ask gets a new revision, with a line naming both commits, and the task sleeps at that human step. The step's queued prompt is taken back, so the next run never reads it |
+| voided by a written answer     | the same, with a line that says a person wrote an answer since      |
 | none                           | the task blocks: `step <id> is irreversible and no answer approved it` |
 
 A branch with no commit to compare also blocks the task. `priory check` refuses an irreversible step
