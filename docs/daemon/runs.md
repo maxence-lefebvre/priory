@@ -442,14 +442,21 @@ for the earlier task's open pull request to merge, or, when it has none yet, for
 A pull request closed without a merge releases it. `priory release` lets the task go as for any
 hold, and the daemon does not hold it for that earlier task again.
 
-A task is never held on an open pull request that is its own work, since only it can get that one
-merged. A pull request is its own work when its key names it, with or without the `cli:` prefix,
-when the pull request is recorded for it, or when one of the two branches holds every commit of the
-other: the task pushed to the pull request's branch, or built on it. The daemon checks the held
-tasks again when it starts, and releases each one it would no longer hold.
+The check keeps new work from starting beside open work. A task that already has work on an open
+pull request, such as a review fix or a CI fix, is never held by it, whichever earlier task it
+overlaps. A task has work on an open pull request of its repository in three cases:
+
+- The pull request is recorded for the task.
+- The task's key names it, with or without the `cli:` prefix.
+- The task's branch and the pull request's pushed branch are in one line: either one holds every
+  commit of the other. The task pushed to it, or is built on it.
+
+The daemon checks this only when it would place a hold. It never releases a hold already placed: a
+person does, with `priory release`.
 
 A stacked batch entry never waits on a task it is stacked on, since its branch starts with that
-task's files (see [batches.md](batches.md)).
+task's files (see [batches.md](batches.md)). The pull requests it is stacked on do not count as its
+own work, so it can still wait on another task.
 
 Set `[queue] overlap = false` in `factory.toml` to turn this off (see
 [factory.md](../reference/factory.md#queue)).
@@ -458,8 +465,12 @@ Known limits:
 
 - Only a task between runs is held: a running task has a process, which a hold would have to kill.
   A task that overlaps while running is held at its next queued step, if it has one.
-- The branches are compared as the clone last pushed or fetched them. A task built on a pull request
-  whose branch was then rewritten no longer holds its commits, so it is held.
+- The branches are compared as the clone last pushed or fetched them. When an amend or a rebase made
+  the two branches diverge, the task is held.
+- New work built on an open pull request's branch counts as work on it, unless it is a stacked batch
+  entry.
+- The daemon keeps a match until the task's next run, the pull request's close or its own restart,
+  even when the pull request's branch is rewritten.
 - The files come from the end of a run. Later commits in a running task show at its next run's end.
 
 

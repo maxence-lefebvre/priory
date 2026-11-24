@@ -387,7 +387,6 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut redispatch: Option<Instant> = None;
     let mut entering = Entering::default();
     let mut live = Live::new(factory, watch, trace.revision.clone(), server);
-    overlap::release(&mut db, factory, &home)?;
     loop {
         let tick = Instant::now();
         if live.poll(&mut db, &trace, true)? {
