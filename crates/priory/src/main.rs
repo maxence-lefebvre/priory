@@ -61,7 +61,9 @@ fn main() -> ExitCode {
             };
             let run = if verb == "intake" {
                 |factory: &factory::Factory, once| {
-                    intake::run(factory, once, watched, merged, health, ended, pre_ran)
+                    intake::run(
+                        factory, once, watched, merged, red, recovered, health, ended, pre_ran,
+                    )
                 }
             } else {
                 daemon::run
@@ -305,6 +307,20 @@ fn merged(since: &str) -> Result<Vec<intake::Merge>, String> {
     }
     let db = state::open()?;
     state::merges(&db, since).map_err(|error| format!("merged pull requests: {error}"))
+}
+
+/// The unread reports of merges since `since` that are red; none when the intake runs without a state file.
+fn red(since: &str) -> Result<Vec<intake::Red>, String> {
+    if std::env::var_os("PRIORY_DB").is_none() {
+        return Ok(Vec::new());
+    }
+    let db = state::open()?;
+    grades::red(&db, since).map_err(|error| format!("red merges: {error}"))
+}
+
+/// Marks read the report of a red merge whose checks passed again.
+fn recovered(report: i64) -> Result<(), String> {
+    post::read(&state::open()?, report)
 }
 
 /// How many tasks with `key` ended, from `PRIORY_DB`; none when the intake runs without a state

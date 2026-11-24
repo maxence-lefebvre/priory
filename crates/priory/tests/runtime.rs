@@ -22035,6 +22035,11 @@ fn a_plan_task_waits_for_a_person_after_a_green_grade_then_moves_on_when_approve
     );
     setup.until("tasks", |rows| rows[0][4] == "asleep");
     assert_eq!(setup.rows("tasks")[0][3], "plan");
+    let shown = &task_json(&setup, "1")["plan_file"];
+    assert_eq!(
+        [&shown["ask"], &shown["files"][0]["text"]],
+        [&json!(1), &json!("Plan: add a flag")]
+    );
 
     let answered = setup.priory(&["answer", "1", "approved", "--revision", "1"]);
 
@@ -28450,6 +28455,38 @@ fn the_outbox_types_nothing_into_a_run_whose_keyboard_a_person_holds() {
     screen_once(&address, |screen| {
         screen["lines"].to_string().contains("hello from the desk")
     });
+    server.kill().unwrap();
+    server.wait().unwrap();
+}
+
+#[test]
+fn a_pasted_prompts_enter_waits_while_a_person_holds_the_keyboard() {
+    let (setup, mut server, address) = Setup::typing("keys-enter");
+    // As a `Stop` leaves the run, which the killed agent may not have sent.
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute_batch(
+            "UPDATE runs SET idle = 1, turn = NULL WHERE id = 1; UPDATE outbox SET state = 'confirmed';",
+        )
+        .unwrap();
+    let said = setup.priory(&["say", "1", "hello"]);
+    assert!(said.status.success(), "{said:?}");
+    setup.until("outbox", |rows| rows.last().unwrap()[3] == "attempted");
+
+    let secret = take_keyboard(&address);
+    let typed = keys(&address, &secret, "a", json!({ "text": "zz-mine" }));
+    assert_eq!(typed.0, 200, "{typed:?}");
+    // Past the second Enter, 5 s after the first: `cat` prints a line back once Enter ends it.
+    std::thread::sleep(Duration::from_secs(7));
+    assert_eq!(on_screen(&address, "zz-mine", 1), 1);
+
+    let (status, _) = post(
+        &address,
+        "/api/runs/1/keyboard/return",
+        json!({ "secret": secret }),
+    );
+    assert_eq!(status, 200);
+    assert_eq!(on_screen(&address, "zz-mine", 2), 2);
     server.kill().unwrap();
     server.wait().unwrap();
 }
