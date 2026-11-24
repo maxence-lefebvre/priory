@@ -1144,6 +1144,17 @@ pub struct TaskApplied {
     pub why: Option<String>,
 }
 
+/// A person drops the requests of a key that no runner claimed, with `priory cancel KEY`. Every
+/// machine drops them as it reads this, unless a runner's claim won the key before it on the log.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TaskDropped {
+    /// The key.
+    pub key: String,
+    /// Where the drop came from: `cli`.
+    pub by: String,
+}
+
 /// An agent saves a memory with the `remember` tool, or removes one with `forget`. Each message is
 /// one candidate, known by its `id`: its own task's later runs get it at once, and other tasks'
 /// runs only once a person accepts it. A later write of the same name is a new candidate.

@@ -4770,6 +4770,29 @@ fn a_sandbox_kind_other_than_bwrap_is_refused_with_its_line() {
 }
 
 #[test]
+fn a_filter_window_names_its_timezone_in_a_factory_of_several_runners() {
+    let runner = format!(
+        "{RUNNER}\n[[filters]]\nmatch = \"!project=oss\"\nwhen = {{ hours = \"08:00-18:00\" }}\n"
+    );
+    let mut files = with("runners/server.toml", RUNNER);
+    files.retain(|(path, _)| *path != "runners/desktop.toml");
+    files.push(("runners/desktop.toml", &runner));
+
+    let several = check(&factory("filter-zone-several", &files));
+    files.retain(|(path, _)| *path != "runners/server.toml");
+    let one = check(&factory("filter-zone-one", &files));
+
+    assert_eq!(
+        (several.code, several.stderr.as_str()),
+        (
+            1,
+            "runners/desktop.toml:2: filter `!project=oss` has a window with no `timezone`, which a factory of 2 runners needs\n"
+        )
+    );
+    assert_eq!(one.code, 0, "{}", one.stderr);
+}
+
+#[test]
 fn trigger_labels_and_runner_filters_pass_and_each_bad_one_names_its_line() {
     let trigger = format!("{TRIGGER}labels = {{ project = \"oss\" }}\n");
     let runner = format!(
@@ -4806,6 +4829,12 @@ fn trigger_labels_and_runner_filters_pass_and_each_bad_one_names_its_line() {
             "\"fri\"",
             "\"fry\"",
             "runners/desktop.toml:4:17: \"fry\" is not a day: use mon, tue, wed, thu, fri, sat or sun\n",
+        ),
+        (
+            "runners/desktop.toml",
+            "[\"mon\", \"fri\"]",
+            "\"mon-fri\"",
+            "runners/desktop.toml:4:17: `days` is not a list such as [\"mon\", \"fri\"]\n",
         ),
         (
             "runners/desktop.toml",

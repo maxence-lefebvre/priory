@@ -1898,7 +1898,8 @@ pub(crate) fn weekdays<'de, D: Deserializer<'de>>(
 ) -> Result<Option<Vec<jiff::civil::Weekday>>, D::Error> {
     use jiff::civil::Weekday::*;
     const NAMES: [&str; 7] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
-    let names = Vec::<String>::deserialize(input)?;
+    let names = Vec::<String>::deserialize(input)
+        .map_err(|_| D::Error::custom("`days` is not a list such as [\"mon\", \"fri\"]"))?;
     if names.is_empty() {
         return Err(D::Error::custom("`days` is empty, so it never fires"));
     }

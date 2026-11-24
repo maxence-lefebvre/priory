@@ -21,7 +21,7 @@ Schema: [`config/runner.json`](../schemas/config/runner.json).
 | `filters.when` | table | no | always | When the filter applies. Outside it, the filter is lifted | `{ hours = "08:00-18:00" }` |
 | `filters.when.days` | list of `mon` to `sun` | no | every day | The weekdays it applies on. With `hours` that pass midnight, the day they start on | `["mon", "tue", "wed", "thu", "fri"]` |
 | `filters.when.hours` | string | no | the whole day | `HH:MM-HH:MM`, from the first time to before the second. It may pass midnight | `"08:00-18:00"` |
-| `filters.when.timezone` | string | no | the machine's | The IANA zone the days and hours are read in | `"Europe/Paris"` |
+| `filters.when.timezone` | string | with two or more runner files | the machine's | The IANA zone the days and hours are read in | `"Europe/Paris"` |
 
 A share is a number followed by `%`, above 0 and at most 100, such as `"60%"`.
 

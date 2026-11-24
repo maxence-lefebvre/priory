@@ -33135,6 +33135,262 @@ fn an_earlier_request_no_filter_accepted_joins_the_task_a_later_request_of_its_k
     desktop.crash();
 }
 
+/// Waits until `setup`'s inbox holds a message of `kind` about `subject` with `outcome`.
+fn until_outcome(setup: &Setup, kind: &str, subject: &str, outcome: &str) {
+    setup.until("inbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == kind && row[2] == subject && row[4] == outcome)
+    });
+}
+
+/// Waits until an alive message of `runner` is in `setup`'s inbox.
+fn until_alive(setup: &Setup, runner: &str) {
+    until_outcome(setup, "priory.runner.alive", runner, "noted");
+}
+
+/// The key, reason and runner of each task `setup` lists.
+fn listed_tasks(setup: &Setup) -> Vec<[serde_json::Value; 3]> {
+    let tasks: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["tasks", "--json"]).stdout).unwrap();
+    tasks["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|task| ["key", "reason", "runner"].map(|field| task[field].clone()))
+        .collect()
+}
+
+#[test]
+fn a_view_only_machine_lists_each_task_no_runner_accepts_with_the_runners_reason() {
+    let mut desktop = placed("filter-view", "desktop", OSS_OFF_BY_DAY, NO_OSS, None);
+    let mut laptop = placed(
+        "filter-view",
+        "laptop",
+        OSS_OFF_BY_DAY,
+        NO_OSS,
+        Some(&desktop),
+    );
+    with_serve(&laptop);
+    desktop.publish(&oss(1));
+    desktop.publish(&oss(2));
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    desktop.start_with(exe, &[("PRIORY_NOW", WORK_HOURS)]);
+    let address = laptop.start_viewing(WORK_HOURS);
+    let keys = ["github:owner/repo#1", "github:owner/repo#2"];
+
+    until_outcome(&laptop, "factory.task.requested", keys[1], "unaccepted");
+    let reason = json!("no runner accepts it until 18:00");
+    let expected = keys.map(|key| [json!(key), reason.clone(), json!(null)]);
+    assert_eq!(listed_tasks(&laptop), expected);
+    let (_, desk) = runner_http(&address, "GET", "/api/desk", "");
+    let items: Vec<_> = desk["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["kind"] == "queue")
+        .map(|item| (&item["id"], &item["what"]))
+        .collect();
+    let what = json!("-: no runner accepts it until 18:00");
+    assert_eq!(
+        items,
+        [(&json!(keys[0]), &what), (&json!(keys[1]), &what)],
+        "{desk}"
+    );
+
+    desktop.crash();
+    desktop.start_with(exe, &[("PRIORY_NOW", EVENING)]);
+    laptop.until("tasks", |rows| with(rows, 13, "desktop") == 2);
+    assert_eq!(listed_tasks(&laptop).len(), 2);
+    assert_eq!(claimants(&laptop, keys[0]), ["desktop"]);
+    desktop.crash();
+    laptop.crash();
+}
+
+#[test]
+fn a_takeover_leaves_a_lapsed_task_the_taker_refuses_until_its_window_lifts() {
+    let mut server = placed(
+        "filter-takeover",
+        "server",
+        OSS_OFF_BY_DAY,
+        "platform = { os = \"linux\" }\n",
+        None,
+    );
+    let mut desktop = placed(
+        "filter-takeover",
+        "desktop",
+        OSS_OFF_BY_DAY,
+        "platform = { os = \"linux\" }\n",
+        Some(&server),
+    );
+    let key = "github:owner/repo#1";
+    server.publish(&oss(1));
+    server.memory(0);
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    server.start_with(exe, &[("PRIORY_NOW", WORK_HOURS)]);
+    logged(
+        &server,
+        "priory.task.held",
+        json!({ "key": key, "runner": "server", "hold": "waiting" }),
+    );
+    server.crash();
+
+    desktop.start_with(exe, &[("PRIORY_NOW", "2026-11-24T12:00:00Z")]);
+    until_alive(&desktop, "desktop");
+    assert_eq!(claimants(&desktop, key), ["server"]);
+    desktop.crash();
+
+    desktop.start_with(exe, &[("PRIORY_NOW", EVENING)]);
+    desktop.until_own_tasks(|rows| with(rows, 4, "running") == 1);
+    assert_eq!(claimants(&desktop, key), ["server", "desktop"]);
+    desktop.crash();
+}
+
+#[test]
+fn a_person_cancels_a_request_no_runner_accepts_and_no_machine_lists_or_claims_it_again() {
+    let mut desktop = placed("filter-cancel", "desktop", OSS_OFF_BY_DAY, NO_OSS, None);
+    let mut server = placed(
+        "filter-cancel",
+        "server",
+        OSS_OFF_BY_DAY,
+        NO_OSS,
+        Some(&desktop),
+    );
+    let mut laptop = placed(
+        "filter-cancel",
+        "laptop",
+        OSS_OFF_BY_DAY,
+        NO_OSS,
+        Some(&desktop),
+    );
+    with_serve(&laptop);
+    let (key, request) = ("github:owner/repo#1", oss(1));
+    desktop.publish(&request);
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    desktop.start_with(exe, &[("PRIORY_NOW", WORK_HOURS)]);
+    server.start_with(exe, &[("PRIORY_NOW", WORK_HOURS)]);
+    laptop.start_viewing(WORK_HOURS);
+    let factory = laptop.dir.join("factory").to_str().unwrap().to_owned();
+    for setup in [&desktop, &server, &laptop] {
+        until_outcome(setup, "factory.task.requested", key, "unaccepted");
+    }
+
+    let unknown = laptop.priory(&["cancel", &factory, "github:owner/repo#9"]);
+    assert_eq!(
+        String::from_utf8_lossy(&unknown.stderr),
+        "priory cancel: no request of github:owner/repo#9 waits for a runner\n"
+    );
+    let cancelled = laptop.priory(&["cancel", &factory, key]);
+    assert!(cancelled.status.success(), "{cancelled:?}");
+
+    for setup in [&desktop, &server, &laptop] {
+        until_outcome(setup, "factory.task.requested", key, "dropped");
+        assert!(listed_tasks(setup).is_empty());
+    }
+    // A claim that was on its way when the drop reached the log loses, on every machine.
+    desktop.publish(
+        &Message::new(
+            "priory.task.claimed",
+            json!({ "key": key, "runner": "server", "request": request.id.to_string() }),
+        )
+        .subject(key),
+    );
+    for setup in [&desktop, &server, &laptop] {
+        until_outcome(setup, "priory.task.claimed", key, "refused");
+        assert!(listed_tasks(setup).is_empty());
+    }
+
+    desktop.crash();
+    desktop.publish(&oss(2));
+    desktop.start_with(exe, &[("PRIORY_NOW", EVENING)]);
+    let tasks = desktop.until_own_tasks(|rows| with(rows, 4, "running") == 1);
+    assert_eq!(tasks.len(), 1, "{tasks:?}");
+    assert_eq!(tasks[0][1], "github:owner/repo#2");
+    desktop.crash();
+    server.crash();
+    laptop.crash();
+}
+
+#[test]
+fn a_close_or_withdrawal_of_its_key_drops_a_request_no_runner_accepts() {
+    let mut desktop = placed("filter-close", "desktop", OSS_OFF_BY_DAY, NO_OSS, None);
+    let at = |text: &str| text.parse::<jiff::Timestamp>().unwrap();
+    let keyed = |key: &str, source: &str| {
+        let mut message = oss(1);
+        message.data["key"] = json!(key);
+        message.data["source"] = json!(source);
+        message.subject(key).time(at("2026-11-24T09:00:00Z"))
+    };
+    let closed = |kind: &str, field: &str, number: u64, time: &str| {
+        Message::new(
+            kind,
+            json!({ "repo": "owner/repo", field: number, "merged": false }),
+        )
+        .subject(format!("owner/repo#{number}"))
+        .time(at(time))
+    };
+    let linear = |kind: &str, issue: &str, view: &str| {
+        Message::new(kind, json!({ "issue": issue, "view": view }))
+            .subject(issue)
+            .time(at("2026-11-24T09:30:00Z"))
+    };
+    let entered = linear("linear.issue.entered", "ENG-7", "todo");
+    let also = linear("linear.issue.entered", "ENG-8", "todo");
+    let review = "github:owner/repo:pulls/4:review:max";
+    for message in [
+        entered.clone(),
+        also.clone(),
+        keyed("github:owner/repo#1", "source"),
+        keyed("github:owner/repo#2", "source"),
+        keyed("github:owner/repo#3", "source"),
+        keyed("github:owner/repo#10", "source"),
+        keyed(review, "source"),
+        keyed("linear:ENG-7", &entered.id.to_string()),
+        keyed("linear:ENG-8", &also.id.to_string()),
+        closed("github.issues.closed", "issue", 1, "2026-11-24T09:30:00Z"),
+        closed(
+            "github.pull_request.closed",
+            "pull_request",
+            2,
+            "2026-11-24T09:30:00Z",
+        ),
+        closed("github.issues.closed", "issue", 3, "2026-11-24T08:00:00Z"),
+        Message::new(
+            "github.pull_request.review_request_removed",
+            json!({ "repo": "owner/repo", "pull_request": 4, "reviewer": "max", "reviewed": false }),
+        )
+        .subject("owner/repo#4")
+        .time(at("2026-11-24T09:30:00Z")),
+        linear("linear.issue.left", "ENG-7", "todo"),
+        linear("linear.issue.left", "ENG-8", "another"),
+    ] {
+        desktop.publish(&message);
+    }
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+
+    desktop.start_with(exe, &[("PRIORY_NOW", WORK_HOURS)]);
+    until_alive(&desktop, "desktop");
+    let keys: Vec<_> = listed_tasks(&desktop)
+        .into_iter()
+        .map(|[key, _, _]| key)
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            "github:owner/repo#3",
+            "github:owner/repo#10",
+            "linear:ENG-8"
+        ],
+        "{:?}",
+        desktop.rows("inbox")
+    );
+    desktop.crash();
+
+    desktop.start_with(exe, &[("PRIORY_NOW", EVENING)]);
+    desktop.until("tasks", |rows| with(rows, 13, "desktop") == 3);
+    assert!(claimants(&desktop, "github:owner/repo#1").is_empty());
+    desktop.crash();
+}
+
 /// A factory whose `[runs] attach` command writes its arguments and ids to `attached`, then exits
 /// with `exit`. The review step, after implement, sets `attach = true`; with `flagged`, implement
 /// does too.

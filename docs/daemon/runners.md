@@ -58,7 +58,7 @@ while the owner routes it as [routing.md](routing.md) says.
 The runners publish more message types on the same output, which
 [events.md](../reference/events.md#runners) lists: `priory.task.claimed`, `priory.task.held`,
 `priory.runner.alive`, `priory.ask.posted`, `priory.ask.applied`, `priory.ask.answered`,
-`priory.ask.dismissed`, `priory.task.acted` and `priory.task.applied`, and the memory messages
+`priory.ask.dismissed`, `priory.task.acted`, `priory.task.applied` and `priory.task.dropped`, and the memory messages
 `priory.memory.written`, `priory.memory.accepted` and `priory.memory.dropped` (see
 [skills.md](skills.md#memories-agents-write)). The daemon stores each claim,
 hold, alive, post and applied message in its state file before it publishes it, so a crash between
@@ -117,13 +117,28 @@ takeover that reads each runner's filter files, and two runners with different c
 task runs twice](#why-no-task-runs-twice) holds as it is. A task that started never moves for a
 filter.
 
-When no runner's filters accept a request, no runner claims it. Each runner lists it in
+When no runner's filters accept a request, no runner claims it. Each runner and view-only machine lists it in
 `priory tasks`, its JSON and the Desk's queue, with no runner and the reason
 `no runner accepts it until 18:00`: the first time a runner's filters lift, in that runner's
-filter timezone. A request no window ever lifts says `no runner accepts it`. Each runner checks
+filter timezone, which a window must name when the factory has two or more runner files. A request no window ever lifts says `no runner accepts it`. Each runner checks
 its unaccepted requests again when it reads its own alive message, once a minute, and claims the
 first request of each key its filters accept by then. When a runner wins a key, every unaccepted request of that key goes
-to its task, as a later request of the key does.
+to its task, as a later request of the key does. A view-only machine reads the reason again at any
+runner's alive message, so it can be out of date while every runner is off.
+
+`priory cancel [DIR] KEY` drops such a request from any machine that lists it: it publishes
+`priory.task.dropped`, and every machine drops the key's requests as it reads that. These events
+drop the requests of a key that no runner holds too:
+
+- the close of the issue or pull request of the key, unless the request is newer than the close;
+- the removal of the review request of a review key, when the reviewer did not review;
+- a Linear issue that leaves the view whose entry made the request.
+
+A drop includes a request whose claim is still on its way, and that claim is refused. Who holds a
+key follows from the log alone, so every machine drops the same requests.
+
+A takeover asks the filters as well: a runner leaves a lapsed `waiting` task alone while its filters
+refuse it, and checks again with each alive message.
 
 ## Holds and leases
 
@@ -292,6 +307,7 @@ A view-only machine can:
   endpoints or the command line, which publishes the action for that runner, as
   [Acting on another runner's task](#acting-on-another-runners-task) says;
 - give a task to a runner with `priory give`;
+- drop a request no runner claimed with `priory cancel [DIR] KEY`;
 - list the memory candidates that agents wrote, and accept or drop one with
   `priory memories accept` or `priory memories drop`, which publishes the verdict for every runner
   (see [skills.md](skills.md));
@@ -299,8 +315,8 @@ A view-only machine can:
 
 A view-only machine cannot:
 
-- claim a task, start a run or apply an answer: it records each task request as `elsewhere` and
-  every other source event as `ignored`;
+- claim a task, start a run or apply an answer: it records a task request as `unaccepted` until a
+  runner's claim wins its key, then as `elsewhere`, and every other source event as `ignored`;
 - publish an alive, held, claimed, posted, applied or memory candidate message: no runner's
   lease, claim or memory depends on it;
 - change anything else. Its socket refuses every other write, such as `priory resume`, a snooze,
@@ -312,8 +328,8 @@ this machine is view-only: it runs no task and changes none here. Answer or dism
 
 Runners refuse a message that names a runner with no file in `runners/`. A view-only machine sends
 only answers, dismisses and task actions, each of which names the runner that applies it, so that
-runner applies them as it applies another runner's, and memory accepts and drops, which name no
-runner.
+runner applies them as it applies another runner's, and memory accepts and drops and request drops,
+which name no runner.
 
 `priory daemon --view-only` refuses to start on a machine that has a runner file, and in a factory
 of fewer than two runners, which posts no ask:

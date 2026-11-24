@@ -123,7 +123,7 @@ pub struct Window {
     )]
     pub hours: Option<(Time, Time)>,
     /// The IANA zone the days and hours are read in, such as `Europe/Paris`; the machine's own
-    /// when unset.
+    /// when unset, which only a factory of one runner allows.
     #[serde(default, deserialize_with = "time_zone")]
     #[schemars(with = "String")]
     pub timezone: Option<TimeZone>,

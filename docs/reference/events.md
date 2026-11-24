@@ -35,7 +35,7 @@ Each type has a JSON Schema in [`docs/schemas/events/`](../schemas/events/), nam
 - Runners: [`priory.task.claimed`](#priorytaskclaimed), [`priory.task.held`](#priorytaskheld),
   [`priory.runner.alive`](#prioryrunneralive), [`priory.ask.answered`](#prioryaskanswered),
   [`priory.ask.dismissed`](#prioryaskdismissed), [`priory.ask.posted`](#prioryaskposted),
-  [`priory.ask.applied`](#prioryaskapplied)
+  [`priory.ask.applied`](#prioryaskapplied), [`priory.task.dropped`](#priorytaskdropped)
 - Memories: [`priory.memory.written`](#priorymemorywritten),
   [`priory.memory.accepted`](#priorymemoryaccepted), [`priory.memory.dropped`](#priorymemorydropped)
 
@@ -1787,6 +1787,30 @@ A runner applied or refused an action that another machine sent to one of its ta
     "submission": "0196f1c5-3d4e-7f60-8b1c-2d3e4f5a6b7c",
     "outcome": "applied"
   },
+  "links": []
+}
+```
+
+### `priory.task.dropped`
+
+A person dropped the requests of a key that no runner claimed, with `priory cancel [DIR] KEY`. Every
+machine drops them as it reads this. It is refused once a runner's claim won the key earlier on the
+log. See [runners.md](../daemon/runners.md#placing-tasks-with-filters). Subject: the key.
+Schema: [`priory.task.dropped.json`](../schemas/events/priory.task.dropped.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `key` | string | The key |
+| `by` | string | `cli` |
+
+<!-- example: events/priory.task.dropped.json -->
+```json
+{
+  "id": "0196f1c5-4e5f-7a61-9c2d-3e4f5a6b7c8d",
+  "type": "priory.task.dropped",
+  "subject": "github:acme/widgets#42",
+  "time": "2026-11-24T10:22:00Z",
+  "data": { "key": "github:acme/widgets#42", "by": "cli" },
   "links": []
 }
 ```
