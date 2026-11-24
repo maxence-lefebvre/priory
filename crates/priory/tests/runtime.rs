@@ -35287,7 +35287,7 @@ fn an_owner_whose_filter_refused_a_request_routes_it_into_its_task_that_feedback
             .all(|row| row[3] == "1" && row[4] != "unaccepted")
     });
     assert_eq!(server.own_tasks().len(), 1);
-    assert_eq!(claimants(&server, key), ["server"]);
+    assert!(desktop.own_tasks().is_empty());
     desktop.crash();
     server.crash();
 }
