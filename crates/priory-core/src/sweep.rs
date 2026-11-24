@@ -306,6 +306,8 @@ pub(crate) fn clear_refusal(home: &Path) {
 /// The sweep's check of the agents slice's limits.
 pub(crate) struct Limits {
     refused: Option<String>,
+    /// It took the slice and has not set its limits yet.
+    uncapped: bool,
     failed: bool,
 }
 
@@ -314,6 +316,7 @@ impl Limits {
     pub(crate) fn new(slice: &str, home: &Path, refused: Option<String>) -> Self {
         let mut limits = Limits {
             refused: None,
+            uncapped: false,
             failed: false,
         };
         if let Some(why) = refused {
@@ -341,7 +344,12 @@ impl Limits {
             self.refuse(slice, home, why);
             return;
         }
-        let checked = if self.refused.is_some() {
+        if self.refused.take().is_some() {
+            eprintln!("priory daemon: took {slice}");
+            clear_refusal(home);
+            self.uncapped = true;
+        }
+        let checked = if self.uncapped {
             slice::cap(slice, share.cpu, share.memory).map(|()| None)
         } else {
             slice::restore(slice, share.cpu, share.memory)
@@ -356,10 +364,7 @@ impl Limits {
             }
         };
         self.failed = false;
-        if self.refused.take().is_some() {
-            eprintln!("priory daemon: took {slice} and set its limits");
-            clear_refusal(home);
-        }
+        self.uncapped = false;
         if let Some(found) = found {
             let what =
                 format!("another process set {slice} to {found}; the sweep restored its limits");

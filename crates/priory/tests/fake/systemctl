@@ -5,8 +5,9 @@ if [ -e "$FAKE_DIR/no-systemd" ]; then
   echo 'Failed to connect to bus: No medium found' >&2
   exit 1
 fi
-# `show` prints the cgroup path in FAKE_DIR/slice-cgroup, unlogged.
+# `show` prints the cgroup path in FAKE_DIR/slice-cgroup, logged in FAKE_DIR/shown.log.
 if [ "${2-}" = show ]; then
+  echo "$*" >> "$FAKE_DIR/shown.log"
   cat "$FAKE_DIR/slice-cgroup" 2>/dev/null || echo /priory-agents.slice
   exit 0
 fi

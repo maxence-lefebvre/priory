@@ -3820,7 +3820,7 @@ fn every_second(setup: &Setup) {
     .unwrap();
 }
 
-fn desk(setup: &Setup) -> String {
+fn desk_text(setup: &Setup) -> String {
     String::from_utf8(setup.priory(&["desk"]).stdout).unwrap()
 }
 
@@ -3847,7 +3847,7 @@ fn a_daemon_takes_the_slice_once_the_daemon_of_its_owner_is_gone() {
     std::thread::sleep(Duration::from_millis(2500));
     assert!(fake_log(&setup, "systemctl.log").is_empty());
     let said = format!("left the limits of priory-agents.slice alone: {why}");
-    assert_eq!(desk(&setup).matches(&said).count(), 1);
+    assert_eq!(desk_text(&setup).matches(&said).count(), 1);
     let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
     assert_eq!(log.matches(&said).count(), 1, "daemon log: {log}");
 
@@ -3858,11 +3858,11 @@ fn a_daemon_takes_the_slice_once_the_daemon_of_its_owner_is_gone() {
     let file = setup.tmux.path().join("priory/priory-agents.slice.owner");
     assert_eq!(fs::read_to_string(&file).unwrap(), home.to_str().unwrap());
     let deadline = Instant::now() + Duration::from_secs(10);
-    while desk(&setup).contains("the limits of") {
-        assert!(Instant::now() < deadline, "{}", desk(&setup));
+    while desk_text(&setup).contains("the limits of") {
+        assert!(Instant::now() < deadline, "{}", desk_text(&setup));
         std::thread::sleep(Duration::from_millis(100));
     }
-    assert!(!desk(&setup).contains("another process set"));
+    assert!(!desk_text(&setup).contains("another process set"));
 }
 
 #[test]
@@ -3915,8 +3915,8 @@ fn the_sweep_restores_the_quota_of_a_slice_with_no_memory_limit() {
 
     let said = "another process set priory-agents.slice to CPUQuota=90%; the sweep restored";
     let deadline = Instant::now() + Duration::from_secs(10);
-    while !desk(&setup).contains(said) {
-        assert!(Instant::now() < deadline, "{}", desk(&setup));
+    while !desk_text(&setup).contains(said) {
+        assert!(Instant::now() < deadline, "{}", desk_text(&setup));
         std::thread::sleep(Duration::from_millis(100));
     }
 }
@@ -3979,8 +3979,13 @@ const READY_PROMPT: &str = "Claude Code v2.1.331
 /// The slice's counters before a run, then those after its quota held it back to 12 %, under
 /// `quota`.
 fn throttle(setup: &Setup, quota: &str) {
-    // The daemon reads the counters at its first tick after the run's start.
-    std::thread::sleep(Duration::from_secs(5));
+    // `show` runs at the daemon's start, at its first sweep, then for the run's first counters.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while fake_log(setup, "shown.log").len() < 3 {
+        assert!(Instant::now() < deadline, "the counters were never read");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_secs(1));
     slice_file(setup, "cpu.max", quota);
     slice_file(
         setup,
