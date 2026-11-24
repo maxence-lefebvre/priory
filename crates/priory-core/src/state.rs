@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 113;
+const VERSION: i64 = 114;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -2000,13 +2000,31 @@ CREATE INDEX sweeps_by_script ON sweeps (script, started);
 "
 );
 
+// The notification kinds a person turned on or off for a subscription, a JSON object of booleans;
+// a kind it lacks takes its default. A merge that landed wrong and a stalled queue queue an alarm
+// too, for the subscriptions that turned it on.
+const SCHEMA_113: &str = "
+ALTER TABLE push_subscriptions ADD COLUMN kinds TEXT;
+CREATE TRIGGER push_a_landed_wrong AFTER INSERT ON inbox
+  WHEN NEW.type = 'priory.report' AND NEW.subject = 'priory'
+  AND json_extract(NEW.data, '$.line') LIKE 'landed wrong: %'
+  AND EXISTS (SELECT 1 FROM push_subscriptions) BEGIN
+  INSERT INTO push_queue (kind, item, state) VALUES ('alarm', NEW.seq, 'landed');
+END;
+CREATE TRIGGER push_a_stall AFTER INSERT ON stalls
+  WHEN EXISTS (SELECT 1 FROM push_subscriptions) BEGIN
+  INSERT INTO push_queue (kind, item, state) VALUES ('alarm', NEW.id, 'stall');
+END;
+PRAGMA user_version = 113;
+";
+
 // A task's labels, as a JSON object, which runner filters match, and why a request no runner's
 // filters accept waits.
-const SCHEMA_113: &str = "
+const SCHEMA_114: &str = "
 ALTER TABLE tasks ADD COLUMN labels TEXT;
 ALTER TABLE inbox ADD COLUMN reason TEXT;
 CREATE INDEX inbox_unaccepted ON inbox (subject, seq) WHERE outcome = 'unaccepted';
-PRAGMA user_version = 113;
+PRAGMA user_version = 114;
 ";
 
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
@@ -2025,6 +2043,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
     SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112, SCHEMA_113,
+    SCHEMA_114,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -3438,6 +3457,9 @@ pub(crate) fn admissible<'r>(
     let mut statement = db.prepare(&format!(
         "SELECT id, workflow, step, trigger, state = 'queued', repo, preempted, lane FROM tasks
              WHERE state IN ('queued', 'ready')
+             -- A task marked to be held while it ran is held on the next tick.
+             AND NOT EXISTS (SELECT 1 FROM holds WHERE holds.task = tasks.id
+               AND holds.released IS NULL)
              -- A task waits while a recipe runs in its worktree, or a teardown is owed there.
              AND NOT EXISTS (SELECT 1 FROM recipes WHERE recipes.task = tasks.id
                AND recipes.ended IS NULL
@@ -4362,6 +4384,17 @@ fn share(tx: &Transaction, run: &NewRun) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Queues again the prompt `run` was launched with when it never reached `SessionStart`, so it never
+/// took it.
+pub(crate) fn requeue_unready(tx: &Transaction, run: i64) -> rusqlite::Result<()> {
+    tx.execute(
+        "UPDATE outbox SET state = 'queued', run = NULL, attempted = NULL
+         WHERE run = ?1 AND state IN ('attempted', 'uncertain') AND (SELECT NOT ready FROM runs WHERE id = ?1)",
+        [run],
+    )
+    .map(drop)
+}
+
 /// Blocks `task` with `reason`, ending its live run first as `ended_as`, if it has one, after reading
 /// its transcript.
 pub(crate) fn block(
@@ -4382,12 +4415,7 @@ pub(crate) fn block(
     if let Some(run) = live {
         // The step goes on after a resume, so the turn cut short still counts toward it.
         crate::trace::account(&tx, trace, run, None)?;
-        // A run that never reached SessionStart never took the prompt it was launched with.
-        tx.execute(
-            "UPDATE outbox SET state = 'queued', run = NULL, attempted = NULL
-             WHERE run = ?1 AND state IN ('attempted', 'uncertain') AND (SELECT NOT ready FROM runs WHERE id = ?1)",
-            [run],
-        )?;
+        requeue_unready(&tx, run)?;
     }
     tx.execute(
         &format!("UPDATE runs SET ended = {NOW}, ended_as = ?2 WHERE task = ?1 AND ended IS NULL"),
@@ -4550,9 +4578,21 @@ pub(crate) fn signal(
         "Stop" => {
             tx.execute("UPDATE runs SET idle = 1, turn = NULL WHERE id = ?1", [run])?;
             let context = crate::trace::account(&tx, trace, run, signal.transcript.as_deref())?;
-            // A run marked for an urgent wake ends here; its resumed session compacts instead.
-            if let Some(head) = crate::preempt::due(&tx, run, watched)? {
-                kill = crate::tools::preempt(&tx, &signal.session, trace, head)?;
+            // A run marked for a hold or an urgent wake ends here; its resumed session compacts instead.
+            if crate::hold::stops(&tx, run, trace.factory)? {
+                kill = crate::tools::stop_marked(
+                    &tx,
+                    &signal.session,
+                    trace,
+                    crate::tools::Stopped::Held,
+                )?;
+            } else if let Some(head) = crate::preempt::due(&tx, run, watched)? {
+                kill = crate::tools::stop_marked(
+                    &tx,
+                    &signal.session,
+                    trace,
+                    crate::tools::Stopped::For(head),
+                )?;
             // The run settles its ask or wait once its compact is typed, so it never sleeps past it.
             // A result carried into the next step on this process compacts there. A run whose gate
             // grades waits, idle, for the verdict, which settles it.
@@ -4922,6 +4962,33 @@ mod move_line_tests {
 
         assert_eq!(moved, Err("move takes a band, a place or both".to_owned()));
         assert_eq!(revision(&db).unwrap(), expected);
+    }
+}
+
+#[cfg(test)]
+mod push_kinds {
+    use super::*;
+
+    #[test]
+    fn an_upgrade_keeps_the_subscriptions_with_no_choice() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.execute_batch(&MIGRATIONS[..112].concat()).unwrap();
+        db.execute(
+            "INSERT INTO push_subscriptions (endpoint, p256dh, auth) VALUES ('e', 'p', 'a')",
+            [],
+        )
+        .unwrap();
+
+        migrate(&mut db).unwrap();
+
+        let row: (String, Option<String>) = db
+            .query_row(
+                "SELECT endpoint, kinds FROM push_subscriptions",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("e".to_owned(), None));
     }
 }
 
