@@ -23,15 +23,6 @@ pub struct Room {
 /// `home`.
 pub fn measure(home: &Path) -> Result<Room, String> {
     let proc = proc();
-    let meminfo = read(&proc.join("meminfo"))?;
-    let kilobytes = |key: &str| {
-        meminfo
-            .lines()
-            .find_map(|line| line.strip_prefix(key)?.strip_prefix(':'))
-            .and_then(|value| value.trim().strip_suffix("kB")?.trim().parse::<u64>().ok())
-            .map(|value| value << 10)
-            .ok_or_else(|| format!("no {key} in {}", proc.join("meminfo").display()))
-    };
     let loadavg = read(&proc.join("loadavg"))?;
     let load = loadavg
         .split_whitespace()
@@ -41,13 +32,42 @@ pub fn measure(home: &Path) -> Result<Room, String> {
         .ok_or_else(|| format!("no load in {}", proc.join("loadavg").display()))?;
     let (disk_total, disk_free) = disk(home)?;
     Ok(Room {
-        memory_free: kilobytes("MemAvailable")?,
-        memory_total: kilobytes("MemTotal")?,
+        memory_free: meminfo("MemAvailable")?,
+        memory_total: meminfo("MemTotal")?,
         disk_free,
         disk_total,
         load,
-        cpus: std::thread::available_parallelism().map_or(1, usize::from),
+        cpus: cpus(),
     })
+}
+
+/// The field `key` of `/proc/meminfo`, in bytes.
+pub(crate) fn meminfo(key: &str) -> Result<u64, String> {
+    let file = proc().join("meminfo");
+    read(&file)?
+        .lines()
+        .find_map(|line| line.strip_prefix(key)?.strip_prefix(':'))
+        .and_then(|value| value.trim().strip_suffix("kB")?.trim().parse::<u64>().ok())
+        .and_then(|value| value.checked_mul(1024))
+        .ok_or_else(|| format!("no {key} in {}", file.display()))
+}
+
+/// The machine's online CPUs, from `/proc/stat`. Rust's `available_parallelism` counts the caller's
+/// own cgroup quota, so it only stands in where there is no such file.
+pub fn cpus() -> usize {
+    let stat = read(&proc().join("stat")).unwrap_or_default();
+    match cpus_of(&stat) {
+        0 => std::thread::available_parallelism().map_or(1, usize::from),
+        online => online,
+    }
+}
+
+/// The CPUs the text of a `/proc/stat` file lists: its `cpu<n>` lines, not their `cpu` total.
+pub fn cpus_of(stat: &str) -> usize {
+    stat.lines()
+        .filter_map(|line| line.strip_prefix("cpu"))
+        .filter(|rest| rest.starts_with(|first: char| first.is_ascii_digit()))
+        .count()
 }
 
 /// The machine's host name, which names its runner file.

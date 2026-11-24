@@ -252,10 +252,11 @@ fn apply_act(
             hold: None,
             text: data["text"].as_str().map(str::to_owned),
             expected: None,
+            now: false,
         };
         // A refused action leaves nothing behind, while the message itself is still recorded.
         tx.execute_batch("SAVEPOINT acted")?;
-        let (reply, session) = crate::tools::act_in_tx(tx, &act, trace.factory)?;
+        let (reply, session) = crate::tools::act_in_tx(tx, &act, trace)?;
         match reply {
             Ok(_) => {
                 tx.execute_batch("RELEASE acted")?;
