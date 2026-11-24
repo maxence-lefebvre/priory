@@ -34882,17 +34882,42 @@ fn a_claim_after_a_close_or_drop_still_wins_so_a_later_request_starts_no_second_
 }
 
 #[test]
-fn a_close_leaves_a_request_whose_claim_is_on_its_way() {
+fn a_close_drops_a_request_read_with_it_whose_claim_is_not_on_the_log_yet() {
     let mut desktop = placed("filter-in-flight", "desktop", OSS_OFF_BY_DAY, NO_OSS, None);
     let key = "github:owner/repo#1";
     desktop.publish(&oss(1).time("2026-11-24T09:00:00Z".parse().unwrap()));
+    desktop.publish(&issue_closed());
+    desktop.publish(&oss(2));
+
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    desktop.start_with(exe, &[("PRIORY_NOW", EVENING)]);
+    let tasks = desktop.until_own_tasks(|rows| with(rows, 4, "running") == 1);
+    assert_eq!(tasks.len(), 1, "{tasks:?}");
+    assert_eq!(tasks[0][1], "github:owner/repo#2");
+    until_outcome(&desktop, "factory.task.requested", key, "dropped");
+    assert!(claimants(&desktop, key).is_empty());
+    desktop.crash();
+}
+
+#[test]
+fn a_claim_on_the_log_before_a_close_wins() {
+    let mut desktop = placed("filter-claimed", "desktop", OSS_OFF_BY_DAY, NO_OSS, None);
+    let key = "github:owner/repo#1";
+    let request = oss(1).time("2026-11-24T09:00:00Z".parse().unwrap());
+    desktop.publish(&request);
+    desktop.publish(
+        &Message::new(
+            "priory.task.claimed",
+            json!({ "key": key, "runner": "desktop", "request": request.id.to_string() }),
+        )
+        .subject(key),
+    );
     desktop.publish(&issue_closed());
 
     let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
     desktop.start_with(exe, &[("PRIORY_NOW", EVENING)]);
     until_outcome(&desktop, "priory.task.claimed", key, "claimed");
-    let tasks = desktop.until_own_tasks(|rows| with(rows, 4, "running") == 1);
-    assert_eq!(tasks[0][1], key);
+    assert_eq!(desktop.until_own_tasks(|rows| rows.len() == 1)[0][1], key);
     desktop.crash();
 }
 
@@ -35094,4 +35119,382 @@ fn a_failing_attach_command_leaves_the_run_running_and_records_why() {
     );
     assert_eq!(setup.rows("tasks")[0][4], "running");
     assert_eq!(setup.rows("runs")[0][7], "-");
+}
+
+/// A comment on `owner/repo#1`, written now.
+fn comment_on_one() -> Message {
+    Message::new(
+        "github.issues.comment",
+        json!({ "repo": "owner/repo", "issue": 1, "actor": "ana", "body": "Still broken.",
+            "url": "u", "github_id": 901 }),
+    )
+    .subject("owner/repo#1")
+    .time(herdr_bus::Timestamp::now())
+}
+
+#[test]
+fn a_request_the_owner_served_after_a_reopen_starts_no_second_task_once_the_window_lifts() {
+    let plain = "platform = { os = \"linux\" }\n";
+    let mut server = placed("filter-served", "server", OSS_OFF_BY_DAY, plain, None);
+    let mut desktop = placed(
+        "filter-served",
+        "desktop",
+        OSS_OFF_BY_DAY,
+        plain,
+        Some(&server),
+    );
+    let mut laptop = placed(
+        "filter-served",
+        "laptop",
+        OSS_OFF_BY_DAY,
+        plain,
+        Some(&server),
+    );
+    with_serve(&laptop);
+    let key = "github:owner/repo#1";
+    let held = |setup: &Setup, hold: &str, generation: i64| {
+        logged(
+            setup,
+            "priory.task.held",
+            json!({ "key": key, "runner": "server", "hold": hold, "generation": generation }),
+        );
+    };
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    desktop.start_with(exe, &[("PRIORY_NOW", WORK_HOURS)]);
+    laptop.start_viewing(WORK_HOURS);
+    server.calls(&[result("passed")]);
+    server.publish(&oss(1));
+    server.start_with(exe, &[("PRIORY_NOW", WORK_HOURS)]);
+    held(&server, "ended", 1);
+    until_outcome(&desktop, "priory.task.held", key, "noted");
+    server.crash();
+    // The comment comes after the task was done, to the second.
+    std::thread::sleep(Duration::from_millis(1100));
+
+    // The server reads both in one poll, after the others read the request.
+    server.publish(&comment_on_one());
+    server.publish(&oss(1));
+    for setup in [&desktop, &laptop] {
+        until_outcome(setup, "factory.task.requested", key, "unaccepted");
+    }
+    server.start_with(exe, &[("PRIORY_NOW", WORK_HOURS)]);
+    held(&server, "kept", 2);
+    let ended = server.priory(&["cancel", "1"]);
+    assert!(ended.status.success(), "{ended:?}");
+    held(&server, "ended", 2);
+    desktop.crash();
+    desktop.publish(&oss(2));
+    desktop.start_with(exe, &[("PRIORY_NOW", EVENING)]);
+    logged(
+        &desktop,
+        "priory.task.claimed",
+        json!({ "key": "github:owner/repo#2", "runner": "desktop" }),
+    );
+    // The desktop's alive message offers the waiting requests; its next claim comes after it.
+    desktop.until("inbox", |rows| {
+        rows.iter()
+            .filter(|row| row[1] == "priory.runner.alive" && row[2] == "desktop")
+            .count()
+            == 2
+    });
+    desktop.publish(&oss(3));
+    logged(
+        &desktop,
+        "priory.task.claimed",
+        json!({ "key": "github:owner/repo#3", "runner": "desktop" }),
+    );
+    assert_eq!(claimants(&desktop, key), ["server"]);
+    for setup in [&desktop, &laptop] {
+        setup.until("inbox", |rows| {
+            rows.iter()
+                .filter(|row| row[1] == "factory.task.requested" && row[2] == key)
+                .all(|row| row[4] == "elsewhere")
+        });
+    }
+
+    for setup in [&mut desktop, &mut server, &mut laptop] {
+        setup.crash();
+    }
+}
+
+#[test]
+fn a_runner_that_was_off_reads_a_request_and_its_later_drop_and_claims_nothing() {
+    let plain = "platform = { os = \"linux\" }\n";
+    let mut desktop = placed("filter-off-drop", "desktop", OSS_OFF_BY_DAY, plain, None);
+    let mut server = placed(
+        "filter-off-drop",
+        "server",
+        OSS_OFF_BY_DAY,
+        plain,
+        Some(&desktop),
+    );
+    let key = "github:owner/repo#1";
+    desktop.publish(&oss(1));
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    desktop.start_with(exe, &[("PRIORY_NOW", WORK_HOURS)]);
+    until_outcome(&desktop, "factory.task.requested", key, "unaccepted");
+    let factory = desktop.dir.join("factory").to_str().unwrap().to_owned();
+    let cancelled = desktop.priory(&["cancel", &factory, key]);
+    assert!(cancelled.status.success(), "{cancelled:?}");
+    until_outcome(&desktop, "factory.task.requested", key, "dropped");
+
+    server.publish(&oss(2));
+    server.start_with(exe, &[("PRIORY_NOW", WORK_HOURS)]);
+    logged(
+        &desktop,
+        "priory.task.claimed",
+        json!({ "key": "github:owner/repo#2", "runner": "server" }),
+    );
+    until_outcome(&server, "factory.task.requested", key, "dropped");
+    assert!(claimants(&desktop, key).is_empty());
+    desktop.crash();
+    server.crash();
+}
+
+#[test]
+fn an_owner_whose_filter_refused_a_request_routes_it_into_its_task_that_feedback_reopened() {
+    let mut server = placed("filter-own", "server", OSS_OFF_BY_DAY, OSS_OFF_BY_DAY, None);
+    let mut desktop = placed(
+        "filter-own",
+        "desktop",
+        OSS_OFF_BY_DAY,
+        OSS_OFF_BY_DAY,
+        Some(&server),
+    );
+    let key = "github:owner/repo#1";
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    server.calls(&[result("passed")]);
+    server.publish(&requested(1));
+    server.start_with(exe, &[("PRIORY_NOW", WORK_HOURS)]);
+    logged(
+        &server,
+        "priory.task.held",
+        json!({ "key": key, "runner": "server", "hold": "ended" }),
+    );
+    desktop.start_with(exe, &[("PRIORY_NOW", WORK_HOURS)]);
+    server.publish(&oss(1));
+    for setup in [&desktop, &server] {
+        until_outcome(setup, "factory.task.requested", key, "unaccepted");
+    }
+    // The comment comes after the task was done, to the second.
+    std::thread::sleep(Duration::from_millis(1100));
+    server.publish(&comment_on_one());
+
+    until_outcome(&desktop, "factory.task.requested", key, "elsewhere");
+    server.until("inbox", |rows| {
+        rows.iter()
+            .filter(|row| row[1] == "factory.task.requested")
+            .all(|row| row[3] == "1" && row[4] != "unaccepted")
+    });
+    assert_eq!(server.own_tasks().len(), 1);
+    assert_eq!(claimants(&server, key), ["server"]);
+    desktop.crash();
+    server.crash();
+}
+
+#[test]
+fn a_request_that_waits_follows_its_issue_to_another_linear_team() {
+    let mut desktop = placed("filter-move", "desktop", OSS_OFF_BY_DAY, NO_OSS, None);
+    let mut laptop = placed(
+        "filter-move",
+        "laptop",
+        OSS_OFF_BY_DAY,
+        NO_OSS,
+        Some(&desktop),
+    );
+    with_serve(&laptop);
+    let labelled = |issue: &str, source: &str| {
+        let mut request = linear_requested(issue, source);
+        request.data["labels"] = json!({ "project": "oss" });
+        request
+    };
+    desktop.publish(&labelled("ENG-7", "first"));
+    desktop.publish(&team_moved("ENG-7", "OPS-3"));
+    desktop.publish(&labelled("OPS-3", "later"));
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    desktop.start_with(exe, &[("PRIORY_NOW", WORK_HOURS)]);
+    laptop.start_viewing(WORK_HOURS);
+    for setup in [&desktop, &laptop] {
+        until_outcome(
+            setup,
+            "factory.task.requested",
+            "linear:OPS-3",
+            "unaccepted",
+        );
+        let keys: Vec<_> = listed_tasks(setup)
+            .into_iter()
+            .map(|[key, _, _]| key)
+            .collect();
+        assert_eq!(keys, ["linear:OPS-3"]);
+    }
+
+    desktop.crash();
+    desktop.start_with(exe, &[("PRIORY_NOW", EVENING)]);
+    let tasks = desktop.until_own_tasks(|rows| with(rows, 4, "running") == 1);
+    assert_eq!(tasks.len(), 1, "{tasks:?}");
+    assert_eq!(tasks[0][1], "linear:OPS-3");
+    assert!(claimants(&desktop, "linear:ENG-7").is_empty());
+    laptop.until("tasks", |rows| rows.len() == 1 && rows[0][13] == "desktop");
+    desktop.crash();
+    laptop.crash();
+}
+
+#[test]
+fn a_runner_claims_the_first_request_of_a_key_its_filters_accept_not_only_the_first_one() {
+    let both = format!(
+        "{NO_OSS}\n[[filters]]\nmatch = \"!tier=day\"\nwhen = {{ hours = \"08:00-18:00\", timezone = \"UTC\" }}\n"
+    );
+    let mut desktop = placed("filter-second", "desktop", &both, &both, None);
+    let key = "github:owner/repo#1";
+    let mut second = requested(1);
+    second.data["labels"] = json!({ "tier": "day" });
+    desktop.publish(&oss(1));
+    desktop.publish(&second);
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    desktop.start_with(exe, &[("PRIORY_NOW", WORK_HOURS)]);
+    until_alive(&desktop, "desktop");
+    assert_eq!(
+        listed_tasks(&desktop),
+        [[
+            json!(key),
+            json!("no runner accepts it until 18:00"),
+            json!(null)
+        ]]
+    );
+
+    desktop.crash();
+    desktop.start_with(exe, &[("PRIORY_NOW", EVENING)]);
+    let tasks = desktop.until_own_tasks(|rows| with(rows, 4, "running") == 1);
+    assert_eq!(tasks.len(), 1, "{tasks:?}");
+    assert_eq!(claimants(&desktop, key), ["desktop"]);
+    desktop.crash();
+}
+
+#[test]
+fn a_request_that_waits_becomes_a_task_once_the_factory_has_one_runner() {
+    let mut desktop = placed("filter-one", "desktop", OSS_OFF_BY_DAY, NO_OSS, None);
+    let key = "github:owner/repo#1";
+    desktop.publish(&oss(1));
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    desktop.start_with(exe, &[("PRIORY_NOW", WORK_HOURS)]);
+    until_outcome(&desktop, "factory.task.requested", key, "unaccepted");
+    desktop.crash();
+
+    fs::remove_file(desktop.dir.join("factory/runners/server.toml")).unwrap();
+    desktop.start_with(exe, &[("PRIORY_NOW", EVENING)]);
+    let tasks = desktop.until_own_tasks(|rows| with(rows, 4, "running") == 1);
+    assert_eq!(tasks[0][1], key);
+    desktop.crash();
+}
+
+#[test]
+fn a_request_without_a_subject_waits_under_its_key() {
+    let mut desktop = placed("filter-subject", "desktop", OSS_OFF_BY_DAY, NO_OSS, None);
+    let key = "github:owner/repo#1";
+    let mut request = oss(1);
+    request.subject = None;
+    desktop.publish(&request);
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    desktop.start_with(exe, &[("PRIORY_NOW", WORK_HOURS)]);
+    until_alive(&desktop, "desktop");
+    assert_eq!(listed_tasks(&desktop).len(), 1);
+
+    desktop.crash();
+    desktop.start_with(exe, &[("PRIORY_NOW", EVENING)]);
+    let tasks = desktop.until_own_tasks(|rows| with(rows, 4, "running") == 1);
+    assert_eq!(tasks[0][1], key);
+    desktop.crash();
+}
+
+#[test]
+fn a_person_cancels_a_waiting_request_though_a_runner_is_named_like_its_keys_source() {
+    let mut desktop = placed("filter-named", "desktop", OSS_OFF_BY_DAY, NO_OSS, None);
+    fs::write(desktop.dir.join("factory/runners/github.toml"), NO_OSS).unwrap();
+    let key = "github:owner/repo#1";
+    desktop.publish(&oss(1));
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    desktop.start_with(exe, &[("PRIORY_NOW", WORK_HOURS)]);
+    until_outcome(&desktop, "factory.task.requested", key, "unaccepted");
+
+    let factory = desktop.dir.join("factory").to_str().unwrap().to_owned();
+    let cancelled = desktop.priory(&["cancel", &factory, key]);
+    assert!(cancelled.status.success(), "{cancelled:?}");
+    until_outcome(&desktop, "factory.task.requested", key, "dropped");
+    desktop.crash();
+}
+
+#[test]
+fn a_window_that_opens_before_a_cleared_task_starts_gives_its_key_back_as_waiting() {
+    let mut desktop = placed("filter-cleared", "desktop", OSS_OFF_BY_DAY, NO_OSS, None);
+    let key = "github:owner/repo#1";
+    desktop.memory(0);
+    desktop.publish(&oss(1));
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    desktop.start_with(exe, &[("PRIORY_NOW", EVENING)]);
+    until_outcome(&desktop, "priory.task.held", key, "noted");
+    desktop.crash();
+    // The daemon stopped after it published `kept` and before it started the task.
+    rusqlite::Connection::open(desktop.dir.join("priory.db"))
+        .unwrap()
+        .execute(
+            "UPDATE claims SET published = 'kept', published_generation = 1",
+            [],
+        )
+        .unwrap();
+    desktop.publish(
+        &Message::new(
+            "priory.task.held",
+            json!({ "key": key, "runner": "desktop", "hold": "kept", "generation": 1 }),
+        )
+        .subject(key),
+    );
+
+    desktop.memory(60);
+    desktop.start_with(exe, &[("PRIORY_NOW", "2026-11-25T10:00:00Z")]);
+    let holds = |setup: &Setup| {
+        on_log(setup, "priory.task.held")
+            .iter()
+            .map(|message| message.data["hold"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while holds(&desktop).len() < 3 {
+        assert!(Instant::now() < deadline, "{:?}", holds(&desktop));
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(holds(&desktop), ["waiting", "kept", "waiting"]);
+    assert_eq!(desktop.own_tasks()[0][4], "queued");
+
+    desktop.crash();
+    desktop.start_with(exe, &[("PRIORY_NOW", "2026-11-25T18:01:00Z")]);
+    desktop.until_own_tasks(|rows| with(rows, 4, "running") == 1);
+    assert_eq!(holds(&desktop)[..4], ["waiting", "kept", "waiting", "kept"]);
+    desktop.crash();
+}
+
+#[test]
+fn a_runner_that_takes_only_labelled_tasks_starts_its_sweeper() {
+    let mut setup = stalled_with_sweeper("sweeper-filter");
+    setup.hold("hold-stop");
+    for (path, content) in [
+        (
+            "factory/runners/desktop.toml",
+            "platform = { os = \"linux\" }\n\n[[filters]]\nmatch = \"project=oss\"\n",
+        ),
+        ("proc/sys/kernel/hostname", "desktop\n"),
+    ] {
+        let file = setup.dir.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, content).unwrap();
+    }
+    // The stall needs a task the filter accepts.
+    setup.publish(&oss(43));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "priory:sweep" && row[4] == "running")
+    });
+    setup.crash();
 }
