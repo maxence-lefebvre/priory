@@ -38,6 +38,28 @@ export const routedMark = (ask) => (ask?.routed_to && (ask.state ?? "open") === 
 /** What an open ask's detail says of its lead, else null. @param {any} ask */
 export const routedNote = (ask) => (routedMark(ask) ? `${ask.routed_to} is answering. You can still answer first: the first answer stands.` : null);
 
+/** A plan file's path from its worktree, such as `.priory/brief.md`. @param {string} path */
+export const planName = (path) => path.slice(path.lastIndexOf("/.priory/") + 1);
+
+/** Whether an open ask of this runner approves its task's plan. Its Plan section then leads. @param {any} ask */
+export const plansFirst = (ask) => ask.state === "open" && Boolean(ask.approves_plan) && !runnerOf(ask);
+
+/** Whether `task`, as last read, lacks the plan this revision of the ask approves: no answer goes until it is read. @param {any} ask @param {any} task */
+export const planUnread = (ask, task) => plansFirst(ask) && !(task?.plan_file?.ask === ask.id && task.plan_file.revision === ask.revision);
+
+/** Each part of a plan: its file, else its result, with its text. @param {any} plan */
+export const planParts = (plan) => plan.files.map((/** @type {any} */ file) => ({ ...file, from: file.path ? planName(file.path) : `${plan.step}, run ${plan.run}` }));
+
+/** What stands beside the options of an ask whose plan, as read, is cut, else null. @param {any} ask @param {any} task */
+export const planCut = (ask, task) => {
+  if (!plansFirst(ask) || planUnread(ask, task)) return null;
+  const cut = planParts(task.plan_file).filter((/** @type {any} */ part) => part.truncated);
+  return cut.length ? `The plan is cut at 64 KB. Read the rest at ${cut.map((/** @type {any} */ part) => part.path || part.from).join(" and ")} before you answer.` : null;
+};
+
+/** Why an ask's options wait for its plan. @param {any} ask @param {string | null | undefined} error why the read failed */
+export const planWait = (ask, error) => (error ? `Could not read the plan: ${error}. It must load before you answer.` : `Reading the plan of revision ${ask.revision} before you answer.`);
+
 /** The runner of another runner's ask, which alone lists `submissions`, else null. @param {any} ask */
 export const runnerOf = (ask) => (Array.isArray(ask?.submissions) ? ask.runner : null);
 
@@ -92,6 +114,9 @@ export const optionKey = (event) => (!event.repeat && /^[1-9]$/.test(event.key) 
 
 /** Whether a person may dismiss an ask: a step's or a hold's ask needs an answer. */
 export const dismissable = (ask) => ask?.dismissable !== false;
+
+/** How "Write an answer" shows on an ask: a lock hides an open form, and only a shown form sends. @param {boolean} writing @param {string | null} locked @param {boolean} pending */
+export const writeShown = (writing, locked, pending) => (writing && !locked ? "form" : locked || pending ? "disabled" : "button");
 
 // How long a first tap on an option stays armed for the second.
 export const ARM_MS = 4000;

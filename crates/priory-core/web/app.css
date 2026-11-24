@@ -265,6 +265,7 @@ a.autolink { color: var(--action-text); text-decoration: underline; text-underli
 .md code { font: 400 13px var(--font-mono); background: var(--raised); border-radius: var(--radius-sm); padding: 1px 4px; }
 .md pre { font: 400 var(--type-mono) var(--font-mono); background: var(--raised); border-radius: var(--radius-md); padding: 10px 12px; overflow-x: auto; white-space: pre; overflow-wrap: normal; }
 .md pre code { font: inherit; background: none; padding: 0; }
+.md .info { font: 400 var(--type-caption) var(--font-mono); color: var(--text-2); }
 .md a { color: var(--action-text); text-decoration: underline; text-underline-offset: 2px; }
 .md .host, .md .img { color: var(--text-3); }
 .md .host { font: 400 var(--type-small) var(--font-ui); }

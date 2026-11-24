@@ -1613,7 +1613,7 @@ fn diagnose(
 ) -> Result<Repair, Error> {
     let need = crate::room::need(factory.agents.get(agent).map(|agent| &agent.value));
     let short = |db: &Connection| -> Result<Result<Option<crate::room::Short>, String>, Error> {
-        let promised = state::promised(db, factory, None)?;
+        let promised = state::promised(db, factory)?;
         Ok(room::measure(home).map(|room| crate::room::wait(&room, share, promised, need)))
     };
     let missing = |short: &crate::room::Short| {

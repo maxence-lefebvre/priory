@@ -61,7 +61,9 @@ fn main() -> ExitCode {
             };
             let run = if verb == "intake" {
                 |factory: &factory::Factory, once| {
-                    intake::run(factory, once, watched, merged, health, ended, pre_ran)
+                    intake::run(
+                        factory, once, watched, merged, red, recovered, health, ended, pre_ran,
+                    )
                 }
             } else {
                 daemon::run
@@ -305,6 +307,20 @@ fn merged(since: &str) -> Result<Vec<intake::Merge>, String> {
     }
     let db = state::open()?;
     state::merges(&db, since).map_err(|error| format!("merged pull requests: {error}"))
+}
+
+/// The unread reports of merges since `since` that are red; none when the intake runs without a state file.
+fn red(since: &str) -> Result<Vec<intake::Red>, String> {
+    if std::env::var_os("PRIORY_DB").is_none() {
+        return Ok(Vec::new());
+    }
+    let db = state::open()?;
+    grades::red(&db, since).map_err(|error| format!("red merges: {error}"))
+}
+
+/// Marks read the report of a red merge whose checks passed again.
+fn recovered(report: i64) -> Result<(), String> {
+    post::read(&state::open()?, report)
 }
 
 /// How many tasks with `key` ended, from `PRIORY_DB`; none when the intake runs without a state
@@ -2316,7 +2332,8 @@ fn adopt(args: Vec<String>) -> ExitCode {
         trigger
             .filter
             .as_ref()
-            .and_then(|filter| filter.get("author")),
+            .and_then(|filter| filter.get("author"))
+            .and_then(factory::FilterValue::one),
     ) else {
         return fail(&format!(
             "trigger {name} is not a pull request comment or review trigger"
@@ -2778,9 +2795,14 @@ fn held(
         pid: child.id(),
     };
     // The daemon takes the same pid again, so a lost reply only delays the hand-over.
+    let mut said = String::new();
     let taken = loop {
         match call(&run, runtime::call_through_restart) {
-            Err(_) if matches!(child.try_wait(), Ok(None)) => {
+            Err(error) if matches!(child.try_wait(), Ok(None)) => {
+                if said != error {
+                    eprintln!("priory memory: grant {grant} waits to start its command: {error}");
+                    said = error;
+                }
                 std::thread::sleep(Duration::from_millis(250));
             }
             taken => break taken.flatten(),

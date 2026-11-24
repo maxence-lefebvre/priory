@@ -1,6 +1,6 @@
 use crate::log::{self, Log};
 use herdr_bus::{Bus, Message, Output, Timestamp, Uuid};
-use priory_factory::factory::{Factory, Trigger};
+use priory_factory::factory::{Factory, FilterValue, Trigger};
 use priory_runtime::http::Reply;
 mod cloudwatch;
 mod figma;
@@ -73,7 +73,7 @@ pub const PASSING: [&str; 3] = ["success", "neutral", "skipped"];
 /// The streams of a repo: the message type each is named after.
 const STREAMS: [&str; 4] = [LABELED, OPENED, REVIEWED, CHECKED];
 pub(crate) const TASK_REQUESTED: &str = "factory.task.requested";
-const BASELINE: &str = "factory.intake.baseline";
+pub const BASELINE: &str = "factory.intake.baseline";
 const EVERY: Duration = Duration::from_secs(60);
 
 /// The counter of the events the intake and the webhooks publish, by source, way and outcome.
@@ -278,6 +278,37 @@ pub struct Merge {
     pub time: String,
 }
 
+/// An unread report that a merge is red on its base branch, which the intake marks read once every
+/// check that failed there passed on a commit that contains the merge.
+pub struct Red {
+    /// The report's inbox sequence number.
+    pub report: i64,
+    pub repo: String,
+    pub base_branch: String,
+    /// The merge commit.
+    pub commit: String,
+    pub checks: Vec<RedCheck>,
+}
+
+/// A check that failed on a merge commit.
+pub struct RedCheck {
+    pub name: String,
+    /// The slug of the GitHub App that ran it.
+    pub app: Option<String>,
+    /// The latest failing check run's id.
+    pub id: u64,
+    /// Every failing check run's page, since two workflows can name a job alike.
+    pub urls: Vec<String>,
+    /// The other merge commits where every later run of that name and app succeeded, newest first.
+    pub passed: Vec<Passed>,
+}
+
+/// A commit where every later run of a check's name and app succeeded, with those runs' pages.
+pub struct Passed {
+    pub sha: String,
+    pub urls: Vec<String>,
+}
+
 /// What one poll found of each source it polled, `github`, `linear` or `slack`: none when the poll
 /// succeeded, else its errors joined by `; `.
 pub type Outcomes<'a> = [(&'a str, Option<String>)];
@@ -289,15 +320,19 @@ pub type Ended = fn(&str) -> Result<u64, String>;
 /// the intake polls the Slack threads, Linear issues and pull request repositories they name.
 /// `merged` reads the task pull requests merged since the time it is given, to read their merge
 /// commits' check runs.
+/// `red` reads the unread reports of red merges since the time it is given, and `recovered` marks one read.
 /// `health` records each poll's outcomes at the poll's time, and how long a source fails before it
 /// reports: `[intake] alarm_after` for a poll, none for a source that cannot start.
 /// `ended` lets the Slack shortcut queue a thread again once its task ended.
 /// `report` records each `pre` script's failure, or none to mark the trigger's last one read.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     factory: &Factory,
     once: bool,
     watched: fn() -> Result<Vec<Watch>, String>,
     merged: fn(&str) -> Result<Vec<Merge>, String>,
+    red: fn(&str) -> Result<Vec<Red>, String>,
+    recovered: fn(i64) -> Result<(), String>,
     health: fn(&Outcomes, Timestamp, Duration) -> Result<(), String>,
     ended: Ended,
     report: fn(&str, Option<&str>) -> Result<(), String>,
@@ -328,7 +363,7 @@ pub fn run(
         .values()
         .filter_map(|trigger| trigger.value.repo.as_deref())
         .collect();
-    let linear_triggers = [from("linear"), from("linear.view")].concat();
+    let linear_triggers = [from("linear"), from("linear.view"), from("linear.project")].concat();
     let slack_triggers = from("slack");
     let review_triggers: Vec<(&str, &Trigger)> = triggers
         .iter()
@@ -385,6 +420,7 @@ pub fn run(
     let mut published = HashSet::new();
     // Merge commits that have no check runs past the grace period, so they are not read again.
     let mut unchecked = HashSet::new();
+    let mut known = pulls::Known::default();
     let mut first = true;
     loop {
         let tick = std::time::Instant::now();
@@ -420,12 +456,13 @@ pub fn run(
         first = false;
         let waited = watching.iter().filter_map(pull_request_repo);
         let polled: BTreeSet<&str> = repos.iter().copied().chain(waited).collect();
-        let merges = match merged(&since(now()?)) {
-            Ok(merges) => merges,
+        let since = since(now()?);
+        let (merges, merges_read) = match merged(&since) {
+            Ok(merges) => (merges, true),
             Err(error) if once => return Err(error),
             Err(error) => {
                 eprintln!("{error}");
-                Vec::new()
+                (Vec::new(), false)
             }
         };
         let (found, errors) = fetch(&polled, &cursors, &merges, &mut unchecked);
@@ -433,14 +470,39 @@ pub fn run(
         let hooked = factory.github_webhook().is_some().then_some(&repos);
         publish_all(bus, &triggers, found, &mut cursors, &mut published, hooked)?;
         failed.entry("github").or_default().extend(errors);
+        // A commit still read may turn another check red, which posts no second report.
+        let settled = |red: &Red| {
+            merges_read
+                && polled.contains(red.repo.as_str())
+                && !merges
+                    .iter()
+                    .any(|merge| merge.repo == red.repo && merge.commit == red.commit)
+        };
+        let cleared = red(&since).and_then(|reds| {
+            for red in reds.iter().filter(|red| settled(red)) {
+                match pulls::recovered(red, &mut known) {
+                    Ok(true) => recovered(red.report)?,
+                    Ok(false) => {}
+                    Err(error) => failed.entry("github").or_default().push(error),
+                }
+            }
+            Ok(())
+        });
+        if let Err(error) = cleared {
+            if once {
+                return Err(error);
+            }
+            eprintln!("{error}");
+        }
         if let Some(reviews) = &mut reviews {
             let errors = reviews.poll(bus, now()?)?;
             failed.entry("github").or_default().extend(errors);
         }
         if let Some(linear) = &mut linear {
             match linear.fetch(&watching) {
-                Ok(polled) => {
-                    linear.publish_all(bus, polled, factory.linear_webhook().is_some())?
+                Ok((polled, errors)) => {
+                    linear.publish_all(bus, polled, factory.linear_webhook().is_some())?;
+                    failed.entry("linear").or_default().extend(errors);
                 }
                 Err(error) => failed.entry("linear").or_default().push(error),
             }
@@ -894,16 +956,19 @@ impl Observed {
         let outsider = field("association")
             .is_some_and(|association| !["OWNER", "MEMBER", "COLLABORATOR"].contains(&association));
         let matches = |trigger: &Trigger| {
-            let filter = |key: &str| trigger.filter.as_ref().and_then(|filter| filter.get(key));
+            let filter = |key: &str| {
+                let value = trigger.filter.as_ref().and_then(|filter| filter.get(key));
+                value.and_then(FilterValue::one)
+            };
             // A bot's review starts a task only for a trigger that names the bot.
             let commenter = match filter("commenter") {
-                Some(commenter) => field("actor") == Some(commenter.as_str()),
+                Some(commenter) => field("actor") == Some(commenter),
                 None => self.data["bot"] != true,
             };
             trigger.repo.as_deref() == Some(self.repo.as_str())
                 && format!("github.{}", trigger.on) == self.kind
-                && filter("label").is_none_or(|label| self.label.as_ref() == Some(label))
-                && filter("author").is_none_or(|author| field("author") == Some(author.as_str()))
+                && filter("label").is_none_or(|label| self.label.as_deref() == Some(label))
+                && filter("author").is_none_or(|author| field("author") == Some(author))
                 && commenter
                 && !outsider
                 && !agent
@@ -927,7 +992,7 @@ fn task_requested(name: &str, trigger: &Trigger, source: &Message, key: String) 
         "trigger": name,
         "source": source.id.to_string(),
     });
-    for field in ["team", "project"] {
+    for field in ["team", "project", "order"] {
         if let Some(value) = source.data.get(field) {
             data[field] = value.clone();
         }
