@@ -1,0 +1,8 @@
+{
+  "id": "0196f1c5-4e5f-7a61-9c2d-3e4f5a6b7c8d",
+  "type": "priory.task.dropped",
+  "subject": "github:acme/widgets#42",
+  "time": "2026-11-24T10:22:00Z",
+  "data": { "key": "github:acme/widgets#42", "by": "cli" },
+  "links": []
+}

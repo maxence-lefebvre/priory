@@ -198,6 +198,11 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     };
     let consumer = runners::consumer(trace.runner.as_deref());
     runners::name(&db, trace.runner.as_deref())?;
+    if trace.runner.is_none() {
+        runners::unplace(&mut db, &trace, counting.get(&home))?
+            .iter()
+            .for_each(|tmux| runtime::kill(tmux));
+    }
     if once {
         drain(&*bus, &consumer, &mut db, &trace, counting.get(&home))?;
         runners::flush(&db, &*bus)?;
@@ -408,7 +413,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             drain_probed(&*bus, &consumer, &mut db, &trace, counter, true)
         });
         if let Some(me) = &trace.runner {
-            runners::tick(&mut db, me, intake::now()?, &mut alive)?;
+            runners::tick(&mut db, me, factory, intake::now()?, &mut alive)?;
         }
         if let Some(drained) = drained {
             let tried = drained.and_then(|()| runners::flush(&db, &*bus));
@@ -1821,7 +1826,15 @@ fn act(
     commands: &mut Vec<(i64, Script)>,
     due: &state::Due,
 ) -> Result<bool, Error> {
-    // A code step's action is a start like a run's: it waits until the log says this runner keeps it.
+    // A code step's action is a start like a run's: this runner's filters hold it as they hold a run,
+    // and it waits until the log says this runner keeps it.
+    if let Some(reason) = state::filtered(db, trace.factory, trace.runner.as_deref(), due.task)? {
+        db.execute(
+            "UPDATE tasks SET reason = ?2 WHERE id = ?1 AND reason IS NOT ?2",
+            rusqlite::params![due.task, reason],
+        )?;
+        return Ok(true);
+    }
     if let Some(me) = &trace.runner
         && runners::cleared(db, me, due.task)? != Some(true)
     {
@@ -2604,6 +2617,10 @@ fn start(
             }
             crate::connectors::Before::Blocked(reason) => return Ok(Err(reason)),
         }
+    }
+    // Preparing the worktree takes time, in which a filter's window can open.
+    if state::filtered(db, factory, runner, admission.task)?.is_some() {
+        return Ok(Ok(()));
     }
     let shared = matches!(agent.value.session, Session::Shared);
     let resumed = match &turn {

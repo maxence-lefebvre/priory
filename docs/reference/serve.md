@@ -406,7 +406,7 @@ Each item:
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
 | `kind` | string | `ask`, `delivery`, `blocked`, `failed`, `prompt`, `command`, `held`, `batch`, `sweep`, `memory`, `report`, `retired`, `queue` or `worktree`. See [desk.md](../daemon/desk.md) |
-| `id` | integer or string | The ask, task, prompt, answer's action, hold, batch, sweep, grant, report's inbox sequence number or queue place; a worktree's path |
+| `id` | integer or string | The ask, task, prompt, answer's action, hold, batch, sweep, grant, report's inbox sequence number or queue place; a worktree's path; the key of a `queue` item that no runner accepts |
 | `task` | integer or null | The task; for a `batch`, its planning task |
 | `key` | string or null | The task's key |
 | `step` | string or null | The task's step |
@@ -566,7 +566,8 @@ the queue from 1, or null), `generation`, `retired`, `tldr`, `since`
 (when the task last changed state), `grade` (`red`, `yellow`, `green` or null), `grade_reason`,
 `progress`, `conditions`, a held task's [conditions](#conditions) or null, `title` (its TL;DR, else
 the first line of its request, cut to 120 characters), `batch` (the id of the batch it is an entry
-or the planning task of, or null), `added_by` (the outside session that added it through
+or the planning task of, or null), `labels` (its labels as an object, which
+[runner filters](runners.md#filters) match), `added_by` (the outside session that added it through
 [`priory mcp --outside`](../daemon/tools.md#the-outside-server), or null), `stack` and `relations`. See Grades in [tools.md](tools.md#grades).
 
 In a factory of several runners, each task also has `runner`, this runner's name, `hold`, the
@@ -585,8 +586,15 @@ The list then adds, after this runner's tasks, each task another runner holds wh
 | `since` | string | When the claim that gave it the key was published |
 | `workflow`, `band`, `lane` | string or null | From the task's request |
 | `title` | string or null | The request's TL;DR, else its subject |
+| `labels` | object | The request's labels |
 | `generation` | integer or null | The task's generation, as that runner last published it. Null until it does |
 | `submissions` | array | Every resume, revive, cancel, release and say sent to it from any machine, oldest first: `submission`, `act`, `generation`, `text`, `step`, `sent`, then `outcome` (`applied` or `refused`), `why` and `applied`, null until its runner applied it |
+
+Last comes the first request of each key that [no runner's filters
+accept](../daemon/runners.md#placing-tasks-with-filters). Its `runner`, `hold` and `id` are null, and
+so are `state`, `step` and `generation`. Its `reason` says why it waits, such as
+`no runner accepts it until 18:00`, `since` is the request's time, `submissions` is empty, and
+`workflow`, `band`, `lane`, `title` and `labels` come from the request.
 
 `priory tasks` without `--json` prints them too, with three more columns, `runner`, `hold` and
 `last_seen`. `--lane` and `--grade` keep this runner's tasks only.

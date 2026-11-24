@@ -786,7 +786,7 @@ fn tasks_since(
     let query = format!(
         "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place AS position,
            generation, retired, tldr, changed AS since, grade, grade_reason, progress, {CONDITIONS},
-           {TITLE}, batch, added_by
+           {TITLE}, batch, added_by, coalesce(labels, '{{}}') AS labels
          FROM tasks LEFT JOIN queue USING (id)
          WHERE (?1 IS NULL OR lane = ?1) AND (?2 IS NULL OR grade = ?2)
            AND (?3 IS NULL OR state NOT IN ('done', 'failed', 'dropped') OR changed >= ?3)
@@ -847,7 +847,14 @@ pub fn holding(db: &Connection, repo: &str, number: u64) -> rusqlite::Result<Val
 }
 
 fn parse_json(task: &mut Value) {
-    for field in ["progress", "conditions", "waits", "stops", "protected"] {
+    for field in [
+        "progress",
+        "conditions",
+        "waits",
+        "stops",
+        "protected",
+        "labels",
+    ] {
         if let Some(text) = task[field].as_str() {
             task[field] = serde_json::from_str(text).unwrap_or(Value::Null);
         }
@@ -1594,6 +1601,7 @@ pub fn desk(
         item.remove("title");
     }
     list.retain(|item| all || item["snoozed_until"].is_null());
+    list.extend(crate::runners::unaccepted_desk_items(db)?);
     for (path, task, reason) in sweep::stays(db, home)? {
         list.push(json!({
             "since": null, "kind": "worktree", "id": path, "task": task, "key": null,
@@ -1660,7 +1668,7 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
             "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place AS position,
                generation, retired, tldr, changed AS since, repo, branch, base_sha, grade, grade_reason,
                merge_risk, progress, plan_goal, plan_testing, plan_brief, verification, intervention, lead, auto_answer, batch, added_by,
-               intent, noop, {CONDITIONS}
+               intent, noop, coalesce(labels, '{{}}') AS labels, {CONDITIONS}
              FROM tasks LEFT JOIN queue USING (id) WHERE id = ?1",
             places()
         ),

@@ -1233,14 +1233,12 @@ fn the_upgrade_marks_read_the_alarms_of_merges_whose_only_red_checks_were_cancel
         ),
     ]);
     assert_eq!(setup.alarms().len(), 5);
-    let newest: i64 = setup
-        .db()
-        .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .unwrap();
-
     setup
         .db()
-        .execute_batch(&format!("PRAGMA user_version = {};", newest - 1))
+        .execute_batch(
+            "ALTER TABLE tasks DROP COLUMN labels; DROP INDEX inbox_unaccepted;
+             ALTER TABLE inbox DROP COLUMN reason; PRAGMA user_version = 115;",
+        )
         .unwrap();
 
     assert_eq!(
