@@ -646,11 +646,7 @@ fn publish_all(
             if CHANGES.contains(&source.kind.as_str()) {
                 let (_, delivered) = match &mut delivered {
                     Some(delivered) => delivered,
-                    None => {
-                        let claim = claim()?;
-                        let changes = recent(bus, |other| CHANGES.contains(&other.kind.as_str()))?;
-                        delivered.insert((claim, changes))
-                    }
+                    None => delivered.insert((claim()?, recent(bus)?)),
                 };
                 // A crash may have stopped the webhook between its event and its task requests.
                 if let Some(other) = delivered.iter().find(|other| same_change(other, &source)) {
@@ -721,13 +717,17 @@ fn reported(bus: &dyn Log, message: &Message) -> Result<bool, String> {
     if !CHANGES.contains(&message.kind.as_str()) {
         return Ok(false);
     }
-    let changes = recent(bus, |other| CHANGES.contains(&other.kind.as_str()))?;
-    Ok(changes.iter().any(|other| same_change(other, message)))
+    Ok(recent(bus)?.iter().any(|other| same_change(other, message)))
+}
+
+/// The source events of `CHANGES` types on the output, as `lately` finds them.
+fn recent(bus: &dyn Log) -> Result<Vec<Message>, String> {
+    lately(bus, |message| CHANGES.contains(&message.kind.as_str()))
 }
 
 /// The messages on the output that `wanted` takes, newest first, back 7 days and at most
 /// `LOOKBACK_MESSAGES` messages.
-fn recent(bus: &dyn Log, wanted: impl Fn(&Message) -> bool) -> Result<Vec<Message>, String> {
+fn lately(bus: &dyn Log, wanted: impl Fn(&Message) -> bool) -> Result<Vec<Message>, String> {
     let since = Timestamp::now().as_second() - LOOKBACK_SECONDS;
     let mut found = Vec::new();
     let mut before = None;
@@ -945,7 +945,7 @@ impl Observed {
                 ))
             })
             .collect();
-        let found = recent(bus, |other| ids.contains(&other.id))?;
+        let found = lately(bus, |other| ids.contains(&other.id))?;
         Ok(found.len() == ids.len())
     }
 
