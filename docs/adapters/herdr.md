@@ -118,7 +118,8 @@ state database and never writes a file in the factory.
   `setShared("priory.attach", { task, at: Date.now(), readOnly })`. The bar runs
   `priory attach TASK --print`, with `--read-only` when `readOnly` is true, and opens a terminal tab
   that runs the printed command, which starts a tmux client on the task's live run (R5.6). A
-  read-only tab, named "Watch task N", cannot type and leaves the agent's window size alone. tmux stays the owner. When the task has no live run,
+  read-only tab, named "Watch task N", cannot type, and sizes the agent's window only while no
+  client that can type is attached. tmux stays the owner. When the task has no live run,
   the bar shows Priory's error instead. The tab opens in the space shown when the panel asked. When
   that space is on another machine than Priory, the bar refuses and asks for a space on Priory's
   machine.
@@ -174,13 +175,12 @@ daemon's environment. Then:
 
 1. `hc ls --label priory.run=RUN`: when a live terminal already carries the run's label, it exits 0
    and opens nothing.
-2. Otherwise `priory attach --run RUN --read-only --print` checks that the run has a live pane. When
-   it fails, the script prints its error and exits 1. `hc run --bg` alone would hide that error.
-3. `hc run --bg --keep --no-parent --no-notify` starts `priory attach --run RUN --read-only`,
-   labelled `herdr.space=<space>`, `herdr.tab=task-<TASK>`, `priory.task=<TASK>` and
-   `priory.run=<RUN>`. The hc core starts it with its own environment, so the script passes the
-   daemon's `PRIORY_DB`, `PRIORY_HOME` and `TMUX_TMPDIR` through `env`, and runs the daemon's
-   own executable, `PRIORY_EXE`.
+2. Otherwise `priory attach --run RUN --read-only --print` checks that the run has a live pane, and
+   prints the tmux command that attaches to it. When it fails or prints no command, the script says so
+   and exits 1. `hc run --bg` alone would hide that error.
+3. `hc run --bg --keep --no-parent --no-notify` starts the printed command, labelled `herdr.space=<space>`, `herdr.tab=task-<TASK>`, `priory.task=<TASK>` and
+   `priory.run=<RUN>`. The command names its tmux server's socket, so it needs none of the daemon's
+   environment. The script unsets `TMUX`, which would make tmux refuse a nested client.
 
 It exits 1 with `attach: hc is not on PATH; install herdr-core or fix the daemon's PATH` when the
 daemon's `PATH` has no `hc`, and with `attach: set PRIORY_HERDR_SPACE to the Herdr space that shows
