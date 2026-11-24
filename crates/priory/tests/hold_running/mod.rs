@@ -27,7 +27,9 @@ fn refused(setup: &Setup, flags: &[&str]) -> String {
 }
 
 fn until_state(setup: &Setup, state: &str) {
-    setup.until("tasks", |rows| rows[0][4] == state);
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == state)
+    });
 }
 
 /// Task 1's `held` rows on the desk: what each says.
@@ -168,7 +170,7 @@ fn a_marked_task_that_asks_sleeps_and_is_held_once_it_is_answered() {
 
     until_state(&setup, "asleep");
     assert_eq!(on_desk(&setup), ["holds once it is ready: room for task 2"]);
-    person(&setup, "answer", &["1", "sqlite"]);
+    person(&setup, "answer", &["1", "sqlite", "--revision", "1"]);
     until_state(&setup, "held");
     assert_eq!(setup.rows("runs").len(), 1);
     assert_eq!(person(&setup, "release", &["1"]), "task 1 is ready\n");
@@ -286,4 +288,65 @@ fn an_asleep_task_cannot_be_held() {
         refused(&setup, &[]),
         "priory hold: task 1 is asleep: only a queued, ready or running task can be held\n"
     );
+}
+
+#[test]
+fn hold_now_keeps_a_result_the_turn_already_sent() {
+    let mut setup = Setup::new("hold-now-result");
+    setup.workflow("two", SAME_AGENT);
+    setup.calls(&[result("passed")]);
+    mid_turn(&mut setup, on("two", requested(42)));
+    setup.written("fake/tools.log");
+    setup.until("runs", |_| {
+        setup.sql("SELECT count(*) FROM results") == Some("1".to_owned())
+    });
+
+    assert_eq!(hold(&setup, &["--now"]), format!("task 1 {HELD}\n"));
+
+    assert_eq!(setup.rows("tasks")[0][3], "check");
+    let prompts = setup.prompts("1");
+    assert!(
+        prompts.last().unwrap().contains("Check the change."),
+        "{prompts:?}"
+    );
+}
+
+#[test]
+fn hold_now_with_an_unconfirmed_prompt_leaves_it_on_the_desk_and_the_task_resumes() {
+    let mut setup = Setup::new("hold-now-unconfirmed");
+    fs::write(setup.dir.join("fake/trailer"), " Wait for approval.").unwrap();
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+    setup.go();
+    setup.written("fake/submitted");
+    draft(&setup);
+
+    assert_eq!(hold(&setup, &["--now"]), format!("task 1 {HELD}\n"));
+
+    setup.gone("priory-1");
+    fs::remove_file(setup.dir.join("fake/trailer")).unwrap();
+    setup.release("hold-stop");
+    assert_eq!(person(&setup, "release", &["1"]), "task 1 is ready\n");
+    let runs = setup.until("runs", |rows| rows.len() == 2);
+    assert_eq!(runs[0][4], runs[1][4], "{runs:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    assert!(setup.typed()[1].starts_with("A person interrupted your last turn"));
+}
+
+#[test]
+fn hold_now_before_the_session_starts_keeps_the_step_prompt() {
+    let mut setup = Setup::new("hold-now-unready");
+    fs::write(setup.dir.join("fake/silent"), "Starting").unwrap();
+    setup.publish(&requested(42));
+    setup.go();
+    setup.until("runs", |rows| rows.len() == 1);
+
+    assert_eq!(hold(&setup, &["--now"]), format!("task 1 {HELD}\n"));
+
+    setup.gone("priory-1");
+    fs::remove_file(setup.dir.join("fake/silent")).unwrap();
+    person(&setup, "release", &["1"]);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let typed = setup.typed();
+    assert!(typed[0].contains("Implement the issue."), "{typed:?}");
 }
