@@ -40,6 +40,7 @@ one: [reload.md](../daemon/reload.md#what-a-reload-changes) lists them.
 | `consult` | table | no | no agent consults | Who may consult which investigator, and the bounds of one consult. See [`[consult]`](#consult) | |
 | `mcp` | table of tables | no | | A person's statement about each MCP server or connector an investigator names. See [`[mcp.<name>]`](#mcpname) | |
 | `guard` | table | no | the built-in guards alone | Irreversible commands and MCP tools the tool guard denies on top of the built-in ones. See [`[guard]`](#guard) | |
+| `private` | table | no | no term is private | Terms no run may publish to the repositories it lists. See [`[private]`](#private) | |
 | `sandboxes` | table of tables | no | no sandbox | The jails a workflow can start its agents in, by name. See [`[sandboxes.<name>]`](#sandboxesname) | |
 | `trust_worktrees` | bool | no | `false`: a person trusts each folder by hand | The daemon records Claude Code's, Codex's and direnv's folder trust for each run's worktree and clone, for the repositories the factory names. When the worktree has an `.envrc` and `direnv` is installed, the run starts in its environment. See [sessions.md](../daemon/sessions.md#trusting-the-worktrees-and-the-clone) | `true` |
 | `repos` | table of tables | no | no recipe runs | The setup, resume and teardown recipes of each repository. See [`[repos]`](#repos) | |
@@ -435,6 +436,39 @@ commands = [{ name = "fly-deploy", run = ["fly", "deploy"] }]
 tools = ["mcp__stripe__*"]
 ```
 
+## `[private]`
+
+Terms, such as ticket ids or other repositories' names, that no run may publish to the listed
+repositories. See [guard.md](../daemon/guard.md#private-terms) for which calls are screened and how.
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `repos` | array of strings | no | `[]`: nothing is screened | The GitHub repositories to keep the terms out of, each `owner/name`, in any case | `["acme/widgets"]` |
+| `terms` | array of tables | no | `[]`: nothing is screened | The terms, in labelled groups | see below |
+
+Each entry of `terms` needs `text` or `regex`, or both:
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `label` | string | yes | | The name a refusal gives in place of the term. Used once, and holds no term itself | `"ticket-id"` |
+| `text` | array of strings | no | `[]` | Literal strings, matched in any case. An end that is a letter, a digit or `_` matches only at a word's edge, so `acme` does not match `acme_x`: use `regex` for that | `["acme-internal"]` |
+| `regex` | array of strings | no | `[]` | Regexes, in the [regex crate's syntax](https://docs.rs/regex/latest/regex/#syntax), matched one line at a time | `['\bACME-\d+']` |
+
+```toml
+[private]
+repos = ["acme/widgets"]
+terms = [
+  { label = "ticket-id", regex = ['\bACME-\d+'] },
+  { label = "internal-repo", text = ["acme-internal"] },
+]
+```
+
+`priory check` warns about a term that matches an entry of `repos`, since a text that names the
+repository is then refused. An error in the table repeats none of its values.
+
+The factory's folder holds the terms as plain text, so keep it in a private repository. A run that
+started before the factory had `[private]` is not screened until it restarts.
+
 ## `[caps]`
 
 Spend caps in dollars, priced from `prices.toml`. See [spend.md](../daemon/spend.md).
@@ -642,6 +676,14 @@ day = 10.0                                     # dollars the lane may spend in a
 | `` the pre-review `<name>` is of kind <kind>: a pre-review is a judge, which reads the lessons `` | `pre_review` names a scorer that is not a `judge` |
 | `` `[guard]` command `<name>` has the name of another guard `` | A `[guard]` command takes a built-in guard's name or another command's |
 | `` `[guard]` command `<name>` needs a program in `run` `` | A `[guard]` command with an empty `run` |
+| `` `[private] repos` `<repo>` needs to be `owner/name` `` | A `[private] repos` entry that is not a GitHub `owner/name` |
+| `` `[private]` term <n> needs a label `` | A blank `label` |
+| `` `[private]` label `<label>` is used twice `` | Two entries of `terms` with one label |
+| `` `[private]` term `<label>` needs `text` or `regex` `` | An entry with neither, or with empty ones |
+| `` `[private]` term `<label>` has a regex that does not compile: <reason> `` | A `regex` the regex crate refuses |
+| `` `[private]` term `<label>` matches empty text `` | An empty `text`, or a `regex` such as `a*`, which would match every line |
+| `` `[private]` label <n> holds a private term, and refusals print labels `` | A label that one of the terms matches |
+| `` `[private]` takes `repos`, an array of strings, and `terms`, ... `` | A key or a value of `[private]` that the tables above do not list. The error repeats neither |
 | `` unknown field `<key>`, expected one of ... `` | A key the tables above do not list, or a top-level key such as `gate` written below a table such as `[serve]`, which makes it that table's key |
 | `"<text>" is not a duration such as 90s, 15m or 2h` | A duration that is not a whole number and `s`, `m`, `h` or `d` |
 | `` `factory` is also defined in factory.toml `` | Both `factory.toml` and `factory.yaml` exist |

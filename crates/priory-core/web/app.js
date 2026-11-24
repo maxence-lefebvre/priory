@@ -1,6 +1,6 @@
 // Priory's web view (DESIGN.md): the frame, the Desk and the Asks, with answering through the CLI's verbs.
 // Agent text is untrusted: every value goes through `html`, which escapes it.
-import { ARM_MS, ASK_VIEWS, answeredAsks, answeredBy, askBody, askGroups, askHeading, confidenceNote, openAsksOf, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, optionKey, press, runsCommand, submitted, takesText, writeNote } from "./asks.js";
+import { ARM_MS, ASK_VIEWS, answeredAsks, answeredBy, askBody, askGroups, askHeading, confidenceNote, openAsksOf, planCut, planParts, planUnread, planWait, plansFirst, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, optionKey, press, runsCommand, submitted, takesText, writeNote } from "./asks.js";
 import { SPLITS, attentionView, costTiles, dayBars, money, scoreTable, splitTable } from "./costs.js";
 import { addBody, addOutcome, swapLine, withDefaults } from "./add.js";
 import { linked } from "./links.js";
@@ -1167,8 +1167,9 @@ function askDetail(id, wide) {
   const bound = `${runnerOf(ask) ? `Runs on ${runnerOf(ask)}. ` : ""}Bound to revision ${ask.revision}.`;
   const optionButtons = optionList(ask, wide);
   const notice = state.notices.get(ask.id);
+  const planError = planErrorOf(ask);
   const lockedNote = locked === "offline" ? html`<p class="note" id="answer-locked">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>`
-    : locked ? html`<p class="note" id="answer-locked">${icon("layers", "s15")}<span>${state.batch?.error ? `Could not read the plan: ${state.batch.error}. It must load before you answer.` : `Reading the plan of revision ${ask.revision} before you answer.`}</span></p>` : "";
+    : locked ? html`<p class="note" id="answer-locked">${icon("layers", "s15")}<span>${planWait(ask, planError)}</span></p>` : cutNote(ask);
   const writing = state.writing.has(ask.id) && !locked;
   const write = !takesText(ask)
     ? ""
@@ -1210,8 +1211,11 @@ function askDetail(id, wide) {
     ...(batch.closes?.length ? [["closes", "Closes", closesSection(batch)]] : []),
     ...(splitsOf(batch).length ? [["splits", "Splits", splitsSection(batch)]] : []),
   ] : [];
-  const read = taskSections(taskOf(ask)).filter(([key]) => !batch || key !== "plan");
-  const sections = [...planned.map(([key, label]) => [key, label]), ["why", "Why"], ...read.map(([key, label]) => [key, label]), ["history", "History"], ...(ask.command ? [["command", "Command"]] : [])];
+  const task = taskOf(ask);
+  const sectionsRead = taskSections(task).filter(([key]) => key !== "plan" || (!batch && !planUnread(ask, task)));
+  const lead = batch || !plansFirst(ask) ? [] : sectionsRead.filter(([key]) => key === "plan");
+  const read = sectionsRead.filter((section) => !lead.includes(section));
+  const sections = [...planned.map(([key, label]) => [key, label]), ...lead.map(([key, label]) => [key, label]), ["why", "Why"], ...read.map(([key, label]) => [key, label]), ["history", "History"], ...(ask.command ? [["command", "Command"]] : [])];
   const jump = html`<nav class="jump" aria-label="Sections">${sections.map(([key, label], i) => html`<a href="#${key}" aria-current="${i === 0 ? "true" : "false"}">${label}</a>`)}</nav>`;
   const why = html`<section class="sect" id="why"><div class="sh">${icon("message-text", "s15")}What the agent asks<span class="meta">${ask.run ? html`run <span class="mono">${ask.run}</span>` : ""}</span></div>
     ${body ? html`<p class="asked">${autolinked(body, ask.repo)}</p>` : ""}
@@ -1246,10 +1250,10 @@ function askDetail(id, wide) {
       <button id="bar-answer" class="btn primary ${barArmed ? "armed" : ""}" data-answer="${options.indexOf(recommended)}" aria-disabled="${locked ? "true" : "false"}">${barArmed
         ? armedLabel(recommended, runsCommand(ask, recommended))
         : html`<span>${recommended}</span><small>${[recommended === ask.recommendation ? "Recommended" : "First option", runsCommand(ask, recommended) && "Runs a command"].filter(Boolean).join(". ")}</small>`}</button>
-      ${locked === "offline" ? html`<p class="note">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>` : ""}</div>`
+      ${locked === "offline" ? html`<p class="note">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>` : locked ? html`<p class="note">${icon("layers", "s15")}<span>${planWait(ask, planError)}</span></p>` : cutNote(ask)}</div>`
     : "";
   const reading = read.map(([, , section]) => section);
-  const plan = planned.map(([, , section]) => section);
+  const plan = [...planned, ...lead].map(([, , section]) => section);
   if (wide) return html`<div class="pinned">${header}${top}${sending}</div><div class="scroll" data-sections>${jump}${plan}${why}${reading}${history}${command}</div>`;
   return html`${header}<div class="scroll" data-sections>${top}${jump}${plan}${why}${reading}${history}${command}</div>${bar}${sending}`;
 }
@@ -1296,11 +1300,19 @@ function batchOf(which, version = null) {
   return state.batch.body;
 }
 
-// Why the options of an ask are disabled: offline, or a batch's ask whose plan is not read yet for
-// this revision, so a Go never answers a plan the page did not show.
+const planErrorOf = (ask) => (ask.approves_plan ? taskRead(state.task, ask.task).task : state.batch)?.error;
+
+const cutNote = (ask) => {
+  const cut = planCut(ask, state.task?.id === ask.task ? state.task.body : null);
+  return cut ? html`<p class="note warn">${icon("file-text", "s15")}<span>${cut}</span></p>` : "";
+};
+
+// Why the options of an ask are disabled: offline, or an ask whose plan is not read yet for this
+// revision, so no answer approves a plan the page did not show.
 function lockOf(ask) {
   if (state.failed) return "offline";
   if (runnerOf(ask)) return null;
+  if (planUnread(ask, state.task?.id === ask.task ? state.task.body : null)) return "plan";
   const read = state.batch?.which === ask.key && state.batch.version === ask.revision && state.batch.body;
   return ask.state === "open" && ask.key?.startsWith("batch:") && !read ? "plan" : null;
 }
@@ -1587,7 +1599,14 @@ function taskSections(task) {
     const criteria = progress.criteria.length ? html`<p class="meta">Acceptance criteria</p><ol class="hist crit">${progress.criteria.map((criterion) => html`<li><span class="mono">${criterion.id}</span><span>${autolinked(criterion.description, task.repo)}</span><span class="tag">${criterion.state}</span></li>`)}</ol>` : "";
     sections.push(["progress", "Progress", sect("progress", "check", "Progress", "", html`${line("Goal", progress.goal)}${criteria}${line("Latest change", progress.latestChange)}${line("Next", progress.nextAction)}`)]);
   }
-  if (task.plan) sections.push(["plan", "Plan", sect("plan", "check", "Plan", `${task.plan.step}, run ${task.plan.run}`, md(task.plan.summary, task.repo))]);
+  const file = task.plan_file;
+  if (file) {
+    const [first, ...others] = planParts(file).map((part) => ({
+      meta: html`<span class="mono" title="${part.path || ""}">${part.from}</span>`,
+      body: html`${md(part.text, task.repo)}${part.truncated ? html`<p class="note">${icon("file-text", "s15")}<span>Showing the first 64 KB. Read the rest at ${part.path || part.from}.</span></p>` : ""}`,
+    }));
+    sections.push(["plan", "Plan", sect("plan", "check", "Plan", first.meta, html`${first.body}${others.map(({ meta, body }) => html`<div class="sh">${icon("check", "s15")}Plan<span class="meta">${meta}</span></div>${body}`)}`)]);
+  } else if (task.plan) sections.push(["plan", "Plan", sect("plan", "check", "Plan", `${task.plan.step}, run ${task.plan.run}`, md(task.plan.summary, task.repo))]);
   const pr = task.pull_request;
   if (pr) {
     sections.push(["pr", "PR", sect("pr", "workflow", `#${pr.number} ${pr.title || ""}`, stateWords(pr.review),
@@ -2440,7 +2459,7 @@ function renderSheet() {
   if (!ask || ask.state !== "open" || state.pending) return sheet.close();
   const focused = document.activeElement?.closest?.("#answer") ? focusKey(document.activeElement) : null;
   sheet.innerHTML = html`<div class="shead"><h2 id="answer-title">Answer ask #${ask.id}<small>revision ${ask.revision}</small></h2><button class="iconbtn" data-action="sheet-close" aria-label="Close">${icon("x", "s20")}</button></div>
-    <div class="opts" role="group" aria-label="Options">${optionList(ask, false)}</div>`.text;
+    <div class="opts" role="group" aria-label="Options">${optionList(ask, false)}</div>${cutNote(ask)}`.text;
   if (focused) sheet.querySelector(focused)?.focus();
 }
 
