@@ -946,8 +946,8 @@ same `endpoint`. The daemon refuses it with `422` when:
 `POST /api/push/unsubscribe` drops the subscription with that `endpoint`, and answers `200` even
 when none had it, with `{"ok": "unsubscribed"}`.
 
-`kinds` turns kinds of notification on or off for that subscription. It replaces the stored choice,
-and a kind it leaves out takes its default. Without `kinds`, a known `endpoint` keeps its choice.
+`kinds` turns kinds of notification on or off for that subscription. It adds to the stored choice,
+and a kind no one turned on or off takes its default. Without `kinds`, a known `endpoint` keeps its choice.
 The reply is `{"ok": "subscribed", "kinds": {...}}`, with every kind and whether the subscription
 gets it:
 

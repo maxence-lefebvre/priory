@@ -19,7 +19,7 @@ function world({ kept = null, refuse = null, old = false } = {}) {
         sent.push(body);
         if (refuse && body.kinds) return refuse();
         if (old) return body.kinds ? { status: 400, body: { error: "unknown field `kinds`" } } : { status: 200, body: { ok: "subscribed" } };
-        stored = body.kinds ?? stored;
+        stored = { ...stored, ...body.kinds };
         return { status: 200, body: { ok: "subscribed", kinds: { ...DEFAULTS, ...stored } } };
       },
       kept: async () => device.kept,
@@ -53,6 +53,19 @@ test("a save sends the choice, keeps it, and a reload shows it", async () => {
   const reload = await confirmPush(phone, io);
   assert.deepEqual(checked(kindBoxes(reload.kinds, false)), ["ask"]);
   assert.deepEqual(sent[1], phone);
+});
+
+test("a save of one kind leaves the others unpinned", async () => {
+  const { io, sent, device } = world({ kept: { cap: false } });
+  await saveKinds(phone, { landed: true }, io);
+  assert.deepEqual(sent[0].kinds, { landed: true });
+  assert.deepEqual(device.kept, { cap: false, landed: true });
+});
+
+test("a kept choice the daemon will not take back is not confirmed", async () => {
+  const { io } = world({ kept: ASKS, refuse: async () => ({ status: 500, body: {} }) });
+  const { status, kinds, confirmed } = await confirmPush(phone, io);
+  assert.deepEqual([status, kinds, confirmed], [200, DEFAULTS, false]);
 });
 
 test("a refused save and a dropped connection put the kept choice back", async () => {

@@ -5100,6 +5100,11 @@ fn each_subscription_gets_the_kinds_it_chose() {
         assert_eq!(reply["ok"], "subscribed");
         reply["kinds"].clone()
     };
+    assert_eq!(
+        kinds(resend(PHONE, Some(json!({ "cap": true }))))["stopped"],
+        false
+    );
+    resend(PHONE, Some(json!({ "cap": false })));
     setup.subscribe(&address, LAPTOP);
     assert_eq!(
         kinds(resend(LAPTOP, None)),

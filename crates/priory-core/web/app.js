@@ -2699,9 +2699,9 @@ async function pushStatus() {
   if (!subscription) return "off";
   // The browser keeps a subscription the daemon may have dropped or never stored: send it again.
   // Only the daemon's refusal ends it; a dropped connection or a stopped daemon proves nothing.
-  const { status, kinds } = await confirmPush(subscription.toJSON(), pushIo).catch(() => ({ status: 0, kinds: null }));
+  const { status, kinds, confirmed } = await confirmPush(subscription.toJSON(), pushIo).catch(() => ({ status: 0, kinds: null, confirmed: false }));
   state.push.kinds = kinds;
-  if (status === 200) return "on";
+  if (status === 200) return confirmed ? "on" : "unconfirmed";
   if (status !== 422) return "unconfirmed";
   await subscription.unsubscribe().catch(() => {});
   return "off";
@@ -2763,14 +2763,13 @@ async function turnPush(on) {
       const subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(key) });
       // A browser subscription the daemon never stored would read "On" and get nothing.
       try {
-        const { status, body, kinds } = await confirmPush(subscription.toJSON(), pushIo);
+        const { status, body, kinds, confirmed } = await confirmPush(subscription.toJSON(), pushIo);
         if (status !== 200) throw new Error(body.error || `the server answered ${status}`);
-        state.push.kinds = kinds;
+        Object.assign(state.push, { kinds, status: confirmed ? "on" : "unconfirmed" });
       } catch (error) {
         await subscription.unsubscribe().catch(() => {});
         throw error;
       }
-      state.push.status = "on";
       return;
     }
     const subscription = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
@@ -2799,7 +2798,7 @@ async function chooseKind(kind, on) {
   try {
     const subscription = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
     if (!subscription) throw new Error("this browser is no longer subscribed");
-    state.push.kinds = await saveKinds(subscription.toJSON(), state.push.kinds, pushIo);
+    state.push.kinds = await saveKinds(subscription.toJSON(), { [kind]: on }, pushIo);
   } catch (error) {
     state.push.kinds = before;
     const why = error instanceof TypeError ? "the connection dropped" : error.message;

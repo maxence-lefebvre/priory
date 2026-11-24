@@ -34,22 +34,23 @@ export async function confirmPush(subscription, { send, kept }) {
   const kinds = reply.status === 200 ? reply.body.kinds ?? null : null;
   const choice = kinds && (await kept().catch(() => null));
   const known = Object.entries(choice || {}).filter(([kind]) => kinds && kind in kinds);
-  if (!known.some(([kind, on]) => kinds[kind] !== on)) return { ...reply, kinds };
+  if (!known.some(([kind, on]) => kinds[kind] !== on)) return { ...reply, kinds, confirmed: reply.status === 200 };
   const again = await send({ ...subscription, kinds: Object.fromEntries(known) }).catch(() => ({ status: 0, body: {} }));
-  return { ...reply, kinds: again.status === 200 ? again.body.kinds : kinds };
+  const confirmed = again.status === 200;
+  return { ...reply, kinds: confirmed ? again.body.kinds : kinds, confirmed };
 }
 
 /**
- * Keeps then sends a changed choice, and returns the daemon's. A refusal or a dropped connection puts
+ * Keeps then sends what a person just turned on or off, and returns every kind as the daemon has it. A refusal or a dropped connection puts
  * the kept choice back, so it never differs from what the screen shows.
- * @param {any} subscription @param {Record<string, boolean>} kinds
+ * @param {any} subscription @param {Record<string, boolean>} changed
  * @param {{ send: (body: any) => Promise<{ status: number, body: any }>, kept: () => Promise<Record<string, boolean> | null>, keep: (kinds: Record<string, boolean> | null) => Promise<unknown> }} io
  */
-export async function saveKinds(subscription, kinds, { send, kept, keep }) {
+export async function saveKinds(subscription, changed, { send, kept, keep }) {
   const before = await kept();
-  await keep(kinds);
+  await keep({ ...before, ...changed });
   try {
-    const { status, body } = await send({ ...subscription, kinds });
+    const { status, body } = await send({ ...subscription, kinds: changed });
     if (status !== 200) throw new Error(body.error || `the server answered ${status}`);
     return body.kinds;
   } catch (error) {

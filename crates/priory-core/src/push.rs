@@ -99,7 +99,7 @@ pub struct Subscription {
     #[serde(rename = "expirationTime", default, skip_serializing)]
     _expiration: Option<serde_json::Value>,
     pub keys: Keys,
-    /// The kinds a person turned on or off. Without them, a known subscription keeps its choice.
+    /// The kinds a person turned on or off. They join the stored choice, so an untouched kind keeps its default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kinds: Option<Choice>,
 }
@@ -220,7 +220,8 @@ pub(crate) fn change(db: &Connection, line: &Line) -> rusqlite::Result<Result<St
     db.execute(
         "INSERT INTO push_subscriptions (endpoint, p256dh, auth, kinds) VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT (endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth,
-           kinds = coalesce(excluded.kinds, push_subscriptions.kinds)",
+           kinds = coalesce(json_patch(coalesce(push_subscriptions.kinds, '{}'), excluded.kinds),
+             push_subscriptions.kinds)",
         params![
             subscription.endpoint,
             subscription.keys.p256dh,
