@@ -24,7 +24,7 @@ reading each task.
 | `report` | the report's inbox sequence number | `<source>: <line>`, for an unread report | it was posted |
 | `todo` | the to-do | its text, then `, due <time>` when it has one (see To-dos). `priory desk` prints the time in UTC; the web and Herdr Desks show it in local time | it was added |
 | `retired` | the task | `its worktree was removed to free disk; it resurrects from <branch> when its wait fires` | it retired |
-| `worktree` | the worktree's path | why it stays: see Sweep | `-` |
+| `worktree` | the worktree's path | why it stays, then its size: see Sweep | `-` |
 
 The lane column is the task's lane, or `-` for a `worktree` row.
 
