@@ -514,7 +514,8 @@ linking to the task page, state and key. Then its 5 newest events as history row
 type in plain words in bold, such as "Linear issue updated" for `linear.issue.updated`, subject, the event's first line in `--text-2` under them, time), and "and 3 older"
 past that. Under them, the one action that routes the next event, by the task's state: the task
 page's **Revive** (armed, as there) for a failed or dropped task; **Request a task** for a done
-one, which opens the [Add](#add) sheet with the task's workflow and the group's `request_text`,
+one, which opens the [Add](#add) sheet with the task's workflow, or the default when the Add sheet
+does not offer it, and the group's `request_text`,
 whose GitHub or Linear URL makes the new task's key that resource (a Slack thread gets a
 `--text-2` line instead: "No new task can take this resource from here: start one from its
 thread."); **Subscribe task 12** for an active one (`POST /api/subscribe` with the revision the

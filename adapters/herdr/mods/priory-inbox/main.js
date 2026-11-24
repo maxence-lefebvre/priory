@@ -4,7 +4,7 @@ import { appHome, exec, home as herdrHome, readTextFile, setShared } from "herdr
 import { follow, priory } from "./priory.js";
 import { selectable, stateTile } from "./ui.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
-import { droppedWhy, eventWords, neverOwned, routeAction, unheardActs } from "./view.js";
+import { droppedWhy, eventWords, neverOwned, requestedWorkflow, routeAction, unheardActs } from "./view.js";
 
 const RETRY_MS = 3000;
 // The events a group shows, newest first, as the web view's Inbox does.
@@ -235,7 +235,12 @@ export default class PrioryInbox extends View {
     /** @type {Record<string, [string, (client: ReturnType<typeof priory>) => Promise<string>]>} */
     const verbs = {
       revive: [`Revive task ${task.id}`, async (client) => { await client.revive(task.id); return `Revived task ${task.id}. Its next event reaches it.`; }],
-      request: ["Request a task", async (client) => `Requested ${await client.add(group.request_text ?? "", { workflow: task.workflow })}. It owns this resource's next event.`],
+      request: ["Request a task", async (client) => {
+        // A workflow the factory does not let a person request falls back to its [request] default.
+        const { workflows } = await client.queue().catch(() => ({ workflows: null }));
+        const workflow = requestedWorkflow(task.workflow, workflows);
+        return `Requested ${await client.add(group.request_text ?? "", { workflow })}. It owns this resource's next event.`;
+      }],
       subscribe: [`Subscribe task ${task.id}`, async (client) => `Subscribed: ${(await client.subscribe(task.id, group.resource, this.revision)).trim()}. Its next event goes to task ${task.id}.`],
     };
     const [label, verb] = verbs[action];

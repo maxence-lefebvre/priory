@@ -368,6 +368,11 @@
         "null"
       ]
     },
+    "requestable": {
+      "default": false,
+      "description": "Whether the web view's and Herdr's Add controls offer it, and `POST /api/request` takes it.\n`priory add` and triggers start any workflow.",
+      "type": "boolean"
+    },
     "sandbox": {
       "description": "The sandbox of `factory.toml` that every model step of the workflow runs its agent in.\nNone runs agents with the person's whole user, as before.",
       "type": [

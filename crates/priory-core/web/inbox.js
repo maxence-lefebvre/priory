@@ -72,6 +72,15 @@ export function routeAction(task) {
   return task.state === "done" ? "request" : "subscribe";
 }
 
+/**
+ * The workflow "Request a task" prefills: the group's task's when the factory lets a person request
+ * it, else none, so the factory's `[request]` default applies. With no list read, the task's.
+ * @param {string} workflow @param {string[] | null | undefined} requestable
+ */
+export function requestedWorkflow(workflow, requestable) {
+  return !requestable || requestable.includes(workflow) ? workflow : undefined;
+}
+
 /** The line for the events no task ever owned, one count per source, or "" with none. */
 export function neverOwned(other) {
   if (!other.length) return "";

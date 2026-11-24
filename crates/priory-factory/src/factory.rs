@@ -1925,6 +1925,10 @@ pub struct Workflow {
     /// The sandbox of `factory.toml` that every model step of the workflow runs its agent in.
     /// None runs agents with the person's whole user, as before.
     pub sandbox: Option<String>,
+    /// Whether the web view's and Herdr's Add controls offer it, and `POST /api/request` takes it.
+    /// `priory add` and triggers start any workflow.
+    #[serde(default)]
+    pub requestable: bool,
     pub steps: Vec<Step>,
 }
 
@@ -2672,6 +2676,13 @@ impl Factory {
     /// The defaults of `priory add`; none makes it need `--workflow`.
     pub fn request(&self) -> Option<&RequestDefaults> {
         self.settings.as_ref()?.value.request.as_ref()
+    }
+
+    /// The workflows a person may request from the Add controls, by name.
+    pub fn requestable(&self) -> Vec<String> {
+        let workflows = self.workflows.iter();
+        let requestable = workflows.filter(|(_, workflow)| workflow.value.requestable);
+        requestable.map(|(name, _)| name.clone()).collect()
     }
 
     /// The `[batch]` table: how `priory batch add` plans batches.

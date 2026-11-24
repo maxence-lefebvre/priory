@@ -8,7 +8,7 @@ import { markdown } from "./markdown.js";
 import { around, dossier, nextPick, refusal } from "./reports.js";
 import { checkState, prStack, stateWords } from "./stack.js";
 import { KINDS, edgeStyle, historyRows, lockBadge, nodeShape, timeline, ungatedPairs } from "./flows.js";
-import { droppedNote, droppedWhy, emptyDetail, eventWords, handled, neverOwned, sinceWords, routeAction, unheardActs, unheardNote, unroutedNote } from "./inbox.js";
+import { droppedNote, droppedWhy, emptyDetail, eventWords, handled, neverOwned, requestedWorkflow, sinceWords, routeAction, unheardActs, unheardNote, unroutedNote } from "./inbox.js";
 import { editBody, issueName, laneLayout, momentWords, stages, successors } from "./batches.js";
 import { EARLIER_CAP, KEYS, keyboardSession, paintRows, sayLine, screenRows, screenWatch } from "./terminal.js";
 import { actionNote, arrivalAsk, batchParts, capsuleWords, countHead, countWords, deskBanners, dueParts, plural, memoryNote, memoryTag, mergeSince, nextLink, onRoom, progressView, rowAction, sectionInView, sinceGroups, taskRepo } from "./desk.js";
@@ -810,9 +810,13 @@ async function subscribeTask(resource, task) {
 }
 
 // The Add sheet with the server's text, whose URL keys the new task by the group's resource.
-function requestTask(text, workflow) {
-  state.add.draft.text = text;
-  if (workflow) state.add.draft.workflow = workflow;
+async function requestTask(text, workflow) {
+  state.add.defaults ??= await api("/api/request").catch(() => null);
+  const { draft, defaults } = state.add;
+  draft.text = text;
+  draft.band ??= defaults?.band || "";
+  // The Add control offers only requestable workflows: any other prefills the factory's default.
+  draft.workflow = requestedWorkflow(workflow, defaults?.workflows) ?? (defaults?.workflow || "");
   keepDraft();
   openAdd();
 }

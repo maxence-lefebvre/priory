@@ -1748,7 +1748,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
             .map(|at| args.remove(at))
             .is_some();
     // Without the factory folder, the queue knows no schedules or workflows, so up next lists none.
-    let (mut schedules, mut workflows, mut now) = (Vec::new(), Vec::new(), jiff::Timestamp::now());
+    let (mut schedules, mut workflows, mut now) = (Vec::new(), None, jiff::Timestamp::now());
     if ["queue", "desk"].contains(&verb) || unrouted {
         now = match intake::now() {
             Ok(now) => now,
@@ -1766,7 +1766,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                 return ExitCode::FAILURE;
             };
             schedules = listing::schedule_triggers(&factory);
-            workflows = factory.workflows.into_keys().collect();
+            workflows = Some(factory.requestable());
         }
         args.clear();
     }
@@ -1814,7 +1814,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                 "tasks" => listing::tasks(db, lane, grade, all),
                 "asks" => listing::asks(db, &bands, &risks),
                 "desk" => listing::desk(db, &home, all, person.unwrap_or(listing::ME), now),
-                _ => listing::queue(db, &schedules, &workflows, now),
+                _ => listing::queue(db, &schedules, workflows.as_deref(), now),
             }
             .map(Some)
         })
