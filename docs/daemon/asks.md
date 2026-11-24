@@ -113,7 +113,7 @@ Known limits:
 - Another runner's ask shows no plan here, since its plan is stored on that runner.
 - A retired task has no worktree to compare, so its stored plan is the one approved.
 - An edit after the answer is not checked.
-- An ask that was open when Priory was upgraded to schema 114 shows no plan and is answered
+- An ask that was open when Priory was upgraded to schema 115 shows no plan and is answered
   unchecked.
 - A task revived before that upgrade has no record of where its current generation began. An ask a
   grading step raises can then show the plan of an earlier generation.
