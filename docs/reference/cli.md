@@ -68,8 +68,9 @@ a group. `PRIORY_METRICS` replaces that list for one process, such as `process,l
   asks for a task with a key of your own, and every field as a flag. See
   [cli.md](../intake/cli.md).
 - `priory adopt [DIR] TRIGGER [PR...]`: parks a task on each open pull request of a comment or
-  review trigger's `author` that no task owns in any state, or on the ones named as `42`,
-  `owner/name#42` or a URL. Prints `adopted <key>` or `<key>: task N owns it` per pull request.
+  review trigger's `author` that no task owns in any state and whose head branch no active
+  task owns, or on the ones named as `42`, `owner/name#42` or a URL. Prints `adopted <key>` or
+  `<key>: task N owns it` per pull request.
   See [adopting-pull-requests.md](../adopting-pull-requests.md).
 - `priory batch add [DIR] ISSUE... [--repo <owner/name>] [--entries <workflow>] [--band <band>] [--lane <lane>]`:
   hands several issues to a planning task that orders them under one ask. See
@@ -128,10 +129,12 @@ a group. `PRIORY_METRICS` replaces that list for one process, such as `process,l
   [runs.md](../daemon/runs.md#queue).
 - `priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]`:
   moves a task to another band or place in the queue.
-- `priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--expected REVISION]`:
-  holds a task back until a time, another task's end, a merge or its last open blocker. See
+- `priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--now] [--expected REVISION]`:
+  holds a task back until a time, another task's end, a merge or its last open blocker. A running
+  task is held at the end of its turn, or at once with `--now`. See
   [runs.md](../daemon/runs.md#holds).
-- `priory release TASK [--expected REVISION]`: lets a held task go.
+- `priory release TASK [--expected REVISION]`: lets a held task go, or keeps a running task from
+  being held after its turn.
 - `priory resume TASK`: resumes a blocked task. See [desk.md](../daemon/desk.md#resume).
 - `priory say TASK TEXT`: sends a task's agent a message, and wakes it if it sleeps. It
   reopens a done task whose pull request is open, and refuses any other ended task. See

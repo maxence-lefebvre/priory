@@ -1996,6 +1996,19 @@ fn a_request_table_passes_and_an_unknown_workflow_or_band_is_refused() {
 }
 
 #[test]
+fn a_request_default_passes_even_when_its_workflow_opts_out() {
+    let good = "name = \"demo\"\n\n[request]\nworkflow = \"implement\"\n";
+    let opted_out = format!("requestable = false\n{WORKFLOW}");
+    let mut files = with("factory.toml", good);
+    files.retain(|(path, _)| *path != "workflows/implement.toml");
+    files.push(("workflows/implement.toml", &opted_out));
+
+    let outcome = check(&factory("request-opted-out", &files));
+
+    assert_eq!((outcome.code, outcome.stderr.as_str()), (0, ""));
+}
+
+#[test]
 fn a_batch_workflow_needs_a_human_step_after_a_model_step() {
     let good = "name = \"demo\"\n\n[batch]\nworkflow = \"implement\"\nentries = \"implement\"\n";
     let ok = check(&factory("batch-ok", &with("factory.toml", good)));

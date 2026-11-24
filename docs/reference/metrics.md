@@ -63,7 +63,7 @@ and as `<name>@<machine id>` when it reads on another.
 
 | Metric | Kind | Unit | Attributes | Value |
 | ------ | ---- | ---- | ---------- | ----- |
-| `priory.run.start.duration` | histogram | `s` | `priory.harness` = `claude-code`, `codex`; `priory.session` = `first`, `resume`; `outcome` = `ok`, `error` | from a run's `started`, to the second, to its `SessionStart`. `error` is a run that ended before one, up to its end: the trust dialog, 60 seconds with none, an exit. Counts the runs whose start ended since the daemon started |
+| `priory.run.start.duration` | histogram | `s` | `priory.harness` = `claude-code`, `codex`; `priory.session` = `first`, `resume`; `outcome` = `ok`, `error` | from a run's `started`, to the second, to its `SessionStart`. `error` is a run that ended before one, up to its end: the trust dialog, its window with none, an exit. Counts the runs whose start ended since the daemon started |
 | `priory.run.starts.active` | gauge | `{run}` | `priory.harness` | the live runs with no `SessionStart` yet. Each harness the factory's agents use has a point, 0 with none |
 | `priory.run.start.oldest.age` | gauge | `s` | `priory.harness` | the oldest of those, since its `started`; 0 with none |
 | `priory.worktree.phase.duration` | histogram | `s` | `priory.phase` = `clone`, `fetch`, `checkout`, `setup`, `resume`, `teardown`; `outcome` = `ok`, `error`, `timeout` | `clone`, `fetch` and `checkout` timed around their `git` commands as a task's worktree is added. `setup`, `resume` and `teardown` from the recipe's start to its end, `ok` for `exit 0`. `timeout` is a command past `command_timeout`, or a recipe past its `timeout` |

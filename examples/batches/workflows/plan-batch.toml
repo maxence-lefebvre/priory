@@ -1,5 +1,6 @@
 #:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/workflow.json
 start = "plan"
+requestable = false            # priory batch add starts it, so the Add controls leave it out
 
 # The planner only reads: the issues, the code and the tasks that already hold an issue.
 [[steps]]
