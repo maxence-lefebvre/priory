@@ -375,7 +375,7 @@
     },
     "reopen_on_changes_requested": {
       "default": false,
-      "description": "Whether a review that requests changes on a done task's open pull request reopens the task\nwhen its author has no write access to the repository; false when unset. Anyone can review a\npull request of a public repository.",
+      "description": "Whether a review that requests changes on the open pull request a done task opened reopens the\ntask when its author has no write access to the repository, once until a trusted act; false\nwhen unset. Anyone can review a pull request of a public repository.",
       "type": "boolean"
     },
     "sandbox": {

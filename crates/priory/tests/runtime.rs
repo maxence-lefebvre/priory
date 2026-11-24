@@ -55,7 +55,7 @@ key = "issue.number"
 
 const OUTPUT: &str = "factory.intake";
 
-/// Undoes migrations 110, a run under direnv, 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
+/// Undoes migrations 111, an outsider's reopen, 110, a run under direnv, 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
 /// `auto_answer` level, 97, the task's `added_by`, and 93: the `pre` script's task columns and the
 /// pending requests.
 macro_rules! undo_pre {
@@ -72,7 +72,7 @@ macro_rules! undo_pre {
   ALTER TABLE tasks DROP COLUMN pre_context; ALTER TABLE tasks DROP COLUMN pre_script; DROP TABLE pending_requests;
   ALTER TABLE memory_candidates DROP COLUMN step; ALTER TABLE gates DROP COLUMN lessons; ALTER TABLE gates DROP COLUMN ask; ALTER TABLE gates DROP COLUMN judges;
   ALTER TABLE runs DROP COLUMN session_started; ALTER TABLE runs DROP COLUMN harness;
-  ALTER TABLE runs DROP COLUMN resumes; ALTER TABLE runs DROP COLUMN sandbox; ALTER TABLE runs DROP COLUMN direnv;
+  ALTER TABLE runs DROP COLUMN resumes; ALTER TABLE runs DROP COLUMN sandbox; ALTER TABLE runs DROP COLUMN direnv; ALTER TABLE tasks DROP COLUMN outsider_reopened;
   "
     };
 }
@@ -9303,6 +9303,41 @@ fn outsiders_review(state: &str, github_id: u64) -> Message {
     review
 }
 
+/// Publishes `review` and returns the outcome routing gave it.
+fn outcome(setup: &Setup, review: &Message) -> String {
+    setup.publish(review);
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let routed = db.query_row(
+            "SELECT outcome FROM inbox WHERE id = ?1",
+            [review.id.to_string()],
+            |row| row.get(0),
+        );
+        if let Ok(outcome) = routed {
+            return outcome;
+        }
+        assert!(Instant::now() < deadline, "never routed: {routed:?}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Waits until run `runs` of task 1 sent `passed`, then makes the task done at green checks `id`.
+fn done_again(setup: &Setup, runs: usize, id: u64) {
+    setup.until("runs", |rows| {
+        rows.len() == runs && rows[runs - 1][7] != "-"
+    });
+    setup.gone("priory-1");
+    setup.publish(&check(id, 0));
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    std::thread::sleep(Duration::from_millis(1100));
+}
+
+/// Queues a `passed` result for the next run.
+fn passes(setup: &Setup) {
+    setup.calls(&[passed_at("abc0000000000000000000000000000000000000")]);
+}
+
 /// `done_with_open_pull_request` in a workflow that lets any review requesting changes reopen it.
 fn opted_in(name: &str, close: Option<Message>) -> Setup {
     let mut setup = Setup::new(name);
@@ -9382,7 +9417,113 @@ fn an_outsiders_review_requesting_changes_on_a_merged_pull_request_reopens_nothi
 }
 
 #[test]
-fn an_outsiders_review_that_reads_a_closed_pull_request_open_again_reopens_its_subscriber() {
+fn an_outsider_reopens_a_done_task_once_until_a_person_says_something() {
+    let setup = opted_in("changes-bound", None);
+    passes(&setup);
+    let first = outsiders_review("changes_requested", 370);
+    assert_eq!(outcome(&setup, &first), "reopened");
+    done_again(&setup, 3, 2);
+
+    let second = outsiders_review("changes_requested", 371);
+    assert_eq!(outcome(&setup, &second), "outsider");
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("runs").len(), 3);
+    assert_eq!(generation(&setup), 2);
+
+    passes(&setup);
+    let said = setup.priory(&["say", "1", "Fix it."]);
+    assert!(said.status.success(), "{said:?}");
+    done_again(&setup, 4, 3);
+    let third = outsiders_review("changes_requested", 372);
+    assert_eq!(outcome(&setup, &third), "reopened");
+}
+
+#[test]
+fn only_a_trusted_persons_feedback_lets_an_outsider_reopen_a_done_task_again() {
+    let setup = opted_in("changes-trusted", None);
+    passes(&setup);
+    let first = outsiders_review("changes_requested", 380);
+    assert_eq!(outcome(&setup, &first), "reopened");
+    done_again(&setup, 3, 2);
+
+    // Each is written with write access: the task's own agent, then a bot.
+    for (id, runs, own, bot) in [(381, 4, true, false), (382, 5, false, true)] {
+        passes(&setup);
+        let mut reply = review_in("changes_requested", id);
+        reply.data["association"] = json!("MEMBER");
+        reply.data["own"] = json!(own);
+        reply.data["agent"] = json!(own);
+        reply.data["bot"] = json!(bot);
+        assert_eq!(outcome(&setup, &reply), "reopened");
+        done_again(&setup, runs, id);
+        let again = outsiders_review("changes_requested", id + 100);
+        assert_eq!(outcome(&setup, &again), "outsider");
+    }
+
+    passes(&setup);
+    let mut person = review_in("changes_requested", 383);
+    person.data["association"] = json!("MEMBER");
+    person.data["own"] = json!(false);
+    person.data["agent"] = json!(false);
+    assert_eq!(outcome(&setup, &person), "reopened");
+    done_again(&setup, 6, 383);
+    let again = outsiders_review("changes_requested", 483);
+    assert_eq!(outcome(&setup, &again), "reopened");
+}
+
+#[test]
+fn an_outsiders_review_reopens_no_task_whose_target_step_no_agent_runs() {
+    let setup = opted_in("changes-no-agent", None);
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute("UPDATE tasks SET step = 'gone' WHERE id = 1", [])
+        .unwrap();
+
+    let review = outsiders_review("changes_requested", 390);
+    assert_eq!(outcome(&setup, &review), "outsider");
+    assert_eq!(setup.rows("tasks")[0][4], "done");
+}
+
+#[test]
+fn an_outsiders_review_reopens_no_task_that_only_subscribes_to_the_pull_request() {
+    let setup = opted_in("changes-subscriber", None);
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute_batch(
+            "DELETE FROM pull_requests;
+             INSERT OR IGNORE INTO subscriptions (task, resource) VALUES (1, 'github:owner/repo#7');",
+        )
+        .unwrap();
+
+    let review = outsiders_review("changes_requested", 391);
+    assert_eq!(outcome(&setup, &review), "outsider");
+    assert_eq!(setup.rows("tasks")[0][4], "done");
+}
+
+#[test]
+fn an_outsiders_review_changes_no_pull_request_of_a_workflow_that_did_not_opt_in() {
+    let setup = done_with_open_pull_request("changes-off-closed");
+    let mut close = closed().time(herdr_bus::Timestamp::now());
+    close.data["merged"] = json!(false);
+    setup.publish(&close);
+    setup.until("inbox", |rows| rows.len() == 4);
+    let mut review = outsiders_review("changes_requested", 392);
+    review.data["open"] = json!(true);
+
+    assert_eq!(outcome(&setup, &review), "outsider");
+    let (state, kept): (String, i64) = rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .query_row(
+            "SELECT state, (SELECT count(*) FROM closed_subscriptions) FROM pull_requests",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((state.as_str(), kept), ("closed", 1));
+}
+
+#[test]
+fn an_outsiders_review_that_reads_a_tasks_closed_pull_request_open_again_reopens_it() {
     let setup = opted_in("changes-after-close", None);
     rusqlite::Connection::open(setup.dir.join("priory.db"))
         .unwrap()

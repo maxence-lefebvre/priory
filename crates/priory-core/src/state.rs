@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 110;
+const VERSION: i64 = 111;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1964,6 +1964,12 @@ ALTER TABLE runs ADD COLUMN direnv INTEGER;
 PRAGMA user_version = 110;
 ";
 
+// Whether an outsider's review reopened the task with no trusted act since.
+const SCHEMA_111: &str = "
+ALTER TABLE tasks ADD COLUMN outsider_reopened INTEGER NOT NULL DEFAULT 0;
+PRAGMA user_version = 111;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1979,7 +1985,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
-    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110,
+    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -2315,6 +2321,10 @@ pub(crate) fn route_in(
         let seq = record(tx, message, reopening, outcome, None)?;
         if let Some(task) = reopening {
             crate::tools::reopen(tx, trace, task, seq)?;
+            tx.execute(
+                "UPDATE tasks SET outsider_reopened = 1 WHERE id = ?1",
+                [task],
+            )?;
         }
         return Ok(Vec::new());
     }
@@ -2490,6 +2500,11 @@ pub(crate) fn route_in(
         None
     };
     let seq = record(tx, message, task, outcome, outbox)?;
+    if crate::tools::trusted(message) {
+        for task in task.into_iter().chain(owners.iter().map(|owner| owner.id)) {
+            rearm(tx, task)?;
+        }
+    }
     if outcome == "ignored"
         && let Some(line) = crate::tools::unheard(tx, message)?
     {
@@ -2735,8 +2750,18 @@ fn read_open(
     Ok(())
 }
 
-/// The done task that an outsider's review requesting changes reopens, when that task's workflow
-/// opts in and no active task owns the pull request.
+/// Lets an outsider's review reopen `task` again, after a trusted act on it.
+pub(crate) fn rearm(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
+    tx.execute(
+        "UPDATE tasks SET outsider_reopened = 0 WHERE id = ?1 AND outsider_reopened = 1",
+        [task],
+    )
+    .map(drop)
+}
+
+/// The done task that an outsider's review requesting changes on its own pull request reopens, when
+/// that task's workflow opts in, no outsider reopened it since a trusted act, no active task owns
+/// the pull request and an agent runs the step it goes back to.
 fn reopened_by_outsider(
     tx: &Transaction,
     message: &Message,
@@ -2745,24 +2770,33 @@ fn reopened_by_outsider(
     if message.kind != REVIEWED || message.data["state"] != "changes_requested" {
         return Ok(None);
     }
-    let resources = route::resources(message);
-    read_open(tx, message, resources.first())?;
-    if !owners(tx, &resources)?.is_empty() {
-        return Ok(None);
-    }
     let Some(task) = crate::tools::reopenable(tx, message)? else {
         return Ok(None);
     };
-    let workflow: String =
-        tx.query_row("SELECT workflow FROM tasks WHERE id = ?1", [task], |row| {
-            row.get(0)
-        })?;
-    let opted = trace
-        .factory
-        .workflows
+    let (workflow, reopened): (String, bool) = tx.query_row(
+        "SELECT workflow, outsider_reopened FROM tasks WHERE id = ?1",
+        [task],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let workflows = &trace.factory.workflows;
+    let opted = workflows
         .get(&workflow)
         .is_some_and(|flow| flow.value.reopen_on_changes_requested);
-    Ok(opted.then_some(task))
+    if !opted || reopened {
+        return Ok(None);
+    }
+    let resources = route::resources(message);
+    read_open(tx, message, resources.first())?;
+    let Some(resource) = resources.first() else {
+        return Ok(None);
+    };
+    if !owners(tx, &resources)?.is_empty()
+        || (message.data["open"] != true && crate::tools::last_read(tx, resource)? != "open")
+    {
+        return Ok(None);
+    }
+    let target = crate::tools::reopens_at(tx, workflows, task, resource)?;
+    Ok(target.is_ok().then_some(task))
 }
 
 /// Whether `task` sleeps where an event can wake it: asleep at a model step, with no daemon's

@@ -4437,13 +4437,14 @@ pub(crate) fn act_in_tx(
             };
             // A fixed first line keeps a text starting with `/` from running as a slash command.
             let text = format!("{SAYS}{text}");
-            if state == "done" {
-                return Ok((say_reopens(tx, trace, act.task, &text)?, None));
+            let said = match state.as_str() {
+                "done" => say_reopens(tx, trace, act.task, &text)?,
+                _ => say_or_hold(tx, act.task, &text, &state, &factory.workflows)?,
+            };
+            if said.is_ok() {
+                crate::state::rearm(tx, act.task)?;
             }
-            Ok((
-                say_or_hold(tx, act.task, &text, &state, &factory.workflows)?,
-                None,
-            ))
+            Ok((said, None))
         }
         "cancel" if ["done", "failed", "dropped"].contains(&state.as_str()) => {
             Ok((Err(format!("task {} is already {state}", act.task)), None))
@@ -4527,21 +4528,15 @@ fn say_reopens(
         Ok(resource) => resource,
         Err(why) => return Ok(Err(format!("task {task} is done and {why}"))),
     };
-    let (key, workflow, at, generation): (String, String, String, i64) = tx.query_row(
-        "SELECT key, workflow, step, generation FROM tasks WHERE id = ?1",
+    let target = match reopens_at(tx, &trace.factory.workflows, task, &resource)? {
+        Ok(target) => target,
+        Err(why) => return Ok(Err(format!("task {task} is done and {why}"))),
+    };
+    let (workflow, at, generation): (String, String, i64) = tx.query_row(
+        "SELECT workflow, step, generation FROM tasks WHERE id = ?1",
         [task],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )?;
-    if let Some(rival) = rival(tx, task, &key)? {
-        return Ok(Err(format!("task {task} is done and {rival}")));
-    }
-    let workflows = &trace.factory.workflows;
-    let target = reentry(tx, workflows, task, &workflow, &at, &resource)?;
-    if step(workflows, &workflow, &target).is_none_or(|step| step.decides != Decider::Model) {
-        return Ok(Err(format!(
-            "task {task} is done and would reopen at step {target}, which no agent runs"
-        )));
-    }
     let generation = reenter(tx, trace, task, &workflow, &at, generation, &resource)?;
     let prompt = format!(
         "{text}\nThis reopened your done task as generation {generation}: {resource} is still open. Check the worktree, then continue."
@@ -4551,6 +4546,31 @@ fn say_reopens(
     Ok(Ok(format!(
         "task {task} reopened at {target}, generation {generation}"
     )))
+}
+
+/// The step the done `task` reopens at for `resource`, or why it cannot: an active task holds its
+/// key or a resource of it, or no agent runs that step.
+pub(crate) fn reopens_at(
+    tx: &Transaction,
+    workflows: &Workflows,
+    task: i64,
+    resource: &str,
+) -> rusqlite::Result<Result<String, String>> {
+    let (key, workflow, at): (String, String, String) = tx.query_row(
+        "SELECT key, workflow, step FROM tasks WHERE id = ?1",
+        [task],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    if let Some(rival) = rival(tx, task, &key)? {
+        return Ok(Err(rival));
+    }
+    let target = reentry(tx, workflows, task, &workflow, &at, resource)?;
+    if step(workflows, &workflow, &target).is_none_or(|step| step.decides != Decider::Model) {
+        return Ok(Err(format!(
+            "would reopen at step {target}, which no agent runs"
+        )));
+    }
+    Ok(Ok(target))
 }
 
 /// The lowest open pull request of `task`, or why it has none: it owns none, or they merged or
@@ -4582,7 +4602,7 @@ fn open_pull_request(tx: &Transaction, task: i64) -> rusqlite::Result<Result<Str
 
 /// Whether the newest event that says so read the pull request `resource` `open`, `closed` or
 /// `merged`. A merge stands whatever came after it; `open` when none says.
-fn last_read(tx: &Transaction, resource: &str) -> rusqlite::Result<String> {
+pub(crate) fn last_read(tx: &Transaction, resource: &str) -> rusqlite::Result<String> {
     tx.query_row(
         "SELECT state FROM (
            SELECT seq, CASE WHEN type = ?2 AND json_extract(data, '$.merged') = 1 THEN 'merged'
@@ -4885,7 +4905,14 @@ pub(crate) fn reopenable(
         return Ok(None);
     }
     // Pull request feedback reaches what the task owns; a comment elsewhere, its subscriptions only.
+    // An outsider's reaches only the task's own pull requests, unless it unsubscribed from them. A
+    // close moved their subscriptions, which the event may give back.
     let owner = match FEEDBACK.contains(&message.kind.as_str()) {
+        true if route::outsider(message) => {
+            "(SELECT task, resource FROM pull_requests INTERSECT
+               SELECT task, resource FROM (SELECT task, resource FROM owned
+                 UNION SELECT task, resource FROM closed_subscriptions))"
+        }
         true => "owned",
         false => "subscriptions",
     };
@@ -4923,6 +4950,13 @@ pub(crate) fn reopenable(
 /// the person's login without the agent comment marker. It wakes its task whenever it was written.
 pub(crate) fn not_agents(data: &Value) -> bool {
     data["own"] == false || data["agent"] == false
+}
+
+/// Whether `message` is a GitHub comment or review the intake knows a person wrote, when
+/// `route::outsider` let it through. Linear and Slack feedback does not say whether an agent wrote it.
+pub(crate) fn trusted(message: &herdr_bus::Message) -> bool {
+    let data = &message.data;
+    feedback_on(&message.kind, data).is_some() && not_agents(data) && data["bot"] != true
 }
 
 /// The report a comment in `message` posts when it lands on the own key of the newest task on that
