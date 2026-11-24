@@ -23,6 +23,7 @@ one: [reload.md](../daemon/reload.md#what-a-reload-changes) lists them.
 | `writing` | path | no | none: agents get only their own prompt | A file, relative to the factory folder, whose text Priory appends to the system prompt of every agent it starts. `priory check` refuses a missing file and warns past 4096 bytes. See [writing.md](../daemon/writing.md) | `"WRITING.md"` |
 | `sweep` | table | no | the built-in worktree sweep alone | How the daemon frees room. See [`[sweep]`](#sweep) | |
 | `intake` | table | no | a failing poll reports after 15 minutes | How the intake treats a failing poll. See [`[intake]`](#intake) | |
+| `memory` | table | no | no limit | How long a gated command waits. See [`[memory]`](#memory) | |
 | `search` | table | no | keyword search, no summarizer | How tasks are found. See [`[search]`](#search) | |
 | `log` | table | no | herdr-bus's file on this machine | Where the event log lives. See [`[log]`](#log) | |
 | `telemetry` | table | no | no export | Where trace records go. See [`[telemetry]`](#telemetry) | |
@@ -71,6 +72,15 @@ See [desk.md](../daemon/desk.md#intake-banner) for the report and the banner a f
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `alarm_after` | duration | no | `"15m"` | How long a source's polls fail before the intake posts its `intake` report, which the desk ranks as an alarm and Web Push sends. Until then, the desk shows only the banner `the intake retries <source> ...`. A source that cannot start reports at once | `"5m"` |
+
+## `[memory]`
+
+See [memory-gate.md](../daemon/memory-gate.md#giving-up) for what the command does at the limit.
+A runner file's `memory` table sets the same key for its machine (see [runners.md](runners.md)).
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `give_up_after` | duration, below `"1h"` | no | none: it waits until `--timeout` | How long `priory memory acquire` without `--timeout` waits for its grant before it exits 75 and says to run the command on CI. Set it when your repositories' CI runs the gated commands | `"10m"` |
 
 ## `[sweep]`
 

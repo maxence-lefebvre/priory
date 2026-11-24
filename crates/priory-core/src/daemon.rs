@@ -1373,7 +1373,8 @@ fn take(
         Ok(Input::Gate(gate)) => {
             let share = Share::of(trace.factory, trace.machine.as_deref());
             let room = || room::measure(&runtime::home());
-            let reply = memory::gate(db, &gate, trace.factory, &share, room)?;
+            let limit = trace.factory.give_up_after(trace.machine.as_deref());
+            let reply = memory::gate(db, &gate, trace.factory, &share, limit, room)?;
             Ok((replied(reply), None))
         }
         Err(error) => {
@@ -2734,6 +2735,7 @@ fn start(
         resume: resume.as_deref(),
         prompt: first.as_deref(),
         debate: turn.is_some(),
+        gives_up: factory.give_up_after(trace.machine.as_deref()).is_some(),
         servers: &servers,
         jail: jail.as_ref(),
         trust,
@@ -2812,6 +2814,7 @@ struct Started<'a> {
     resume: Option<&'a str>,
     prompt: Option<&'a str>,
     debate: bool,
+    gives_up: bool,
     servers: &'a priory_runtime::servers::Servers,
     /// The sandbox its harness starts in, if its workflow turns one on.
     jail: Option<&'a priory_runtime::jail::Jail>,
@@ -2914,6 +2917,7 @@ fn launch(
             scope,
             env: &env,
             debate: started.debate,
+            gives_up: started.gives_up,
             servers: started.servers,
             tools,
             jail: started.jail,
@@ -3014,6 +3018,10 @@ fn compact_idle(
             resume: Some(&due.session),
             prompt: None,
             debate: false,
+            gives_up: trace
+                .factory
+                .give_up_after(trace.machine.as_deref())
+                .is_some(),
             servers: &servers,
             jail: None,
             trust: false,

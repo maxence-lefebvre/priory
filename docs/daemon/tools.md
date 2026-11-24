@@ -220,7 +220,9 @@ gate's exit code, or 1 when a signal killed the gate or the daemon did not recor
 `priory gate` runs nothing and exits 1 outside a run's pane, where `PRIORY_SESSION` is unset, in a
 factory with no `gate`, and in a worktree whose checked-out commit is not the head of its branch,
 since the gate would test another commit than the one it records. It records nothing either when
-the worktree moves to another commit while the gate runs.
+the worktree moves to another commit while the gate runs, or when the gate fails after a command in
+it gave up its wait for memory (see [memory-gate.md](memory-gate.md#giving-up)). It then exits with
+the gate's code, and an earlier run at the same commit still counts.
 
 A step with a proof ends its prompt with a line that names the outcomes to prove. When the agent
 sends a proved outcome, the daemon reads the task's gate runs in the trace and refuses the result,

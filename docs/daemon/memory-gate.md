@@ -72,17 +72,60 @@ however it ends, the guard sends that group `SIGTERM`, then `SIGKILL` 5 seconds 
 `kill <lease pid>` ends the server too, and a command that exits leaves no process of its group
 behind.
 
+## Giving up
+
+Off by default. With [`[memory] give_up_after`](../reference/factory.md#memory) in `factory.toml`,
+an `acquire` without `--timeout` that still waits at that limit exits 75 and never runs its command.
+It prints one line the agent can act on:
+
+```text
+priory memory: waited 10m for 8 GB behind 2 grants; the command did not run: let CI run it
+```
+
+- The count is the held grants and the waiting ones requested earlier. With none, the line says
+  `with no grant ahead`: live runs hold the room. With none and no measure of the room, it says
+  `while the room cannot be measured`.
+- The daemon decides on each poll, so a reloaded limit applies to commands that already wait. A
+  grant that fits in the poll at the limit is held.
+- The daemon ends the grant in the step that gives up, so it cannot be granted later. Inside a run it
+  leaves its request time to a retry, as a timed-out grant does. After a lost reply, the next poll
+  gives up again, as `waited 10m` without the GB and the count.
+- The limit counts the command's own wait, not its request time, so a retry waits its full limit.
+- `--timeout` wins over the limit, and expires with 125. `lease` has no limit: CI cannot replace a
+  server.
+- When a limit is set as a run starts, its MCP server's instructions tell the agent to push what it
+  committed and wait for CI, without asking a person, when `acquire` exits 75 and prints
+  `the command did not run`. Exit 75 without that line is the command's own. An investigator, which
+  never pushes, is not told. A reload changes what later runs are told.
+- `priory gate` does not record a gate that failed because of a give-up (see
+  [tools.md](tools.md#proofs)).
+
+It is off by default because Priory cannot know that a repository's CI runs the command. A limit
+below 15 minutes ends a wait before later grants stop going first (see step 2), unless the command
+is retried within the hour and keeps its request time.
+
+## What a person sees
+
 `priory memory` prints each grant in request order: id, task, state (`held` or `waiting`), GB,
-command, age and pid. A held grant's age counts from its grant, a waiting one's from its request.
+command, age, pid and flag. An age is such as `1h 51m`, `12m` or `40s`. A held grant's age counts from its grant, a waiting one's from its request.
 The pid is the grant's holder: the `acquire` process while the grant waits, then the command; the
 `lease` process for a lease.
-`priory desk` shows each waiting grant as a `memory` row.
+The flag is `long` on a grant held past an hour while another waits, and `-` otherwise.
+`priory desk` shows each waiting grant as a `memory` row that names the longest held grant, and each
+`long` grant as a row of its own (see [desk.md](desk.md)). The limit is a fixed hour, since Priory
+keeps no usual time of a command. Nothing stops a flagged grant.
 
 The MCP server's instructions teach every agent the gate. They ask it to wrap each heavy command in
 `priory memory acquire --gb N -- <command>`, with the path of this `priory`.
 
-Known limits:
+## Known limits
 
+- When a reload removes the limit between a lost give-up reply and the next poll, `acquire` exits 125
+  with `no memory grant`. The command did not run.
+- A time on the desk is as of the last read. The web view reads again when the state changes, so
+  the time and a new `long` row can lag.
+- A lease that holds its grant past an hour is flagged too while another grant waits.
+- A command that waits while no daemon listens gives up at its first poll after the daemon is back.
 - A held grant counts in full until its command ends, whatever the command uses. A command that
   asks for far more than its peak holds that room back for its whole life.
 - Between its 5 and 15 minutes, a large grant can wait on while smaller grants take the room it
