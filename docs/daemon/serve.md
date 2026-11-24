@@ -292,14 +292,27 @@ queues a notification in the same transaction as the change, and only while a br
   approval whose branch moved;
 - for a task that turns `blocked` or `failed`, an alarm;
 - for every other item the desk ranks as an alarm: a report the intake posts when a poll fails, a
-  prompt that turned `uncertain`, and an answer's command that turned `uncertain`;
+  prompt that turned `uncertain`, an answer's command that turned `uncertain`, and a merge that
+  [landed wrong](desk.md#the-next-thing);
+- for a [queue stall](room.md), once it lasted 5 minutes, so a stall the sweep scripts end tells
+  nobody;
 - for a `day` or `week` [spend cap](spend.md#new-runs-wait) once its window reaches it, an alarm with
   the desk's line for the cap. The daemon queues it when it first finds the cap reached, and again
   only after the cap stopped being reached, such as on the next day.
 
+Each browser chooses its kinds on the Notifications screen, so a phone can take asks only while a
+desktop takes everything. [The reference](../reference/serve.md#notifications) lists them. A merge
+that landed wrong and a stall are off until a person turns them on. The daemon stores what a person
+turned on or off, not the whole list, so a kind added later takes its default. It reads the choice
+before each send and each retry. The page and the service worker keep the choice on the device too.
+The page sends it again when the daemon's differs, such as after a new state file. Each save sends
+the whole kept choice. A refused save puts the old choice back. When the reply is lost, the daemon
+may have stored the save, so the page keeps the new choice and hides the boxes as unconfirmed. The
+next time it loads, the daemon and the device agree on that choice.
+
 The daemon sends the queue one notification at a time. Before it sends one, it reads the item
 again, and sends nothing when the ask closed, the task left that state, a cap is no longer
-reached, or a person snoozed it.
+reached, a stall ended, or a person snoozed it.
 A notification leaves the queue once every browser got it or the daemon gave up on that browser,
 so a queue left by a stopped daemon goes out when the next one starts.
 
@@ -342,10 +355,10 @@ at 1 again, does not repeat an old id.
 
 A push service can replace or expire a subscription, and the browser then fires
 `pushsubscriptionchange` at the service worker. The worker subscribes again with the same key and
-sends the new subscription to `POST /api/push/subscribe`, and the old endpoint to
-`/api/push/unsubscribe`. It reads the token from a copy the page keeps in the browser's Cache
-Storage for the worker, since a worker cannot read local storage. Signing out deletes that copy.
-Without it, the worker still subscribes again, and the page sends the new subscription the next
+sends the new subscription, with the kinds the device keeps, to `POST /api/push/subscribe`. Once the
+daemon stored it, the worker sends the old endpoint to `/api/push/unsubscribe`. It reads the token from a copy the page keeps in the browser's Cache
+Storage for the worker, since a worker cannot read local storage. Signing out deletes that copy
+and the kept kinds. Without it, the worker still subscribes again, and the page sends the new subscription the next
 time the Notifications screen opens.
 
 ### Desktop notifications

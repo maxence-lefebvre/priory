@@ -4,15 +4,22 @@
 const values = (rows, field) => [...new Set(rows.map((row) => row[field]).filter((value) => value != null))].sort();
 
 /**
- * The chips' choices: the factory's requestable workflows and bands, and each lane a task carries.
- * A queue read without the factory folder has `workflows` null, or `[]` from an older priory, so
- * the chips offer those the tasks carry.
+ * The dropdowns' choices: the factory's requestable workflows and bands, and each lane a task
+ * carries. A queue read without the factory folder has `workflows` null, or `[]` from an older
+ * priory, so the dropdown offers those the tasks carry.
  * @param {any} queue `priory queue --json` @param {any[]} tasks `priory tasks --json`'s tasks
  */
 export function addChoices(queue, tasks) {
   const listed = [...queue.waiting, ...tasks];
   const workflow = queue.workflows?.length ? queue.workflows : values(listed, "workflow");
-  return { workflow, band: queue.bands ?? [], lane: values(listed, "lane") };
+  // Null with a known factory is no default; an unknown factory may have one.
+  const none = queue.workflows?.length && queue.default_workflow === null ? "pick one" : "default";
+  return {
+    workflow,
+    band: queue.bands ?? [],
+    lane: values(listed, "lane"),
+    unpicked: { workflow: queue.default_workflow ? `default (${queue.default_workflow})` : none, band: "default", lane: "routed" },
+  };
 }
 
 /**
@@ -25,5 +32,5 @@ export function addStatus({ text, sending, error, key }) {
   if (sending) return { text: "Adding…", tone: "muted", ready };
   if (error) return { text: `Add did not go: ${error}.`, tone: "warn", ready };
   if (key && !text) return { text: `Added ${key}.`, tone: "ok", ready };
-  return { text: "Workflow, band and lane come from the factory's [request] table unless you pick one.", tone: "muted", ready };
+  return { text: "Workflow and band come from the factory's [request] table, and lane from its lane rules, unless you pick one.", tone: "muted", ready };
 }
