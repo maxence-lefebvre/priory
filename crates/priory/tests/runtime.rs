@@ -32566,3 +32566,26 @@ fn a_single_runners_filter_holds_its_task_with_the_reason_until_the_window_lifts
     setup.until("tasks", |rows| with(rows, 4, "running") == 1);
     setup.crash();
 }
+
+#[test]
+fn an_earlier_request_no_filter_accepted_joins_the_task_a_later_request_of_its_key_started() {
+    let mut desktop = placed("filter-join", "desktop", OSS_OFF_BY_DAY, NO_OSS, None);
+    desktop.publish(&oss(1));
+    desktop.publish(&requested(1));
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+
+    desktop.start_with(exe, &[("PRIORY_NOW", WORK_HOURS)]);
+    desktop.until_own_tasks(|rows| with(rows, 4, "running") == 1);
+    let inbox = desktop.until("inbox", |rows| {
+        rows.iter()
+            .filter(|row| row[1] == "factory.task.requested")
+            .all(|row| row[4] != "unaccepted")
+    });
+    let tasks = desktop.rows("tasks");
+    assert_eq!(
+        tasks.len(),
+        1,
+        "no row is left without a runner: {tasks:?}\n{inbox:?}"
+    );
+    desktop.crash();
+}

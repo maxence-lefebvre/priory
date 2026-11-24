@@ -1874,9 +1874,7 @@ fn until<'de, D: Deserializer<'de>>(input: D) -> Result<Option<Until>, D::Error>
         })
 }
 
-pub(crate) fn time_of_day<'de, D: Deserializer<'de>>(
-    input: D,
-) -> Result<Option<jiff::civil::Time>, D::Error> {
+fn time_of_day<'de, D: Deserializer<'de>>(input: D) -> Result<Option<jiff::civil::Time>, D::Error> {
     let text = String::deserialize(input)?;
     jiff::civil::Time::strptime("%H:%M", &text)
         .map(Some)

@@ -194,6 +194,16 @@ pub(crate) fn handle(
         _ => return Ok(None),
     };
     crate::state::record(tx, message, None, outcome, None)?;
+    if outcome == UNACCEPTED {
+        let now = intake::now().unwrap_or_else(|_| Timestamp::now());
+        tx.execute(
+            "UPDATE inbox SET reason = ?2 WHERE id = ?1",
+            params![
+                message.id.to_string(),
+                unaccepted(trace.factory, &labels(&message.data), now)
+            ],
+        )?;
+    }
     Ok(Some(kill))
 }
 
@@ -532,14 +542,6 @@ fn requested(
         _ => {
             let now = intake::now().unwrap_or_else(|_| Timestamp::now());
             if refusal(factory, me, &labels(&message.data), now).is_some() {
-                crate::state::record(tx, message, None, UNACCEPTED, None)?;
-                tx.execute(
-                    "UPDATE inbox SET reason = ?2 WHERE id = ?1",
-                    params![
-                        message.id.to_string(),
-                        unaccepted(factory, &labels(&message.data), now)
-                    ],
-                )?;
                 return Ok(Some(UNACCEPTED));
             }
             claim(tx, me, &key, &message.id.to_string())?;
@@ -557,6 +559,12 @@ fn claim(tx: &Transaction, me: &str, key: &str, request: &str) -> rusqlite::Resu
 
 /// The inbox outcome of a request that no filter of this runner let it claim.
 const UNACCEPTED: &str = "unaccepted";
+
+/// The inbox rows of the first unaccepted request of each key that no runner holds.
+const WAITING: &str = "outcome = 'unaccepted'
+  AND seq = (SELECT min(seq) FROM inbox AS first
+    WHERE first.subject = inbox.subject AND first.outcome = 'unaccepted')
+  AND NOT EXISTS (SELECT 1 FROM claims WHERE claims.key = inbox.subject AND claims.hold != 'ended')";
 
 /// The labels a task request carries.
 pub(crate) fn labels(data: &Value) -> Labels {
@@ -614,12 +622,9 @@ fn unaccepted(factory: &Factory, labels: &Labels, at: Timestamp) -> String {
 /// holds; tells again why each other one waits.
 fn offer(tx: &Transaction, me: &str, factory: &Factory, at: Timestamp) -> rusqlite::Result<()> {
     let waiting = tx
-        .prepare(
-            "SELECT id, subject, data FROM inbox WHERE outcome = 'unaccepted'
-               AND seq = (SELECT min(seq) FROM inbox AS first
-                 WHERE first.subject = inbox.subject AND first.outcome = 'unaccepted')
-             ORDER BY seq",
-        )?
+        .prepare(&format!(
+            "SELECT id, subject, data FROM inbox WHERE {WAITING} ORDER BY seq"
+        ))?
         .query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -715,12 +720,14 @@ fn claimed(
             if ended { "ended" } else { "waiting" }
         ],
     )?;
-    // The request, then each later one of the key that no task here took, are this task's.
+    // The request, then each later one of the key that no task here took, and each one no filter
+    // let this runner claim, are this task's.
     let mut pending: Vec<String> = tx
         .prepare(
             "SELECT id FROM inbox WHERE subject = ?1 AND id != ?2
-               AND outcome IN ('claiming', 'elsewhere', 'unaccepted')
-               AND seq > (SELECT seq FROM inbox WHERE id = ?2)
+               AND (outcome IN ('claiming', 'elsewhere')
+                   AND seq > (SELECT seq FROM inbox WHERE id = ?2)
+                 OR outcome = 'unaccepted')
              ORDER BY seq",
         )?
         .query_map([key, request], |row| row.get(0))?
@@ -1364,15 +1371,12 @@ pub(crate) fn with_remote_tasks(db: &Connection, tasks: &mut Value) -> rusqlite:
 /// The first request of each key that no runner's filters let it claim yet, as a task row with no
 /// runner and the reason it waits.
 fn unaccepted_rows(db: &Connection) -> rusqlite::Result<Vec<Value>> {
-    db.prepare(
+    db.prepare(&format!(
         "SELECT subject, time, reason, json_extract(data, '$.workflow'), json_extract(data, '$.band'),
            json_extract(data, '$.lane'), coalesce(nullif(json_extract(data, '$.tldr'), ''), subject),
-           coalesce(json_extract(data, '$.labels'), '{}')
-         FROM inbox WHERE outcome = 'unaccepted'
-           AND seq = (SELECT min(seq) FROM inbox AS first
-             WHERE first.subject = inbox.subject AND first.outcome = 'unaccepted')
-         ORDER BY seq",
-    )?
+           coalesce(json_extract(data, '$.labels'), '{{}}')
+         FROM inbox WHERE {WAITING} ORDER BY seq"
+    ))?
     .query_map([], |row| {
         Ok(json!({
             "id": null, "key": row.get::<_, String>(0)?, "runner": null, "hold": null,

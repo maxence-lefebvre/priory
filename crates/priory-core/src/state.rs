@@ -3443,11 +3443,9 @@ pub(crate) fn admissible<'r>(
         let new_work = admission.fresh && !helper;
         // A pause holds only new tasks: a woken, resumed or revived one is `ready` and goes on.
         let busy = busy.or_else(|| paused.clone().filter(|_| new_work));
-        // So do this runner's filters: a task that started stays on its runner.
         let busy = match busy {
             Some(reason) => Some(reason),
-            None if new_work => filtered(db, factory, runner, admission.task)?,
-            None => None,
+            None => filtered(db, factory, runner, admission.task)?,
         };
         let busy = match busy {
             Some(reason) => Some(reason),
@@ -3546,9 +3544,10 @@ pub(crate) fn admissible<'r>(
     Ok(None)
 }
 
-/// Why this runner's filters hold `task` now, if they do. A factory of one runner has no runner
-/// name, so its one runner file applies.
-fn filtered(
+/// Why this runner's filters hold `task` now, if they do. They hold only a task that never ran a
+/// step, since one that started stays on its runner, and never a lead's or an investigator's. A
+/// factory of one runner has no runner name, so its one runner file applies.
+pub(crate) fn filtered(
     db: &Connection,
     factory: &Factory,
     runner: Option<&str>,
@@ -3560,10 +3559,16 @@ fn filtered(
     }) else {
         return Ok(None);
     };
-    let labels: Option<String> =
-        db.query_row("SELECT labels FROM tasks WHERE id = ?1", [task], |row| {
-            row.get(0)
-        })?;
+    let (labels, started): (Option<String>, bool) = db.query_row(
+        "SELECT labels, trigger IN (?2, ?3) OR EXISTS (SELECT 1 FROM runs WHERE runs.task = tasks.id)
+           OR EXISTS (SELECT 1 FROM actions WHERE actions.task = tasks.id)
+         FROM tasks WHERE id = ?1",
+        params![task, crate::tools::LEAD_TRIGGER, crate::consult::TRIGGER],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if started {
+        return Ok(None);
+    }
     let labels = labels
         .and_then(|labels| serde_json::from_str(&labels).ok())
         .unwrap_or_default();

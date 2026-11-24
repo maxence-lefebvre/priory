@@ -173,13 +173,13 @@ impl Window {
     fn closes(&self, at: Timestamp) -> Option<Timestamp> {
         let zone = self.zone();
         let now = at.to_zoned(zone.clone());
+        // A wall time that a DST change repeats has two instants: the first after `at` is the close.
         let at_time = |date: Date, time: Time| -> Option<Timestamp> {
-            Some(
-                date.to_datetime(time)
-                    .to_zoned(zone.clone())
-                    .ok()?
-                    .timestamp(),
-            )
+            let both = zone.to_ambiguous_zoned(date.to_datetime(time));
+            [both.clone().earlier().ok()?, both.later().ok()?]
+                .into_iter()
+                .map(|zoned| zoned.timestamp())
+                .find(|close| *close > at)
         };
         match self.hours {
             Some((from, to)) if from > to && now.time() >= from => {
@@ -233,26 +233,28 @@ pub fn accepts<'a>(
     let Some(first) = refusing(at).next() else {
         return Ok(());
     };
-    // A filter that lifts can leave another that still refuses, so step until none does.
+    // A filter that lifts can leave another that still refuses, so step until none does. Windows
+    // repeat each week, so one still refusing after eight days never lifts.
+    let last = at
+        .checked_add(jiff::SignedDuration::from_hours(8 * 24))
+        .ok();
     let mut until = at;
-    for _ in 0..16 {
+    let until = loop {
         let lifts = refusing(until)
             .map(|filter| filter.when.as_ref().and_then(|when| when.closes(until)))
             .collect::<Option<Vec<_>>>();
         match lifts.as_deref() {
-            None => break,
-            Some([]) => {
-                return Err(Refused {
-                    filter: &first.matches,
-                    until: Some(until),
-                });
-            }
+            None => break None,
+            Some([]) => break Some(until),
             Some(lifts) => until = lifts.iter().copied().max().unwrap_or(until),
         }
-    }
+        if last.is_none_or(|last| until > last) {
+            break None;
+        }
+    };
     Err(Refused {
         filter: &first.matches,
-        until: None,
+        until,
     })
 }
 
@@ -367,6 +369,35 @@ mod tests {
         );
         let refused = accepts(&filters, &oss(), at("2026-11-24T09:00:00Z")).unwrap_err();
         assert_eq!(refused.until, Some(at("2026-11-24T18:00:00Z")));
+    }
+
+    #[test]
+    fn many_adjacent_windows_lift_at_the_end_of_the_last() {
+        let toml: String = (0..20)
+            .map(|minute| {
+                format!(
+                    "[[filters]]\nmatch = \"!project=oss\"\nwhen = {{ hours = \"00:{minute:02}-00:{:02}\", timezone = \"UTC\" }}\n",
+                    minute + 1
+                )
+            })
+            .collect();
+        let filters = filters(&toml);
+        let refused = accepts(&filters, &oss(), at("2026-11-24T00:00:00Z")).unwrap_err();
+        assert_eq!(refused.until, Some(at("2026-11-24T00:20:00Z")));
+    }
+
+    #[test]
+    fn a_window_that_closes_in_a_repeated_hour_closes_after_now() {
+        // Paris repeats 02:00 to 03:00 on 2026-10-25; 01:15 UTC is the second 02:15.
+        let filters = filters(
+            r#"
+            [[filters]]
+            match = "!project=oss"
+            when = { hours = "01:00-02:30", timezone = "Europe/Paris" }
+            "#,
+        );
+        let refused = accepts(&filters, &oss(), at("2026-10-25T01:15:00Z")).unwrap_err();
+        assert_eq!(refused.until, Some(at("2026-10-25T01:30:00Z")));
     }
 
     #[test]

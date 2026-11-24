@@ -104,9 +104,10 @@ Each runner checks its own filters twice, on its own clock:
 1. When it reads a request whose key no runner holds. A runner whose filters refuse the request
    sends no claim, and records the request as `unaccepted`. The first claim in log order still
    wins, so filters only decide which runners send one.
-2. Before the first run of a task it owns. A task its filters refuse now waits with the reason
-   `runner desktop's filter !project=oss holds it until 18:00`, and starts once the window lifts.
-   This check applies in a factory of one runner too.
+2. Before the first run or code step of a task it owns. A task its filters refuse now waits with
+   the reason `runner desktop's filter !project=oss holds it until 18:00`, and starts once the
+   window lifts. This check applies in a factory of one runner too. It skips a task that ran any
+   step, and lead and investigator tasks.
 
 A runner keeps a task it claimed when its window closes before the task's first run. The task
 stays `waiting` on the log, as any unstarted task does, and runs when the window lifts. Use
@@ -121,7 +122,8 @@ When no runner's filters accept a request, no runner claims it. Each runner list
 `no runner accepts it until 18:00`: the first time a runner's filters lift, in that runner's
 filter timezone. A request no window ever lifts says `no runner accepts it`. Each runner checks
 its unaccepted requests again when it reads its own alive message, once a minute, and claims the
-first request of each key its filters accept by then.
+first request of each key its filters accept by then. When a runner wins a key, every unaccepted request of that key goes
+to its task, as a later request of the key does.
 
 ## Holds and leases
 

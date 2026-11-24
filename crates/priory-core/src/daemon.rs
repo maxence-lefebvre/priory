@@ -1666,7 +1666,15 @@ fn act(
     commands: &mut Vec<(i64, Script)>,
     due: &state::Due,
 ) -> Result<bool, Error> {
-    // A code step's action is a start like a run's: it waits until the log says this runner keeps it.
+    // A code step's action is a start like a run's: this runner's filters hold it as they hold a run,
+    // and it waits until the log says this runner keeps it.
+    if let Some(reason) = state::filtered(db, trace.factory, trace.runner.as_deref(), due.task)? {
+        db.execute(
+            "UPDATE tasks SET reason = ?2 WHERE id = ?1 AND reason IS NOT ?2",
+            rusqlite::params![due.task, reason],
+        )?;
+        return Ok(true);
+    }
     if let Some(me) = &trace.runner
         && runners::cleared(db, me, due.task)? != Some(true)
     {
