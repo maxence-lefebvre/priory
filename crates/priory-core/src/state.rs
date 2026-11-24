@@ -1969,6 +1969,7 @@ const SCHEMA_111: &str = "
 CREATE TABLE lapses (
   task    INTEGER NOT NULL REFERENCES tasks (id),
   command TEXT NOT NULL,
+  bytes   INTEGER NOT NULL,
   created TEXT NOT NULL,
   lapsed  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );

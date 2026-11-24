@@ -15173,22 +15173,17 @@ fn without_a_daemon_the_command_fails_fast_and_never_runs() {
     assert!(!setup.dir.join("fake/ran").exists());
 }
 
-#[test]
-fn a_waiting_acquire_polls_on_after_a_poll_the_daemon_drops_and_runs_its_command() {
+/// A daemon that answers each gate message in turn, or closes the connection with no reply, and
+/// returns the messages and grants it got.
+fn scripted(
+    setup: &Setup,
+    replies: &'static [Option<&'static str>],
+) -> std::thread::JoinHandle<Vec<[serde_json::Value; 2]>> {
     use std::io::{BufRead, Write};
-    let setup = Setup::new("gate-dropped-poll");
     fs::create_dir_all(setup.dir.join("home")).unwrap();
     fs::create_dir_all(setup.socket().parent().unwrap()).unwrap();
     let listener = std::os::unix::net::UnixListener::bind(setup.socket()).unwrap();
-    // A busy or dying daemon closes the second poll with no reply.
-    let daemon = std::thread::spawn(move || {
-        let replies = [
-            Some("7 waiting"),
-            None,
-            Some("7 held"),
-            Some("7 held"),
-            Some("7 released"),
-        ];
+    std::thread::spawn(move || {
         let mut lines = Vec::new();
         for reply in replies {
             let (mut stream, _) = listener.accept().unwrap();
@@ -15203,27 +15198,84 @@ fn a_waiting_acquire_polls_on_after_a_poll_the_daemon_drops_and_runs_its_command
             }
         }
         lines
-    });
+    })
+}
 
-    let done = acquire(&setup, "8", "echo ran").wait_with_output().unwrap();
+#[test]
+fn a_gated_command_runs_once_after_the_daemon_drops_any_message() {
+    for (name, replies, messages) in [
+        (
+            "gate-dropped-poll",
+            &[
+                Some("7 waiting"),
+                None,
+                Some("7 held"),
+                Some("7 held"),
+                Some("7 released"),
+            ][..],
+            ["acquire", "poll", "poll", "run", "release"],
+        ),
+        (
+            "gate-dropped-acquire",
+            &[
+                None,
+                Some("7 waiting"),
+                Some("7 held"),
+                Some("7 held"),
+                Some("7 released"),
+            ],
+            ["acquire", "acquire", "poll", "run", "release"],
+        ),
+        (
+            "gate-dropped-run",
+            &[
+                Some("7 held"),
+                None,
+                None,
+                Some("7 held"),
+                Some("7 released"),
+            ],
+            ["acquire", "run", "run", "run", "release"],
+        ),
+    ] {
+        let setup = Setup::new(name);
+        let daemon = scripted(&setup, replies);
 
-    assert_eq!(
-        done.status.code(),
-        Some(0),
-        "stderr: {}",
-        String::from_utf8_lossy(&done.stderr)
-    );
-    assert_eq!(String::from_utf8_lossy(&done.stdout), "ran\n");
-    assert_eq!(
-        daemon.join().unwrap(),
-        [
-            [json!("acquire"), json!(null)],
-            [json!("poll"), json!(7)],
-            [json!("poll"), json!(7)],
-            [json!("run"), json!(7)],
-            [json!("release"), json!(7)],
-        ]
-    );
+        let done = acquire(&setup, "8", "echo ran").wait_with_output().unwrap();
+
+        assert_eq!(
+            done.status.code(),
+            Some(0),
+            "{name}: {}",
+            String::from_utf8_lossy(&done.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&done.stdout), "ran\n");
+        let expected = messages.map(|message| {
+            let grant = if message == "acquire" {
+                json!(null)
+            } else {
+                json!(7)
+            };
+            [json!(message), grant]
+        });
+        assert_eq!(daemon.join().unwrap(), expected);
+    }
+}
+
+#[test]
+fn a_stale_socket_fails_the_command_fast_and_it_never_runs() {
+    let setup = Setup::new("gate-stale-socket");
+    fs::create_dir_all(setup.socket().parent().unwrap()).unwrap();
+    drop(std::os::unix::net::UnixListener::bind(setup.socket()).unwrap());
+    let start = Instant::now();
+
+    let done = acquire(&setup, "1", "echo ran > ran")
+        .wait_with_output()
+        .unwrap();
+
+    assert_eq!(done.status.code(), Some(125));
+    assert!(start.elapsed() < Duration::from_secs(10));
+    assert!(!setup.dir.join("fake/ran").exists());
 }
 
 #[test]

@@ -2657,8 +2657,10 @@ fn acquire(args: &[OsString], lease: bool) -> ExitCode {
     // restart only delays the next poll of the same grant.
     let grant = loop {
         let asked = match grant {
-            Some(grant) => call(&Gate::Poll { grant }),
-            None => call(&acquire),
+            Some(grant) => call(&Gate::Poll { grant }, runtime::call_through_restart),
+            // Until a daemon took the request, none may be coming back: fail at once.
+            None if !sent => call(&acquire, runtime::call),
+            None => call(&acquire, runtime::call_through_restart),
         };
         sent |= !matches!(&asked, Err(error) if error.starts_with(runtime::NO_DAEMON));
         let reply = match asked {
@@ -2689,10 +2691,7 @@ fn acquire(args: &[OsString], lease: bool) -> ExitCode {
             let Some(grant) = grant else {
                 return failed(format!("no grant after {timeout:?}"));
             };
-            let _ = gate(&Gate::Release {
-                grant,
-                lapsed: true,
-            });
+            let _ = gate(&Gate::Release { grant });
             return failed(format!("grant {grant} still waits after {timeout:?}"));
         }
         std::thread::sleep(Duration::from_millis(250));
@@ -2703,18 +2702,12 @@ fn acquire(args: &[OsString], lease: bool) -> ExitCode {
         match held(program, rest, grant) {
             Ok(status) => status,
             Err(error) => {
-                let _ = gate(&Gate::Release {
-                    grant,
-                    lapsed: false,
-                });
+                let _ = gate(&Gate::Release { grant });
                 return failed(error);
             }
         }
     };
-    if let Err(error) = gate(&Gate::Release {
-        grant,
-        lapsed: false,
-    }) {
+    if let Err(error) = gate(&Gate::Release { grant }) {
         eprintln!(
             "priory memory: grant {grant} stays until the daemon sees this process end: {error}"
         );
@@ -2766,10 +2759,19 @@ fn held(
         Ok(child) => child,
         Err(error) => return Ok(Err(error)),
     };
-    let taken = gate(&Gate::Run {
+    let run = Gate::Run {
         grant,
         pid: child.id(),
-    });
+    };
+    // The daemon takes the same pid again, so a lost reply only delays the hand-over.
+    let taken = loop {
+        match call(&run, runtime::call_through_restart) {
+            Err(_) if matches!(child.try_wait(), Ok(None)) => {
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            taken => break taken.flatten(),
+        }
+    };
     if let Err(error) =
         taken.and_then(|_| writer.write_all(b"\n").map_err(|error| error.to_string()))
     {
@@ -2810,13 +2812,16 @@ fn leased(program: &OsString, rest: &[OsString]) -> std::io::Result<std::process
 
 /// Sends `gate` to the daemon and returns its reply.
 fn gate(gate: &Gate) -> Result<String, String> {
-    call(gate)?
+    call(gate, runtime::call_through_restart)?
 }
 
-/// Sends `gate` to the daemon, through a restart, and returns its reply, or why none came.
-fn call(gate: &Gate) -> Result<Result<String, String>, String> {
+/// Sends `gate` to the daemon with `send` and returns its reply, or why none came.
+fn call(
+    gate: &Gate,
+    send: fn(&Path, &str, Duration) -> Result<String, String>,
+) -> Result<Result<String, String>, String> {
     let line = serde_json::to_string(gate).expect("a gate message serializes");
-    let reply = runtime::call_through_restart(&runtime::home(), &line, runtime::REPLY)?;
+    let reply = send(&runtime::home(), &line, runtime::REPLY)?;
     serde_json::from_str(&reply).map_err(|error| format!("unreadable reply {reply:?}: {error}"))
 }
 

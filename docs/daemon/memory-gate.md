@@ -16,16 +16,19 @@ duration such as `90s`, `15m` or `2h`.
    later grants that fit go first, in order, and it keeps its place ahead of them for the next
    room. A build it waits for usually ends within 5 minutes, and a grant behind it still has most
    of its 1-hour default timeout left. Once it has waited 15 minutes, later grants stop going first
-   while any grant is held, so the room drains towards it as held grants end. When no grant is
-   held and it still does not fit, live runs take its room, and no release could make it. Later
-   grants that fit then go first, so it never blocks the queue for good.
+   while the end of the held grants would make it fit, so the room drains towards it. A grant held
+   for 30 minutes or more does not count: it may be a hung test or a dev server's lease. When the
+   other held grants would not make it fit, later grants that fit go first again. A retry that
+   keeps its request time does not restart the 30 minutes.
 3. The command polls the daemon every 250 ms. A poll that gets no reply, because the daemon is
    busy, restarting or gone, does not end the wait. The command reports it and polls the same grant
    again until `--timeout`. The daemon keeps a waiting grant for as long as its `acquire` process
    lives, so the grant keeps its id and its place through a daemon restart. An `acquire` that asks
-   again after a lost reply gets the grant it already has. Once its grant is held, it starts a shell that waits
+   again after a lost reply gets the grant it already has: the one with its process, GB, command
+   and task. Once its grant is held, it starts a shell that waits
    for a go-ahead, hands the grant to that shell's process, and only then lets the shell run the
-   command with `acquire`'s own working directory, environment and terminal. The shell becomes the
+   command with `acquire`'s own working directory, environment and terminal. It sends the hand-over
+   again while a reply is lost and the shell lives. The shell becomes the
    command, so the grant follows it. In a run, that environment is the run's own: its `PATH` and
    every variable its harness got, including the worktree's direnv environment when the run starts
    in it (see [sessions.md](sessions.md#with-trust_worktrees)). The gate adds and removes nothing. An `acquire` that dies before the hand-off closes the shell's
@@ -41,8 +44,11 @@ runs keeps its grant until that command ends.
 
 `acquire` exits 125 and never runs the command when no daemon listens to its first request, when
 the daemon cannot measure the room or refuses the grant, or when the grant still waits after
-`--timeout`, 1 hour by default. A grant that times out inside a run leaves its request time behind
-for an hour. When the same task acquires the same command again within that hour, the new grant
+`--timeout`, 1 hour by default. No daemon listens when its socket refuses the first request, and `acquire` does
+not wait for a restart then. A grant of a run that stops waiting, because it timed out or its
+`acquire` was killed, leaves its request time behind for an hour. The daemon records it even when
+it only sees that the process is gone. When the same task acquires the same command with the same
+GB again within that hour, the new grant
 takes the old request time, so a retry keeps its place in the queue. A grant above the runner's share of the machine can never fit, so the daemon refuses it at
 once, as
 `9.0 GB never fits: this runner's agents may take 7.2 GB`. A command that cannot start exits 127, or 126 when it is not executable.
@@ -77,7 +83,14 @@ Known limits:
   asks for far more than its peak holds that room back for its whole life.
 - Between its 5 and 15 minutes, a large grant can wait on while smaller grants take the room it
   needs.
-- A retry keeps its request time only inside a run, and only with the same command text. Another
+- A build held for 30 minutes or more no longer protects a large grant that waits for it: smaller
+  grants can take its room again.
+- The check past 15 minutes counts a held grant's GB as promised room only. Memory its command
+  already uses is missing from the measured free memory and is not added back, so smaller grants
+  can overtake a large one although an end would make it fit.
+- Two requests of the same task with the same command, GB and pid share a grant. Two jailed runs
+  of one task can have the same pid.
+- A retry keeps its request time only inside a run, and only with the same command text and GB. Another
   run of the same task that retries the same command also takes it.
 - Two runs' grants can each wait for the other run's promise. The default timeout ends that wait
   after an hour, and the agent sees the failure.
@@ -87,8 +100,8 @@ Known limits:
   a build runs on without a grant.
 - A grant that arrives in the last poll before `--timeout` still runs its command. It runs up to
   250 ms late, or up to 40 seconds late when that poll waits on a busy or restarting daemon.
-- A grant that times out while no daemon listens loses its request time, and a retry queues at the
-  back.
+- A grant that the daemon grants just as its `acquire` times out leaves no request time, and a retry
+  queues at the back.
 - A lease's memory frees as soon as the lease ends, while its command may still take up to 5
   seconds to stop.
 - A leased command runs outside the terminal's foreground group with no input. Ctrl-C reaches the
