@@ -2059,6 +2059,7 @@ CREATE TRIGGER IF NOT EXISTS ask_answered_by AFTER UPDATE OF answered_by ON asks
   WHEN NEW.answer IS NOT NULL AND NEW.answered_by IS NOT NULL BEGIN
   INSERT OR REPLACE INTO ask_answerers (ask, revision, by)
   VALUES (NEW.id, NEW.revision, NEW.answered_by);
+  UPDATE ask_revisions SET answered = NEW.answered WHERE ask = NEW.id AND revision = NEW.revision;
 END;
 CREATE INDEX IF NOT EXISTS autopilot_by_ask ON autopilot_asks (ask);
 CREATE TRIGGER IF NOT EXISTS ask_version_autopilot AFTER INSERT ON autopilot_asks BEGIN

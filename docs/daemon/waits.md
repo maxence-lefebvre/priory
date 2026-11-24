@@ -124,7 +124,8 @@ and appends [`factory.ask.autopilot_replaced`](../trace-schema.md#factoryaskauto
 After that, the refusal names `priory say`.
 
 `priory autopilot report` lists what a window answered and why, what it left and why, and the command
-that reverses each answer. A done task with no open pull request has none, and the report says so.
+that reverses each answer. A done task with no open pull request has none, and the report says so. The report checks that a
+revive's step still exists when `PRIORY_FACTORY`, or the current folder, holds the factory.
 When a window ends, the daemon posts one report line to the desk.
 
 ## Waits

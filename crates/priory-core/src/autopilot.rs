@@ -97,12 +97,38 @@ pub fn set(
     if queued {
         runners::send(&tx, &message)?;
     }
+    // An off waits for its echo even before `tell`, so no older `on` from the log undoes it.
+    let awaited = queued || setting.is_none();
     tx.execute(
         "UPDATE autopilot_state SET unread = ?1",
-        [queued.then(|| message.id.to_string())],
+        [awaited.then(|| message.id.to_string())],
     )?;
     tx.commit()?;
     Ok(message)
+}
+
+/// Tells the other runners the `off` that `message` is, as this machine's `role` in `factory` does.
+pub fn tell(
+    db: &mut Connection,
+    factory: &Factory,
+    role: Role,
+    message: &Message,
+) -> Result<(), String> {
+    match role {
+        Role::Viewer => publish(factory, message),
+        Role::Runner => db
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .and_then(|tx| {
+                runners::send(&tx, message)?;
+                tx.commit()
+            })
+            .map_err(|error| error.to_string()),
+        // With no other runner, no echo comes.
+        Role::Alone => db
+            .execute("UPDATE autopilot_state SET unread = NULL", [])
+            .map(drop)
+            .map_err(|error| error.to_string()),
+    }
 }
 
 /// Sends `message` to the runners from a machine that runs no task.
@@ -264,9 +290,10 @@ impl Window {
     }
 }
 
-/// Whether the clock reads over a minute earlier than it did while autopilot was on, in SQL.
+/// Whether the clock was set back by over a minute while autopilot was on, in SQL. The stored clock
+/// is up to 10 seconds old and never moves back.
 const SET_BACK: &str = "(SELECT clock FROM autopilot_state)
-  > strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '+60 seconds')";
+  > strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '+50 seconds')";
 
 /// The window in force now, if any. Its end is read here, so no restart or pause extends it.
 pub(crate) fn window(db: &Connection) -> rusqlite::Result<Option<Window>> {
@@ -620,7 +647,7 @@ fn finish(db: &mut Connection) -> rusqlite::Result<()> {
             "SELECT EXISTS (SELECT 1 FROM autopilot_windows WHERE reported IS NULL AND (ended IS NOT NULL
                OR until <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now') OR {SET_BACK}
                OR (SELECT clock FROM autopilot_state)
-                 < strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-60 seconds')))"
+                 < strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-10 seconds')))"
         ),
         [],
         |row| row.get(0),
@@ -643,7 +670,7 @@ fn finish(db: &mut Connection) -> rusqlite::Result<()> {
         [],
     )?;
     tx.execute(
-        "UPDATE autopilot_state SET clock = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')",
+        "UPDATE autopilot_state SET clock = max(clock, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))",
         [],
     )?;
     let ended = tx
@@ -710,9 +737,13 @@ pub fn line(status: &Value) -> Option<String> {
     ))
 }
 
-/// What window `id`, the latest without one, answered and left, why, and how to reverse each.
-/// `None` when there is no such window.
-pub fn report(db: &Connection, id: Option<i64>) -> rusqlite::Result<Option<Value>> {
+/// What window `id`, the latest without one, answered and left, why, and how to reverse each, in
+/// `factory` when it is known. `None` when there is no such window.
+pub fn report(
+    db: &Connection,
+    id: Option<i64>,
+    factory: Option<&Factory>,
+) -> rusqlite::Result<Option<Value>> {
     let found = rows(
         db,
         "SELECT id AS window, started AS since, until, level, lanes, coalesce(ended,
@@ -733,7 +764,7 @@ pub fn report(db: &Connection, id: Option<i64>) -> rusqlite::Result<Option<Value
            noted.verdict, noted.option, noted.why, noted.noted AS at, asks.kind,
            CASE WHEN asks.withdrawn IS NOT NULL THEN 'withdrawn' WHEN asks.answer IS NOT NULL
              THEN 'answered' ELSE 'open' END AS state, asks.answer, asks.answered_by,
-           tasks.state AS task_state, tasks.key, EXISTS (SELECT 1 FROM outbox WHERE outbox.task = asks.task
+           tasks.state AS task_state, tasks.key, tasks.workflow, EXISTS (SELECT 1 FROM outbox WHERE outbox.task = asks.task
              AND outbox.state = 'queued'
              AND instr(outbox.text, 'Answer to ask ' || asks.id || ' (revision ') > 0) AS unsent
          FROM autopilot_asks AS noted JOIN asks ON asks.id = noted.ask
@@ -743,7 +774,7 @@ pub fn report(db: &Connection, id: Option<i64>) -> rusqlite::Result<Option<Value
     )?;
     let (mut answered, mut left) = (Vec::new(), Vec::new());
     for mut ask in noted.as_array().cloned().unwrap_or_default() {
-        match reverse(db, &ask)? {
+        match reverse(db, &ask, factory)? {
             Some(Ok(command)) => ask["reverse"] = json!(command),
             Some(Err(why)) => {
                 ask["reverse"] = Value::Null;
@@ -754,6 +785,7 @@ pub fn report(db: &Connection, id: Option<i64>) -> rusqlite::Result<Option<Value
         let fields = ask.as_object_mut().expect("rows are objects");
         fields.remove("unsent");
         fields.remove("key");
+        fields.remove("workflow");
         match fields
             .remove("verdict")
             .and_then(|it| it.as_str().map(str::to_owned))
@@ -820,7 +852,11 @@ fn remote(
 
 /// The command that reverses an answer autopilot gave, or why none does: another answer while its
 /// prompt is unsent, else word to the agent, or for a plan a cancel and a revive at the graded step.
-fn reverse(db: &Connection, ask: &Value) -> rusqlite::Result<Option<Result<String, String>>> {
+fn reverse(
+    db: &Connection,
+    ask: &Value,
+    factory: Option<&Factory>,
+) -> rusqlite::Result<Option<Result<String, String>>> {
     if ask["verdict"] != "answered" || ask["answered_by"] != AUTOPILOT {
         return Ok(None);
     }
@@ -836,10 +872,22 @@ fn reverse(db: &Connection, ask: &Value) -> rusqlite::Result<Option<Result<Strin
     if over && let Some(rival) = tools::rival(&tx, task, ask["key"].as_str().unwrap_or_default())? {
         return Ok(Some(Err(format!("task {task} is {state}, and {rival}"))));
     }
+    let workflow = ask["workflow"].as_str().unwrap_or_default();
+    let revives = state != "done" && (over || ask["kind"] == "step");
+    if let Some(factory) = factory
+        && revives
+        && factory
+            .workflows
+            .get(workflow)
+            .is_none_or(|flow| flow.value.step(step).is_none())
+    {
+        return Ok(Some(Err(format!(
+            "task {task} cannot revive at step {step}, which is no longer in workflow {workflow}"
+        ))));
+    }
     Ok(Some(match (state, ask["kind"] == "step") {
-        // shortcut: a step no agent runs refuses the say, which the report, with no factory, cannot see.
-        ("done", _) => match tools::open_pull_request(&tx, task)? {
-            Ok(_) => Ok(format!("priory say {task} TEXT")),
+        ("done", _) => match tools::says_reopens(&tx, task, factory)? {
+            Ok(()) => Ok(format!("priory say {task} TEXT")),
             Err(why) => Err(format!(
                 "task {task} is done and {why}: ask for the change in a new task, with `priory add TEXT`"
             )),

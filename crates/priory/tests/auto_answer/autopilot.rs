@@ -23,7 +23,12 @@ impl Setup {
     }
 
     fn autopilot_report(&self) -> serde_json::Value {
-        let output = self.autopilot(&["report", "--json"]);
+        let output = self
+            .command(env!("CARGO_BIN_EXE_priory"))
+            .args(["autopilot", "report", "--json"])
+            .env("PRIORY_FACTORY", self.dir.join("factory"))
+            .output()
+            .unwrap();
         assert!(output.status.success(), "{output:?}");
         serde_json::from_slice(&output.stdout).unwrap()
     }
@@ -917,6 +922,33 @@ fn a_done_task_with_an_open_pull_request_is_told_to_reopen() {
 }
 
 #[test]
+fn a_plan_whose_step_an_edit_removed_has_no_reversal() {
+    let setup = plan("pilot-plan-removed", "green", true);
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[3] == "regrade")
+    });
+    let file = setup.dir.join("factory/workflows/implement.toml");
+    let renamed = fs::read_to_string(&file)
+        .unwrap()
+        .replace("\"plan\"", "\"design\"");
+    fs::write(&file, renamed).unwrap();
+
+    let report = setup.autopilot_report();
+
+    assert_eq!(
+        [
+            &report["answered"][0]["reverse"],
+            &report["answered"][0]["no_reverse"]
+        ],
+        [
+            &json!(null),
+            &json!("task 1 cannot revive at step plan, which is no longer in workflow implement")
+        ],
+        "{report}"
+    );
+}
+
+#[test]
 fn a_dropped_tasks_answer_is_reversed_by_a_revive_that_works() {
     let mut setup = Setup::new("pilot-reverse-dropped");
     setup.calls(&[confident_ask("high"), result("failed")]);
@@ -1051,6 +1083,29 @@ fn an_off_is_not_undone_by_an_older_on_it_had_not_read() {
 }
 
 #[test]
+fn an_off_that_told_no_runner_is_not_undone_by_an_older_on() {
+    let mut a = runner("pilot-off-untold", "a", None);
+    let mut b = runner("pilot-off-untold", "b", Some(&a));
+    a.start();
+    b.start();
+    a.crash();
+    b.autopilot_on(&["--for", "1h"]);
+    logged(&b, "priory.autopilot.set", json!({ "level": "high" }));
+    let settings = a.dir.join("factory/factory.toml");
+    let text = fs::read_to_string(&settings).unwrap();
+    fs::write(&settings, "name = [").unwrap();
+    let off = a.autopilot(&["off", &factory(&a)]);
+    assert!(!off.status.success(), "{off:?}");
+    fs::write(&settings, text).unwrap();
+
+    a.start();
+
+    until_read(&a, 1);
+    assert_eq!(status_level(&a), json!(null));
+    assert_eq!(status_level(&b), json!("high"));
+}
+
+#[test]
 fn a_lane_that_is_no_lane_is_refused() {
     let setup = Setup::new("pilot-bad-lane");
     let output = setup.autopilot(&["on", "--for", "1h", "--lane", "core"]);
@@ -1086,7 +1141,7 @@ fn a_clock_set_back_ends_it() {
     rusqlite::Connection::open(setup.dir.join("priory.db"))
         .unwrap()
         .execute(
-            "UPDATE autopilot_state SET clock = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '+2 hours')",
+            "UPDATE autopilot_state SET clock = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '+55 seconds')",
             [],
         )
         .unwrap();

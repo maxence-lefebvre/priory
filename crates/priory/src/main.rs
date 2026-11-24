@@ -1640,8 +1640,15 @@ fn autopilot(args: Vec<String>) -> ExitCode {
                 },
                 _ => return usage(),
             };
+            // The report needs no factory: one that loads lets it check each command's step.
+            let (found, problems) = factory::load(&factory::folder(None));
+            let known =
+                Some(found).filter(|found| problems.is_empty() && !found.workflows.is_empty());
             let report = state::read_only()
-                .and_then(|db| autopilot::report(&db, window).map_err(|error| error.to_string()))
+                .and_then(|db| {
+                    autopilot::report(&db, window, known.as_ref())
+                        .map_err(|error| error.to_string())
+                })
                 .and_then(|found| {
                     found.ok_or_else(|| match window {
                         Some(id) => format!("there is no autopilot window {id}"),
@@ -1738,14 +1745,8 @@ fn autopilot_off(dir: Option<&str>) -> ExitCode {
             .ok_or_else(|| "the factory does not load".to_owned())
             .and_then(|factory| {
                 let host = priory_runtime::room::hostname();
-                match autopilot::role(&factory, host.as_deref())? {
-                    autopilot::Role::Alone => Ok(()),
-                    // Set again with its message, so the log's older settings wait for its echo.
-                    autopilot::Role::Runner => autopilot::set(&mut db, None, true)
-                        .map(drop)
-                        .map_err(|error| error.to_string()),
-                    autopilot::Role::Viewer => autopilot::publish(&factory, &message),
-                }
+                let role = autopilot::role(&factory, host.as_deref())?;
+                autopilot::tell(&mut db, &factory, role, &message)
             });
         told.map_err(|why| format!("it is off here, and no other runner was told: {why}"))
     });

@@ -4790,6 +4790,22 @@ fn say_reopens(
     )))
 }
 
+/// Whether a `say` reopens the done `task`, or why not. Without `factory`, its step goes unchecked.
+pub(crate) fn says_reopens(
+    tx: &Transaction,
+    task: i64,
+    factory: Option<&Factory>,
+) -> rusqlite::Result<Result<(), String>> {
+    let resource = match open_pull_request(tx, task)? {
+        Ok(resource) => resource,
+        Err(why) => return Ok(Err(why)),
+    };
+    match factory {
+        Some(factory) => Ok(reopens_at(tx, &factory.workflows, task, &resource)?.map(drop)),
+        None => Ok(Ok(())),
+    }
+}
+
 /// The step the done `task` reopens at for `resource`, or why it cannot: an active task holds its
 /// key or a resource of it, or no agent runs that step.
 fn reopens_at(

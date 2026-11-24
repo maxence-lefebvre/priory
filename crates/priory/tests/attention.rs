@@ -224,6 +224,16 @@ fn an_answer_no_person_gave_is_no_act_and_ends_no_wait_of_the_persons() {
         setup.ask(id, 1, "2026-11-16T09:00:00Z", Some("2026-11-16T09:10:00Z"));
         setup.answered_by(id, by);
     }
+    // A person gave the same answer as autopilot, 20 minutes later.
+    setup.ask(6, 1, "2026-11-16T09:00:00Z", Some("2026-11-16T09:10:00Z"));
+    setup.answered_by(6, "autopilot");
+    setup
+        .db()
+        .execute(
+            "UPDATE asks SET answer = 'yes', answered = '2026-11-16T09:30:00Z', answered_by = 'cli' WHERE id = 6",
+            [],
+        )
+        .unwrap();
     // Autopilot's answer to the first revision still is not the person's once the ask is asked again.
     setup
         .db()
@@ -245,8 +255,15 @@ fn an_answer_no_person_gave_is_no_act_and_ends_no_wait_of_the_persons() {
 
     let attention = setup.attention_json(&["--since", "2026-11-16T00:00:00Z"]);
 
-    assert_eq!(attention["waits"]["acted"], 1, "{attention}");
-    assert_eq!(attention["acts"], 2, "{attention}");
+    assert_eq!(
+        [
+            &attention["waits"]["acted"],
+            &attention["waits"]["p90_minutes"]
+        ],
+        [&json!(2), &json!(30.0)],
+        "{attention}"
+    );
+    assert_eq!(attention["acts"], 3, "{attention}");
 }
 
 #[test]
