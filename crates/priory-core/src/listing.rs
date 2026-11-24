@@ -216,6 +216,12 @@ const DESK: &str = concat!(
                FROM sweeps JOIN stalls ON stalls.id = sweeps.stall JOIN tasks ON tasks.id = stalls.task
                WHERE stalls.ended IS NULL
                UNION ALL
+               SELECT 0, started, 'sweep', id, NULL, NULL,
+                 script || ': ' || coalesce(status
+                   || coalesce(nullif(': ' || output, ': '), ''), 'running')
+               FROM sweeps WHERE stall IS NULL AND coalesce(status, '') != 'exit 0'
+                 AND id = (SELECT max(id) FROM sweeps AS later WHERE later.script = sweeps.script)
+               UNION ALL
                SELECT 0, grants.created, 'memory', grants.id, grants.task, tasks.lane,
                  'waits for ' || printf('%.1f', grants.bytes / 1073741824.0) || ' GB: '
                  || grants.command
@@ -1590,6 +1596,7 @@ pub fn desk(
         post::intake_banner(db)?,
         crate::kit::banner(db)?,
         sweep::fetch_banner(home),
+        sweep::slice_banner(home),
     ]
     .into_iter()
     .flatten()

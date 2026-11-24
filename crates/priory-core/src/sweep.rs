@@ -1,6 +1,7 @@
 use crate::recipe::{self, Teardown};
 use crate::trace::{self, Trace};
 use priory_factory::factory::Factory;
+use priory_runtime::slice;
 use priory_runtime::worktrees::{self, Found, Verdict};
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::{BTreeMap, HashSet, VecDeque};
@@ -268,6 +269,123 @@ fn human(bytes: u64) -> String {
         size /= 1024.0;
     }
     format!("{size:.1} TiB")
+}
+
+/// What `<home>/slice.json` keeps for the desk: why the daemon leaves the agents slice's limits
+/// alone, or the last time the sweep restored them.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Noted {
+    at: jiff::Timestamp,
+    what: String,
+    #[serde(default)]
+    refused: bool,
+}
+
+fn note(home: &Path, what: String, refused: bool) {
+    eprintln!("priory daemon: {what}");
+    let file = home.join("slice.json");
+    let at = jiff::Timestamp::now();
+    let json = serde_json::to_vec(&Noted { at, what, refused }).expect("serializes");
+    if let Err(error) = std::fs::write(&file, json) {
+        eprintln!("priory daemon: recording {}: {error}", file.display());
+    }
+}
+
+fn noted(home: &Path) -> Option<Noted> {
+    serde_json::from_slice(&std::fs::read(home.join("slice.json")).ok()?).ok()
+}
+
+/// Takes a refusal that no longer holds off the desk.
+pub(crate) fn clear_refusal(home: &Path) {
+    let file = home.join("slice.json");
+    if noted(home).is_some_and(|noted| noted.refused)
+        && let Err(error) = std::fs::remove_file(&file)
+    {
+        eprintln!("priory daemon: removing {}: {error}", file.display());
+    }
+}
+
+/// The sweep's check of the agents slice's limits.
+pub(crate) struct Limits {
+    refused: Option<String>,
+    /// It took the slice and has not set its limits yet.
+    uncapped: bool,
+    failed: bool,
+}
+
+impl Limits {
+    /// The check of a daemon whose claim of `slice` was `refused`, if it was.
+    pub(crate) fn new(slice: &str, home: &Path, refused: Option<String>) -> Self {
+        let mut limits = Limits {
+            refused: None,
+            uncapped: false,
+            failed: false,
+        };
+        if let Some(why) = refused {
+            limits.refuse(slice, home, why);
+        }
+        limits
+    }
+
+    /// Says on the desk and in the log, once per reason, why the limits are left alone.
+    fn refuse(&mut self, slice: &str, home: &Path, why: String) {
+        if self.refused.as_ref() != Some(&why) {
+            note(
+                home,
+                format!("left the limits of {slice} alone: {why}"),
+                true,
+            );
+            self.refused = Some(why);
+        }
+    }
+
+    /// Sets the limits of a `slice` this daemon just took, or restores those another process
+    /// changed, and says so in the log and on the desk. A check that keeps failing is logged once.
+    pub(crate) fn check(&mut self, slice: &str, share: &crate::room::Share, home: &Path) {
+        if let Err(why) = slice::claim(slice, home) {
+            self.refuse(slice, home, why);
+            return;
+        }
+        if self.refused.take().is_some() {
+            eprintln!("priory daemon: took {slice}");
+            clear_refusal(home);
+            self.uncapped = true;
+        }
+        let checked = if self.uncapped {
+            slice::cap(slice, share.cpu, share.memory).map(|()| None)
+        } else {
+            slice::restore(slice, share.cpu, share.memory)
+        };
+        let found = match checked {
+            Ok(found) => found,
+            Err(error) => {
+                if !std::mem::replace(&mut self.failed, true) {
+                    eprintln!("priory daemon: checking the limits of {slice}: {error}");
+                }
+                return;
+            }
+        };
+        self.failed = false;
+        self.uncapped = false;
+        if let Some(found) = found {
+            let what =
+                format!("another process set {slice} to {found}; the sweep restored its limits");
+            note(home, what, false);
+        }
+    }
+}
+
+/// Why the daemon leaves the agents slice's limits alone, or their last restore, for a day.
+pub fn slice_banner(home: &Path) -> Option<String> {
+    let noted = noted(home)?;
+    if noted.refused {
+        return Some(noted.what);
+    }
+    let day = jiff::SignedDuration::from_hours(24);
+    (noted.at + day > jiff::Timestamp::now()).then(|| {
+        let at = noted.at.round(jiff::Unit::Second).unwrap_or(noted.at);
+        format!("{} at {at}", noted.what)
+    })
 }
 
 /// How long the sweep waits before it fetches again a clone whose fetch failed.
