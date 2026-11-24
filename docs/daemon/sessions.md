@@ -228,6 +228,34 @@ a worktree or clone that a symlink leads elsewhere.
   it. It also refuses a profile that is not a regular file, such as a FIFO. When the daemon cannot
   read a config back after a dialog, it blocks the task without the restart. Codex still runs only the hooks a person trusted with
   `/hooks`, so that step stays manual.
+- **direnv** refuses a folder's `.envrc` until a person runs `direnv allow`, unless its
+  `direnv.toml` whitelists the folder. When `direnv` is on the daemon's PATH and the worktree has
+  an `.envrc`, the daemon writes a direnv config folder of its own for the run,
+  `direnv/<session>/` in Priory home. Its `direnv.toml`, which only the person can read, is the
+  person's own (from `DIRENV_CONFIG`, else `$XDG_CONFIG_HOME/direnv`, else `~/.config/direnv`)
+  with the worktree and the clone added to `[whitelist] exact`, each as the daemon spells it and
+  as its real path, since direnv matches the path it is given and Priory home may go through a
+  symlink. Its `direnvrc` and `lib` link to the real paths of the person's, so a home-manager
+  link into `/nix/store` still resolves in a jail and libraries such as nix-direnv still load.
+  The run's harness then starts as `direnv exec <worktree> <harness>`, with `DIRENV_CONFIG`
+  naming that folder, so every command the agent runs gets the `.envrc` environment, such as a
+  nix flake's toolchain. The daemon never edits the person's `direnv.toml` or direnv's allow
+  folder. It refuses the grant, and starts the run without direnv, when the person's
+  `direnv.toml` cannot be read or parsed. Without `direnv` or without an `.envrc`, nothing
+  changes. An agent that edits `.envrc` reloads it with `direnv exec . <command>`.
+
+  Whitelisting a path in `exact` skips direnv's content check: an `.envrc` that changes, by a
+  commit or by the agent, loads without a new `direnv allow`. The variables an `.envrc` exports
+  reach the harness's environment as they are, outside the daemon's secret redaction, so keep
+  secrets out of a repository's `.envrc`.
+
+  The harness starts only after the `.envrc` loads: a `use flake` took 12s on a fresh worktree
+  and under 1s after. A run under direnv gets 600s, rather than 60s, to reach `SessionStart`,
+  and one whose `.envrc` is still loading then blocks with a reason that names direnv. When
+  direnv itself fails before the harness starts, for example because the `.envrc` exits non-zero
+  or `nix` is not on PATH in a jail, the harness starts without the `.envrc`. The daemon records
+  direnv's error as a `failed` `factory.run.trusted` record and in the task's reason, which a
+  later block reason keeps. A harness that exits on its own under direnv is not started again.
 
 Each path gets a `factory.run.trusted` record in the trace, whose `outcome` is `granted`, `present`
 or `refused` (see [trace-schema.md](../trace-schema.md#factoryruntrusted)).
