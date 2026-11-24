@@ -147,6 +147,7 @@ export default class PrioryQueue extends View {
     if (read !== this.reads) return false;
     if (read >= this.settles) this.acting = false;
     this.data = queue;
+    this.adding.offer(addChoices(queue, []));
     this.tasks = tasks.tasks;
     this.room = { paused: desk.paused, banner: desk.banner };
     this.updated = Date.now();
