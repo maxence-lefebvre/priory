@@ -3800,32 +3800,125 @@ fn a_daemon_inside_the_agents_slice_leaves_its_limits_alone() {
     left_alone(&setup, "this daemon runs inside it");
 }
 
-#[test]
-fn a_daemon_of_another_home_leaves_the_slices_limits_alone_until_that_home_is_gone() {
-    let mut setup = Setup::new("slice-owner");
+/// Another home whose daemon runs until the returned lock drops, as the slice's owner.
+fn owned_by_another(setup: &Setup) -> (PathBuf, fs::File) {
     let owner = setup.dir.join("other-home");
     fs::create_dir_all(&owner).unwrap();
+    let lock = fs::File::create(owner.join("daemon.lock")).unwrap();
+    lock.lock().unwrap();
     fs::create_dir_all(setup.tmux.path().join("priory")).unwrap();
     let file = setup.tmux.path().join("priory/priory-agents.slice.owner");
-    fs::write(&file, owner.to_str().unwrap()).unwrap();
+    write_atomic(&file, owner.to_str().unwrap());
+    (owner, lock)
+}
+
+fn every_second(setup: &Setup) {
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\n\n[sweep]\nevery = \"1s\"\n",
+    )
+    .unwrap();
+}
+
+fn desk(setup: &Setup) -> String {
+    String::from_utf8(setup.priory(&["desk"]).stdout).unwrap()
+}
+
+/// Waits until `setup`'s fake systemctl got `calls` calls.
+fn capped(setup: &Setup, calls: usize) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while fake_log(setup, "systemctl.log").len() < calls {
+        assert!(Instant::now() < deadline, "the slice was not capped");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_daemon_takes_the_slice_once_the_daemon_of_its_owner_is_gone() {
+    let mut setup = Setup::new("slice-owner");
+    every_second(&setup);
+    let (owner, lock) = owned_by_another(&setup);
     setup.publish(&requested(42));
 
     setup.start();
 
-    left_alone(
-        &setup,
-        &format!("the daemon of {} set them", owner.display()),
-    );
-    setup.crash();
-    fs::remove_dir_all(&owner).unwrap();
-    setup.start();
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while fake_log(&setup, "systemctl.log").len() < 2 {
-        assert!(Instant::now() < deadline, "the slice was not capped");
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    let why = format!("the daemon of {} set them", owner.display());
+    left_alone(&setup, &why);
+    std::thread::sleep(Duration::from_millis(2500));
+    assert!(fake_log(&setup, "systemctl.log").is_empty());
+    let said = format!("left the limits of priory-agents.slice alone: {why}");
+    assert_eq!(desk(&setup).matches(&said).count(), 1);
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    assert_eq!(log.matches(&said).count(), 1, "daemon log: {log}");
+
+    drop(lock);
+    capped(&setup, 2);
+
     let home = fs::canonicalize(setup.dir.join("home")).unwrap();
+    let file = setup.tmux.path().join("priory/priory-agents.slice.owner");
     assert_eq!(fs::read_to_string(&file).unwrap(), home.to_str().unwrap());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while desk(&setup).contains("the limits of") {
+        assert!(Instant::now() < deadline, "{}", desk(&setup));
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(!desk(&setup).contains("another process set"));
+}
+
+#[test]
+fn a_daemon_whose_bus_is_not_its_runtime_directorys_leaves_the_limits_alone() {
+    let mut setup = Setup::new("slice-foreign-bus");
+    setup.publish(&requested(42));
+
+    setup.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/bus")],
+    );
+
+    left_alone(&setup, "DBUS_SESSION_BUS_ADDRESS is not the bus of");
+}
+
+#[test]
+fn a_daemon_whose_socket_falls_back_to_tmp_still_claims_the_slice() {
+    let mut setup = Setup::new("slice-long-run");
+    let run = setup.dir.join("r".repeat(100));
+    fs::create_dir_all(&run).unwrap();
+
+    setup.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("XDG_RUNTIME_DIR", run.to_str().unwrap())],
+    );
+
+    capped(&setup, 2);
+    let home = fs::canonicalize(setup.dir.join("home")).unwrap();
+    let owner = fs::read_to_string(run.join("priory/priory-agents.slice.owner")).unwrap();
+    assert_eq!(owner, home.to_str().unwrap());
+    let socket = priory_runtime::runtime::socket_in(Some(&run), &home);
+    assert!(socket.starts_with("/tmp"));
+    setup.crash();
+    let _ = fs::remove_file(socket);
+}
+
+#[test]
+fn the_sweep_restores_the_quota_of_a_slice_with_no_memory_limit() {
+    let mut setup = Setup::new("slice-no-memory");
+    every_second(&setup);
+    let stat: String = (0..22).map(|cpu| format!("cpu{cpu} 1 2 3\n")).collect();
+    fs::write(setup.dir.join("proc/stat"), stat).unwrap();
+    slice_file(&setup, "cpu.max", "90000 100000\n");
+    fs::write(setup.dir.join("fake/capped"), "90000 100000\n").unwrap();
+    setup.start();
+    capped(&setup, 2);
+    fs::write(setup.dir.join("fake/capped"), "1980000 100000\n").unwrap();
+
+    capped(&setup, 4);
+
+    let said = "another process set priory-agents.slice to CPUQuota=90%; the sweep restored";
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !desk(&setup).contains(said) {
+        assert!(Instant::now() < deadline, "{}", desk(&setup));
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 #[test]
@@ -3869,10 +3962,7 @@ fn the_sweep_restores_the_slices_limits_another_process_changed_and_says_so_once
     assert_eq!(desk.matches(said).count(), 1, "{desk}");
 
     // Another home takes the slice, so this daemon's next sweep leaves a change alone.
-    let owner = setup.dir.join("other-home");
-    fs::create_dir_all(&owner).unwrap();
-    let file = setup.tmux.path().join("priory/priory-agents.slice.owner");
-    write_atomic(&file, owner.to_str().unwrap());
+    let _owner = owned_by_another(&setup);
     slice_file(&setup, "cpu.max", "90000 100000\n");
     std::thread::sleep(Duration::from_millis(2500));
     assert_eq!(fake_log(&setup, "systemctl.log").len(), 4);
@@ -3886,24 +3976,48 @@ const READY_PROMPT: &str = "Claude Code v2.1.331
   auto mode on (shift+tab to cycle)
 ";
 
-/// The reason a run that never reports `SessionStart` and shows `READY_PROMPT` blocks its task with.
-fn late_at_a_ready_prompt(setup: &mut Setup) -> String {
+/// The slice's counters before a run, then those after its quota held it back to 12 %, under
+/// `quota`.
+fn throttle(setup: &Setup, quota: &str) {
+    // The daemon reads the counters at its first tick after the run's start.
+    std::thread::sleep(Duration::from_secs(5));
+    slice_file(setup, "cpu.max", quota);
+    slice_file(
+        setup,
+        "cpu.stat",
+        "usage_usec 1012000\nnr_throttled 600\nthrottled_usec 9088000\n",
+    );
+}
+
+/// The reason a run that never reports `SessionStart` and shows `screen` blocks its task with, in a
+/// slice throttled under `quota`, if any.
+fn late(setup: &mut Setup, screen: &str, quota: Option<&str>) -> String {
     setup.publish(&requested(42));
-    fs::write(setup.dir.join("fake/silent"), READY_PROMPT).unwrap();
+    fs::write(setup.dir.join("fake/silent"), screen).unwrap();
+    slice_file(
+        setup,
+        "cpu.stat",
+        "usage_usec 1000000\nnr_throttled 500\nthrottled_usec 9000000\n",
+    );
     setup.start();
     setup.until("runs", |rows| rows.len() == 1);
+    if let Some(quota) = quota {
+        throttle(setup, quota);
+    }
     let tasks = setup.within(75, "tasks", |rows| {
         rows.first().is_some_and(|row| row[4] == "blocked")
     });
-    assert!(!tasks[0][7].contains("trust the"), "{}", tasks[0][7]);
     tasks[0][7].clone()
 }
+
+const THROTTLING: &str = "priory-agents.slice was throttled: its quota kept back 88% of the CPU its agents wanted since the run started, under CPUQuota=90%";
 
 #[test]
 fn a_late_run_at_a_ready_prompt_gets_no_trust_advice() {
     let mut setup = Setup::new("late-ready");
 
-    let reason = late_at_a_ready_prompt(&mut setup);
+    // A quota of `max` throttles nothing, whatever the counters say.
+    let reason = late(&mut setup, READY_PROMPT, Some("max 100000\n"));
 
     assert!(
         reason.starts_with(
@@ -3911,24 +4025,46 @@ fn a_late_run_at_a_ready_prompt_gets_no_trust_advice() {
         ),
         "{reason}"
     );
+    assert!(!reason.contains("trust the"), "{reason}");
+    assert!(!reason.contains("throttled"), "{reason}");
 }
 
 #[test]
-fn a_late_run_in_a_throttled_slice_names_the_throttling() {
+fn a_late_run_at_a_ready_prompt_in_a_throttled_slice_names_the_throttling() {
     let mut setup = Setup::new("late-throttled");
+
+    let reason = late(&mut setup, READY_PROMPT, Some("90000 100000\n"));
+
+    let prefix = format!("claude showed no SessionStart within 60s; {THROTTLING}");
+    assert!(reason.starts_with(&prefix), "{reason}");
+    assert!(!reason.contains("trust the"), "{reason}");
+}
+
+#[test]
+fn a_late_run_in_a_slice_throttled_only_before_it_started_names_no_throttling() {
+    let mut setup = Setup::new("late-throttled-before");
     slice_file(&setup, "cpu.max", "90000 100000\n");
-    slice_file(
-        &setup,
-        "cpu.pressure",
-        "some avg10=90.00 avg60=89.00 avg300=1.00 total=1\nfull avg10=89.00 avg60=88.00 avg300=1.00 total=1\n",
+
+    let reason = late(&mut setup, READY_PROMPT, None);
+
+    assert!(!reason.contains("throttled"), "{reason}");
+}
+
+#[test]
+fn a_late_codex_run_in_a_throttled_slice_keeps_its_hooks_command() {
+    let mut setup = Setup::new("late-throttled-codex");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+
+    let reason = late(
+        &mut setup,
+        "  Hooks need review\n\n  3 hooks are new or changed\n",
+        Some("90000 100000\n"),
     );
 
-    let reason = late_at_a_ready_prompt(&mut setup);
-
-    assert!(
-        reason.starts_with("claude showed no SessionStart within 60s; priory-agents.slice was throttled: its agents had no CPU for 88% of the last minute, under CPUQuota=90%"),
-        "{reason}"
+    let tail = format!(
+        "type /hooks and trust Priory's hooks, then exit; {THROTTLING}. Its pane ended with: Hooks need review | 3 hooks are new or changed"
     );
+    assert!(reason.ends_with(&tail), "{reason}");
 }
 
 #[test]

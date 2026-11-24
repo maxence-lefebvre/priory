@@ -269,25 +269,83 @@ fn human(bytes: u64) -> String {
     format!("{size:.1} TiB")
 }
 
-/// The last time the sweep restored the agents slice's limits, kept in `<home>/slice.json`.
+/// What `<home>/slice.json` keeps for the desk: why the daemon leaves the agents slice's limits
+/// alone, or the last time the sweep restored them.
 #[derive(serde::Serialize, serde::Deserialize)]
-struct Restored {
+struct Noted {
     at: jiff::Timestamp,
     what: String,
+    #[serde(default)]
+    refused: bool,
+}
+
+fn note(home: &Path, what: String, refused: bool) {
+    eprintln!("priory daemon: {what}");
+    let file = home.join("slice.json");
+    let at = jiff::Timestamp::now();
+    let json = serde_json::to_vec(&Noted { at, what, refused }).expect("serializes");
+    if let Err(error) = std::fs::write(&file, json) {
+        eprintln!("priory daemon: recording {}: {error}", file.display());
+    }
+}
+
+fn noted(home: &Path) -> Option<Noted> {
+    serde_json::from_slice(&std::fs::read(home.join("slice.json")).ok()?).ok()
+}
+
+/// Takes a refusal that no longer holds off the desk.
+pub(crate) fn clear_refusal(home: &Path) {
+    let file = home.join("slice.json");
+    if noted(home).is_some_and(|noted| noted.refused)
+        && let Err(error) = std::fs::remove_file(&file)
+    {
+        eprintln!("priory daemon: removing {}: {error}", file.display());
+    }
 }
 
 /// The sweep's check of the agents slice's limits.
-#[derive(Default)]
 pub(crate) struct Limits {
+    refused: Option<String>,
     failed: bool,
 }
 
 impl Limits {
-    /// Restores the limits of `slice` another process changed, and says so in the log and on the
-    /// desk. A check that keeps failing is logged once.
+    /// The check of a daemon whose claim of `slice` was `refused`, if it was.
+    pub(crate) fn new(slice: &str, home: &Path, refused: Option<String>) -> Self {
+        let mut limits = Limits {
+            refused: None,
+            failed: false,
+        };
+        if let Some(why) = refused {
+            limits.refuse(slice, home, why);
+        }
+        limits
+    }
+
+    /// Says on the desk and in the log, once per reason, why the limits are left alone.
+    fn refuse(&mut self, slice: &str, home: &Path, why: String) {
+        if self.refused.as_ref() != Some(&why) {
+            note(
+                home,
+                format!("left the limits of {slice} alone: {why}"),
+                true,
+            );
+            self.refused = Some(why);
+        }
+    }
+
+    /// Sets the limits of a `slice` this daemon just took, or restores those another process
+    /// changed, and says so in the log and on the desk. A check that keeps failing is logged once.
     pub(crate) fn check(&mut self, slice: &str, share: &crate::room::Share, home: &Path) {
-        let checked =
-            slice::claim(slice, home).and_then(|()| slice::restore(slice, share.cpu, share.memory));
+        if let Err(why) = slice::claim(slice, home) {
+            self.refuse(slice, home, why);
+            return;
+        }
+        let checked = if self.refused.is_some() {
+            slice::cap(slice, share.cpu, share.memory).map(|()| None)
+        } else {
+            slice::restore(slice, share.cpu, share.memory)
+        };
         let found = match checked {
             Ok(found) => found,
             Err(error) => {
@@ -298,29 +356,28 @@ impl Limits {
             }
         };
         self.failed = false;
-        let Some(found) = found else { return };
-        let what = format!("another process set {slice} to {found}; the sweep restored its limits");
-        eprintln!("priory daemon: {what}");
-        let file = home.join("slice.json");
-        let restored = Restored {
-            at: jiff::Timestamp::now(),
-            what,
-        };
-        let json = serde_json::to_vec(&restored).expect("serializes");
-        if let Err(error) = std::fs::write(&file, json) {
-            eprintln!("priory daemon: recording {}: {error}", file.display());
+        if self.refused.take().is_some() {
+            eprintln!("priory daemon: took {slice} and set its limits");
+            clear_refusal(home);
+        }
+        if let Some(found) = found {
+            let what =
+                format!("another process set {slice} to {found}; the sweep restored its limits");
+            note(home, what, false);
         }
     }
 }
 
-/// The last restore of the agents slice's limits, for a day.
+/// Why the daemon leaves the agents slice's limits alone, or their last restore, for a day.
 pub fn slice_banner(home: &Path) -> Option<String> {
-    let json = std::fs::read(home.join("slice.json")).ok()?;
-    let restored: Restored = serde_json::from_slice(&json).ok()?;
+    let noted = noted(home)?;
+    if noted.refused {
+        return Some(noted.what);
+    }
     let day = jiff::SignedDuration::from_hours(24);
-    (restored.at + day > jiff::Timestamp::now()).then(|| {
-        let at = restored.at.round(jiff::Unit::Second).unwrap_or(restored.at);
-        format!("{} at {at}", restored.what)
+    (noted.at + day > jiff::Timestamp::now()).then(|| {
+        let at = noted.at.round(jiff::Unit::Second).unwrap_or(noted.at);
+        format!("{} at {at}", noted.what)
     })
 }
 

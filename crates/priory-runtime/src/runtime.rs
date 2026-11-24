@@ -2452,7 +2452,7 @@ pub fn socket_in(run: Option<&Path>, home: &Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(format!("/tmp/priory-{}", uid())).join(name))
 }
 
-fn uid() -> u32 {
+pub(crate) fn uid() -> u32 {
     if let Ok(own) = fs::metadata("/proc/self") {
         return own.uid();
     }
@@ -2475,7 +2475,7 @@ fn fallback_reason(run: Option<&Path>, home: &Path) -> Option<String> {
 /// Makes `dir` for the socket, readable by its owner only, and tightens one of the user `owner`
 /// that others can enter. It refuses one that is not a folder or belongs to another user; `why`
 /// says why the socket is there.
-fn private_dir(dir: &Path, owner: u32, why: Option<&str>) -> Result<(), String> {
+pub(crate) fn private_dir(dir: &Path, owner: u32, why: Option<&str>) -> Result<(), String> {
     let at = |error: std::io::Error| format!("{}: {error}", dir.display());
     let private = fs::Permissions::from_mode(0o700);
     match fs::DirBuilder::new().mode(0o700).create(dir) {

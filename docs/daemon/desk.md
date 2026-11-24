@@ -238,7 +238,8 @@ daemon reads it from Priory home, not the state, so a client sees it at its next
 [sweep.md](sweep.md#a-clone-that-fails-to-fetch).
 
 For 24 hours after the sweep restored the agents slice's limits, the banner ends with `another
-process set <slice> to <limits>; the sweep restored its limits at <time>`. The daemon reads it from
+process set <slice> to <limits>; the sweep restored its limits at <time>`. While the daemon may not
+set them, it ends with `left the limits of <slice> alone: <why>` instead. The daemon reads both from
 Priory home too. See [agents-slice.md](agents-slice.md#restoring-the-limits).
 
 The banner is `intake` in `priory desk --json` and `/api/desk`. A source that starts failing, or
