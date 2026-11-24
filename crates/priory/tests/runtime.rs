@@ -19699,7 +19699,6 @@ fn a_call_priory_cannot_read_passes_on_an_unlisted_repository_and_is_denied_on_a
         "gh pr edit 3 -b \"$(notes)\"",
         "gh pr edit 3 -b \"$BODY\"",
         "notes > b.md; gh pr edit 3 -F b.md",
-        "gh api -X PATCH repos/{owner}/{repo}/issues/3 -f body=\"$(notes)\"",
     ];
     for call in calls {
         says(setup.private_denial(call), "Priory denied");
@@ -19742,19 +19741,6 @@ fn a_cd_in_a_shell_of_its_own_hides_no_commit_and_one_that_lasts_moves_the_check
 }
 
 #[test]
-fn an_issue_a_merge_and_a_link_in_a_field_hide_no_term() {
-    let setup = Setup::with_private_terms("private-api");
-    for call in [
-        "gh api -X PATCH repos/owner/repo/issues/3 -f body=vault9",
-        "gh api -X PATCH repos/owner/repo/pulls/3 -f body='https://github.com/repos/o/r/pulls/1 vault9'",
-        "gh pr merge 3 --squash --subject vault9",
-        "gh pr merge 3 -sb vault9",
-    ] {
-        says(setup.private_denial(call), "rule host");
-    }
-}
-
-#[test]
 fn a_commits_people_and_a_file_outside_the_current_folder_are_screened() {
     let setup = Setup::with_private_terms("private-people");
     let push = "git push origin HEAD";
@@ -19771,13 +19757,22 @@ fn a_commits_people_and_a_file_outside_the_current_folder_are_screened() {
         "user.email=a@vault9",
         "commit",
         "-q",
+        "--allow-empty",
         "--amend",
         "--reset-author",
         "-m",
         "x",
     ]);
     says(setup.private_denial(push), "committer");
-    setup.private_git(&["commit", "-q", "--amend", "--reset-author", "-m", "x"]);
+    setup.private_git(&[
+        "commit",
+        "-q",
+        "--allow-empty",
+        "--amend",
+        "--reset-author",
+        "-m",
+        "x",
+    ]);
     assert_eq!(setup.private_denial(push), None);
 
     fs::create_dir(setup.private_worktree().join("sub")).unwrap();

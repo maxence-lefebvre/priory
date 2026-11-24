@@ -496,6 +496,38 @@ mod tests {
         assert_eq!(slug("r"), None);
     }
 
+    #[test]
+    fn an_issue_a_merge_and_a_link_in_a_field_hide_no_term() {
+        let rules = Private {
+            repos: vec!["o/r".to_owned()],
+            terms: vec![priory_factory::private::Term {
+                label: "host".to_owned(),
+                text: vec!["vault9".to_owned()],
+                regex: Vec::new(),
+            }],
+        };
+        let denied = |command: &str| {
+            let none = serde_json::Value::Null;
+            let found = priory_factory::publish::calls("Bash", Some(command), &none);
+            assert_eq!(found.len(), 1, "{command}");
+            screen(&rules, &std::env::temp_dir(), &found[0]).err()
+        };
+        for command in [
+            "gh api -X PATCH repos/o/r/issues/3 -f body=vault9",
+            "gh api -X PATCH repos/o/r/pulls/3 -f body='https://github.com/repos/o/x/pulls/1 vault9'",
+            "gh pr merge 3 -R o/r --squash --subject vault9",
+            "gh pr merge 3 -R o/r -sb vault9",
+        ] {
+            let reason = denied(command).expect(command);
+            assert!(reason.contains("rule host"), "{reason}");
+            assert!(!reason.contains("vault9"), "{reason}");
+            assert_eq!(denied(&command.replace("o/r", "o/x")), None);
+        }
+        let unread = "gh api -X PATCH repos/o/r/issues/3 -f body=\"$(notes)\"";
+        assert!(denied(unread).is_some());
+        assert_eq!(denied(&unread.replace("o/r", "o/x")), None);
+    }
+
     proptest! {
         #[test]
         fn reading_a_patch_never_panics(
