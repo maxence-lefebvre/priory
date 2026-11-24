@@ -79,7 +79,9 @@ sit in the agent's input. That rule holds while the run the prompt went to is li
   gets its prompts.
 
 A run whose keyboard a person holds gets no prompt while the grant is open: `say` queues, and the
-daemon types at the run's next idle point after the grant ends. See
+daemon types at the run's next idle point after the grant ends. A prompt pasted before the grant
+gets no Enter while it is open, so Priory never submits what the person typed, and is not marked
+`uncertain` meanwhile. Its wait starts over, so its Enter goes once the grant ends. See
 [A run's keyboard](serve.md#a-runs-keyboard).
 
 A `UserPromptSubmit` with the same words confirms an `uncertain` prompt of its run, even one the
