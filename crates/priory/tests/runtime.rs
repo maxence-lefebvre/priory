@@ -7,6 +7,7 @@ mod conform;
 mod consult;
 mod debate;
 mod evidence;
+mod hold_running;
 mod metrics;
 mod outside_answer;
 #[cfg(feature = "postgres")]
@@ -68,7 +69,7 @@ macro_rules! undo_scheduled_sweeps {
     };
 }
 
-/// Undoes migrations 113, news, 112, scheduled sweeps, 111, memory lapses, 110, a run under direnv, 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
+/// Undoes the news migration and migrations 113, a subscription's kinds, 112, scheduled sweeps, 111, memory lapses, 110, a run under direnv, 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
 /// `auto_answer` level, 97, the task's `added_by`, and 93: the `pre` script's task columns and the
 /// pending requests.
 macro_rules! undo_pre {
@@ -85,7 +86,8 @@ macro_rules! undo_pre {
   ALTER TABLE tasks DROP COLUMN pre_context; ALTER TABLE tasks DROP COLUMN pre_script; DROP TABLE pending_requests;
   ALTER TABLE memory_candidates DROP COLUMN step; ALTER TABLE gates DROP COLUMN lessons; ALTER TABLE gates DROP COLUMN ask; ALTER TABLE gates DROP COLUMN judges;
   ALTER TABLE runs DROP COLUMN session_started; ALTER TABLE runs DROP COLUMN harness;
-  ALTER TABLE runs DROP COLUMN resumes; ALTER TABLE runs DROP COLUMN sandbox; ALTER TABLE runs DROP COLUMN direnv; DROP TABLE lapses; DROP TABLE news;
+  ALTER TABLE runs DROP COLUMN resumes; ALTER TABLE runs DROP COLUMN sandbox; ALTER TABLE runs DROP COLUMN direnv; DROP TABLE lapses;
+  DROP TRIGGER push_a_landed_wrong; DROP TRIGGER push_a_stall; ALTER TABLE push_subscriptions DROP COLUMN kinds; DROP TABLE news;
   ")
     };
 }
@@ -1492,7 +1494,7 @@ fn a_codex_run_with_no_session_start_names_the_codex_command_whose_hooks_to_trus
     assert!(reason.starts_with(&prefix), "{reason}");
     assert!(
         reason.ends_with(
-            ", accept the folder, type /hooks and trust Priory's hooks, then exit. Its pane ended with: token [redacted] refused | Hooks need review | 3 hooks are new or changed | › 1. Review hooks"
+            ", accept the folder, type /hooks and trust Priory's hooks, then exit. Resume the task to try again. Its pane ended with: token [redacted] refused | Hooks need review | 3 hooks are new or changed | › 1. Review hooks"
         ),
         "{reason}"
     );
@@ -3128,7 +3130,9 @@ fn a_state_file_at_111_keeps_its_stall_runs_and_takes_scheduled_ones() {
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(concat!(
         undo_scheduled_sweeps!(),
-        "PRAGMA foreign_keys = OFF;
+        "DROP TRIGGER push_a_landed_wrong; DROP TRIGGER push_a_stall;
+         ALTER TABLE push_subscriptions DROP COLUMN kinds;
+         PRAGMA foreign_keys = OFF;
          INSERT INTO stalls (id, resource, missing, task, ended)
            VALUES (7, 'disk', '1 GB', 1, '2026-01-01T00:00:00Z');
          INSERT INTO sweeps VALUES (5, 7, 'old', '2026-01-01T00:00:00Z', '2026-01-01T00:00:01Z',
@@ -4360,7 +4364,7 @@ fn a_late_run_at_a_ready_prompt_gets_no_trust_advice() {
 
     assert!(
         reason.starts_with(
-            "claude showed no SessionStart within 60s; its prompt is ready and asks for no trust"
+            "claude showed no SessionStart within 60s; its prompt is ready and asks for no trust, so its SessionStart hook is late or never reached the daemon. Resume the task to try again. Its pane ended with: "
         ),
         "{reason}"
     );
@@ -4374,7 +4378,9 @@ fn a_late_run_at_a_ready_prompt_in_a_throttled_slice_names_the_throttling() {
 
     let reason = late(&mut setup, READY_PROMPT, Some("90000 100000\n"));
 
-    let prefix = format!("claude showed no SessionStart within 60s; {THROTTLING}");
+    let prefix = format!(
+        "claude showed no SessionStart within 60s; {THROTTLING}. Resume the task to try again. Its pane ended with: "
+    );
     assert!(reason.starts_with(&prefix), "{reason}");
     assert!(!reason.contains("trust the"), "{reason}");
 }
@@ -4401,7 +4407,7 @@ fn a_late_codex_run_in_a_throttled_slice_keeps_its_hooks_command() {
     );
 
     let tail = format!(
-        "type /hooks and trust Priory's hooks, then exit; {THROTTLING}. Its pane ended with: Hooks need review | 3 hooks are new or changed"
+        "type /hooks and trust Priory's hooks, then exit; {THROTTLING}. Resume the task to try again. Its pane ended with: Hooks need review | 3 hooks are new or changed"
     );
     assert!(reason.ends_with(&tail), "{reason}");
 }
@@ -4470,7 +4476,7 @@ fn a_run_with_no_session_start_within_60_seconds_ends_and_names_the_folders_to_t
     assert_eq!(
         tasks[0][7],
         format!(
-            "claude showed no SessionStart within 60s; trust the worktrees folder and the clone once: cd {} && claude, accept, exit, then cd {} && claude, accept, exit",
+            "claude showed no SessionStart within 60s; trust the worktrees folder and the clone once: cd {} && claude, accept, exit, then cd {} && claude, accept, exit. Resume the task to try again",
             setup.dir.join("home/worktrees").display(),
             clone.display()
         )
@@ -5097,6 +5103,219 @@ fn a_grant_claude_overwrote_restarts_the_run_once_then_fails_the_task() {
         "claude overwrote Priory's trust grant"
     );
     assert_eq!(repaired[0]["data"]["outcome"], "ready");
+}
+
+impl Setup {
+    /// Makes the live run look as if it started `seconds` ago.
+    fn started_ago(&self, seconds: u32) {
+        let db = rusqlite::Connection::open(self.dir.join("priory.db")).unwrap();
+        let changed = db
+            .execute(
+                &format!("UPDATE runs SET started = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-{seconds} seconds') WHERE ended IS NULL"),
+                [],
+            )
+            .unwrap();
+        assert_eq!(changed, 1);
+    }
+
+    /// Asserts that the daemon's next ticks leave task 1's live run alone.
+    fn stays_live(&self) {
+        std::thread::sleep(Duration::from_secs(3));
+        assert_eq!(self.rows("runs").last().unwrap()[7], "-");
+        assert_eq!(self.rows("tasks")[0][4], "running");
+    }
+
+    /// The reason task 1 blocks with.
+    fn blocked(&self) -> String {
+        let blocked = |rows: &[Vec<String>]| rows.first().is_some_and(|row| row[4] == "blocked");
+        self.until("tasks", blocked)[0][7].clone()
+    }
+}
+
+#[test]
+fn a_trusted_run_that_starts_slowly_gets_180_seconds_then_blocks_until_a_person_resumes_it() {
+    let mut setup = trusting("trust-slow");
+    setup.memory(12);
+    setup.publish(&requested(42));
+    setup.hold("silent");
+    start_trusting(&mut setup);
+    setup.written("fake/pid");
+    setup.publish(&requested(43));
+    setup.until("tasks", |rows| rows.len() == 2);
+    person(
+        &setup,
+        "hold",
+        &["2", "--reason", "needs it", "--after", "1"],
+    );
+
+    setup.started_ago(120);
+    setup.stays_live();
+    setup.started_ago(180);
+    let reason = setup.blocked();
+
+    assert_eq!(
+        reason,
+        "claude showed no SessionStart within 180s although Priory recorded its trust; it started too slowly. Resume the task to try again"
+    );
+    setup.gone("priory-1");
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(setup.rows("runs").len(), 1);
+    assert_eq!(held_as(&setup, "2")[0], "held");
+    assert!(traced(&setup, "factory.task.repaired").is_empty());
+
+    setup.release("silent");
+    assert!(setup.priory(&["resume", "1"]).status.success());
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+}
+
+#[test]
+fn a_resumed_run_that_starts_slowly_gets_the_same_180_seconds() {
+    let mut setup = trusting("trust-slow-resumed");
+    setup.hold("undecided");
+    setup.hold("hold-stop");
+    setup.calls(&[json!({ "name": "Bash", "arguments": { "command": "rm -rf /" } })]);
+    setup.publish(&requested(42));
+    start_trusting(&mut setup);
+    setup.blocked();
+    setup.gone("priory-1");
+    setup.hold("silent");
+    setup.release("pid");
+
+    assert!(setup.priory(&["resume", "1"]).status.success());
+    let runs = setup.until("runs", |rows| rows.len() == 2);
+    setup.written("fake/pid");
+    assert_eq!(runs[0][4], runs[1][4]);
+    assert!(has(&launched(&setup), ["--resume", &runs[0][4]]));
+    setup.started_ago(120);
+    setup.stays_live();
+    setup.started_ago(180);
+
+    let reason = setup.blocked();
+    assert!(
+        reason.starts_with("claude showed no SessionStart within 180s although Priory recorded its trust; it started too slowly"),
+        "{reason}"
+    );
+    assert_eq!(setup.rows("runs").len(), 2);
+}
+
+#[test]
+fn a_trusted_codex_run_whose_hooks_need_review_keeps_the_command_that_trusts_them() {
+    let mut setup = trusting("trust-codex-hooks");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    fs::create_dir_all(setup.dir.join("codex")).unwrap();
+    fs::write(setup.dir.join("fake/silent"), "  Hooks need review\n").unwrap();
+    setup.publish(&requested(42));
+    start_trusting(&mut setup);
+    setup.written("fake/codex-args.log");
+    assert_eq!(
+        until_traced(&setup, "factory.run.trusted")["data"]["outcome"],
+        "granted"
+    );
+
+    setup.started_ago(120);
+    setup.stays_live();
+    setup.started_ago(180);
+
+    let reason = setup.blocked();
+    assert!(
+        reason.starts_with(
+            "codex showed no SessionStart within 180s; trust the clone and Priory's hooks once: cd "
+        ),
+        "{reason}"
+    );
+    assert!(
+        reason.ends_with("type /hooks and trust Priory's hooks, then exit. Resume the task to try again. Its pane ended with: Hooks need review"),
+        "{reason}"
+    );
+}
+
+/// The reason a run with recorded trust that shows `screen` blocks its task with after 180 seconds,
+/// in a slice throttled under a 90% quota when `throttled`.
+fn late_trusted(setup: &mut Setup, screen: &str, throttled: bool) -> String {
+    setup.publish(&requested(42));
+    fs::write(setup.dir.join("fake/silent"), screen).unwrap();
+    slice_file(
+        setup,
+        "cpu.stat",
+        "usage_usec 1000000\nnr_throttled 500\nthrottled_usec 9000000\n",
+    );
+    start_trusting(setup);
+    setup.written("fake/pid");
+    if throttled {
+        throttle(setup, "90000 100000\n");
+    }
+    // The harness writes its pid before it draws the screen.
+    std::thread::sleep(Duration::from_secs(1));
+    setup.started_ago(180);
+    setup.blocked()
+}
+
+const TRUSTED_LATE: &str =
+    "claude showed no SessionStart within 180s although Priory recorded its trust; ";
+
+#[test]
+fn a_trusted_late_run_in_a_throttled_slice_names_the_throttling_not_a_slow_start() {
+    let mut setup = trusting("trust-late-throttled");
+
+    let reason = late_trusted(&mut setup, "", true);
+
+    assert_eq!(
+        reason,
+        format!("{TRUSTED_LATE}{THROTTLING}. Resume the task to try again")
+    );
+}
+
+#[test]
+fn a_trusted_late_run_at_a_ready_prompt_names_the_late_hook_not_a_slow_start() {
+    let mut setup = trusting("trust-late-ready");
+
+    let reason = late_trusted(&mut setup, READY_PROMPT, false);
+
+    let prefix = format!(
+        "{TRUSTED_LATE}its prompt is ready and asks for no trust, so its SessionStart hook is late or never reached the daemon. Resume the task to try again. Its pane ended with: "
+    );
+    assert!(reason.starts_with(&prefix), "{reason}");
+}
+
+#[test]
+fn a_trusted_late_codex_run_in_a_throttled_slice_keeps_its_hooks_command() {
+    let mut setup = trusting("trust-late-throttled-codex");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    fs::create_dir_all(setup.dir.join("codex")).unwrap();
+
+    let reason = late_trusted(&mut setup, "  Hooks need review\n", true);
+
+    assert!(
+        reason.starts_with(
+            "codex showed no SessionStart within 180s; trust the clone and Priory's hooks once: cd "
+        ),
+        "{reason}"
+    );
+    let tail = format!(
+        "type /hooks and trust Priory's hooks, then exit; {THROTTLING}. Resume the task to try again. Its pane ended with: Hooks need review"
+    );
+    assert!(reason.ends_with(&tail), "{reason}");
+}
+
+#[test]
+fn a_trusted_run_under_direnv_keeps_its_600_seconds() {
+    let mut setup = trusting("trust-slow-direnv");
+    envrc(&setup);
+    setup.publish(&requested(42));
+    setup.hold("silent");
+    start_direnv(&mut setup, true, "", &[]);
+    setup.written("fake/pid");
+
+    setup.started_ago(300);
+    setup.stays_live();
+    setup.started_ago(600);
+
+    let reason = setup.blocked();
+    assert!(
+        reason.starts_with("claude showed no SessionStart within 600s although Priory recorded its trust; it started too slowly"),
+        "{reason}"
+    );
 }
 
 fn codex_profile(setup: &Setup) -> PathBuf {
@@ -12968,24 +13187,6 @@ fn a_task_request_whose_hold_names_null_conditions_files_its_task_held() {
     );
 }
 
-#[test]
-fn a_running_task_cannot_be_held() {
-    let mut setup = Setup::new("hold-running");
-    setup.publish(&requested(42));
-    setup.start();
-    setup.until("tasks", |rows| {
-        rows.first().is_some_and(|row| row[4] == "running")
-    });
-
-    let refused = setup.priory(&["hold", "1", "--reason", "too late"]);
-
-    assert!(!refused.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&refused.stderr),
-        "priory hold: task 1 is running: only a queued or ready task can be held\n"
-    );
-}
-
 /// Pull request 7 closed, from a branch no task owns.
 fn closed_7(merged: bool, github_id: u64) -> Message {
     on_pull(
@@ -16430,6 +16631,244 @@ fn a_dirty_asleep_task_never_retires_and_says_why() {
         ["asleep", "cannot retire: untracked files", "-"]
     );
     assert!(setup.worktree(1).join("notes.txt").exists());
+}
+
+/// Names `target` and `link` the build output of `owner/repo`, and sweeps every second.
+const BUILD: &str = "build = [\"target\", \"link\"]\n\n[sweep]\nevery = \"1s\"";
+
+/// Writes 1 MiB of build output into task 1's worktree, in a folder the test may make read-only.
+fn build_output(setup: &Setup) -> PathBuf {
+    let locked = setup.worktree(1).join("target/debug/locked");
+    fs::create_dir_all(&locked).unwrap();
+    fs::write(locked.join("lib.rlib"), vec![1u8; 1 << 20]).unwrap();
+    setup.worktree(1).join("target")
+}
+
+/// Task 1 sleeps on pull request 7 with build output in its worktree, under a factory that names
+/// it.
+fn asleep_with_build_output(name: &str) -> (Setup, PathBuf) {
+    let mut setup = Setup::new(name);
+    setup.recipes(BUILD);
+    setup.calls(&[wait(on_pull_7("pull_request"))]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    let target = build_output(&setup);
+    (setup, target)
+}
+
+#[test]
+fn an_idle_task_build_output_goes_under_the_reclaim_threshold_even_read_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let (setup, target) = asleep_with_build_output("reclaim");
+    let outside = setup.dir.join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("keep"), "x\n").unwrap();
+    std::os::unix::fs::symlink(&outside, setup.worktree(1).join("link")).unwrap();
+    fs::set_permissions(
+        target.join("debug/locked"),
+        fs::Permissions::from_mode(0o555),
+    )
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(2100));
+    assert!(target.exists(), "100 GB free is over the 40 GB threshold");
+
+    setup.disk(30);
+    let records = until_record(&setup, "factory.worktree.reclaimed");
+
+    assert!(!target.exists());
+    assert!(
+        outside.join("keep").exists(),
+        "a symlinked build folder is not followed"
+    );
+    assert!(setup.worktree(1).join("link").exists());
+    assert!(setup.worktree(1).join(".git").exists());
+    assert!(setup.branches().contains("priory/1"));
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        [&records[0]["task"], &records[0]["path"]],
+        ["1", target.to_str().unwrap()]
+    );
+    assert!(records[0]["bytes"].as_u64().unwrap() >= 1 << 20);
+    let desk = String::from_utf8(setup.priory(&["desk"]).stdout).unwrap();
+    assert!(
+        desk.contains(
+            "reclaimed 0.0 GB of build output from 1 folder in the last 24 hours, last at "
+        ),
+        "{desk}"
+    );
+}
+
+#[test]
+fn a_symlink_inside_the_build_output_goes_without_what_it_points_to() {
+    use std::os::unix::fs::PermissionsExt;
+    let (setup, target) = asleep_with_build_output("reclaim-escape");
+    // Empty, so the test's cleanup can still remove it.
+    let sealed = setup.dir.join("outside/sealed");
+    fs::create_dir_all(&sealed).unwrap();
+    fs::set_permissions(&sealed, fs::Permissions::from_mode(0o555)).unwrap();
+    std::os::unix::fs::symlink(&sealed, target.join("debug/escape")).unwrap();
+
+    setup.disk(30);
+    until_record(&setup, "factory.worktree.reclaimed");
+
+    assert!(!target.exists());
+    let mode = fs::metadata(&sealed).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o555, "a chmod does not follow the symlink");
+}
+
+#[test]
+fn a_build_folder_holding_a_tracked_file_stays() {
+    let (setup, target) = asleep_with_build_output("reclaim-tracked");
+    setup.commit(1, "target/app.js");
+
+    setup.disk(30);
+    std::thread::sleep(Duration::from_millis(2100));
+
+    assert!(target.join("app.js").exists());
+    assert!(target.join("debug/locked/lib.rlib").exists());
+    assert!(trace_records(&setup, "factory.worktree.reclaimed").is_empty());
+}
+
+#[test]
+fn a_staged_deletion_inside_a_build_folder_keeps_it() {
+    let (setup, target) = asleep_with_build_output("reclaim-staged");
+    setup.commit(1, "target/app.js");
+    setup.git(&setup.worktree(1), &["rm", "-q", "target/app.js"]);
+
+    setup.disk(30);
+    std::thread::sleep(Duration::from_millis(2100));
+
+    assert!(target.join("debug/locked/lib.rlib").exists());
+    assert!(trace_records(&setup, "factory.worktree.reclaimed").is_empty());
+}
+
+#[test]
+fn the_sweep_deletes_one_build_folder_per_tick() {
+    let (setup, target) = asleep_with_build_output("reclaim-tick");
+    let link = setup.worktree(1).join("link");
+    fs::create_dir_all(&link).unwrap();
+    fs::write(link.join("out.o"), vec![1u8; 1 << 10]).unwrap();
+
+    setup.disk(30);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while trace_records(&setup, "factory.worktree.reclaimed").len() < 2 {
+        assert!(Instant::now() < deadline, "two reclaims");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    assert!(!target.exists() && !link.exists());
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    let gap: f64 = db
+        .query_row(
+            "SELECT (julianday(max(time)) - julianday(min(time))) * 86400 FROM trace
+             WHERE type = 'factory.worktree.reclaimed'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        gap >= 0.5,
+        "the second folder waits for the next tick: {gap}s"
+    );
+}
+
+#[test]
+fn a_retirement_waits_for_the_reclaim_to_take_the_build_output() {
+    let (setup, target) = asleep_with_build_output("reclaim-retire");
+    // Ignored, so it does not itself keep the worktree from retiring.
+    let exclude = setup.git(
+        &setup.worktree(1),
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "info/exclude",
+        ],
+    );
+    fs::write(exclude.trim(), "target\n").unwrap();
+
+    setup.disk(10);
+    setup.removed(1);
+
+    assert!(!target.exists());
+    assert_eq!(trace_records(&setup, "factory.worktree.reclaimed").len(), 1);
+}
+
+#[test]
+fn a_live_run_keeps_its_build_output_until_it_ends() {
+    let mut setup = Setup::new("reclaim-live");
+    setup.recipes(BUILD);
+    setup.hold("hold-stop");
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(42));
+    setup.disk(30);
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1);
+    let target = build_output(&setup);
+
+    std::thread::sleep(Duration::from_millis(2100));
+    assert!(target.exists());
+
+    setup.release("hold-stop");
+    until_record(&setup, "factory.worktree.reclaimed");
+    assert!(!target.exists());
+}
+
+#[test]
+fn a_held_memory_grant_keeps_its_task_build_output_after_the_run_sleeps() {
+    let mut setup = Setup::new("reclaim-grant");
+    setup.recipes(BUILD);
+    setup.hold("hold-stop");
+    setup.calls(&[wait(on_pull_7("pull_request"))]);
+    setup.publish(&requested(42));
+    setup.start();
+    let runs = setup.until("runs", |rows| rows.len() == 1);
+    setup.hold("hold-g");
+    let grant = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .env("PRIORY_SESSION", &runs[0][4])
+        .args([
+            "memory",
+            "acquire",
+            "--gb",
+            "1",
+            "--",
+            "sh",
+            "-c",
+            &held("g"),
+        ])
+        .current_dir(setup.dir.join("fake"))
+        .spawn()
+        .unwrap();
+    setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
+    setup.release("hold-stop");
+    setup.until("runs", |rows| rows[0][7] == "asleep");
+    let target = build_output(&setup);
+    setup.disk(30);
+
+    std::thread::sleep(Duration::from_millis(2100));
+    assert!(target.exists());
+
+    setup.release("hold-g");
+    assert!(grant.wait_with_output().unwrap().status.success());
+    until_record(&setup, "factory.worktree.reclaimed");
+    assert!(!target.exists());
+}
+
+#[test]
+fn an_uncommitted_change_keeps_the_build_output() {
+    let (setup, target) = asleep_with_build_output("reclaim-dirty");
+    setup.commit(1, "widget.txt");
+    fs::write(setup.worktree(1).join("widget.txt"), "edited\n").unwrap();
+
+    setup.disk(30);
+    std::thread::sleep(Duration::from_millis(2100));
+
+    assert!(target.exists());
+    assert!(trace_records(&setup, "factory.worktree.reclaimed").is_empty());
 }
 
 impl Setup {
@@ -22186,6 +22625,19 @@ fn overlapping(name: &str, second: &str, factory: &str) -> Setup {
 }
 
 fn overlapping_after(name: &str, second: &str, factory: &str, first: impl Fn(&Setup)) -> Setup {
+    overlapping_as(name, &requested(43), factory, first, |setup| {
+        setup.commit(2, second);
+    })
+}
+
+/// `request` starts task 2, and `work` is what its `implement` run does.
+fn overlapping_as(
+    name: &str,
+    request: &Message,
+    factory: &str,
+    first: impl Fn(&Setup),
+    work: impl Fn(&Setup),
+) -> Setup {
     let mut setup = Setup::with_workflow(name, TWO_MODEL_STEPS);
     fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
     setup.publish(&requested(42));
@@ -22203,9 +22655,9 @@ fn overlapping_after(name: &str, second: &str, factory: &str, first: impl Fn(&Se
         })
     });
     first(&setup);
-    setup.publish(&requested(43));
+    setup.publish(request);
     setup.until("tasks", |rows| with(rows, 4, "running") == 2);
-    setup.commit(2, second);
+    work(&setup);
     setup.calls(&[passed_with_evidence()]);
     setup.until("tasks", |rows| {
         rows.iter()
@@ -22272,6 +22724,7 @@ fn a_task_overlapping_one_with_an_open_pull_request_is_held_until_it_merges() {
             [],
         )
         .unwrap();
+        setup.push_to(1, "priory/1");
     });
     setup.until("tasks", |rows| {
         rows.iter().any(|row| row[0] == "2" && row[4] != "ready")
@@ -22291,12 +22744,7 @@ fn a_task_overlapping_one_with_an_open_pull_request_is_held_until_it_merges() {
 /// that pull request.
 fn own_pull_request(name: &str, rows: &'static str) -> Setup {
     overlapping_after(name, "shared.txt", "name = \"demo\"", move |setup| {
-        let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
-        db.execute_batch(&format!(
-            "PRAGMA foreign_keys = OFF;
-             INSERT INTO pull_requests (task, resource, branch, base) VALUES {rows};"
-        ))
-        .unwrap();
+        records_pull_requests(setup, rows);
     })
 }
 
@@ -22333,6 +22781,309 @@ fn a_task_keyed_on_the_open_pull_request_it_overlaps_is_not_held_on_it() {
     );
 
     assert_runs_its_check(&setup);
+}
+
+/// A task request keyed `key`, as `priory request` publishes it.
+fn requested_as(key: &str) -> Message {
+    let mut request = requested(43);
+    request.data["key"] = json!(key);
+    request.subject(key)
+}
+
+/// Task 1's branch is pushed and is the head of the open pull request 7.
+fn opened_pull_request(setup: &Setup) {
+    setup.push_to(1, "priory/1");
+    records_pull_requests(setup, "(1, 'github:owner/repo#7', 'priory/1', 'main')");
+}
+
+/// Moves task 2's branch to the pull request's head.
+fn checks_out_the_pull_request(setup: &Setup) {
+    setup.git(
+        &setup.worktree(2),
+        &["reset", "-q", "--hard", "origin/priory/1"],
+    );
+}
+
+#[test]
+fn a_task_that_pushed_to_the_open_pull_request_it_overlaps_is_not_held_on_it() {
+    let setup = overlapping_as(
+        "overlap-pushed",
+        &requested_as("cli:fix-435"),
+        "name = \"demo\"",
+        opened_pull_request,
+        |setup| {
+            checks_out_the_pull_request(setup);
+            setup.commit(2, "fix.txt");
+            setup.push_to(2, "priory/1");
+            // Task 1 pushes on top, so the pull request is ahead of task 2.
+            setup.commit(2, "more.txt");
+            setup.push_to(2, "priory/1");
+            setup.git(&setup.worktree(2), &["reset", "-q", "--hard", "HEAD~1"]);
+        },
+    );
+
+    assert_runs_its_check(&setup);
+}
+
+#[test]
+fn a_task_built_on_the_open_pull_request_it_overlaps_is_not_held_on_it_before_it_pushes() {
+    let setup = overlapping_as(
+        "overlap-built-on",
+        &requested_as("cli:fix-435"),
+        "name = \"demo\"",
+        opened_pull_request,
+        |setup| {
+            checks_out_the_pull_request(setup);
+            setup.commit(2, "fix.txt");
+        },
+    );
+
+    assert_runs_its_check(&setup);
+}
+
+#[test]
+fn a_task_whose_cli_key_names_the_open_pull_request_it_overlaps_is_not_held_on_it() {
+    let setup = overlapping_as(
+        "overlap-cli-key",
+        &requested_as("cli:github:owner/repo#7"),
+        "name = \"demo\"",
+        opened_pull_request,
+        |setup| {
+            setup.commit(2, "shared.txt");
+        },
+    );
+
+    assert_runs_its_check(&setup);
+}
+
+/// Task 2 is held on pull request 7, which its branch diverged from.
+fn held_on_the_pull_request(name: &str) -> Setup {
+    let setup = overlapping_as(
+        name,
+        &requested_as("cli:fix-435"),
+        "name = \"demo\"",
+        opened_pull_request,
+        |setup| {
+            setup.commit(2, "shared.txt");
+            setup.commit(2, "fix.txt");
+        },
+    );
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "2" && row[4] == "held")
+    });
+    setup
+}
+
+#[test]
+fn a_restart_keeps_a_task_held_on_another_tasks_pull_request() {
+    let mut setup = held_on_the_pull_request("overlap-restart-held");
+    setup.crash();
+
+    setup.start();
+    // A request the restarted daemon routes proves that its start is over.
+    setup.publish(&requested(44));
+    setup.until("tasks", |rows| rows.iter().any(|row| row[0] == "3"));
+
+    assert_eq!(state_of(&setup, "2").0, "held");
+}
+
+#[test]
+fn a_restart_keeps_a_persons_hold_whatever_its_reason_says() {
+    let mut setup = queued_without_room("overlap-person-hold");
+    setup.publish(&requested(43));
+    setup.publish(&requested(44));
+    setup.until("tasks", |rows| rows.len() == 3);
+    let own = "(1, 'github:owner/repo#7', 'priory/1', 'main'),
+               (2, 'github:owner/repo#7', 'priory/1', 'main')";
+    records_pull_requests(&setup, own);
+    for (task, reason) in [
+        ("2", "overlaps task 1 on shared.txt"),
+        ("3", "overlaps task 999 elsewhere"),
+    ] {
+        person(&setup, "hold", &[task, "--reason", reason, "--after", "1"]);
+    }
+    setup.crash();
+
+    setup.start();
+    setup.publish(&requested(45));
+    setup.until("tasks", |rows| rows.len() == 4);
+
+    assert_eq!(state_of(&setup, "2").0, "held");
+    assert_eq!(state_of(&setup, "3").0, "held");
+}
+
+/// Records the open pull requests `rows`.
+fn records_pull_requests(setup: &Setup, rows: &str) {
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute_batch(&format!(
+            "PRAGMA foreign_keys = OFF;
+             INSERT INTO pull_requests (task, resource, branch, base) VALUES {rows};"
+        ))
+        .unwrap();
+}
+
+/// Adds the done task 0, which changed `shared.txt` too and has the open pull request 6.
+fn earlier_pull_request(setup: &Setup) {
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute(
+            "INSERT INTO tasks (id, key, workflow, step, state, trigger, source, branch, worktree, files)
+             SELECT 0, 'cli:earlier', workflow, step, 'done', trigger, source, 'priory/0',
+               substr(worktree, 1, length(worktree) - 1) || '0', '[\"shared.txt\"]'
+             FROM tasks WHERE id = 1",
+            [],
+        )
+        .unwrap();
+    records_pull_requests(setup, "(0, 'github:owner/repo#6', 'priory/0', 'main')");
+}
+
+#[test]
+fn a_fix_task_is_not_held_on_earlier_tasks_either() {
+    let setup = overlapping_as(
+        "overlap-fix-earlier",
+        &requested_as("cli:fix-435"),
+        "name = \"demo\"",
+        |setup| {
+            opened_pull_request(setup);
+            earlier_pull_request(setup);
+        },
+        |setup| {
+            checks_out_the_pull_request(setup);
+            setup.commit(2, "fix.txt");
+        },
+    );
+
+    assert_runs_its_check(&setup);
+}
+
+#[test]
+fn two_fix_tasks_are_not_held_on_each_others_pull_requests() {
+    let setup = overlapping_as(
+        "overlap-fix-both",
+        &requested_as("cli:fix-7"),
+        "name = \"demo\"",
+        |setup| {
+            opened_pull_request(setup);
+            earlier_pull_request(setup);
+        },
+        |setup| {
+            checks_out_the_pull_request(setup);
+            setup.commit(2, "fix.txt");
+        },
+    );
+    assert_runs_its_check(&setup);
+    setup.until("outbox", |rows| {
+        rows.iter().any(|row| {
+            row[2] == "4" && row[3] == "confirmed" && row[4].starts_with("Your last turn ended")
+        })
+    });
+
+    setup.publish(&requested_as("cli:fix-6"));
+    setup.until("tasks", |rows| with(rows, 4, "running") == 3);
+    setup.commit(3, "shared.txt");
+    setup.commit(3, "fix-6.txt");
+    setup.push_to(3, "priory/0");
+    setup.calls(&[passed_with_evidence()]);
+
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| {
+            row[0] == "3" && (row[4] == "held" || row[3] == "check" && row[4] == "running")
+        })
+    });
+    assert_eq!(state_of(&setup, "3").0, "running");
+}
+
+#[test]
+fn a_task_with_its_own_open_pull_request_is_not_held_on_an_earlier_one() {
+    let setup = own_pull_request(
+        "overlap-own-red",
+        "(1, 'github:owner/repo#7', 'priory/1', 'main'), (2, 'github:owner/repo#8', 'priory/2', 'main')",
+    );
+
+    assert_runs_its_check(&setup);
+}
+
+#[test]
+fn a_task_built_on_the_newer_pull_request_of_a_stack_is_not_held_on_the_older() {
+    let setup = overlapping_as(
+        "overlap-stack",
+        &requested_as("cli:fix-435"),
+        "name = \"demo\"",
+        |setup| {
+            records_pull_requests(setup, "(1, 'github:owner/repo#5', 'priory/1-a', 'main')");
+            opened_pull_request(setup);
+            let tree = ["-c", "user.name=t", "-c", "user.email=t@t", "commit-tree"];
+            let rewritten = [
+                &tree[..],
+                &["HEAD^{tree}", "-p", "HEAD~1", "-m", "rewritten"],
+            ];
+            let commit = setup.git(&setup.worktree(1), &rewritten.concat());
+            let refspec = format!("{}:refs/heads/priory/1-a", commit.trim());
+            setup.git(&setup.worktree(1), &["push", "-q", "origin", &refspec]);
+        },
+        |setup| {
+            checks_out_the_pull_request(setup);
+            setup.commit(2, "fix.txt");
+        },
+    );
+
+    assert_runs_its_check(&setup);
+}
+
+#[test]
+fn new_work_is_held_beside_an_open_pull_request_whose_branch_is_in_the_trunk() {
+    let setup = overlapping_as(
+        "overlap-new-work",
+        &requested_as("cli:new-work"),
+        "name = \"demo\"",
+        |setup| {
+            earlier_pull_request(setup);
+            let trunk = "origin/HEAD:refs/heads/priory/0";
+            setup.git(&setup.worktree(1), &["push", "-q", "origin", trunk]);
+        },
+        |setup| {
+            setup.commit(2, "shared.txt");
+            setup.commit(2, "new.txt");
+        },
+    );
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "2" && row[4] != "ready")
+    });
+
+    assert_eq!(state_of(&setup, "2").0, "held");
+}
+
+#[test]
+fn a_stacked_entry_is_held_on_a_task_it_is_not_stacked_on() {
+    let setup = overlapping_as(
+        "overlap-stacked-entry",
+        &requested_as("cli:stacked"),
+        "name = \"demo\"",
+        |setup| {
+            opened_pull_request(setup);
+            earlier_pull_request(setup);
+        },
+        |setup| {
+            rusqlite::Connection::open(setup.dir.join("priory.db"))
+                .unwrap()
+                .execute("UPDATE tasks SET base_task = 1 WHERE id = 2", [])
+                .unwrap();
+            checks_out_the_pull_request(setup);
+            setup.commit(2, "new.txt");
+        },
+    );
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "2" && row[4] != "ready")
+    });
+
+    let (state, reason) = state_of(&setup, "2");
+
+    assert_eq!(state, "held");
+    assert!(
+        reason.starts_with("held: overlaps task 0 on shared.txt"),
+        "{reason}"
+    );
 }
 
 const FIX: &str = r#"
@@ -34015,6 +34766,98 @@ fn a_parked_task_ends_on_a_close_that_arrived_before_its_adopt_request() {
         all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == state);
         assert!(setup.rows("runs").is_empty());
     }
+}
+
+/// A review on alice's pull request 7 that saw it `open` at its poll.
+fn polled_review(open: bool, id: u64) -> Message {
+    on_alice_pull(
+        "github.pull_request_review.submitted",
+        json!({
+            "actor": "bob", "state": "commented", "body": "Late note", "github_id": id,
+            "open": open,
+            "url": format!("https://github.com/owner/repo/pull/7#pullrequestreview-{id}")
+        }),
+    )
+}
+
+#[test]
+fn a_parked_task_waits_for_the_close_after_a_review_that_saw_its_pull_request_closed() {
+    let setup = adopting("adopt-review-before-close", &[7]);
+    adopt(&setup, &["my-prs", "7"]);
+    all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == "held");
+
+    setup.publish(&polled_review(false, 801));
+
+    setup.until("inbox", |rows| rows.len() == 2);
+    assert_eq!(setup.listed(&["tasks", "--all"])[0][4], "held");
+
+    setup.publish(&on_alice_pull(
+        "github.pull_request.closed",
+        json!({ "merged": true, "github_id": 400 }),
+    ));
+
+    all_tasks_until(&setup, |rows| rows[0][4] == "done");
+    assert!(setup.rows("runs").is_empty());
+}
+
+#[test]
+fn a_parked_task_stays_parked_when_its_pull_request_reopened_before_its_adopt_request() {
+    let setup = adopting("adopt-reopened", &[7]);
+    setup.publish(&on_alice_pull(
+        "github.pull_request.closed",
+        json!({ "merged": false, "open": false, "github_id": 400 }),
+    ));
+    setup.publish(&polled_review(true, 801));
+    setup.until("inbox", |rows| rows.len() == 2);
+
+    adopt(&setup, &["my-prs", "7"]);
+
+    all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == "held");
+
+    setup.publish(&polled_review(false, 802));
+
+    setup.until("inbox", |rows| rows.len() == 4);
+    assert_eq!(setup.listed(&["tasks", "--all"])[0][4], "held");
+}
+
+#[test]
+fn a_parked_task_is_done_when_a_late_open_review_follows_the_merge_before_its_adopt_request() {
+    let setup = adopting("adopt-merged-then-open", &[7]);
+    setup.publish(&on_alice_pull(
+        "github.pull_request.closed",
+        json!({ "merged": true, "open": false, "github_id": 400 }),
+    ));
+    setup.publish(&polled_review(true, 801));
+    setup.until("inbox", |rows| rows.len() == 2);
+
+    adopt(&setup, &["my-prs", "7"]);
+
+    all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == "done");
+    assert!(setup.rows("runs").is_empty());
+}
+
+#[test]
+fn adopt_skips_a_pull_request_whose_head_branch_an_active_task_owns() {
+    let mut setup = Setup::new("adopt-branch-owner");
+    fs::write(setup.dir.join("factory/triggers/my-prs.toml"), MY_PRS).unwrap();
+    fs::write(
+        setup.dir.join("fake/prs"),
+        r#"[{"number":7,"title":"Own","url":"https://github.com/owner/repo/pull/7",
+             "headRefName":"priory/1","isCrossRepository":false},
+            {"number":8,"title":"Fork","url":"https://github.com/owner/repo/pull/8",
+             "headRefName":"priory/1","isCrossRepository":true}]"#,
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    let adopted = adopt(&setup, &["my-prs"]);
+
+    assert_eq!(
+        adopted,
+        "github:owner/repo#7: task 1 owns it\nadopted github:owner/repo#8\n"
+    );
 }
 
 #[test]

@@ -169,8 +169,8 @@ export function arrivalAsk({ from, list, view, asks }) {
 }
 
 /**
- * The Desk's banners, each the daemon's sentence: the pause, the room, the intake, then one per
- * day or week spend cap reached, as `priory desk` prints them. The pause and the stall say when
+ * The Desk's banners, each the daemon's sentence: the pause, the room, the intake, the build output
+ * reclaimed in the last 24 hours, then one per day or week spend cap reached, as `priory desk` prints them. The pause and the stall say when
  * they began in the page's words: "stalled 12 min ago", not "stalled since <time>".
  * @param {any} desk `/api/desk` @param {(iso: string) => string} ago
  */
@@ -180,6 +180,7 @@ export function deskBanners(desk, ago) {
     { text: began(desk.paused), icon: "pause", intake: false },
     { text: began(desk.banner), icon: "hard-drive", intake: false },
     { text: desk.intake, icon: "unplug", intake: true },
+    { text: desk.reclaim, icon: "hard-drive", intake: false },
     ...(desk.caps ?? []).map((/** @type {string} */ text) => ({ text, icon: "hourglass", intake: false })),
   ].filter((banner) => banner.text);
 }
