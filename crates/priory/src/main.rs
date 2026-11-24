@@ -2354,7 +2354,12 @@ fn adopt(args: Vec<String>) -> ExitCode {
             continue;
         }
         let key = format!("github:{repo}#{number}");
-        match state::any_owner(&db, &key) {
+        // A fork's branch of the same name is someone else's.
+        let branch = pull["headRefName"]
+            .as_str()
+            .filter(|_| pull["isCrossRepository"] == false)
+            .map(|head| format!("github:{repo}@{head}"));
+        match state::any_owner(&db, &key, branch.as_deref()) {
             Ok(Some(task)) => {
                 println!("{key}: task {task} owns it");
                 continue;
