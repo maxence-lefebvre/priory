@@ -67,9 +67,69 @@ the folder in binary units, such as `not merged, 7.4 GiB`. After each periodic s
 own walks the kept folders and records their sizes, since that walk takes seconds. A folder the walk
 has not measured yet shows its reason alone.
 
+## Reclaiming build output
+
+While free disk is under `[sweep] reclaim`, by default 20 % of the disk and at most 40 GB, each sweep starts a walk that lists the
+build output of idle tasks. The daemon then deletes it one folder at a time, at most one per tick. A threshold under
+the room's disk floor (see Room) acts as the floor. So build output goes before the floor stops new
+runs, and before a whole worktree retires.
+
+A task is idle when it is `done`, `dropped`, `held` or `asleep`, has no live run, and holds no
+memory grant, waiting or held (see Memory gate). A build that a run wrapped in `priory memory
+acquire` keeps its grant after the run sleeps, so its output stays until it ends.
+
+`[repos."owner/name"] build` names the build folders, relative to the worktree. Without it, a
+worktree with a `Cargo.toml` at its root has `target`, and other worktrees have none. `build = []`
+opts a repository out: none of its worktrees loses build output. A worktree keeps all its build
+output when any retirement check fails: it is not Priory's worktree, it is off its branch, a process runs in it, or it has an uncommitted change or an untracked file. Untracked
+files inside the build folders do not count; a change to a tracked file there does. A build folder
+that holds a file git tracks, such as a committed bundle, stays. A build folder that is a symlink,
+or that a symlink leads to, is never followed, and a symlink inside one goes without what it points
+to.
+
+These build folders stay too:
+
+- One with a mount at or under it, as `/proc/self/mountinfo` shows.
+- One inside a submodule or a nested repository.
+- One that holds a `.git` entry. A `.git` in the `tmp` folder of a cargo target does not count: tests
+  keep scratch files there. Cargo's `CACHEDIR.TAG` marks such a target.
+
+A thread lists and sizes each folder as `du` does, off the daemon's tick. Then each tick
+takes one folder, the largest first, and on equal sizes the task idle longest first. The tick checks
+again that the task is idle and that every check above still passes, then moves the folder to
+`PRIORY_HOME/reclaim/`, a rename that takes no longer for a large folder. A thread deletes it there.
+Only the tick starts runs, so none starts between those checks and the move, and a run that starts
+during the delete finds no build folder and makes a new one. No other folder goes until the delete
+ends. The tick measures the disk before each folder and stops once free disk is back at the
+threshold. A folder that a test made read-only is made writable, then deleted. The worktree,
+its branch and its session stay, so the task's next run rebuilds what it needs.
+
+Each deletion, once it ends, appends a `factory.worktree.reclaimed` record with the task, the folder
+and its bytes (see [trace-schema.md](../trace-schema.md#factoryworktreereclaimed)). `priory desk` and the web
+desk show `reclaimed 14.2 GB of build output from 3 folders in the last 24 hours, last at
+2026-11-23T19:30:02Z` while any happened in the last 24 hours.
+
+The thread looks for mounts and `.git` entries once more before it deletes a moved folder. If it finds
+one, it moves the folder back. If a new build folder took its place, the moved one stays in
+`PRIORY_HOME/reclaim/`.
+
+A daemon that stops during a delete leaves files in `PRIORY_HOME/reclaim/`, and the next sweep
+deletes them. It deletes only folders with a name it gave, a task's id and nanoseconds such as
+`304-1763926202412000000`. When `reclaim` is not a real folder, such as a symlink, nothing moves and
+nothing goes.
+
+The daemon logs a folder it cannot delete once, tries it again each sweep, and goes on with other
+build output. To remove one by hand, read the path in the log. Look for a mount (`findmnt -R <path>`), a
+repository, an immutable file (`lsattr -R <path>`) or a file of another user. Unmount the mount and
+move the repository out. Then run `rm -rf <path>`, with `sudo chattr -R -i <path>` first for immutable
+files, and `sudo` for another user's.
+
+When a worktree is on another filesystem than `PRIORY_HOME`, the move fails. The daemon logs it, keeps
+the folder with its mode, and does not try that folder again until it restarts.
+
 ## Retiring asleep tasks
 
-After each sweep, while free disk is at or under the room's disk floor (see Room), the daemon
+After each sweep, once the reclaim has nothing left to take, while free disk is at or under the room's disk floor (see Room), the daemon
 retires asleep tasks, longest asleep first, until the floor is met again. Retiring runs
 `git worktree remove` without force. The worktree goes, while the branch `priory/<id>` and the
 task's sessions stay. A task retires only when its worktree is Priory's, on its branch, has nothing
@@ -130,6 +190,7 @@ sweep forgets its record.
 every = "10m"                 # the built-in worktree sweep's cadence
 scripts = [
   { run = "docker builder prune -f", when = "disk", timeout = "5m" },
+  { run = "nh clean all --keep 3", every = "4h" },
 ]
 after = "30m"                 # how long the queue stays stalled after its scripts
 agent = "sweeper"             # no agent, no sweeper
@@ -145,6 +206,23 @@ killed when it ends. A script that fails or cannot start never stops the daemon.
 kills its predecessor's running scripts, after checking each process group's start time in `/proc`
 so a reused pid is left alone. It records them as `interrupted by a daemon restart`, with the tail
 of their output.
+
+A script with `every` also runs on a schedule: once that long has passed since it last started,
+for a stall or on its schedule. A script needs `when`, `every` or both. A scheduled run uses the
+same shell, process group, timeout, output tail and restart handling as a stall's run. The last
+start is kept in the state database, so a restarted daemon neither reruns a script early nor
+postpones it. A script with no run on record, such as a new one, runs at the daemon's next tick.
+A script never runs twice at once: its schedule waits while it runs, and a stall that opens during
+a scheduled run of a matching script takes that run as its own instead of starting another. From then on it is a run of the stall: it
+keeps its start, the stall waits for it to end, and the desk lists it only while the stall is open,
+even if it fails. The desk lists a scheduled script as a `sweep` row with no task while it runs. A
+failed run stays there until the script runs again. A clean scheduled run leaves no row. `every` is
+at least 10 seconds and at most 36500 days.
+
+At each tick, the daemon forgets a scheduled run that ended once its script has a later run, so the
+state database keeps the latest one per script. It also forgets a failed last run once no entry of
+`[sweep] scripts` with `every` has that `run` text, so a fixed or removed command leaves the desk.
+It keeps a clean last run, so a script you remove and add back keeps its schedule. Runs of a stall stay.
 
 After the stall's scripts end, or at its start when none matches, the stall waits `after`, 30
 minutes by default. If it still holds and `agent` names an agent, the daemon creates a task with the
@@ -169,7 +247,8 @@ Unless the factory defines its own `sweep` workflow, the sweeper runs this built
    approval, since it posts an agent's text to a repository other people read. A sweeper runs
    rarely, so the ask costs little.
 
-`priory check` refuses a `[sweep]` field it does not know, a malformed duration or resource, and an
+`priory check` refuses a `[sweep]` field it does not know, a malformed duration or resource, a
+script with neither `when` nor `every`, a script's `every` under 10 seconds or over 36500 days, an
 `agent` the factory lacks, and a `repo` that is not `owner/name`, with its line.
 
 Known limits:
@@ -181,3 +260,11 @@ Known limits:
 - A restarted daemon cannot kill background children of a lost script whose shell already exited.
   It cannot tell that group from a process that reused the shell's pid.
 - A stall that alternates between two resources starts a new stall, and new scripts, at each change.
+- A script's history is keyed by its `run` text: editing the command runs it at the next tick, and
+  two entries with the same `run` share one schedule.
+- A failed scheduled script you remove and add back runs at the next tick, since its run is
+  forgotten.
+- A scheduled run that a daemon restart interrupts counts as a run: its script runs again `every`
+  after the interrupted run started, and the desk lists it as failed until then.
+- Schedules read the wall clock: setting it back delays every script until the clock passes its
+  last start by `every` again.

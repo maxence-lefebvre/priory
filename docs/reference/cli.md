@@ -135,7 +135,8 @@ a group. `PRIORY_METRICS` replaces that list for one process, such as `process,l
 - `priory release TASK [--expected REVISION]`: lets a held task go, or keeps a running task from
   being held after its turn.
 - `priory resume TASK`: resumes a blocked task. See [desk.md](../daemon/desk.md#resume).
-- `priory say TASK TEXT`: sends a task's agent a message, and wakes it if it sleeps. See
+- `priory say TASK TEXT`: sends a task's agent a message, and wakes it if it sleeps. It
+  reopens a done task whose pull request is open, and refuses any other ended task. See
   [desk.md](../daemon/desk.md#say).
 - `priory cancel TASK [--expected REVISION]`: drops an active task and ends its run.
 - `priory revive TASK [--step STEP]`: restarts a failed or dropped task as a new generation. See
