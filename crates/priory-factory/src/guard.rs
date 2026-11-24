@@ -121,6 +121,9 @@ pub const SIGN_IN_TOOLS: &[&str] = &["authenticate", "complete_authentication"];
 /// The guard on Priory's own person verbs, which nothing grants to a run.
 pub const PERSON: &str = "priory-person";
 
+/// The guard on a call that publishes one of the factory's private terms, which nothing grants.
+pub const PRIVATE: &str = "private-terms";
+
 /// The guard on a script nested too deep for the guard to read, which nothing grants.
 pub const UNREADABLE: &str = "unreadable";
 
@@ -295,7 +298,7 @@ impl Guards {
 
 /// Whether `words` asks for the program's help. A help word after an option may be that option's
 /// value, as pflag and git take it, so it counts only after a word that is no option.
-fn help(words: &[String]) -> bool {
+pub(crate) fn help(words: &[String]) -> bool {
     let short = matches!(words[0].as_str(), "gh" | "git");
     words
         .iter()
@@ -310,7 +313,7 @@ fn help(words: &[String]) -> bool {
 
 /// Whether `words` runs `run[0]` with positional words starting with the rest of `run`, and holds
 /// one of `flags` if any.
-fn starts<S: AsRef<str>>(words: &[String], run: &[S], flags: &[S]) -> bool {
+pub(crate) fn starts<S: AsRef<str>>(words: &[String], run: &[S], flags: &[S]) -> bool {
     let Some((program, rest)) = run.split_first() else {
         return false;
     };
@@ -355,7 +358,7 @@ fn clustered(word: &str, flag: &str) -> bool {
 }
 
 /// Options of a program that take the next word as their value.
-fn takes_value(program: &str, option: &str) -> bool {
+pub(crate) fn takes_value(program: &str, option: &str) -> bool {
     let options: &[&str] = match program {
         "gh" => &["-R", "--repo"],
         "git" => &["-C", "-c", "--git-dir", "--work-tree", "--namespace"],
@@ -365,7 +368,7 @@ fn takes_value(program: &str, option: &str) -> bool {
 }
 
 /// The arguments after the program that are no option nor an option's value.
-fn positional(words: &[String]) -> Vec<&str> {
+pub(crate) fn positional(words: &[String]) -> Vec<&str> {
     let mut positional = Vec::new();
     let mut args = words[1..].iter();
     while let Some(arg) = args.next() {
@@ -384,7 +387,7 @@ fn positional(words: &[String]) -> Vec<&str> {
 
 /// `gh api` that writes: a method other than GET, or a field or body, which makes it a POST. A
 /// merge or an approving review is named as such, and so is one whose body Priory cannot read.
-fn gh_api(words: &[String], git: Git) -> Option<&'static str> {
+pub(crate) fn gh_api(words: &[String], git: Git) -> Option<&'static str> {
     if positional(words).first() != Some(&"api") {
         return None;
     }
@@ -708,10 +711,20 @@ const DEPTH: usize = 16;
 /// The simple commands a shell script runs, each as its words, with wrappers removed and the
 /// program named by its file name.
 pub fn commands(script: &str) -> Vec<Vec<String>> {
+    let mut found = read(script);
+    found.retain(|words| words[0] != TEXT);
+    found
+}
+
+/// The commands of `script`, with a `TEXT` one for each heredoc, here-string and assigned value.
+pub(crate) fn read(script: &str) -> Vec<Vec<String>> {
     let mut found = Vec::new();
     parse(script, 0, &mut found);
     found
 }
+
+/// The command the splitter records for text a script holds: no program has this name.
+pub(crate) const TEXT: &str = "\0text";
 
 /// The command the splitter records for a script nested past `DEPTH`: no program has this name.
 const TOO_DEEP: &str = "\0too deeply nested for the guard to read";
@@ -809,6 +822,7 @@ impl Split<'_> {
                 return;
             }
             if std::mem::take(&mut self.herestring) {
+                self.found.push(vec![TEXT.to_owned(), word.clone()]);
                 self.stdin.push(word);
                 return;
             }
@@ -822,6 +836,9 @@ impl Split<'_> {
             return;
         }
         let words = std::mem::take(&mut self.words);
+        for word in words.iter().take_while(|word| assignment(word)) {
+            self.found.push(vec![TEXT.to_owned(), word.clone()]);
+        }
         let before = self.found.len();
         unwrap(&words, self.depth, self.found);
         let shell = self.found[before..].iter().any(|command| {
@@ -1019,6 +1036,7 @@ impl Split<'_> {
         let script = std::mem::take(&mut self.stdin_shell);
         for (delimiter, strip, quoted) in std::mem::take(&mut self.heredocs) {
             let body = self.heredoc_body(&delimiter, strip);
+            self.found.push(vec![TEXT.to_owned(), body.clone()]);
             if script {
                 parse(&body, self.depth + 1, self.found);
             } else if !quoted {

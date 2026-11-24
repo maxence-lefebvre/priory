@@ -87,6 +87,34 @@ guarded. A factory adds its own guards with `[guard]` in
 same call as `gh-pr-merge` or `gh-pr-approve`, such as one on `gh pr` or `mcp__github__*`, does not
 rename it: the call keeps its built-in guard.
 
+## Private terms
+
+A factory with [`[private]`](../reference/factory.md#private) keeps its private terms out of the
+repositories it lists. The hook screens each call that publishes to one:
+
+- `git push`: the message, the file paths and the added lines of every commit the remote lacks, so a
+  line that a later commit removes still counts. A merge shows only what it resolved;
+- `gh pr create` and `gh pr edit`: the arguments, the body file and text elsewhere in the call, such
+  as a heredoc or a file `cat` prints, and, for `create`, the branch's commits;
+- `gh api` writes to a repository's pull requests, contents, merges and git data, or to `graphql`;
+- MCP tools named `create_pull_request`, `update_pull_request`, `push_files` or
+  `create_or_update_file`.
+
+A hit denies the call with each rule's label and location, such as
+`rule ticket-id: commit 1a2b3c4 src/x.rs:40`, and tells the agent to rewrite it. The denial never
+holds the term. Nothing grants the call. It is on the trace as `factory.tool.denied` with the guard
+`private-terms` and the call's name without its arguments. An `open-pr` step screens the same way
+before it pushes any branch, and fails on a hit.
+
+The destination is the push's remote, `-R`, the MCP tool's arguments, or the folder's remotes. One
+Priory cannot read counts as listed. On a listed repository, the hook also denies what it cannot
+read: a push in the call that makes the commit, a body from stdin, a missing body file, a push to a
+URL that no remote has, and a revision that does not resolve.
+
+The hook asks the daemon for the terms at each such call, so they are never in the run's
+environment, which holds only `PRIORY_PRIVATE=1`. It denies the call when the daemon does not
+answer. Comments, reviews, issues, branch names and tag messages are not screened.
+
 ## Connector sign-in
 
 An MCP server that needs a sign-in offers an `authenticate` tool in place of its own. A run that

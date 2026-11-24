@@ -81,6 +81,9 @@ pub struct Settings {
     /// Irreversible commands and MCP tools on top of the built-in ones.
     #[serde(default)]
     pub guard: crate::guard::Guards,
+    /// Terms no run may publish to the repositories it lists.
+    #[serde(default)]
+    pub private: crate::private::Private,
     /// Autolinks, in order: each key a regex, each value an `https://` URL template whose `$1`
     /// names the regex's first group. An entry with a built-in link's regex replaces it.
     #[serde(default, deserialize_with = "links")]
@@ -2608,6 +2611,12 @@ impl Factory {
             .as_ref()
             .map(|settings| settings.value.guard.clone())
             .unwrap_or_default()
+    }
+
+    /// The factory's `[private]` table, when it holds a repository and a term.
+    pub fn private(&self) -> Option<&crate::private::Private> {
+        let private = &self.settings.as_ref()?.value.private;
+        (!private.repos.is_empty() && !private.terms.is_empty()).then_some(private)
     }
 
     /// The recipe of `repo` that runs at `moment`, if the factory has one.

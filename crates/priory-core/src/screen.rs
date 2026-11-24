@@ -54,13 +54,33 @@ static CONTROL: LazyLock<Regex> =
 /// control characters are gone, so none can split a secret. It looks again with only the control
 /// characters gone, for a secret inside a sequence's string, such as a link's address.
 pub(crate) fn holds_any_secret(text: &str, exact: &[String]) -> bool {
-    let plain = CONTROL
-        .replace_all(&ESCAPE.replace_all(text, ""), "")
-        .into_owned();
-    let bare = CONTROL.replace_all(text, "").into_owned();
-    [plain, bare]
+    readings(text)
         .iter()
         .any(|text| exact.iter().any(|secret| text.contains(secret.as_str())) || holds_secret(text))
+}
+
+/// `text` with its escape sequences and control characters gone, then with only the latter gone.
+fn readings(text: &str) -> [String; 2] {
+    let plain = CONTROL.replace_all(&ESCAPE.replace_all(text, ""), "");
+    [
+        plain.into_owned(),
+        CONTROL.replace_all(text, "").into_owned(),
+    ]
+}
+
+/// Each line of `text`, from 1, that one of the labelled `terms` matches, read as a secret is.
+pub(crate) fn labels<'t>(text: &str, terms: &'t [(String, Regex)]) -> Vec<(usize, &'t str)> {
+    let mut found = Vec::new();
+    for (at, line) in text.lines().enumerate() {
+        let readings = readings(line);
+        for (label, term) in terms {
+            let hit = (at + 1, label.as_str());
+            if readings.iter().any(|line| term.is_match(line)) && !found.contains(&hit) {
+                found.push(hit);
+            }
+        }
+    }
+    found
 }
 
 static PEM_END: LazyLock<Regex> = LazyLock::new(|| {
@@ -420,7 +440,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_term_is_found_by_line_whatever_hides_it_in_the_text() {
+        let term =
+            |label: &str, pattern: &str| (label.to_owned(), regex::Regex::new(pattern).unwrap());
+        let terms = [term("host", "(?i)vault9"), term("ticket", r"\bZED-\d+")];
+        assert_eq!(
+            super::labels(
+                "ok\nVAULT9 and ZED-1\nva\u{200b}ult9\nva\x1b[1mult9",
+                &terms
+            ),
+            [(2, "host"), (2, "ticket"), (3, "host"), (4, "host")]
+        );
+        assert_eq!(super::labels("clean\n", &terms), []);
+    }
+
     proptest! {
+        #[test]
+        fn labels_never_panics_and_finds_a_term_anywhere(before in "(?s).{0,40}", after in "(?s).{0,40}") {
+            let terms = [("host".to_owned(), regex::Regex::new("vault9").unwrap())];
+            let text = format!("{before}\nvault9\n{after}");
+            prop_assert!(!super::labels(&text, &terms).is_empty());
+        }
+
         #[test]
         fn redact_never_panics_and_leaves_no_secret_on_screen(
             secrets in prop::collection::vec("[a-z\\]\\[ é\n-]{8,12}", 0..3),

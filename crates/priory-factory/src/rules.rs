@@ -388,7 +388,11 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 }
             }
         }
+        for message in settings.value.private.problems() {
+            problems.push(problem(settings, settings.lines.field("private"), message));
+        }
         let mut named: Vec<&str> = crate::guard::BUILT_IN.to_vec();
+        named.push(crate::guard::PRIVATE);
         for command in &settings.value.guard.commands {
             let message = if named.contains(&command.name.as_str()) {
                 format!(

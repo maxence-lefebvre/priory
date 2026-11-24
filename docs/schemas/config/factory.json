@@ -540,6 +540,28 @@
       },
       "type": "object"
     },
+    "Private": {
+      "additionalProperties": false,
+      "description": "The factory's private terms, and the repositories they must stay out of.",
+      "properties": {
+        "repos": {
+          "default": [],
+          "description": "The GitHub repositories, each `owner/name`, that must never hold a term.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "terms": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/Term"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
     "Queue": {
       "additionalProperties": false,
       "description": "How the queue orders tasks.",
@@ -1011,6 +1033,35 @@
       ],
       "type": "object"
     },
+    "Term": {
+      "additionalProperties": false,
+      "description": "Private terms under one label, which a refusal names instead of the term.",
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "regex": {
+          "default": [],
+          "description": "Regexes, in the regex crate's syntax.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "text": {
+          "default": [],
+          "description": "Literal strings, matched in any case.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "type": "object"
+    },
     "Terminal": {
       "description": "What the HTTP server lets a token holder do with a run's terminal.",
       "oneOf": [
@@ -1264,6 +1315,18 @@
         "string",
         "null"
       ]
+    },
+    "private": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/Private"
+        }
+      ],
+      "default": {
+        "repos": [],
+        "terms": []
+      },
+      "description": "Terms no run may publish to the repositories it lists."
     },
     "queue": {
       "$ref": "#/definitions/Queue"

@@ -504,6 +504,55 @@ fn a_factory_guard_cannot_take_a_built_in_guards_name() {
 }
 
 #[test]
+fn check_reports_what_is_wrong_with_private_terms_by_label_and_never_by_term() {
+    let dir = factory("private-problems", &[("implement", IMPLEMENT)]);
+    let check = |terms: &str| {
+        fs::write(
+            dir.join("factory.toml"),
+            format!("name = \"demo\"\n\n[private]\n{terms}\n"),
+        )
+        .unwrap();
+        priory(&["check"], &dir).stderr
+    };
+    for (terms, problem) in [
+        (
+            "repos = [\"o\"]",
+            "`[private] repos` `o` needs to be `owner/name`",
+        ),
+        (
+            "terms = [{ label = \" \", text = [\"a\"] }]",
+            "`[private]` term 1 needs a label",
+        ),
+        (
+            "terms = [{ label = \"x\" }]",
+            "`[private]` term `x` needs `text` or `regex`",
+        ),
+        (
+            "terms = [{ label = \"x\", text = [\"aa\"] }, { label = \"x\", text = [\"bb\"] }]",
+            "`[private]` label `x` is used twice",
+        ),
+        (
+            "terms = [{ label = \"x\", regex = [\"(\"] }]",
+            "`[private]` term `x` has a regex that does not compile: error: unclosed group",
+        ),
+        (
+            "terms = [{ label = \"x\", text = [\"\"] }]",
+            "`[private]` term `x` matches empty text",
+        ),
+        (
+            "terms = [{ label = \"on-vault9\", text = [\"vault9\"] }]",
+            "`[private]` label 1 holds a private term, and refusals print labels",
+        ),
+    ] {
+        assert_eq!(check(terms), format!("factory.toml:3: {problem}\n"));
+    }
+    assert_eq!(
+        check("repos = [\"o/r\"]\nterms = [{ label = \"x\", text = [\"vault9\"] }]"),
+        ""
+    );
+}
+
+#[test]
 fn a_codex_agent_with_mcp_servers_lists_mcp_calls_the_guard_may_not_see() {
     let dir = factory("guard-codex", &[("implement", IMPLEMENT)]);
     fs::write(
