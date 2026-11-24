@@ -5636,7 +5636,7 @@ fn a_trusted_late_codex_run_in_a_throttled_slice_keeps_its_hooks_command() {
 }
 
 #[test]
-fn a_trusted_run_under_direnv_keeps_its_600_seconds() {
+fn a_trusted_run_under_direnv_gets_its_180_seconds_once_the_envrc_loaded_and_780_in_all() {
     let mut setup = trusting("trust-slow-direnv");
     envrc(&setup);
     setup.publish(&requested(42));
@@ -5644,13 +5644,13 @@ fn a_trusted_run_under_direnv_keeps_its_600_seconds() {
     start_direnv(&mut setup, true, "", &[]);
     setup.written("fake/pid");
 
-    setup.started_ago(300);
-    setup.stays_live();
     setup.started_ago(600);
+    setup.stays_live();
+    setup.started_ago(780);
 
     let reason = setup.blocked();
     assert!(
-        reason.starts_with("claude showed no SessionStart within 600s although Priory recorded its trust; it started too slowly"),
+        reason.starts_with("claude showed no SessionStart within 180s although Priory recorded its trust; it started too slowly"),
         "{reason}"
     );
 }
