@@ -352,6 +352,19 @@ pane wrapped counts as one line, so a secret that wraps is hidden whole. Both hi
 screen does (see [serve.md](serve.md#a-runs-screen)), and show `[redacted]` alone when one still
 shows.
 
+The reason names a cause the daemon can see:
+
+- Since the run started, the CPU quota of the [agents slice](agents-slice.md) kept back at least 10 %
+  of the CPU its agents wanted: `priory-agents.slice was throttled: its quota kept back <n>% of the CPU
+  its agents wanted since the run started, under CPUQuota=<quota>`. The share is the growth of
+  `throttled_usec` in the slice's `cpu.stat`, over its growth plus that of `usage_usec`.
+- Claude's pane shows its input box: `its prompt is ready and asks for no trust, so its SessionStart
+  hook is late or never reached the daemon. Resume the task to try again`.
+
+At Claude's input box, the cause replaces the commands, the throttling first, so a person does not
+accept a trust that is not missing. Elsewhere, as at Codex's `Hooks need review`, the throttling
+follows the commands after `; `.
+
 The daemon's `runs` metrics group counts both as starts that ended in `error`, and shows a start
 still waiting for `SessionStart` by its age. See [metrics.md](metrics.md#the-runs-group).
 
