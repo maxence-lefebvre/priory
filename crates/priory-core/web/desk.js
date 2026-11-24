@@ -126,6 +126,9 @@ export function memoryNote(verb, status, body) {
 }
 
 /** A count and its noun: "1 task", "2 tasks"; `many` covers irregular plurals. @param {number} count @param {string} one @param {string} [many] */
+/** The repository of task `id` in `tasks`, so a Desk row's `#n` links where its task lives; null without one. */
+export const taskRepo = (tasks, id) => (id == null ? null : (tasks || []).find((task) => task.id === id)?.repo ?? null);
+
 export const plural = (count, one, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 
 /**

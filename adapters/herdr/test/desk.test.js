@@ -51,6 +51,7 @@ test("the next thing is the desk's next, so an alarm comes before every ask", ()
     step: "triage",
     age: "31 min",
     why: "work stopped and waits on a person",
+    whySpans: [{ text: "First because work stopped and waits on a person" }],
     question: "Permission prompt denied: write to ~/.ssh/config, outside the worktree.",
     questionSpans: [{ text: "Permission prompt denied: write to ~/.ssh/config, outside the worktree." }],
     recommendation: "Resume",
@@ -71,6 +72,7 @@ test("an ask as the next thing carries its recommendation and its task's progres
     step: "approve",
     age: "42 min",
     why: "its answer lets an irreversible step run",
+    whySpans: [{ text: "First because its answer lets an irreversible step run" }],
     question: "Merge #212 into main? Checks are green at a1f3c9e.",
     questionSpans: [{ text: "Merge #212 into main? Checks are green at a1f3c9e." }],
     recommendation: "merge",
@@ -147,8 +149,8 @@ test("the room and intake banners, Since you looked and Up next come from the de
   ]);
   assert.equal(model.since.from, "09:12");
   assert.deepEqual(model.since.rows.slice(0, 2), [
-    { key: "cli:PRI-66", task: 6, what: "run started triage", time: "58 min" },
-    { key: "cli:PRI-63", task: 3, what: "step ended approve: merged #210", time: "1 h" },
+    { key: "cli:PRI-66", task: 6, what: "run started triage", whatSpans: [{ text: "run started triage" }], time: "58 min" },
+    { key: "cli:PRI-63", task: 3, what: "step ended approve: merged #210", whatSpans: [{ text: "step ended approve: merged #210" }], time: "1 h" },
   ]);
   assert.deepEqual(model.upNext, [
     { when: "now", key: "cli:PRI-72", task: 7, why: "first in the queue" },
@@ -254,11 +256,11 @@ test("an ask routed to a lead shows with the lead in its row and as the next thi
 });
 
 /** The Desk panel drawn from the fixtures, in Node, with the fake kit. */
-async function deskPanel(links = /** @type {{ pattern: string, url: string }[]} */ ([])) {
+async function deskPanel(links = /** @type {{ pattern: string, url: string }[]} */ ([]), desk = data.desk) {
   const { context, herdr, settle } = await import("./kit.js");
   const { default: Desk } = await import("../mods/priory-desk/main.js");
   herdr.reset();
-  herdr.replies = { desk: data.desk, asks: data.asks, tasks: data.tasks, queue: data.queue, links: { links } };
+  herdr.replies = { desk, asks: data.asks, tasks: data.tasks, queue: data.queue, links: { links } };
   const panel = new Desk();
   const cx = context();
   panel.init({}, cx);
@@ -345,6 +347,42 @@ test("a press on a row's link opens the link and leaves the selection where it w
   assert.equal(panel.selected, before);
   press(draw(panel, cx), "row-ask:2");
   assert.equal(panel.selected, "ask:2");
+});
+
+// The report Max could not open: a bare URL and an `owner/repo#N` the factory's rule links.
+const LANDED = "priory: landed wrong: acme/shop#212 of task 7 is red on dev: deploy cancelled https://github.com/acme/shop/actions/runs/1001.";
+const REPO_RULE = [{ pattern: String.raw`\b([\w.-]+)/([\w.-]+)#(\d+)\b`, url: "https://github.com/$1/$2/issues/$3" }];
+const landedDesk = () => ({ ...data.desk, items: [...data.desk.items, { ...data.desk.items[0], id: 12, what: LANDED }] });
+
+test("a report's bare URL and owner/repo#N draw as links, and a press on the row outside them selects it", async () => {
+  const { draw, find, press } = await import("./kit.js");
+  const row = deskModel({ ...data, desk: landedDesk() }, { now, links: REPO_RULE }).sections("needs").flatMap((section) => section.rows).find((each) => each.id === "report:12");
+  assert.deepEqual(row.textSpans, [
+    { text: "priory: landed wrong: " },
+    { text: "acme/shop#212", url: "https://github.com/acme/shop/issues/212" },
+    { text: " of task 7 is red on dev: deploy cancelled " },
+    { text: "https://github.com/acme/shop/actions/runs/1001", url: "https://github.com/acme/shop/actions/runs/1001" },
+    { text: "." },
+  ]);
+
+  const { panel, cx } = await deskPanel(REPO_RULE, landedDesk());
+  const tree = draw(panel, cx);
+  const html = find(tree, "text-report:12")?.html ?? "";
+  assert.match(html, /<a href="https:\/\/github.com\/acme\/shop\/actions\/runs\/1001">/);
+  assert.match(html, /<a href="https:\/\/github.com\/acme\/shop\/issues\/212">acme\/shop#212<\/a>/);
+  const before = panel.selected;
+  press(tree, "text-report:12");
+  assert.equal(panel.selected, before, "a press on the link leaves the selection");
+  press(draw(panel, cx), "row-report:12");
+  assert.equal(panel.selected, "report:12");
+});
+
+test("the next thing's why and Since you looked draw their URLs as links", () => {
+  const next = { ...data.desk.next, why: "see https://ci.example.com/r/7" };
+  const since = [{ ...data.desk.since_you_looked[0], what: "report https://ci.example.com/r/8" }];
+  const model = deskModel({ ...data, desk: { ...data.desk, next, since_you_looked: since } }, { now });
+  assert.deepEqual(model.next.whySpans.filter((span) => span.url), [{ text: "https://ci.example.com/r/7", url: "https://ci.example.com/r/7" }]);
+  assert.deepEqual(model.since.rows[0].whatSpans.filter((span) => span.url), [{ text: "https://ci.example.com/r/8", url: "https://ci.example.com/r/8" }]);
 });
 
 test("the selected row's text selects and copies, and so does the next thing's question", async () => {

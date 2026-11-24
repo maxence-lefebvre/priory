@@ -101,7 +101,7 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue,
       age: item.since ? age(item.since, now) : null,
       // The desk's `what` for a failed task ends with its revive command; the task's reason does not.
       text,
-      textSpans: autolink(text, links, ask?.repo ?? null),
+      textSpans: autolink(text, links, ask?.repo ?? task?.repo ?? null),
       recommends: ask ? ask.recommendation ?? null : RECOMMENDS[item.kind] ?? null,
       note: isSnoozed(item) ? `Snoozed until ${when(item.snoozed_until, now)}`
         : back ? `Back early: ${back.reason}${back.reason === "new revision" && ask ? ` ${ask.revision}` : ""}` : null,
@@ -201,7 +201,10 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue,
     banners: [began(desk.paused, now), began(desk.banner, now), desk.intake, ...(desk.caps ?? [])].filter(Boolean),
     since: {
       from: desk.last_visit ? when(desk.last_visit, now) : null,
-      rows: desk.since_you_looked.map((/** @type {any} */ event) => ({ key: event.key, task: event.task, what: sinceWords(event.what), time: age(event.time, now) })),
+      rows: desk.since_you_looked.map((/** @type {any} */ event) => {
+        const what = sinceWords(event.what);
+        return { key: event.key, task: event.task, what, whatSpans: autolink(what, links, taskById.get(event.task)?.repo ?? null), time: age(event.time, now) };
+      }),
     },
     upNext: queue.up_next.map((/** @type {any} */ entry) => ({
       when: entry.kind === "queued" ? "now" : when(entry.at, now),
@@ -233,8 +236,9 @@ function nextThing(item, ask, task, now, links) {
     step: item.step,
     age: age(item.since, now),
     why: item.why,
+    whySpans: autolink(`First because ${item.why}`, links, ask?.repo ?? task?.repo ?? null),
     question,
-    questionSpans: autolink(question, links, ask?.repo ?? null),
+    questionSpans: autolink(question, links, ask?.repo ?? task?.repo ?? null),
     recommendation: isAsk ? ask?.recommendation ?? null : RECOMMENDS[item.kind] ?? null,
     tradeoff: ask?.tradeoff ?? null,
     progress: progress ? { latestChange: progress.latestChange ?? null, nextAction: progress.nextAction ?? null } : null,

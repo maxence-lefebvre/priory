@@ -23,10 +23,18 @@ function worker({ token = null } = {}) {
         async delete(key) {
           return store.delete(key);
         },
-        async addAll() {},
+        async addAll(paths) {
+          for (const path of paths) store.set(path, "");
+        },
       };
     },
     async match() {},
+    async keys() {
+      return [...stores.keys()];
+    },
+    async delete(name) {
+      return stores.delete(name);
+    },
   };
   const listeners = {};
   const shown = [];
@@ -62,8 +70,19 @@ function worker({ token = null } = {}) {
     await Promise.all(waits);
   };
   const ready = token ? caches.open("priory-push").then((cache) => cache.put("/api/worker/token", new Response(token))) : Promise.resolve();
-  return { fire, shown, requests, subscribed, ready };
+  return { fire, shown, requests, subscribed, ready, stores };
 }
+
+test("an install caches the shell under its new name, and an upgrade drops the older shell", async () => {
+  const { fire, stores } = worker();
+  await fire("install", {});
+  assert.deepEqual([...stores.get("priory-shell-2").keys()].filter((path) => path.endsWith(".js")), ["/boot.js", "/app.js"]);
+
+  stores.set("priory-shell", new Map([["/asks.js", "old"]]));
+  stores.set("priory-push", new Map([["/api/worker/token", "t"]]));
+  await fire("activate", {});
+  assert.deepEqual([...stores.keys()].sort(), ["priory-push", "priory-shell-2"]);
+});
 
 const push = (notice) => ({ data: { json: () => notice } });
 
