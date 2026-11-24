@@ -417,12 +417,14 @@ pub(crate) fn summarized(
     append(tx, trace, "factory.summarizer.called", &time, data)
 }
 
-/// Whether Priory recorded a harness's trust for `run` before it started, granted or present.
+/// Whether Priory recorded a harness's trust for `run` before it started: each of its paths granted
+/// or present. direnv's grants do not count.
 pub(crate) fn granted(db: &Connection, run: i64) -> bool {
     db.query_row(
-        "SELECT EXISTS (SELECT 1 FROM trace WHERE type = 'factory.run.trusted'
+        "SELECT coalesce(min(json_extract(event, '$.data.outcome') IN ('granted', 'present')), 0)
+         FROM trace WHERE type = 'factory.run.trusted'
            AND json_extract(event, '$.data.run') = ?1
-           AND json_extract(event, '$.data.outcome') IN ('granted', 'present'))",
+           AND json_extract(event, '$.data.harness') <> 'direnv'",
         [run.to_string()],
         |row| row.get(0),
     )
@@ -761,6 +763,36 @@ pub(crate) fn worktree_recovered(
         fields.retain(|_, value| !value.is_null());
     }
     append(tx, trace, "factory.worktree.recovered", &time, data)
+}
+
+/// Appends a `factory.worktree.reclaimed` record: the sweep deleted `bytes` of build output at
+/// `path` in the worktree of idle `task`.
+pub(crate) fn worktree_reclaimed(
+    tx: &Transaction,
+    trace: &Trace,
+    task: i64,
+    path: &Path,
+    bytes: u64,
+) -> rusqlite::Result<()> {
+    let (workflow, key, time): (String, String, String) = tx.query_row(
+        "SELECT workflow, key, strftime('%Y-%m-%dT%H:%M:%fZ', 'now') FROM tasks WHERE id = ?1",
+        [task],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    let mut data = json!({
+        "factory": trace.factory.name,
+        "factory_revision": trace.revision,
+        "workflow": workflow,
+        "task": task.to_string(),
+        "key": key,
+        "machine": trace.machine,
+        "path": path.display().to_string(),
+        "bytes": bytes,
+    });
+    if let Value::Object(fields) = &mut data {
+        fields.retain(|_, value| !value.is_null());
+    }
+    append(tx, trace, "factory.worktree.reclaimed", &time, data)
 }
 
 /// Appends a `factory.task.snoozed` record for a person's snooze of a desk item of `task` until
@@ -1360,4 +1392,36 @@ struct Ended {
     model: Option<String>,
     generation: i64,
     lane: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_run_is_trusted_only_when_each_grant_of_its_harness_holds() {
+        let db = crate::state::memory();
+        for (run, harness, outcome) in [
+            (1, "claude-code", "granted"),
+            (1, "claude-code", "present"),
+            (1, "direnv", "refused"),
+            (2, "claude-code", "granted"),
+            (2, "claude-code", "refused"),
+            (3, "direnv", "granted"),
+        ] {
+            let event =
+                json!({"data": {"run": run.to_string(), "harness": harness, "outcome": outcome}});
+            db.execute(
+                "INSERT INTO trace (id, type, time, event)
+                 VALUES (hex(randomblob(8)), 'factory.run.trusted', '2026-11-24T00:00:00Z', ?1)",
+                [event.to_string()],
+            )
+            .unwrap();
+        }
+
+        assert_eq!(
+            [1, 2, 3, 4].map(|run| granted(&db, run)),
+            [true, false, false, false]
+        );
+    }
 }

@@ -252,6 +252,7 @@ fn apply_act(
             hold: None,
             text: data["text"].as_str().map(str::to_owned),
             expected: None,
+            now: false,
         };
         // A refused action leaves nothing behind, while the message itself is still recorded.
         tx.execute_batch("SAVEPOINT acted")?;

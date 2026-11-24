@@ -2569,6 +2569,15 @@ pub(crate) fn stop(
     Ok(None)
 }
 
+/// Whether the run sent its result.
+fn sent(tx: &Transaction, run: i64) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT count(*) > 0 FROM results WHERE run = ?1",
+        [run],
+        |row| row.get(0),
+    )
+}
+
 /// Fails the run's task when its step went over its budget, before its result moves it. Returns
 /// the tmux session to kill when it did.
 fn over_spent(
@@ -2580,13 +2589,9 @@ fn over_spent(
     let Some((over, reason)) = over_budget(tx, run, trace)? else {
         return Ok(None);
     };
-    let sent = tx
-        .query_row("SELECT 1 FROM results WHERE run = ?1", [run.id], |_| Ok(()))
-        .optional()?
-        .is_some();
     // The money of a turn that sent its result is spent: the result stands, and its step's
     // trace record carries the overrun.
-    if over && sent {
+    if over && sent(tx, run.id)? {
         return Ok(None);
     }
     end(tx, run.id, "budget")?;
@@ -2818,20 +2823,35 @@ fn dollars(spent: f64, budget: f64) -> String {
     format!("${spent:.6}")
 }
 
-/// After the turn of a run marked to stop for task `head`: settles it as `stop` does, but ends it
-/// as `preempted` wherever its process would have gone on, with the stop prompt ahead of the
-/// task's queued prompts. Returns the tmux session to kill.
-pub(crate) fn preempt(
+/// Why a live run is stopped with its session kept.
+#[derive(Clone, Copy)]
+pub(crate) enum Stopped {
+    /// To make room for this task.
+    For(i64),
+    /// For its task's hold, at its turn end.
+    Held,
+    /// For its task's hold, idle between turns.
+    Idle,
+    /// For its task's hold, inside its turn.
+    Interrupted,
+}
+
+/// After the turn of a marked run, or inside it for `Interrupted`: settles it as `stop` does, but
+/// stops it wherever its process would have gone on, with the stop prompt ahead of the task's
+/// queued prompts. Returns the tmux session to kill.
+pub(crate) fn stop_marked(
     tx: &Transaction,
     session: &str,
     trace: &Trace,
-    head: i64,
+    why: Stopped,
 ) -> rusqlite::Result<Option<String>> {
     let Some(mut run) = run(tx, session)? else {
         return Ok(None);
     };
-    // A step over its budget fails, marked or not.
-    if let Some(kill) = over_spent(tx, &run, trace)? {
+    // A step over its budget fails, marked or not. A turn that has not ended may have no tokens
+    // to price yet: with no result sent, a later turn end prices it.
+    let unpriced = matches!(why, Stopped::Idle | Stopped::Interrupted) && !sent(tx, run.id)?;
+    if !unpriced && let Some(kill) = over_spent(tx, &run, trace)? {
         return Ok(kill);
     }
     // No process carries on, so a next step of the same agent gets a new run.
@@ -2856,8 +2876,111 @@ pub(crate) fn preempt(
             return Ok(kill);
         }
     }
-    stop_for(tx, trace, run.id, head)?;
+    match why {
+        Stopped::For(head) => stop_for(tx, trace, run.id, head)?,
+        Stopped::Held | Stopped::Idle | Stopped::Interrupted => stop_held(tx, &run)?,
+    }
     Ok(Some(run.tmux))
+}
+
+/// Ends `run` as `held`, if it is not ended yet, and holds its task with the stop prompt ahead of
+/// its queued prompts.
+fn stop_held(tx: &Transaction, run: &Run) -> rusqlite::Result<()> {
+    let text = crate::hold::prompt(tx, run)?;
+    crate::hold::forget_unprompted(tx, run.id)?;
+    crate::state::requeue_unready(tx, run.id)?;
+    tx.execute(
+        "UPDATE outbox SET state = 'uncertain' WHERE run = ?1 AND state = 'attempted'",
+        [run.id],
+    )?;
+    tx.execute(
+        &format!("UPDATE runs SET ended = coalesce(ended, {NOW}), ended_as = 'held' WHERE id = ?1"),
+        [run.id],
+    )?;
+    wake(tx, run.task, &text)?;
+    set(tx, run.task, "ready", None, None)?;
+    crate::hold::park(tx, run.task).map(drop)
+}
+
+/// Ends the idle live run of `session` for its task's hold, unless its mark no longer stops it.
+/// Returns the tmux session to kill.
+pub(crate) fn hold_idle(
+    db: &mut Connection,
+    trace: &Trace,
+    session: &str,
+) -> rusqlite::Result<Option<String>> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let Some(run) = run(&tx, session)? else {
+        return Ok(None);
+    };
+    if !crate::hold::stops(&tx, run.id, trace.factory)? {
+        return Ok(None);
+    }
+    trace::account(&tx, trace, run.id, None)?;
+    let kill = stop_marked(&tx, session, trace, Stopped::Idle)?;
+    tx.commit()?;
+    Ok(kill)
+}
+
+/// Holds `task` as `hold` does, and ends its live run at once rather than at its turn end. Refused
+/// for a run that `preempt::guarded` protects. Returns the reply and the tmux session to kill.
+fn hold_now(
+    tx: &Transaction,
+    task: i64,
+    hold: &priory_factory::factory::Hold,
+    trace: &Trace,
+) -> rusqlite::Result<(Result<String, String>, Option<String>)> {
+    let state = tx
+        .query_row("SELECT state FROM tasks WHERE id = ?1", [task], |row| {
+            row.get::<_, String>(0)
+        })
+        .optional()?;
+    let live: Option<(i64, String)> = tx
+        .query_row(
+            "SELECT id, session FROM runs WHERE task = ?1 AND ended IS NULL",
+            [task],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    if state.as_deref() == Some("running") {
+        let refused = match &live {
+            None => Some(format!("task {task} has no live run to interrupt")),
+            Some((run, _)) => crate::hold::guarded(tx, *run, trace.factory)?,
+        };
+        if let Some(why) = refused {
+            return Ok((
+                Err(format!("{why}: leave out --now to hold it after its turn")),
+                None,
+            ));
+        }
+    }
+    let marked = crate::hold::hold(tx, task, hold, trace.factory)?;
+    let Some((run, session)) =
+        live.filter(|_| marked.is_ok() && state.as_deref() == Some("running"))
+    else {
+        return Ok((marked, None));
+    };
+    // Ending the run would drop the result its gate grades: the verdict moves the task first.
+    if crate::gates::grading(tx, run)?.is_some() {
+        let until = if crate::gates::turn_over(tx, run)? {
+            "its process goes on until the gate's verdict"
+        } else {
+            "its turn still runs, and its process goes on until the turn's end and the gate's verdict"
+        };
+        return Ok((marked.map(|marked| format!("{marked}; {until}")), None));
+    }
+    trace::account(tx, trace, run, None)?;
+    let kill = stop_marked(tx, &session, trace, Stopped::Interrupted)?;
+    let (state, reason): (String, Option<String>) = tx.query_row(
+        "SELECT state, reason FROM tasks WHERE id = ?1",
+        [task],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let reply = match (state.as_str(), reason) {
+        ("held", Some(reason)) => format!("task {task} {reason}"),
+        _ => format!("task {task} is {state}"),
+    };
+    Ok((Ok(reply), kill))
 }
 
 /// Ends the run `run` as `preempted` for task `head`, if it is not ended yet, and makes its task
@@ -4380,12 +4503,15 @@ pub struct Act {
     /// The state revision a person's `hold`, `release` or `cancel` was made on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected: Option<i64>,
+    /// Whether `hold` ends a running task's turn at once.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub now: bool,
 }
 
 /// Applies a desk action. `resume` makes a blocked task `ready`, with a prompt that says why it
 /// stopped. `cancel` drops an active task and ends its live run. `revive` restarts a failed or
-/// dropped task as its next generation. `hold` and `release` hold a queued or ready task and let it
-/// go. Returns the reply and a tmux session to kill.
+/// dropped task as its next generation. `hold` and `release` hold a queued, ready or running task and let
+/// it go. Returns the reply and a tmux session to kill.
 pub(crate) fn act(
     db: &mut Connection,
     act: &Act,
@@ -4409,6 +4535,9 @@ pub(crate) fn act_in_tx(
     trace: &Trace,
 ) -> rusqlite::Result<(Result<String, String>, Option<String>)> {
     let factory = trace.factory;
+    if let ("hold", Some(hold), true) = (act.act.as_str(), &act.hold, act.now) {
+        return hold_now(tx, act.task, hold, trace);
+    }
     let held = match (act.act.as_str(), &act.hold) {
         ("hold", Some(hold)) => Some(crate::hold::hold(tx, act.task, hold, factory)?),
         ("release", _) => Some(crate::hold::release_task(tx, act.task)?),
@@ -5086,12 +5215,7 @@ pub(crate) fn lost(
     };
     trace::account(&tx, trace, run.id, None)?;
     end(&tx, run.id, "lost")?;
-    // A run that never reached SessionStart never took the prompt it was launched with.
-    tx.execute(
-        "UPDATE outbox SET state = 'queued', run = NULL, attempted = NULL
-         WHERE run = ?1 AND state IN ('attempted', 'uncertain') AND (SELECT NOT ready FROM runs WHERE id = ?1)",
-        [run.id],
-    )?;
+    crate::state::requeue_unready(&tx, run.id)?;
     let again = tx
         .query_row(
             "SELECT ended_as = 'lost' FROM runs WHERE task = ?1 AND id < ?2 ORDER BY id DESC LIMIT 1",

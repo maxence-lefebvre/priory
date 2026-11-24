@@ -1662,6 +1662,42 @@ fn a_sweep_table_passes_and_a_bad_one_names_its_line() {
 }
 
 #[test]
+fn build_output_paths_must_stay_inside_the_worktree() {
+    let text = |build: &str| {
+        format!(
+            "name = \"demo\"\n\n[sweep]\nreclaim = \"60GB\"\n\n[repos.\"owner/repo\"]\nbuild = [{build}]\n"
+        )
+    };
+    let ok = check(&factory(
+        "build-ok",
+        &with("factory.toml", &text("\"target\", \"web/dist\"")),
+    ));
+    let up = check(&factory(
+        "build-up",
+        &with("factory.toml", &text("\"../x\"")),
+    ));
+    let root = check(&factory(
+        "build-root",
+        &with("factory.toml", &text("\"/tmp\"")),
+    ));
+    let empty = check(&factory(
+        "build-empty",
+        &with("factory.toml", &text("\"\"")),
+    ));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    for (path, out) in [("../x", up), ("/tmp", root), ("", empty)] {
+        assert_eq!(
+            (out.code, out.stderr.as_str()),
+            (
+                1,
+                format!("factory.toml:6: `[repos.\"owner/repo\"] build` path `{path}` needs to be a folder inside the worktree, with no `..`\n").as_str()
+            )
+        );
+    }
+}
+
+#[test]
 fn a_sweep_script_needs_when_or_every_and_a_valid_every() {
     let good = "name = \"demo\"\n\n[sweep]\nscripts = [\n  { run = \"nh clean all\", every = \"4h\" },\n  { run = \"cargo-prune\", every = \"7d\", when = \"disk\" },\n]\n";
     let ok = check(&factory("sweep-every-ok", &with("factory.toml", good)));
@@ -1957,6 +1993,19 @@ fn a_request_table_passes_and_an_unknown_workflow_or_band_is_refused() {
         "factory.toml:3: `[request] workflow` `groom` does not exist\n\
          factory.toml:3: `[request] band` `someday` is not one of blocker, now, today, later\n"
     );
+}
+
+#[test]
+fn a_request_default_passes_even_when_its_workflow_opts_out() {
+    let good = "name = \"demo\"\n\n[request]\nworkflow = \"implement\"\n";
+    let opted_out = format!("requestable = false\n{WORKFLOW}");
+    let mut files = with("factory.toml", good);
+    files.retain(|(path, _)| *path != "workflows/implement.toml");
+    files.push(("workflows/implement.toml", &opted_out));
+
+    let outcome = check(&factory("request-opted-out", &files));
+
+    assert_eq!((outcome.code, outcome.stderr.as_str()), (0, ""));
 }
 
 #[test]
