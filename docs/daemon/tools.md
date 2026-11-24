@@ -99,7 +99,9 @@ ask 14 waits for a person: step approve-pr approves irreversible step open-pr. A
 `ask` is the ask's number, or an outside ask's name. `revision` is required, as it is for `priory
 answer`: an ask at another revision is refused with `ask 14 is at revision 2, not 1`, and the
 session reads it again with `asks`. An answer applies as a person's does: it moves a step's task by
-its option, or wakes an agent with `Answer to ask 14 (revision 1): ...`. A dismissal wakes the agent
+its option, or wakes an agent with `Answer to ask 14 (revision 1): ...`. A human step's ask takes
+only its options from a session, with or without a note: text is
+refused with `ask 14 takes one of: ship, wait`. A dismissal wakes the agent
 with `Session <session> dismissed ask 14 without an answer. Continue your task.`
 
 Priory never records the decision as a person's. The ask's `answered_by` is `session:` and the
@@ -416,7 +418,8 @@ The lead answers with `result`:
 
 The summary, trimmed, is the answer. When the ask lists options, it must be one of them, or the
 result is refused with `ask <id> takes one of: <options>`. A person can still answer an agent's ask
-in free text. In the same
+in free text, and a human step's ask in writing (see [waits.md](waits.md#asks-and-answers)). A gate's
+ask takes only its options. In the same
 transaction the daemon applies it to the ask, as a person's answer would, and records it as
 answered by `agent:<lead>`. The asking task then wakes as after any answer. When the answer is
 refused, for example because the ask is no longer open or its plan changed, the refusal is kept on
@@ -565,6 +568,7 @@ branch's current commit:
 | ------------------------------ | ------------------------------------------------------------------- |
 | at the same commit             | the step runs                                                       |
 | at another commit              | the ask gets a new revision, with a line naming both commits, and the task sleeps at that human step. The step's queued prompt is taken back, so the next run never reads it |
+| voided by a written answer     | the same, with a line that says a person wrote an answer since      |
 | none                           | the task blocks: `step <id> is irreversible and no answer approved it` |
 
 A branch with no commit to compare also blocks the task. `priory check` refuses an irreversible step

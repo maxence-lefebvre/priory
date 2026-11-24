@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, submitted, seenAgo, sentNote, shownGroups, snoozeShortcut, stillArmed, press, optionKey, takesText, openAsksOf, planCut, planParts, planName, planUnread, planWait, plansFirst, writeNote, shrunkHead, answeredAsks, confidenceNote, courseNote, askHeading, askBody, cutAt, HEADING_MAX } from "./asks.js";
+import { ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, submitted, seenAgo, sentNote, shownGroups, snoozeShortcut, stillArmed, press, optionKey, dismissable, openAsksOf, planCut, planParts, planName, planUnread, planWait, plansFirst, writeNote, writeShown, shrunkHead, answeredAsks, confidenceNote, courseNote, askHeading, askBody, cutAt, HEADING_MAX } from "./asks.js";
 
 const now = Date.parse("2026-11-20T12:00:00Z");
 const ask = (id, fields) => ({ id, state: "open", snoozed_until: null, ...fields });
@@ -123,10 +123,10 @@ test("a refused ask write says why, and a 504 or a dropped connection says to ch
   assert.equal(writeNote(500, {}, ago), "Could not send: the server answered 500.");
 });
 
-test("a step's ask takes only its options, so it offers no text and no dismissal; an agent's ask does", () => {
-  assert.equal(takesText(ask(1, { free_text: false })), false);
-  assert.equal(takesText(ask(2, { free_text: true })), true);
-  assert.equal(takesText(ask(3)), true);
+test("a step's ask offers no dismissal; an agent's ask does", () => {
+  assert.equal(dismissable(ask(1, { dismissable: false })), false);
+  assert.equal(dismissable(ask(2, { dismissable: true })), true);
+  assert.equal(dismissable(ask(3)), true);
 });
 
 test("another runner's ask names its runner, and this runner's ask names none", () => {
@@ -344,4 +344,16 @@ test("an ask's locked options say why", () => {
 
 test("a plan file is named from its worktree", () => {
   assert.equal(planName("/home/me/worktrees/acme/shop/7/.priory/brief.md"), ".priory/brief.md");
+});
+
+test("Write waits for the plan as the options do, and a form opened before a new revision neither shows nor sends", () => {
+  const ask = { id: 4, revision: 2, state: "open", approves_plan: true };
+  const lock = (task) => (planUnread(ask, task) ? "plan" : null);
+  const read = (revision) => ({ plan_file: { ask: 4, revision, step: "groom", run: 9, files: [] } });
+  assert.equal(writeShown(false, lock(null), false), "disabled");
+  assert.equal(writeShown(true, lock(read(1)), false), "disabled", "the form opened on revision 1");
+  assert.equal(writeShown(true, "offline", false), "disabled");
+  assert.equal(writeShown(false, lock(read(2)), false), "button");
+  assert.equal(writeShown(true, lock(read(2)), false), "form");
+  assert.equal(writeShown(false, null, true), "disabled", "an answer is on its way");
 });

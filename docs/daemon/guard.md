@@ -16,7 +16,8 @@ A call is guarded when a guard matches it. A guarded call runs only when one of 
 
 - the task's current step is an irreversible model step that lists the guard in its own
   `guard.allow`, and either a person approved the step in the task's current generation and the
-  task's branch is still at the commit the approval was given for, or the step is `autonomous`;
+  task's branch is still at the commit the approval was given for, or the step is `autonomous`. A
+  [written answer](waits.md#asks-and-answers) voids the approval;
 - the task's workflow lists the guard in `guard.allow`.
 
 An approved or `autonomous` step grants only the guards it names. A step that names none may make

@@ -92,12 +92,13 @@ does not show. That change time (`ctime`) is one an agent cannot set.
 [serve.md](../reference/serve.md)). The web view and the Herdr Asks panel show it
 in the ask's Plan section, as Markdown in the web view and as plain text in Herdr. For an open ask
 that approves a plan, Plan comes before Why, and the options wait until the plan of that revision
-is read.
+is read. In the web view, Write an answer waits too.
 
 An answer approves only the plan shown. With the plan, Priory stores a hash of each document's
 content, and compares both when the ask is answered, whatever the files' times say. When either
 changed, appeared or went, Priory refuses the answer and asks again as the next revision, which shows
-each document that is fresh, changed or was shown before. A lead's, a session's and another runner's
+each document that is fresh, changed or was shown before. A written answer is checked as an option is, and
+a refused one voids no approval. A lead's, a session's and another runner's
 answer are checked the same way. A lead that was refused ends with `skipped`, and the person answers
 the new revision.
 

@@ -379,7 +379,6 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let every = factory.sweep().every.unwrap_or(SWEEP);
     let mut swept: Option<Instant> = None;
     let mut reclaiming = sweep::Reclaim::default();
-    let mut retires = false;
     let mut held: Option<Instant> = None;
     let mut alive = None;
     let mut aged = None;
@@ -514,9 +513,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         };
         reclaiming.tick(&mut db, factory, &home, &trace, due, under)?;
         // A retirement costs a worktree, so it waits for what the reclaim frees.
-        retires |= due;
-        if retires && reclaiming.settled() {
-            retires = false;
+        if reclaiming.retires() {
             let short = || room::measure(&home).is_ok_and(|room| crate::room::short_of_disk(&room));
             sweep::retire(&db, factory, &home, short)?;
         }

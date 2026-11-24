@@ -465,6 +465,12 @@ fn a_persons_answer_replaces_autopilots_while_its_prompt_is_unsent() {
         only_ask_or_null(&setup)["answered_by"] == "autopilot"
     });
     assert_eq!(reverse(&setup), "priory answer --revision 1 1 OPTION");
+    let blank = setup.priory(&["answer", "1", " ", "--revision", "1"]);
+    assert!(!blank.status.success(), "{blank:?}");
+    assert!(
+        String::from_utf8_lossy(&blank.stderr).ends_with("ask 1 takes no blank answer\n"),
+        "{blank:?}"
+    );
 
     reverses(&setup, &reverse(&setup), "postgres");
 
