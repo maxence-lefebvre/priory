@@ -516,7 +516,7 @@ an object: `answered` and `withdrawn`, the number of each left out, within `band
 | `revision` | integer | The question's revision. `priory answer` and `priory dismiss` take it |
 | `question` | string | The question |
 | `options` | array of strings | The options |
-| `free_text` | boolean | Whether the ask takes free text and a dismissal. False for a step's ask and a hold's ask, which take only their options |
+| `dismissable` | boolean | Whether a person may dismiss the ask. False for a step's ask and a hold's ask, which need an answer. Every ask takes a written answer (see [waits.md](../daemon/waits.md#asks-and-answers)) |
 | `recommendation`, `tradeoff` | string or null | What the agent recommends, and the trade-off |
 | `title`, `text` | string or null | The ask's title and its Markdown body. A human step's ask has the task's [merge risk](tools.md#merge-risk) as its body, when it has one |
 | `what_waits`, `next_action` | string or null | What waits on the answer, and what the agent does next |

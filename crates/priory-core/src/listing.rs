@@ -304,7 +304,7 @@ fn asks_query() -> String {
       FROM (SELECT * FROM ask_refusals WHERE ask = asks.id ORDER BY id)) AS refused,
      {IRREVERSIBLE} AS irreversible, {LETS} AS lets, tasks.merge_risk, tasks.grade,
      asks.kind != 'step' AND NOT EXISTS (SELECT 1 FROM holds
-       WHERE holds.ask = asks.id AND holds.released IS NULL) AS free_text, {}
+       WHERE holds.ask = asks.id AND holds.released IS NULL) AS dismissable, {}
    FROM asks LEFT JOIN tasks ON tasks.id = asks.task
    LEFT JOIN snoozes ON snoozes.kind = 'ask' AND snoozes.item = asks.id
    WHERE (?1 IS NULL OR asks.task = ?1
@@ -972,8 +972,8 @@ fn asks_of(
             .chain(object.remove("grade").filter(Value::is_string))
             .collect();
         object.insert("risk".to_owned(), risk.into());
-        let free_text = object["free_text"].as_i64() == Some(1);
-        object.insert("free_text".to_owned(), free_text.into());
+        let dismissable = object["dismissable"].as_i64() == Some(1);
+        object.insert("dismissable".to_owned(), dismissable.into());
     }
     if let Some(asks) = asks.as_array_mut() {
         risk_estimates(db, asks);

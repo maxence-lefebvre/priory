@@ -17,8 +17,8 @@ The drawing follows one ask, from the agent's `ask` call to the prompt that carr
 `priory answer <ask> <option-or-text> --revision <n>` sends the answer to the daemon. `--expected`
 is the same flag, and `--` ends the flags, as in `priory answer --expected 2 -- cache.ship ship`.
 The first answer to the ask's revision stands. Refused: an answer to another revision, a second
-answer, or, for a step's ask, a text that is neither one of its options nor `OPTION: NOTE` (see
-below). In a factory of several
+answer, or, for a human step's ask, a written answer when the task ran no model step before it
+(see below). In a factory of several
 runners, `priory answer <runner>:<ask>` answers another runner's ask through the log (see
 [runners.md](runners.md#answering-another-runners-ask)).
 
@@ -42,6 +42,16 @@ ask are refused, since only one of their options moves the task on.
   [score.md](score.md#pre-review)). An option
   that leads anywhere else, such as `done` or a code step, or that runs a command, refuses a note:
   `ask 12 answered approved leads to done, which reads no note: answer approved alone`.
+- A step's ask also takes a written answer: text that is neither one of its options nor
+  `OPTION: NOTE`. The ask keeps the text as its answer, and the task goes back to the model step it
+  ran last, with `A person answered step <step> in writing: <text>` queued as that step's prompt.
+  Its next run resumes that agent's session. The step's trace record has the outcome `written`.
+  When the task ran no model step before the ask, the answer is refused:
+  `ask 12 takes one of: approved, rejected; no earlier model step reads a written answer`.
+- A hold's ask takes a written answer too. The hold and its ask stay open, and the text waits as
+  the task's next prompt, `A person wrote on ask <id>: <text>`, which its first run after the
+  release types. Release or drop the hold with one of its options. A dropped task never gets the
+  text.
 - An agent's ask queues the answer as the task's next prompt, after fixed words such as
   `Answer to ask 12 (revision 2): `, so an answer starting with `/` never runs as a slash command.
   An asleep task becomes `ready`. A task whose run has not stopped yet stays `running`, and the

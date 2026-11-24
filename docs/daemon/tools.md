@@ -409,7 +409,7 @@ The lead answers with `result`:
 ```
 
 The summary, trimmed, is the answer. When the ask lists options, it must be one of them, or the
-result is refused with `ask <id> takes one of: <options>`. A person can still answer an agent's ask
+result is refused with `ask <id> takes one of: <options>`. A person can still answer any ask
 in free text. In the same
 transaction the daemon applies it to the ask, as a person's answer would, and records it as
 answered by `agent:<lead>`. The asking task then wakes as after any answer. When the answer is

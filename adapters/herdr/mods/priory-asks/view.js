@@ -276,8 +276,9 @@ export function askDetail(ask, { now, armed, task = null, links = [] }) {
     command: command(ask),
     bar: options.length ? { count: plural(options.length, "option"), option: recommended } : null,
     canSnooze: open && ask.task != null && !owner,
-    // A step's or a hold's ask takes only its options: no free text and no dismissal.
-    takesText: open && ask.free_text !== false,
+    takesText: open,
+    // A step's or a hold's ask needs an answer: no dismissal.
+    dismissable: open && ask.dismissable !== false,
   };
 }
 

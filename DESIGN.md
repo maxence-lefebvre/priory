@@ -679,8 +679,8 @@ for a decision. Every ask has its own URL, such as `/asks/42`.
    "Recommended" under its label in `--text-3`, plus "Runs a command" when its answer runs one. In the drawer the options sit in one row, each with
    its key `1` to `9`.
 6. **Write an answer**: a ghost button that expands into a 16 px text field with a "Send"
-   button, on an ask that takes free text. A step's ask and a hold's ask take only their options,
-   so they show neither Write an answer nor Dismiss (`free_text` is false).
+   button, on every open ask. A step's ask and a hold's ask need an answer, so they show no
+   Dismiss (`dismissable` is false).
 7. **Dismiss** and the [snooze](#snooze) buttons: ghost buttons on the same line as "Write an
    answer". Dismiss closes the ask with no answer and sends at once, with no undo bar, as
    `priory dismiss` does. Snooze shows only on an ask that belongs to a task.

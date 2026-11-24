@@ -3909,6 +3909,44 @@ fn answer_in(
         .filter(|_| kind == "agent" || kind == "step")
         .and_then(|command| serde_json::from_str::<command::Command>(command).ok())
         .filter(|command| command.runs.contains(&chosen));
+    if (kind == "step" || hold.is_some())
+        && !options.contains(&chosen)
+        && let Some(task) = task
+    {
+        let by = decider(&answer.by);
+        if hold.is_some() {
+            queue_first(
+                tx,
+                task,
+                &format!("{by} wrote on ask {label}: {}", answer.text),
+            )?;
+            return Ok(Ok(format!(
+                "ask {label}: the text waits for the task's next run; its hold still takes one of: {}",
+                options.join(", ")
+            )));
+        }
+        let Some(back) = last_model_step(tx, workflows, &workflow, task)? else {
+            return Ok(Err(format!(
+                "ask {label} takes one of: {}; no earlier model step reads a written answer",
+                options.join(", ")
+            )));
+        };
+        tx.execute(
+            &format!(
+                "UPDATE asks SET answer = ?2, answered = {NOW}, answered_by = ?3 WHERE id = ?1"
+            ),
+            params![answer.ask, answer.text, answer.by],
+        )?;
+        drop_lead(tx, answer.ask, &format!("ask {label} was answered first"))?;
+        trace::ended(tx, trace, task, "written", None)?;
+        queue_first(
+            tx,
+            task,
+            &format!("{by} answered step {at} in writing: {}", answer.text),
+        )?;
+        enter(tx, task, &workflow, &back, None, "", trace.factory)?;
+        return Ok(Ok(format!("ask {label} answered: back to step {back}")));
+    }
     if (kind == "step" || hold.is_some()) && !options.contains(&chosen) {
         return Ok(Err(format!(
             "ask {label} takes one of: {}",
@@ -4101,6 +4139,22 @@ fn answer_in(
         }
     }
     Ok(Ok(format!("ask {label} answered")))
+}
+
+/// The model step of `workflow` that `task` ran last, which reads a written answer to a human step.
+fn last_model_step(
+    tx: &Transaction,
+    workflows: &Workflows,
+    workflow: &str,
+    task: i64,
+) -> rusqlite::Result<Option<String>> {
+    let ran = tx
+        .prepare("SELECT step FROM runs WHERE task = ?1 ORDER BY id DESC")?
+        .query_map([task], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(ran.into_iter().find(|ran| {
+        step(workflows, workflow, ran).is_some_and(|ran| ran.decides == Decider::Model)
+    }))
 }
 
 /// Where answer `answer` to the ask of step `at` leads.
