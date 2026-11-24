@@ -1,5 +1,5 @@
 use super::gh::{Login, gh};
-use super::{CHECK_RUNS, CHECKED, COMMENTED, Merge, Observed, REVIEWED};
+use super::{CHECK_RUNS, CHECKED, COMMENTED, Merge, Observed, REVIEWED, Red, RedCheck};
 use herdr_bus::Timestamp;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -463,6 +463,57 @@ fn later_run(repo: &str, merge: &Merge, name: &str, fresh: bool) -> Result<Later
         ("completed", _) => Later::Not,
         _ => Later::Running,
     })
+}
+
+/// Whether every check that failed on `red`'s merge commit passed later on a commit of the base
+/// branch that contains the merge. A read that fails, as for a deleted base branch, says no.
+pub(super) fn recovered(red: &Red) -> bool {
+    !red.checks.is_empty()
+        && red.checks.iter().all(|check| {
+            let tip = passed_tip(red, check).unwrap_or_default();
+            tip.iter()
+                .chain(&check.passed)
+                .any(|sha| contains(red, sha).unwrap_or_default())
+        })
+}
+
+/// The tip of `red`'s base branch, when every run of `check` there succeeded, later than the red one.
+fn passed_tip(red: &Red, check: &RedCheck) -> Result<Option<String>, String> {
+    let path = format!(
+        "repos/{}/commits/heads/{}/check-runs",
+        red.repo,
+        encoded(&red.base_branch)
+    );
+    let check_name = format!("check_name={}", check.name);
+    let found: CommitRuns = gh(
+        &path,
+        &["-X", "GET", "-f", &check_name, "-f", "per_page=100"],
+    )?;
+    let runs: Vec<&Run> = found
+        .check_runs
+        .iter()
+        .filter(|run| run.app.as_ref().map(|app| &app.slug) == check.app.as_ref())
+        .collect();
+    let passed = found.total_count == found.check_runs.len()
+        && runs.iter().all(|run| {
+            run.id > check.id
+                && run.status == "completed"
+                && run.conclusion.as_deref() == Some("success")
+        });
+    Ok(runs
+        .first()
+        .filter(|_| passed)
+        .map(|run| run.head_sha.clone()))
+}
+
+/// Whether the commit `sha` is `red`'s merge commit or descends from it.
+fn contains(red: &Red, sha: &str) -> Result<bool, String> {
+    if sha == red.commit {
+        return Ok(true);
+    }
+    let path = format!("repos/{}/compare/{}...{sha}", red.repo, red.commit);
+    let compare: Compare = gh(&path, &["-X", "GET", "-f", "per_page=1"])?;
+    Ok(compare.status == "ahead")
 }
 
 /// `text` percent-encoded as one URL path segment, so a branch such as `release/x` stays one.

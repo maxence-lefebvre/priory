@@ -3,7 +3,7 @@
 
 use crate::trace::{self, Trace};
 use herdr_bus::Message;
-use priory_intake::intake::{CHECKED, PASSING, PR_CLOSED, REVIEWED};
+use priory_intake::intake::{CHECKED, PASSING, PR_CLOSED, REVIEWED, Red, RedCheck};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 
@@ -300,6 +300,100 @@ fn reported(tx: &Transaction, start: &str) -> rusqlite::Result<bool> {
 fn report(tx: &Transaction, line: &str) -> rusqlite::Result<()> {
     crate::post::report(tx, "priory", line)
         .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()))
+}
+
+/// The unread reports of merges that are red on their base branch, with each check that failed at
+/// the merge commit. A revert's report is none.
+pub fn red(db: &Connection) -> rusqlite::Result<Vec<Red>> {
+    let mut reds: Vec<Red> = db
+        .prepare(
+            "SELECT DISTINCT report.seq, json_extract(closed.data, '$.repo'),
+               json_extract(closed.data, '$.base_branch'), json_extract(closed.data, '$.merge_commit')
+             FROM inbox AS report CROSS JOIN inbox AS closed
+               ON closed.type = ?1 AND json_extract(closed.data, '$.merged') = 1
+               AND json_extract(closed.data, '$.merge_commit') IS NOT NULL
+               AND json_extract(closed.data, '$.base_branch') IS NOT NULL
+               AND instr(json_extract(report.data, '$.line'), ?2 || json_extract(closed.data, '$.repo')
+                 || '#' || json_extract(closed.data, '$.pull_request') || ' of task') = 1
+             WHERE report.type = ?3 AND report.subject = 'priory' AND report.read IS NULL
+             AND instr(json_extract(report.data, '$.line'), ' is red on ') > 0",
+        )?
+        .query_map(params![PR_CLOSED, LANDED, crate::post::REPORT], |row| {
+            Ok(Red {
+                report: row.get(0)?,
+                repo: row.get(1)?,
+                base_branch: row.get(2)?,
+                commit: row.get(3)?,
+                checks: Vec::new(),
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    for red in &mut reds {
+        red.checks = red_checks(db, &red.repo, &red.commit)?;
+        for check in &mut red.checks {
+            check.passed = passed(db, red.repo.as_str(), &red.base_branch, check)?;
+        }
+    }
+    Ok(reds)
+}
+
+/// The checks of `repo` that failed at `commit`, each with its latest failing run.
+fn red_checks(db: &Connection, repo: &str, commit: &str) -> rusqlite::Result<Vec<RedCheck>> {
+    db.prepare(
+        "SELECT coalesce(json_extract(data, '$.name'), ''), json_extract(data, '$.app'),
+           max(json_extract(data, '$.github_id'))
+         FROM inbox WHERE type = ?1 AND json_extract(data, '$.repo') = ?2
+         AND json_extract(data, '$.head_sha') = ?3
+         AND coalesce(json_extract(data, '$.conclusion'), '') NOT IN ('success', 'neutral', 'skipped')
+         AND json_extract(data, '$.superseded_by') IS NULL
+         GROUP BY 1, 2",
+    )?
+    .query_map(params![CHECKED, repo, commit], |row| {
+        Ok(RedCheck {
+            name: row.get(0)?,
+            app: row.get(1)?,
+            id: row.get::<_, i64>(2)? as u64,
+            passed: Vec::new(),
+        })
+    })?
+    .collect()
+}
+
+/// The merge commits of `repo` into `base` where a run of `check` after the red one succeeded, the
+/// 5 newest first.
+fn passed(
+    db: &Connection,
+    repo: &str,
+    base: &str,
+    check: &RedCheck,
+) -> rusqlite::Result<Vec<String>> {
+    db.prepare(
+        "SELECT json_extract(data, '$.head_sha') FROM inbox AS run
+         WHERE type = ?1 AND json_extract(data, '$.repo') = ?2
+         AND json_extract(data, '$.base_branch') = ?3
+         AND json_extract(data, '$.name') = ?4 AND json_extract(data, '$.app') IS ?5
+         AND json_extract(data, '$.github_id') > ?6
+         AND json_extract(data, '$.conclusion') = 'success'
+         AND EXISTS (SELECT 1 FROM inbox AS closed WHERE closed.type = ?7
+           AND json_extract(closed.data, '$.merged') = 1
+           AND json_extract(closed.data, '$.repo') = ?2
+           AND json_extract(closed.data, '$.base_branch') = ?3
+           AND json_extract(closed.data, '$.merge_commit') = json_extract(run.data, '$.head_sha'))
+         GROUP BY 1 ORDER BY max(json_extract(data, '$.github_id')) DESC LIMIT 5",
+    )?
+    .query_map(
+        params![
+            CHECKED,
+            repo,
+            base,
+            check.name,
+            check.app,
+            check.id as i64,
+            PR_CLOSED
+        ],
+        |row| row.get(0),
+    )?
+    .collect()
 }
 
 /// Whether `text` holds `reference` not followed by another digit, so `#5` is not `#57`.

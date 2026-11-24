@@ -103,6 +103,21 @@ also raises a `landed wrong` alarm on the desk, once per merge commit (see
   while a newer push's run may not exist yet. Any other answer, and any failed read, such as a 404
   for a base branch deleted after the merge, publishes the cancelled run as it is.
 
+### When the base branch recovers
+
+On each poll, the intake marks an unread `landed wrong` report of a red merge read once every check
+that failed on the merge commit passed on a commit of the base branch that contains the merge.
+
+- A check is a run of the same name and app. A pass is `success`: `skipped` and `neutral` are none.
+- The intake looks at the tip of the base branch, where every run of the check must be a success,
+  then at the 5 newest other task merges into that branch where a later run passed. A re-run on the
+  merge commit counts.
+- `repos/{repo}/compare/{merge}...{sha}` must say `ahead`, so a commit without the merge clears nothing.
+- It waits until the merge commit's own checks all completed, since the one report stands for all of them.
+- A failed read, such as a 404 for a deleted base branch, keeps the report, and the poll goes on.
+- It makes one call per failed check and poll while the report is unread, and one per commit compared.
+- The report of a revert stays. The [`red-after-merge`](../daemon/trace.md#outcome-labels) label stays too.
+
 ### Check run snapshots
 
 A repository that runs no checks never produces a `github.check_run.completed` event, and a queued
