@@ -721,7 +721,8 @@ pub(crate) fn left(tx: &Transaction, resource: &str, origin: &str) -> rusqlite::
              AND state IN ('queued', 'ready', 'held')
              AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.task = tasks.id)
              AND NOT EXISTS (SELECT 1 FROM holds WHERE holds.task = tasks.id
-               AND holds.kind = 'person' AND holds.released IS NULL AND holds.ask IS NOT NULL
+               AND holds.kind = 'person' AND holds.released IS NULL AND holds.met IS NULL
+               AND holds.ask IS NOT NULL
                AND (holds.reason = 'left ' || ?2
                  OR ?2 LIKE 'the view%' AND holds.reason LIKE 'left the view%'))
              ORDER BY id",

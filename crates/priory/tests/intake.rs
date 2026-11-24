@@ -3841,17 +3841,25 @@ fn entering_one_filter_again_leaves_the_other_filters_ask_open() {
     poll(&[], &[]);
     poll(&here, &[]);
 
-    let asks: serde_json::Value = serde_json::from_str(&setup.priory(&["asks", "--json"])).unwrap();
-    let asks = asks["asks"].as_array().or(asks.as_array()).unwrap();
-    let questions: Vec<_> = asks
-        .iter()
-        .filter(|ask| ask["state"] == "open")
-        .map(|ask| ask["question"].as_str().unwrap())
-        .collect();
-    assert_eq!(
-        questions,
-        [r#"ENG-7 left the project a1b2c3d4e5f6 filtered by {"state":["triage"]}. Drop the task?"#]
-    );
+    let questions = || -> Vec<String> {
+        let asks: serde_json::Value =
+            serde_json::from_str(&setup.priory(&["asks", "--json"])).unwrap();
+        let asks = asks["asks"].as_array().or(asks.as_array()).unwrap();
+        asks.iter()
+            .filter(|ask| ask["state"] == "open")
+            .map(|ask| ask["question"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let left = |state: &str| {
+        format!(
+            r#"ENG-7 left the project a1b2c3d4e5f6 filtered by {{"state":["{state}"]}}. Drop the task?"#
+        )
+    };
+    assert_eq!(questions(), [left("triage")]);
+
+    // Leaving the first filter again asks again, though its earlier ask's hold is not released yet.
+    poll(&[], &[]);
+    assert_eq!(questions(), [left("triage"), left("backlog")]);
 }
 
 #[test]
@@ -3887,6 +3895,29 @@ fn a_projects_tasks_queue_by_milestone_then_issue_order_with_no_milestone_last()
         5,
         "a move inside the project is no membership event"
     );
+}
+
+#[test]
+fn a_task_revived_after_its_issue_changed_milestone_takes_the_new_place() {
+    let setup = Setup::linear("project-revived", &[("joined", PROJECT_TRIGGER)]);
+    let (first, second) = (Some((1.0, None)), Some((2.0, None)));
+    setup.poll_project(&[]);
+    setup.poll_project(&[placed(1, "p", first, 0.0), placed(2, "p", second, 0.0)]);
+    assert_eq!(setup.queue(), ["ENG-1", "ENG-2"]);
+    let state = |state: &str| {
+        let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+        db.execute("UPDATE tasks SET state = ?1 WHERE id = 1", [state])
+            .unwrap();
+    };
+    state("failed");
+    setup.poll_project(&[placed(1, "p", None, 0.0), placed(2, "p", second, 0.0)]);
+    setup.inbox();
+
+    state("queued");
+    // Another issue's change publishes a marker, which places the queue.
+    setup.poll_project(&[placed(1, "p", None, 0.0), placed(2, "p", second, 1.0)]);
+
+    assert_eq!(setup.queue(), ["ENG-2", "ENG-1"]);
 }
 
 #[test]

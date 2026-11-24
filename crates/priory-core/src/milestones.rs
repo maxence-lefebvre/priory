@@ -28,9 +28,9 @@ pub(crate) fn read(db: &Connection, factory: &Factory, message: &Message) -> rus
         })
         .map(|(name, _)| name.as_str())
         .collect();
+    // Ended tasks too: no later marker would tell a revived one.
     let mut update = db.prepare(
         "UPDATE tasks SET issue_order = ?2 WHERE key = ?1 AND issue_order IS NOT ?2
-         AND state NOT IN ('done', 'failed', 'dropped')
          AND trigger IN (SELECT value FROM json_each(?3))",
     )?;
     for member in message.data["members"].as_array().into_iter().flatten() {
