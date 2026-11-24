@@ -2327,7 +2327,7 @@ fn tagged_pane<'a>(panes: &'a str, session: &str) -> Option<(&'a str, Snapshot)>
 
 /// The command that attaches a tmux client to the session `name`, through the socket of the server
 /// that runs it, or none unless a live pane there runs the harness session `session`. A
-/// `read_only` client cannot type and leaves the window's size alone.
+/// `read_only` client cannot type, and sizes the window only while no other client does.
 pub fn attach(name: &str, session: &str, read_only: bool) -> Option<Vec<String>> {
     let panes = run(tmux().args([
         "list-panes",
@@ -2343,28 +2343,33 @@ pub fn attach(name: &str, session: &str, read_only: bool) -> Option<Vec<String>>
         let (dead, tag, socket) = (fields.next()?, fields.next()?, fields.next()?);
         (dead == "0" && tag == session).then_some(socket)
     })?;
-    let read_only = read_only.then_some("-r");
+    let read_only: &[&str] = if read_only {
+        &["-f", "read-only,ignore-size"]
+    } else {
+        &[]
+    };
     Some(
         ["tmux", "-S", socket, "attach-session"]
             .into_iter()
-            .chain(read_only)
+            .chain(read_only.iter().copied())
             .chain(["-t", &format!("={name}")])
             .map(str::to_owned)
             .collect(),
     )
 }
 
-/// How many tmux clients are attached to the session `name`, or none when tmux cannot tell.
+/// How many tmux clients that can type are attached to the session `name`, or none when tmux
+/// cannot tell.
 pub fn clients(name: &str) -> Option<usize> {
     run(tmux().args([
         "list-clients",
         "-t",
         &format!("={name}"),
         "-F",
-        "#{client_name}",
+        "#{client_readonly}",
     ]))
     .ok()
-    .map(|clients| clients.lines().filter(|line| !line.is_empty()).count())
+    .map(|clients| clients.lines().filter(|line| *line == "0").count())
 }
 
 /// Kills the tmux session `name`, if it still exists.

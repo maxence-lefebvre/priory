@@ -689,6 +689,20 @@
       ],
       "type": "string"
     },
+    "Runs": {
+      "additionalProperties": false,
+      "description": "What happens when a run starts.",
+      "properties": {
+        "attach": {
+          "description": "The command that opens a run where a person can watch it, relative to the factory folder.\nThe daemon runs it once per new run of a step with `attach = true`, with the task id and\nrun id as its arguments.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "Sandbox": {
       "additionalProperties": false,
       "description": "`[sandboxes.<name>]`: a jail around a run's agent, which sees its worktree, its harness's own\nhome and what the sandbox names, each at the same path as outside.",
@@ -1270,6 +1284,9 @@
           "type": "null"
         }
       ]
+    },
+    "runs": {
+      "$ref": "#/definitions/Runs"
     },
     "sandboxes": {
       "additionalProperties": {

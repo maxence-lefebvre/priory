@@ -31,6 +31,7 @@ one: [reload.md](../daemon/reload.md#what-a-reload-changes) lists them.
 | `webhooks` | table | no | no webhook is taken | The signed webhooks the server takes. Needs `[serve]`. See [`[webhooks.github]`](#webhooksgithub), [`[webhooks.linear]`](#webhookslinear), [`[webhooks.sentry]`](#webhookssentry), [`[webhooks.honeycomb]`](#webhookshoneycomb), [`[webhooks.intercom]`](#webhooksintercom), [`[webhooks.cloudwatch]`](#webhookscloudwatch) and [`[webhooks.figma]`](#webhooksfigma) | |
 | `slack` | table | no | no Slack shortcut | The Slack message shortcut. See [`[slack.shortcut]`](#slackshortcut) | |
 | `asks` | table | no | answers are only stored | What happens to the answer of an ask from outside Priory. See [`[asks]`](#asks) | |
+| `runs` | table | no | no command at a run's start | What the daemon runs when a run starts. See [`[runs]`](#runs) | |
 | `links` | table of strings | no | the built-in `#n` link | Autolinks, each a regex and a URL template. See [`[links]`](#links) | |
 | `request` | table | no | `priory add` needs `--workflow` | The defaults of `priory add` and `POST /api/request`. See [`[request]`](#request) | |
 | `batch` | table | no | `priory batch add` is refused | How `priory batch add` plans batches. See [`[batch]`](#batch) | |
@@ -338,6 +339,15 @@ and [tools.md](tools.md#commands-an-answer-runs) for the commands an answer runs
 | `deliver` | string | no | none: an answer is only stored | The command that delivers an outside ask's answer or dismissal to the session that asked, relative to the factory folder. `priory check` refuses one that is not an executable file | `"adapters/herdr/deliver"` |
 | `targets` | table of strings | no | none: only `worktree` | The folders, by name, where an answer can run an agent's ask command besides the task's worktree, relative to the factory folder or absolute | `{ ops = "../ops" }` |
 
+## `[runs]`
+
+See [sessions.md](../daemon/sessions.md#opening-a-run-when-it-starts) for when the daemon runs the
+`attach` command.
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `attach` | string | no | none: no run opens by itself | The command that opens a new run of a step with `attach = true`, relative to the factory folder. It gets the task id and the run id as its arguments. `priory check` refuses one that is not an executable file | `"adapters/herdr/attach"` |
+
 ## `[links]`
 
 Autolinks turn keys in text into links when the web view shows it. Each key is a regex, in the
@@ -599,6 +609,9 @@ workspace = "a86dr8yl"                         # the one workspace whose notific
 deliver = "bin/deliver"                        # delivers outside answers, from the factory folder
 targets = { ops = "../ops" }                   # where an answer can run an ask's command
 
+[runs]
+attach = "bin/attach"                          # opens each run of an attach = true step
+
 [request]
 workflow = "implement"                         # what priory add starts without --workflow
 band = "today"                                 # its band without --band
@@ -648,6 +661,8 @@ day = 10.0                                     # dollars the lane may spend in a
 | `` the sweeper agent `<name>` does not exist `` | `[sweep] agent` names no folder under `agents/` |
 | `` `[asks] deliver`: <path> is not a file in the factory folder `` | `deliver` names no file under the factory folder |
 | `` `[asks] deliver`: <path> is not executable: chmod +x it `` | The `deliver` file has no execute bit |
+| `` `[runs] attach`: <path> is not a file in the factory folder `` | `attach` names no file under the factory folder |
+| `` `[runs] attach`: <path> is not executable: chmod +x it `` | The `attach` file has no execute bit |
 | `` [log] backend = "postgres" needs a priory built with `--features postgres` `` | `[log] backend = "postgres"` in a build without the Postgres adapter |
 | `` `[log] url_env` names the environment variable that holds the connection string, such as PRIORY_LOG_URL, never the string itself `` | `url_env` is not a variable name, such as a pasted URL |
 | `` `headers_env` names the environment variable that holds the headers, such as OTEL_EXPORTER_OTLP_HEADERS, never the headers themselves `` | `[telemetry] headers_env` is not a variable name, such as pasted headers |

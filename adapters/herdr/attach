@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""Opens a Priory run in a kept hc terminal, so it waits in the hub until a person looks.
+
+Priory runs it as `attach TASK RUN` when a run of a step with `attach = true` starts. It opens one
+terminal per run that runs `priory attach --run RUN --read-only`, labelled with the Herdr space that
+PRIORY_HERDR_SPACE names, a tab per task, and `priory.run=RUN`. A run that already has a terminal
+gets no second one. The terminal gets the daemon's PRIORY_DB, PRIORY_HOME and TMUX_TMPDIR, and
+the daemon's executable, PRIORY_EXE, so it attaches to the daemon's run. Exit 0 means the run has
+its terminal.
+"""
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+# shortcut: the launch size of runtime.rs plus tmux's status line, change both together.
+VIEW = 'stty cols 200 rows 51; exec "$@"'
+FORWARDED = ("PRIORY_DB", "PRIORY_HOME", "TMUX_TMPDIR")
+
+
+def main(task, run):
+    if shutil.which("hc") is None:
+        print("attach: hc is not on PATH; install herdr-core or fix the daemon's PATH", file=sys.stderr)
+        return 1
+    space = os.environ.get("PRIORY_HERDR_SPACE")
+    if not space:
+        print("attach: set PRIORY_HERDR_SPACE to the Herdr space that shows runs", file=sys.stderr)
+        return 1
+    priory = os.environ.get("PRIORY_EXE")
+    if not priory:
+        print("attach: PRIORY_EXE is unset; run this from a daemon that sets it", file=sys.stderr)
+        return 1
+    label = f"priory.run={run}"
+    listed = subprocess.run(["hc", "ls", "--json", "--label", label], capture_output=True, text=True)
+    if listed.returncode != 0:
+        sys.stderr.write(listed.stderr)
+        return listed.returncode
+    try:
+        terminals = json.loads(listed.stdout).get("terminals") or []
+    except (ValueError, AttributeError):
+        print(f"attach: hc ls printed no JSON: {listed.stdout[:200]}", file=sys.stderr)
+        return 1
+    if terminals:
+        return 0
+    view = [priory, "attach", "--run", run, "--read-only"]
+    # hc run --bg succeeds whatever its program does, so a run that cannot be attached fails here.
+    try:
+        checked = subprocess.run([*view, "--print"], capture_output=True, text=True)
+    except OSError as error:
+        print(f"attach: {priory}: {error}", file=sys.stderr)
+        return 1
+    if checked.returncode != 0:
+        sys.stderr.write(checked.stderr)
+        return 1
+    # The hc core starts the terminal with its own environment, not the daemon's.
+    env = [f"{name}={os.environ[name]}" for name in FORWARDED if os.environ.get(name)]
+    started = subprocess.run(
+        ["hc", "run", "--bg", "--keep", "--no-parent", "--no-notify",
+         "--label", f"herdr.space={space}", "--label", f"herdr.tab=task-{task}",
+         "--label", f"priory.task={task}", "--label", label,
+         "--", "env", *env, "sh", "-c", VIEW, "sh", *view],
+        capture_output=True, text=True)
+    sys.stderr.write(started.stderr)
+    return started.returncode
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 3:
+        print("usage: attach TASK RUN", file=sys.stderr)
+        sys.exit(2)
+    sys.exit(main(*sys.argv[1:]))

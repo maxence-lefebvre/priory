@@ -30,16 +30,18 @@ fn files(root: &Path, dir: &Path) -> BTreeSet<String> {
     found
 }
 
-/// Copies the example factory to `to`, with the `deliver` script its `factory.toml` names, which
-/// the reference pages do not show.
+/// Copies the example factory to `to`, with the `deliver` and `attach` scripts its `factory.toml`
+/// names, which the reference pages do not show.
 fn example_factory(to: &Path) {
     use std::os::unix::fs::PermissionsExt;
     let _ = fs::remove_dir_all(to);
     copy(&examples().join("factory"), to);
-    let deliver = to.join("bin/deliver");
-    fs::create_dir_all(deliver.parent().unwrap()).unwrap();
-    fs::write(&deliver, "#!/bin/sh\n").unwrap();
-    fs::set_permissions(&deliver, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::create_dir_all(to.join("bin")).unwrap();
+    for script in ["bin/deliver", "bin/attach"] {
+        let script = to.join(script);
+        fs::write(&script, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    }
 }
 
 #[test]
