@@ -562,6 +562,9 @@ pub fn worktree(
     }
     if orphaned(&path, &clone) {
         remove_sealed(&path);
+        if path.exists() {
+            move_aside(home, &path)?;
+        }
     }
     if path.exists() {
         let common =
@@ -1580,6 +1583,25 @@ fn seal(dir: &Path) -> std::io::Result<()> {
         }
     }
     fs::set_permissions(dir, fs::Permissions::from_mode(0o555))
+}
+
+/// Moves `path`, a worktree folder the daemon could not remove (a container can leave root-owned
+/// files under an ignored folder), into `home/trash`, so the task's worktree can be added back. A
+/// rename needs write access on the parent folder only.
+fn move_aside(home: &Path, path: &Path) -> Result<(), String> {
+    let trash = home.join("trash");
+    fs::create_dir_all(&trash).map_err(|error| format!("{}: {error}", trash.display()))?;
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    let aside = trash.join(format!("{name}-{stamp}"));
+    fs::rename(path, &aside).map_err(|error| {
+        format!(
+            "{} could not be removed or moved aside ({error}): remove it by hand",
+            path.display()
+        )
+    })
 }
 
 /// Removes `dir` and everything under it, a sealed folder included. Use it for any folder that
@@ -3323,6 +3345,22 @@ mod tests {
         assert!(!sealed.exists());
         assert!(home.tree().join("README.md").is_file());
         assert_eq!(sh(&home.tree(), &["branch", "--show-current"]), "priory/1");
+    }
+
+    #[test]
+    fn a_worktree_folder_that_cannot_be_removed_moves_into_the_trash() {
+        let home = Home::new("aside");
+        let leftover = home.home().join("worktrees/o/n/1");
+        fs::create_dir_all(leftover.join("target")).unwrap();
+        fs::write(leftover.join("target/owned-by-root"), "").unwrap();
+
+        move_aside(&home.home(), &leftover).unwrap();
+        fs::create_dir_all(&leftover).unwrap();
+        move_aside(&home.home(), &leftover).unwrap();
+
+        assert!(!leftover.exists());
+        let moved = fs::read_dir(home.home().join("trash")).unwrap().count();
+        assert_eq!(moved, 2, "each move keeps its own name");
     }
 
     #[test]
