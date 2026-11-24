@@ -3925,8 +3925,8 @@ fn a_view_orders_each_project_by_itself_and_leaves_other_work_its_place() {
 
     assert_eq!(setup.queue(), ["ENG-5", "ENG-4", "ENG-3", "ENG-2", "ENG-1"]);
 
-    // A task that ends gives its place back to the project's others.
-    setup.priory(&["cancel", "5"]);
+    // A task moved to another band trades places only there.
+    setup.priory(&["move", "5", "--band", "later"]);
     setup.answer_linear(&Linear {
         view: vec![
             placed(1, "a", second, 1.0),
@@ -3938,7 +3938,7 @@ fn a_view_orders_each_project_by_itself_and_leaves_other_work_its_place() {
         ..Linear::default()
     });
     succeeded(&setup.intake());
-    assert_eq!(setup.queue(), ["ENG-1", "ENG-4", "ENG-3", "ENG-2"]);
+    assert_eq!(setup.queue(), ["ENG-1", "ENG-4", "ENG-3", "ENG-2", "ENG-5"]);
 }
 
 #[test]
@@ -3959,7 +3959,11 @@ fn a_view_marker_without_orders_gives_queued_tasks_theirs_and_publishes_no_event
             "lane": null, "team": "ENG", "project": "p", "trigger": "agent-ready",
             "source": "8beb4cb2-80ac-53e2-b95c-eeb5e39b5a11"
         });
-        seed(&setup, &Message::new("factory.task.requested", request));
+        seed(
+            &setup,
+            &Message::new("factory.task.requested", request)
+                .subject(format!("linear:ENG-{number}")),
+        );
     }
     assert_eq!(setup.queue(), ["ENG-1", "ENG-2"]);
     setup.answer_linear(&Linear {

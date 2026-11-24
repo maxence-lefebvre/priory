@@ -114,6 +114,43 @@ mod tests {
         ]
     }
 
+    #[test]
+    fn a_task_that_ends_leaves_no_stale_place() {
+        let db = crate::state::memory();
+        let insert = |key: &str, order: Option<i64>| {
+            let order = order.map(|sort| {
+                json!({ "project_id": "p", "milestone": { "sort_order": sort } }).to_string()
+            });
+            db.execute(
+                "INSERT INTO tasks (key, workflow, step, state, trigger, source, issue_order)
+                 VALUES (?1, 'implement', 'implement', 'queued', 'joined', 'source', ?2)",
+                params![key, order],
+            )
+            .unwrap();
+        };
+        insert("linear:ENG-1", Some(2));
+        insert("github:owner/repo#2", None);
+        insert("linear:ENG-3", Some(1));
+        let queue = || -> Vec<i64> {
+            place(&db).unwrap();
+            db.prepare(&format!(
+                "SELECT id FROM tasks WHERE state = 'queued' ORDER BY {}",
+                crate::state::START_ORDER
+            ))
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+        };
+        assert_eq!(queue(), [3, 2, 1]);
+
+        db.execute("UPDATE tasks SET state = 'done' WHERE id = 3", [])
+            .unwrap();
+
+        assert_eq!(queue(), [1, 2]);
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(256))]
 
