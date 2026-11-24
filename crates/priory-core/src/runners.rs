@@ -88,9 +88,9 @@ pub(crate) fn view(
     if seen.is_none() {
         let outcome = if crate::route::outsider(message) {
             Some("outsider")
-        } else if crate::memories::handle(&tx, message)?.is_some() {
-            None
-        } else if handle(&tx, message, viewer, trace, None)?.is_some() {
+        } else if crate::memories::handle(&tx, message)?.is_some()
+            || handle(&tx, message, viewer, trace, None)?.is_some()
+        {
             None
         } else {
             Some("ignored")

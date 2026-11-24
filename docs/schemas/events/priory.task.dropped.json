@@ -41,7 +41,7 @@
       "type": "object"
     }
   },
-  "description": "A person on one runner resumes, revives, cancels, releases or says to a task of another, with\n`priory resume RUNNER:KEY` and its siblings or their endpoints. Only that runner applies it, with\nthe checks of a local action, and only while it holds the key at that generation.",
+  "description": "A person drops the requests of a key that no runner claimed, with `priory cancel KEY`. Every\nmachine drops them as it reads this, unless a runner's claim won the key before it on the log.",
   "properties": {
     "data": {
       "$ref": "#/definitions/TaskDropped"
