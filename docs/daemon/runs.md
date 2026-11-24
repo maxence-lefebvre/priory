@@ -440,9 +440,16 @@ repository's default branch (`git diff origin/HEAD...<branch>`). On each tick, i
 files, the task gets an ordinary hold with the reason `overlaps task N on <files>`. The hold waits
 for the earlier task's open pull request to merge, or, when it has none yet, for that task to end.
 A pull request closed without a merge releases it. `priory release` lets the task go as for any
-hold, and the daemon does not hold it for that earlier task again. A stacked batch entry never waits on
-a task it is stacked on, since its branch starts with that task's files (see
-[batches.md](batches.md)).
+hold, and the daemon does not hold it for that earlier task again.
+
+A task is never held on an open pull request that is its own work, since only it can get that one
+merged. A pull request is its own work when its key names it, with or without the `cli:` prefix,
+when the pull request is recorded for it, or when one of the two branches holds every commit of the
+other: the task pushed to the pull request's branch, or built on it. The daemon checks the held
+tasks again when it starts, and releases each one it would no longer hold.
+
+A stacked batch entry never waits on a task it is stacked on, since its branch starts with that
+task's files (see [batches.md](batches.md)).
 
 Set `[queue] overlap = false` in `factory.toml` to turn this off (see
 [factory.md](../reference/factory.md#queue)).
@@ -451,6 +458,8 @@ Known limits:
 
 - Only a task between runs is held: a running task has a process, which a hold would have to kill.
   A task that overlaps while running is held at its next queued step, if it has one.
+- The branches are compared as the clone last pushed or fetched them. A task built on a pull request
+  whose branch was then rewritten no longer holds its commits, so it is held.
 - The files come from the end of a run. Later commits in a running task show at its next run's end.
 
 

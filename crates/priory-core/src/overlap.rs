@@ -7,8 +7,8 @@ use std::path::Path;
 /// Records the files each task's branch changed at the end of its latest run, then holds each
 /// queued or ready task that changes files an earlier, unfinished task changes, until that task's
 /// pull request merges or, with none, the task ends. A task never waits on a pull request that is
-/// its own work, even while the task that opened it is active: only it can get that one merged. A person's release of the hold stays final for
-/// that earlier task. Tasks in other repositories never overlap, a task never waits on one that
+/// its own work, even while the task that opened it is active: only it can get that one merged. A
+/// person's release of the hold stays final for that earlier task. Tasks in other repositories never overlap, a task never waits on one that
 /// waits on it, and a stacked batch entry never waits on a task it is stacked on.
 pub(crate) fn tick(db: &mut Connection, factory: &Factory, home: &Path) -> rusqlite::Result<()> {
     if !factory.overlap() {
@@ -61,7 +61,7 @@ pub(crate) fn tick(db: &mut Connection, factory: &Factory, home: &Path) -> rusql
             if said {
                 continue;
             }
-            let Some(wait) = wait_for(&tx, task, other)? else {
+            let Some(wait) = wait_for(&tx, home, task, other)? else {
                 continue;
             };
             let held = Hold {
@@ -80,6 +80,34 @@ pub(crate) fn tick(db: &mut Connection, factory: &Factory, home: &Path) -> rusql
     tx.commit()
 }
 
+/// Releases each overlap hold that `tick` would no longer place. Run once as the daemon starts, since
+/// a held task's branch does not move.
+pub(crate) fn release(db: &mut Connection, factory: &Factory, home: &Path) -> rusqlite::Result<()> {
+    if !factory.overlap() {
+        return Ok(());
+    }
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let held: Vec<(i64, i64, String)> = tx
+        .prepare(
+            "SELECT holds.id, holds.task, holds.reason FROM holds JOIN tasks ON tasks.id = holds.task
+             WHERE holds.released IS NULL AND holds.met IS NULL AND tasks.state = 'held'
+             AND holds.kind IN ('merge', 'task') AND holds.reason LIKE 'overlaps task %'
+             ORDER BY holds.id",
+        )?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (id, task, reason) in held {
+        let Some(other) = reason.split(' ').nth(2).and_then(|id| id.parse().ok()) else {
+            continue;
+        };
+        if wait_for(&tx, home, task, other)?.is_none() {
+            let how = format!("task {task} no longer waits on task {other}");
+            hold::meet(&tx, id, &how)?;
+        }
+    }
+    tx.commit()
+}
+
 struct Wait {
     after: Option<After>,
     merge: Option<String>,
@@ -88,22 +116,22 @@ struct Wait {
 /// What `other` ends or merges to get out of the way: its open pull request, else its end; `None`
 /// when it is done with no pull request left open, or when that pull request is `task`'s own work,
 /// since `task` would then wait on itself.
-fn wait_for(tx: &rusqlite::Transaction, task: i64, other: i64) -> rusqlite::Result<Option<Wait>> {
-    let open: Option<String> = tx
+fn wait_for(
+    tx: &rusqlite::Transaction,
+    home: &Path,
+    task: i64,
+    other: i64,
+) -> rusqlite::Result<Option<Wait>> {
+    let open: Option<(String, String)> = tx
         .query_row(
-            "SELECT resource FROM pull_requests WHERE task = ?1 AND state = 'open' ORDER BY created LIMIT 1",
+            "SELECT resource, branch FROM pull_requests WHERE task = ?1 AND state = 'open'
+             ORDER BY created LIMIT 1",
             [other],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
-    if let Some(resource) = open {
-        let own: bool = tx.query_row(
-            "SELECT EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND key = ?2)
-             OR EXISTS (SELECT 1 FROM pull_requests WHERE task = ?1 AND resource = ?2)",
-            params![task, resource],
-            |row| row.get(0),
-        )?;
-        if own {
+    if let Some((resource, branch)) = open {
+        if own(tx, home, task, &resource, &branch)? {
             return Ok(None);
         }
         return Ok(Some(Wait {
@@ -120,6 +148,36 @@ fn wait_for(tx: &rusqlite::Transaction, task: i64, other: i64) -> rusqlite::Resu
         after: Some(After::Task(other)),
         merge: None,
     }))
+}
+
+/// Whether the pull request `resource` from `pull_branch` is `task`'s own work: its key names it, it
+/// is recorded for it, or one of their branches holds every commit of the other.
+fn own(
+    tx: &rusqlite::Transaction,
+    home: &Path,
+    task: i64,
+    resource: &str,
+    pull_branch: &str,
+) -> rusqlite::Result<bool> {
+    let (key, recorded, worktree, branch): (String, bool, Option<String>, Option<String>) = tx
+        .query_row(
+            "SELECT key, EXISTS (SELECT 1 FROM pull_requests WHERE task = ?1 AND resource = ?2),
+             worktree, branch FROM tasks WHERE id = ?1",
+            params![task, resource],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+    if recorded || key.trim_start_matches("cli:") == resource {
+        return Ok(true);
+    }
+    let (Some(worktree), Some(branch)) = (worktree, branch) else {
+        return Ok(false);
+    };
+    Ok(runtime::in_line(
+        home,
+        Path::new(&worktree),
+        &branch,
+        pull_branch,
+    ))
 }
 
 fn files_of(json: &str) -> Vec<String> {

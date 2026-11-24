@@ -788,6 +788,25 @@ pub fn is_ancestor(worktree: &Path, below: &str, commit: &str) -> bool {
         .is_ok_and(|status| status.success())
 }
 
+/// Whether the local branch `branch` of `worktree`'s clone holds every commit of `pushed` as last
+/// pushed to or fetched from origin, or the other way round. False when either is missing.
+pub fn in_line(home: &Path, worktree: &Path, branch: &str, pushed: &str) -> bool {
+    let Some(repo) = worktree
+        .parent()
+        .and_then(|repo| repo.strip_prefix(home.join("worktrees")).ok())
+    else {
+        return false;
+    };
+    let (Some(head), Some(pushed)) = (
+        kept_head(home, worktree, branch),
+        pushed_head(home, worktree, pushed),
+    ) else {
+        return false;
+    };
+    let clone = home.join("repos").join(repo);
+    is_ancestor(&clone, &head, &pushed) || is_ancestor(&clone, &pushed, &head)
+}
+
 /// The open pull requests of `repo` that `author` opened, or every open one without an author,
 /// each with its `number`, `title` and `url`.
 pub fn open_pull_requests(
