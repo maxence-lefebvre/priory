@@ -5101,6 +5101,8 @@ fn each_subscription_gets_the_kinds_it_chose() {
         .unwrap();
     assert_eq!(urls(0, 3), [LAPTOP, LAPTOP, PHONE]);
 
+    // The desk, which a landed-wrong notice reads, parses an open ask's command as JSON.
+    db.execute("UPDATE asks SET answer = 'yes'", []).unwrap();
     setup.subscribe_to(&address, DESKTOP, Some(json!(["landed", "stall"])));
     db.execute(
         "INSERT INTO inbox (id, time, type, subject, data, links, outcome)
