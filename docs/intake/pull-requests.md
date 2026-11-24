@@ -64,6 +64,18 @@ also holds the line `<!-- agent-comment -->`. Agents post as the person's own lo
 tells an agent's comment from the person's. The marker alone, from another login, proves nothing.
 See [routing.md](../daemon/routing.md#an-agents-own-comments).
 
+GitHub wraps each reply in a review thread in a `COMMENTED` review with an empty body. The marker is
+in the thread comment, so the intake judges such a review by its comments when `gh`'s login wrote it:
+
+| Its thread comments | The review |
+| ------------------- | ---------- |
+| all marked | `agent: true`, so it starts no task |
+| all marked, and each is already on `factory.intake` | not published |
+| some unmarked, or none | the person's: `agent: false` |
+
+A review with a body is judged by its body. So is another login's review, which is never `agent`.
+The comments take one REST call per review (see [github-polling.md](github-polling.md#calls-and-cost)).
+
 `merged` on a close is true only when the pull request is merged and this is its last `closed`
 event the poll read.
 A close also carries `merge_commit`, the commit the merge made on the base branch, or null unless
@@ -153,5 +165,8 @@ Each message id is the UUIDv5 of a name:
   commit per pull request.
 - A poll reads the repository's newest 100 review thread comments. More than 100 between two polls
   loses the oldest, unless a webhook delivered them.
+- Of the thread comments a review wraps, the first 100 are read.
+- A review whose thread comments cannot be read is not published. The next poll tries again, if it
+  still reads the pull request.
 - A comment's or review's author is a bot when GitHub types the account `Bot`. A person or an
   agent that comments through a personal access token is not one.

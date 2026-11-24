@@ -274,9 +274,10 @@ pub struct ReviewSubmitted {
     /// during the agent's turn.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub own: Option<bool>,
-    /// Whether an agent wrote it: `own`, and its body holds `<!-- agent-comment -->`; absent while
-    /// `gh` cannot say. An agent's comment starts no task. The person's unmarked one wakes its task
-    /// even when it was written during the agent's turn.
+    /// Whether an agent wrote it: `own`, and its body holds `<!-- agent-comment -->`, or its body is
+    /// empty and every thread comment it wraps holds that; absent while `gh` cannot say. An agent's
+    /// review starts no task. The person's wakes its task even when it was written during the
+    /// agent's turn.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<bool>,
     /// The `X-GitHub-Delivery` of the webhook delivery that reported it; absent when a poll did.

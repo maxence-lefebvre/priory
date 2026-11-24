@@ -72,6 +72,7 @@ The events' ids are on their own pages.
 | N over 25 | the query pages itself: ceil(N/25) requests |
 | New pull request events | 1 more GraphQL query per 25 pull requests they name |
 | A task pull request merged in the last 7 days | 1 more REST request per merge commit whose checks have not all completed ([why](pull-requests.md#check-runs-at-a-merge)) |
+| A review by `gh`'s login that is `COMMENTED` with an empty body | 1 more REST request for its thread comments, once per review until the intake restarts ([why](pull-requests.md#events)) |
 | Over 100 new events in a stream since the last poll | 1 more REST page per 100 |
 
 A subscription or a task branch adds no call for a repository a trigger already names. For one no
@@ -116,6 +117,7 @@ A poll publishes reviews and checks before the issue streams. So a crash after a
 | ---------- | ---- |
 | `gh` with a 5xx or GitHub's GraphQL timeout | the call is tried again after 1 second, then after 3 seconds. If the third try fails too, it fails like any other `gh` error |
 | `gh` for one repository | that repository publishes nothing; the others still publish |
+| `gh` for a review's thread comments | that review is not published, and the next poll tries again; the rest publishes |
 | `gh`, without `--once` | the error is logged and retried on the next poll. With `PRIORY_DB` set, it shows as a banner on the desk until a poll succeeds, and as an alarm once it has failed for `[intake] alarm_after`: see [desk.md](../daemon/desk.md#intake-banner) |
 | `gh`, with `--once` | the intake polls the other sources, records the failure, then exits non-zero |
 | a publish | the intake ends, so its restart recovers what it left out |

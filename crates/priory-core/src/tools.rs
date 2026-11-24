@@ -1478,6 +1478,7 @@ pub(crate) fn event(
             .as_str()
             .zip(data["pull_request"].as_u64())
             .map(|(repo, number)| route::pull_request(repo, number));
+        let reviewed = kind_of_event == REVIEWED && data["agent"] != true;
         // Each pull request of a stack has its own gate, which only its events decide.
         if daemon && on.as_deref() != Some(resource.as_str()) {
             // A merged pull request's gate already fired, so a person's feedback on it fires the
@@ -1490,7 +1491,7 @@ pub(crate) fn event(
             }
             let place = crate::stack::place(tx, task, &on)?;
             let said = feedback(&on, place.as_deref(), &kind_of_event, &data)
-                .filter(|_| later || kind_of_event == REVIEWED || not_agents(&data))
+                .filter(|_| later || reviewed || not_agents(&data))
                 .filter(|_| !settles(&kind_of_event, &data));
             let Some(said) = said else {
                 continue;
@@ -1507,7 +1508,7 @@ pub(crate) fn event(
         // A comment written before the wait, such as the agent's own, wakes nothing.
         let place = crate::stack::place(tx, task, &resource)?;
         let said = feedback(&resource, place.as_deref(), &kind_of_event, &data)
-            .filter(|_| later || kind_of_event == REVIEWED || not_agents(&data));
+            .filter(|_| later || reviewed || not_agents(&data));
         if daemon {
             let Some(said) = said.filter(|_| !settles(&kind_of_event, &data)) else {
                 return judge(tx, wait, factory);

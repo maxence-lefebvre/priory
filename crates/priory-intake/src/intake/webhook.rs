@@ -84,23 +84,30 @@ impl Github {
             .iter()
             .map(|(name, trigger)| (name.as_str(), trigger))
             .collect();
-        let published = observed
-            .message(&triggers, super::gh::viewer)
-            .and_then(|mut message| {
-                // GitHub redelivers for 3 days; an older body is a replay the change match may miss.
-                if message.time.as_second() < now()?.as_second() - LOOKBACK_SECONDS {
-                    return Ok(false);
-                }
-                message.data["delivery"] = json!(delivery);
-                let _claim = claim()?;
-                if reported(bus, &message)? {
-                    super::counted("github", "webhook", "duplicate");
-                    return Ok(false);
-                }
-                publish_delivered(bus, &message, "github")?;
-                dispatch(bus, &triggers, &message)?;
-                Ok(true)
-            });
+        let thread = match observed.wraps(super::gh::viewer) {
+            true => observed.thread(),
+            false => Ok(Vec::new()),
+        };
+        let published = thread.and_then(|thread| {
+            let mut message = observed.message(&triggers, super::gh::viewer, &thread)?;
+            // GitHub redelivers for 3 days; an older body is a replay the change match may miss.
+            if message.time.as_second() < now()?.as_second() - LOOKBACK_SECONDS {
+                return Ok(false);
+            }
+            message.data["delivery"] = json!(delivery);
+            let _claim = claim()?;
+            if reported(bus, &message)? {
+                super::counted("github", "webhook", "duplicate");
+                return Ok(false);
+            }
+            if observed.repeats(bus, &message, &thread)? {
+                super::counted("github", "webhook", "duplicate");
+                return Ok(false);
+            }
+            publish_delivered(bus, &message, "github")?;
+            dispatch(bus, &triggers, &message)?;
+            Ok(true)
+        });
         match published {
             Ok(true) => accepted("published"),
             Ok(false) => accepted("dropped"),
@@ -440,7 +447,7 @@ mod tests {
         let threads = feedback_trigger("pull_request_review_comment", &json!({ "author": "max" }));
         let triggers = [("mine", &mine), ("threads", &threads)];
         let matched = |observed: &Observed, viewer: crate::intake::Viewer| {
-            observed.message(&triggers, viewer).unwrap().data["triggers"].clone()
+            observed.message(&triggers, viewer, &[]).unwrap().data["triggers"].clone()
         };
         let marked = |login: &str| {
             let mut comment = comment_by(login, "User");
@@ -484,7 +491,7 @@ mod tests {
             });
             let body = payload.to_string();
             if let Ok(Some(observed)) = github().observe(event, &payload, body.as_bytes()) {
-                let _ = observed.message(&[], || None);
+                let _ = observed.message(&[], || None, &[]);
             }
         }
 
@@ -514,7 +521,7 @@ mod tests {
             });
             let body = payload.to_string();
             if let Ok(Some(observed)) = github().observe(event, &payload, body.as_bytes()) {
-                let _ = observed.message(&[], || None);
+                let _ = observed.message(&[], || None, &[]);
             }
         }
 

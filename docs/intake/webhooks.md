@@ -74,6 +74,11 @@ Its `time` is the payload's: `updated_at` for a label, `closed_at` for a close, 
 opening or a comment, and `submitted_at` for a review. A bot's comment publishes nothing. An
 `issue_comment` names no branch, so its head and base fields are null.
 
+A review payload holds no thread comments. For a `COMMENTED` review with an empty body by `gh`'s
+login, the server reads them with one `gh api` call to tell
+[an agent's reply from the person's](pull-requests.md#events). If that call fails, the reply is `500`
+and the next poll publishes the review.
+
 ### Duplicates
 
 Each message id is a UUIDv5, so herdr-bus drops a message whose id is already on the output (see

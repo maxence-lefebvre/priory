@@ -201,7 +201,7 @@ comment:
 | Field | `true` when | What reads it |
 | ----- | ----------- | ------------- |
 | `own` | the login `gh` runs as wrote it | the person's handling: [triage](../reference/tools.md#review-feedback) does not put it to the agent |
-| `agent` | it is `own` and its body holds the marker | triggers, waking during a turn, and the agent's reply in triage |
+| `agent` | it is `own` and its body holds the marker, or it is a review with an empty body whose [thread comments all hold it](../intake/pull-requests.md#events) | triggers, waking during a turn, and the agent's reply in triage |
 
 Priory adds the marker to each comment it posts itself, and the starter factories tell agents to add
 it. The marker in another login's comment proves nothing: that comment is neither `own` nor `agent`.
