@@ -67,9 +67,69 @@ the folder in binary units, such as `not merged, 7.4 GiB`. After each periodic s
 own walks the kept folders and records their sizes, since that walk takes seconds. A folder the walk
 has not measured yet shows its reason alone.
 
+## Reclaiming build output
+
+While free disk is under `[sweep] reclaim`, by default 20 % of the disk and at most 40 GB, each sweep starts a walk that lists the
+build output of idle tasks. The daemon then deletes it one folder at a time, at most one per tick. A threshold under
+the room's disk floor (see Room) acts as the floor. So build output goes before the floor stops new
+runs, and before a whole worktree retires.
+
+A task is idle when it is `done`, `dropped`, `held` or `asleep`, has no live run, and holds no
+memory grant, waiting or held (see Memory gate). A build that a run wrapped in `priory memory
+acquire` keeps its grant after the run sleeps, so its output stays until it ends.
+
+`[repos."owner/name"] build` names the build folders, relative to the worktree. Without it, a
+worktree with a `Cargo.toml` at its root has `target`, and other worktrees have none. `build = []`
+opts a repository out: none of its worktrees loses build output. A worktree keeps all its build
+output when any retirement check fails: it is not Priory's worktree, it is off its branch, a process runs in it, or it has an uncommitted change or an untracked file. Untracked
+files inside the build folders do not count; a change to a tracked file there does. A build folder
+that holds a file git tracks, such as a committed bundle, stays. A build folder that is a symlink,
+or that a symlink leads to, is never followed, and a symlink inside one goes without what it points
+to.
+
+These build folders stay too:
+
+- One with a mount at or under it, as `/proc/self/mountinfo` shows.
+- One inside a submodule or a nested repository.
+- One that holds a `.git` entry. A `.git` in the `tmp` folder of a cargo target does not count: tests
+  keep scratch files there. Cargo's `CACHEDIR.TAG` marks such a target.
+
+A thread lists and sizes each folder as `du` does, off the daemon's tick. Then each tick
+takes one folder, the largest first, and on equal sizes the task idle longest first. The tick checks
+again that the task is idle and that every check above still passes, then moves the folder to
+`PRIORY_HOME/reclaim/`, a rename that takes no longer for a large folder. A thread deletes it there.
+Only the tick starts runs, so none starts between those checks and the move, and a run that starts
+during the delete finds no build folder and makes a new one. No other folder goes until the delete
+ends. The tick measures the disk before each folder and stops once free disk is back at the
+threshold. A folder that a test made read-only is made writable, then deleted. The worktree,
+its branch and its session stay, so the task's next run rebuilds what it needs.
+
+Each deletion, once it ends, appends a `factory.worktree.reclaimed` record with the task, the folder
+and its bytes (see [trace-schema.md](../trace-schema.md#factoryworktreereclaimed)). `priory desk` and the web
+desk show `reclaimed 14.2 GB of build output from 3 folders in the last 24 hours, last at
+2026-11-23T19:30:02Z` while any happened in the last 24 hours.
+
+The thread looks for mounts and `.git` entries once more before it deletes a moved folder. If it finds
+one, it moves the folder back. If a new build folder took its place, the moved one stays in
+`PRIORY_HOME/reclaim/`.
+
+A daemon that stops during a delete leaves files in `PRIORY_HOME/reclaim/`, and the next sweep
+deletes them. It deletes only folders with a name it gave, a task's id and nanoseconds such as
+`304-1763926202412000000`. When `reclaim` is not a real folder, such as a symlink, nothing moves and
+nothing goes.
+
+The daemon logs a folder it cannot delete once, tries it again each sweep, and goes on with other
+build output. To remove one by hand, read the path in the log. Look for a mount (`findmnt -R <path>`), a
+repository, an immutable file (`lsattr -R <path>`) or a file of another user. Unmount the mount and
+move the repository out. Then run `rm -rf <path>`, with `sudo chattr -R -i <path>` first for immutable
+files, and `sudo` for another user's.
+
+When a worktree is on another filesystem than `PRIORY_HOME`, the move fails. The daemon logs it, keeps
+the folder with its mode, and does not try that folder again until it restarts.
+
 ## Retiring asleep tasks
 
-After each sweep, while free disk is at or under the room's disk floor (see Room), the daemon
+After each sweep, once the reclaim has nothing left to take, while free disk is at or under the room's disk floor (see Room), the daemon
 retires asleep tasks, longest asleep first, until the floor is met again. Retiring runs
 `git worktree remove` without force. The worktree goes, while the branch `priory/<id>` and the
 task's sessions stay. A task retires only when its worktree is Priory's, on its branch, has nothing

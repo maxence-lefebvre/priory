@@ -310,6 +310,9 @@ pub struct Repo {
     pub resume: Option<Recipe>,
     /// Runs before the sweep or a retirement removes the worktree. A failure keeps the worktree.
     pub teardown: Option<Recipe>,
+    /// The folders, relative to the worktree, that a build regenerates and a reclaim may delete;
+    /// `["target"]` in a worktree with a `Cargo.toml` when unset.
+    pub build: Option<Vec<String>>,
 }
 
 /// One command of a repository's recipe: `argv`, which Priory execs as it is, or `shell`, which it
@@ -1025,6 +1028,14 @@ pub struct Sweep {
     pub agent: Option<String>,
     /// The repository the sweeper works in and files its issue on, a GitHub `owner/name`.
     pub repo: Option<String>,
+    /// The free disk under which the sweep deletes idle tasks' build output; 20 % of the disk,
+    /// at most 40 GB, when unset.
+    #[serde(default, deserialize_with = "size")]
+    #[schemars(
+        with = "String",
+        regex(pattern = r"^(?=[^KMGT]*[1-9])([0-9]+(\.[0-9]*)?|\.[0-9]+)(KB|MB|GB|TB)$")
+    )]
+    pub reclaim: Option<u64>,
 }
 
 /// `[intake]`: how the intake treats a failing poll.
@@ -2563,6 +2574,7 @@ impl Factory {
             after: None,
             agent: None,
             repo: None,
+            reclaim: None,
         };
         self.settings
             .as_ref()
@@ -2629,6 +2641,17 @@ impl Factory {
             .repos
             .get(repo)?
             .recipe(moment)
+    }
+
+    /// The build output folders `[repos]` names for `repo`, if any.
+    pub fn build(&self, repo: &str) -> Option<&[String]> {
+        self.settings
+            .as_ref()?
+            .value
+            .repos
+            .get(repo)?
+            .build
+            .as_deref()
     }
 
     /// How long one git, gh or tmux command may run; 5 minutes when unset.
