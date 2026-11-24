@@ -445,6 +445,11 @@ impl Setup {
         answers: &[(&str, serde_json::Value)],
     ) {
         self.answer(answers);
+        self.count(path, failures, stderr);
+    }
+
+    /// Does what `fail_first` does to the fake `gh` that already answers.
+    fn count(&self, path: &str, failures: u32, stderr: &str) {
         let gh = self.dir.join("bin/gh");
         let answering = fs::read_to_string(&gh).unwrap();
         let count = self.dir.join(format!("calls-{}", path.replace('/', "-")));
@@ -1784,6 +1789,185 @@ fn an_empty_review_whose_comments_cannot_be_read_waits_for_the_next_poll() {
 
     assert_eq!(review_agents(&setup), [(501, json!(true))]);
     assert!(requests(&setup).is_empty());
+}
+
+/// The path of every lookup of pull request 43's review comments.
+const LOOKUPS: &str = "repos/owner/repo/pulls/43/reviews/";
+
+#[test]
+fn a_first_poll_that_cannot_read_a_review_stays_a_baseline() {
+    let setup = Setup::new("pr-wrapper-baseline", &[]);
+    pr_trigger(
+        &setup,
+        "my-reviews",
+        "on = \"pull_request_review.submitted\"\nfilter = { author = \"max\", commenter = \"max\" }\n",
+    );
+    let marked = || {
+        let markers = setup.output();
+        markers.iter().any(|stored| {
+            stored.message.kind == "factory.intake.baseline"
+                && stored.message.data["stream"] == "github.pull_request_review.submitted"
+        })
+    };
+    let reviews = json!([own_review(501, "")]);
+    answer_reviews(&setup, reviews.clone(), json!([]), &[(501, json!({}))]);
+    assert!(!setup.intake().status.success());
+    assert!(!marked());
+    answer_reviews(
+        &setup,
+        reviews,
+        json!([]),
+        &[(501, json!([own_reply(821, false)]))],
+    );
+
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    assert_eq!(review_agents(&setup), [(501, json!(false))]);
+    assert_eq!(published[0].message.data["baseline"], true);
+    assert_eq!(requests(&setup), []);
+    assert!(marked());
+}
+
+#[test]
+fn a_restart_looks_up_no_review_on_the_output_and_requests_the_task_a_crash_left_out() {
+    let setup = own_review_setup("pr-wrapper-restart");
+    answer_reviews(
+        &setup,
+        json!([own_review(501, ""), own_review(502, "")]),
+        json!([]),
+        &[
+            (501, json!([own_reply(811, true)])),
+            (502, json!([own_reply(821, false)])),
+        ],
+    );
+    succeeded(&setup.intake());
+    let request = [("my-reviews".to_owned(), "github:owner/repo#43".to_owned())];
+    assert_eq!(requests(&setup), request);
+    let bus = rusqlite::Connection::open(setup.dir.join("bus.db")).unwrap();
+    // Older than the 7 days one poll reads back, so only the start's own read finds them.
+    bus.execute("UPDATE messages SET published = '2026-01-01T00:00:00Z'", [])
+        .unwrap();
+    bus.execute(
+        "DELETE FROM messages WHERE type = 'factory.task.requested'",
+        [],
+    )
+    .unwrap();
+    drop(bus);
+    setup.count(LOOKUPS, 0, "");
+
+    succeeded(&setup.intake());
+
+    assert_eq!(setup.calls(LOOKUPS), 0);
+    assert_eq!(requests(&setup), request);
+}
+
+#[test]
+fn one_poll_looks_up_at_most_20_reviews() {
+    let setup = own_review_setup("pr-wrapper-bound");
+    let reviews: Vec<_> = (501..526).map(|id| own_review(id, "")).collect();
+    let threads: Vec<_> = (501..526)
+        .map(|id| (id, json!([own_reply(id + 1000, true)])))
+        .collect();
+    answer_reviews(&setup, json!(reviews), json!([]), &threads);
+    setup.count(LOOKUPS, 0, "");
+
+    succeeded(&setup.intake());
+    assert_eq!(setup.calls(LOOKUPS), 20);
+    assert_eq!(review_agents(&setup).len(), 20);
+
+    succeeded(&setup.intake());
+    assert_eq!(setup.calls(LOOKUPS), 25);
+    assert_eq!(review_agents(&setup).len(), 25);
+}
+
+#[test]
+fn a_rate_limit_or_a_timeout_ends_the_lookups_of_a_poll() {
+    for (name, failing) in [
+        (
+            "limit",
+            "echo 'gh: API rate limit exceeded for user ID 1. (HTTP 403)' >&2; exit 1",
+        ),
+        ("timeout", "exec sleep 60"),
+    ] {
+        let setup = own_review_setup(&format!("pr-wrapper-{name}"));
+        write(
+            &setup.dir.join("factory/factory.toml"),
+            "name = \"demo\"\ncommand_timeout = \"5s\"\n",
+        );
+        answer_reviews(
+            &setup,
+            json!([
+                own_review(501, ""),
+                own_review(502, ""),
+                own_review(503, "One thing.")
+            ]),
+            json!([]),
+            &[],
+        );
+        let gh = setup.dir.join("bin/gh");
+        let script = fs::read_to_string(&gh).unwrap().replacen(
+            "#!/bin/sh\n",
+            &format!("#!/bin/sh\ncase \"$*\" in \"api {LOOKUPS}\"*) {failing} ;; esac\n"),
+            1,
+        );
+        Setup::fake_gh(&setup.dir, &script);
+        setup.count(LOOKUPS, 0, "");
+
+        assert!(!setup.intake().status.success());
+
+        assert_eq!(setup.calls(LOOKUPS), 1, "{name}");
+        assert_eq!(review_agents(&setup), [(503, json!(false))], "{name}");
+    }
+}
+
+#[test]
+fn an_empty_list_of_comments_is_unread_while_its_review_is_under_a_minute_old() {
+    let setup = own_review_setup("pr-wrapper-young");
+    answer_reviews(
+        &setup,
+        json!([own_review(501, "")]),
+        json!([]),
+        &[(501, json!([]))],
+    );
+
+    succeeded(&setup.intake_at("2026-11-17T12:10:59Z"));
+    assert_eq!(review_agents(&setup), []);
+
+    succeeded(&setup.intake_at("2026-11-17T12:11:00Z"));
+    assert_eq!(review_agents(&setup), [(501, json!(false))]);
+}
+
+#[test]
+fn an_empty_verdict_and_another_logins_review_are_not_judged_by_their_comments() {
+    let setup = own_review_setup("pr-wrapper-others");
+    let mut approved = own_review(501, "");
+    approved["state"] = json!("APPROVED");
+    let mut rejected = own_review(502, "");
+    rejected["state"] = json!("CHANGES_REQUESTED");
+    let mut other = own_review(503, "");
+    other["author"]["login"] = json!("ana");
+    let marked = |id| (id, json!([own_reply(id + 1000, true)]));
+    answer_reviews(
+        &setup,
+        json!([approved, rejected, other]),
+        json!([]),
+        &[marked(501), marked(502), marked(503)],
+    );
+    setup.count(LOOKUPS, 0, "");
+
+    succeeded(&setup.intake());
+
+    assert_eq!(setup.calls(LOOKUPS), 0);
+    assert_eq!(
+        review_agents(&setup),
+        [
+            (501, json!(false)),
+            (502, json!(false)),
+            (503, json!(false)),
+        ]
+    );
+    assert_eq!(requests(&setup).len(), 2);
 }
 
 /// An RFC 3339 time `seconds` ago.

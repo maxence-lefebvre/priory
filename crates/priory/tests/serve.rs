@@ -2892,6 +2892,9 @@ fn a_delivered_empty_review_counts_as_its_thread_comments() {
     send("pull_request_review_comment", &comment.to_string());
     answers(&json!([reply(851, true)]));
     let delivered = send("pull_request_review", &own_review(505, ""));
+    answers(&json!([]));
+    let young = own_review(507, "").replace("T10:30:00Z", "T11:59:30Z");
+    let early = send("pull_request_review", &young);
     fs::write(setup.dir.join("fake/review-comments-fail"), "").unwrap();
     let unread = send("pull_request_review", &own_review(506, ""));
 
@@ -2901,6 +2904,7 @@ fn a_delivered_empty_review_counts_as_its_thread_comments() {
     );
     assert_eq!(delivered, dropped);
     assert_eq!(unread.0, 500);
+    assert_eq!(early.0, 500);
     let reviews: Vec<_> = setup
         .published()
         .into_iter()
