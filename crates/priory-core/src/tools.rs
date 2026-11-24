@@ -2541,6 +2541,15 @@ pub(crate) fn stop(
     Ok(None)
 }
 
+/// Whether the run sent its result.
+fn sent(tx: &Transaction, run: i64) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT count(*) > 0 FROM results WHERE run = ?1",
+        [run],
+        |row| row.get(0),
+    )
+}
+
 /// Fails the run's task when its step went over its budget, before its result moves it. Returns
 /// the tmux session to kill when it did.
 fn over_spent(
@@ -2552,13 +2561,9 @@ fn over_spent(
     let Some((over, reason)) = over_budget(tx, run, trace)? else {
         return Ok(None);
     };
-    let sent = tx
-        .query_row("SELECT 1 FROM results WHERE run = ?1", [run.id], |_| Ok(()))
-        .optional()?
-        .is_some();
     // The money of a turn that sent its result is spent: the result stands, and its step's
     // trace record carries the overrun.
-    if over && sent {
+    if over && sent(tx, run.id)? {
         return Ok(None);
     }
     end(tx, run.id, "budget")?;
@@ -2790,20 +2795,35 @@ fn dollars(spent: f64, budget: f64) -> String {
     format!("${spent:.6}")
 }
 
-/// After the turn of a run marked to stop for task `head`: settles it as `stop` does, but ends it
-/// as `preempted` wherever its process would have gone on, with the stop prompt ahead of the
-/// task's queued prompts. Returns the tmux session to kill.
-pub(crate) fn preempt(
+/// Why a live run is stopped with its session kept.
+#[derive(Clone, Copy)]
+pub(crate) enum Stopped {
+    /// To make room for this task.
+    For(i64),
+    /// For its task's hold, at its turn end.
+    Held,
+    /// For its task's hold, idle between turns.
+    Idle,
+    /// For its task's hold, inside its turn.
+    Interrupted,
+}
+
+/// After the turn of a marked run, or inside it for `Interrupted`: settles it as `stop` does, but
+/// stops it wherever its process would have gone on, with the stop prompt ahead of the task's
+/// queued prompts. Returns the tmux session to kill.
+pub(crate) fn stop_marked(
     tx: &Transaction,
     session: &str,
     trace: &Trace,
-    head: i64,
+    why: Stopped,
 ) -> rusqlite::Result<Option<String>> {
     let Some(mut run) = run(tx, session)? else {
         return Ok(None);
     };
-    // A step over its budget fails, marked or not.
-    if let Some(kill) = over_spent(tx, &run, trace)? {
+    // A step over its budget fails, marked or not. A turn that has not ended may have no tokens
+    // to price yet: with no result sent, a later turn end prices it.
+    let unpriced = matches!(why, Stopped::Idle | Stopped::Interrupted) && !sent(tx, run.id)?;
+    if !unpriced && let Some(kill) = over_spent(tx, &run, trace)? {
         return Ok(kill);
     }
     // No process carries on, so a next step of the same agent gets a new run.
@@ -2828,8 +2848,111 @@ pub(crate) fn preempt(
             return Ok(kill);
         }
     }
-    stop_for(tx, trace, run.id, head)?;
+    match why {
+        Stopped::For(head) => stop_for(tx, trace, run.id, head)?,
+        Stopped::Held | Stopped::Idle | Stopped::Interrupted => stop_held(tx, &run)?,
+    }
     Ok(Some(run.tmux))
+}
+
+/// Ends `run` as `held`, if it is not ended yet, and holds its task with the stop prompt ahead of
+/// its queued prompts.
+fn stop_held(tx: &Transaction, run: &Run) -> rusqlite::Result<()> {
+    let text = crate::hold::prompt(tx, run)?;
+    crate::hold::forget_unprompted(tx, run.id)?;
+    crate::state::requeue_unready(tx, run.id)?;
+    tx.execute(
+        "UPDATE outbox SET state = 'uncertain' WHERE run = ?1 AND state = 'attempted'",
+        [run.id],
+    )?;
+    tx.execute(
+        &format!("UPDATE runs SET ended = coalesce(ended, {NOW}), ended_as = 'held' WHERE id = ?1"),
+        [run.id],
+    )?;
+    wake(tx, run.task, &text)?;
+    set(tx, run.task, "ready", None, None)?;
+    crate::hold::park(tx, run.task).map(drop)
+}
+
+/// Ends the idle live run of `session` for its task's hold, unless its mark no longer stops it.
+/// Returns the tmux session to kill.
+pub(crate) fn hold_idle(
+    db: &mut Connection,
+    trace: &Trace,
+    session: &str,
+) -> rusqlite::Result<Option<String>> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let Some(run) = run(&tx, session)? else {
+        return Ok(None);
+    };
+    if !crate::hold::stops(&tx, run.id, trace.factory)? {
+        return Ok(None);
+    }
+    trace::account(&tx, trace, run.id, None)?;
+    let kill = stop_marked(&tx, session, trace, Stopped::Idle)?;
+    tx.commit()?;
+    Ok(kill)
+}
+
+/// Holds `task` as `hold` does, and ends its live run at once rather than at its turn end. Refused
+/// for a run that `preempt::guarded` protects. Returns the reply and the tmux session to kill.
+fn hold_now(
+    tx: &Transaction,
+    task: i64,
+    hold: &priory_factory::factory::Hold,
+    trace: &Trace,
+) -> rusqlite::Result<(Result<String, String>, Option<String>)> {
+    let state = tx
+        .query_row("SELECT state FROM tasks WHERE id = ?1", [task], |row| {
+            row.get::<_, String>(0)
+        })
+        .optional()?;
+    let live: Option<(i64, String)> = tx
+        .query_row(
+            "SELECT id, session FROM runs WHERE task = ?1 AND ended IS NULL",
+            [task],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    if state.as_deref() == Some("running") {
+        let refused = match &live {
+            None => Some(format!("task {task} has no live run to interrupt")),
+            Some((run, _)) => crate::hold::guarded(tx, *run, trace.factory)?,
+        };
+        if let Some(why) = refused {
+            return Ok((
+                Err(format!("{why}: leave out --now to hold it after its turn")),
+                None,
+            ));
+        }
+    }
+    let marked = crate::hold::hold(tx, task, hold, trace.factory)?;
+    let Some((run, session)) =
+        live.filter(|_| marked.is_ok() && state.as_deref() == Some("running"))
+    else {
+        return Ok((marked, None));
+    };
+    // Ending the run would drop the result its gate grades: the verdict moves the task first.
+    if crate::gates::grading(tx, run)?.is_some() {
+        let until = if crate::gates::turn_over(tx, run)? {
+            "its process goes on until the gate's verdict"
+        } else {
+            "its turn still runs, and its process goes on until the turn's end and the gate's verdict"
+        };
+        return Ok((marked.map(|marked| format!("{marked}; {until}")), None));
+    }
+    trace::account(tx, trace, run, None)?;
+    let kill = stop_marked(tx, &session, trace, Stopped::Interrupted)?;
+    let (state, reason): (String, Option<String>) = tx.query_row(
+        "SELECT state, reason FROM tasks WHERE id = ?1",
+        [task],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let reply = match (state.as_str(), reason) {
+        ("held", Some(reason)) => format!("task {task} {reason}"),
+        _ => format!("task {task} is {state}"),
+    };
+    Ok((Ok(reply), kill))
 }
 
 /// Ends the run `run` as `preempted` for task `head`, if it is not ended yet, and makes its task
@@ -4352,22 +4475,25 @@ pub struct Act {
     /// The state revision a person's `hold`, `release` or `cancel` was made on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected: Option<i64>,
+    /// Whether `hold` ends a running task's turn at once.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub now: bool,
 }
 
 /// Applies a desk action. `resume` makes a blocked task `ready`, with a prompt that says why it
 /// stopped. `cancel` drops an active task and ends its live run. `revive` restarts a failed or
-/// dropped task as its next generation. `hold` and `release` hold a queued or ready task and let it
-/// go. Returns the reply and a tmux session to kill.
+/// dropped task as its next generation. `hold` and `release` hold a queued, ready or running task and let
+/// it go. Returns the reply and a tmux session to kill.
 pub(crate) fn act(
     db: &mut Connection,
     act: &Act,
-    factory: &priory_factory::factory::Factory,
+    trace: &Trace,
 ) -> rusqlite::Result<(Result<String, String>, Option<String>)> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     if let Err(stale) = crate::state::expect_revision(&tx, act.expected) {
         return Ok((Err(stale), None));
     }
-    let acted = act_in_tx(&tx, act, factory)?;
+    let acted = act_in_tx(&tx, act, trace)?;
     if acted.0.is_ok() {
         tx.commit()?;
     }
@@ -4378,8 +4504,12 @@ pub(crate) fn act(
 pub(crate) fn act_in_tx(
     tx: &Transaction,
     act: &Act,
-    factory: &priory_factory::factory::Factory,
+    trace: &Trace,
 ) -> rusqlite::Result<(Result<String, String>, Option<String>)> {
+    let factory = trace.factory;
+    if let ("hold", Some(hold), true) = (act.act.as_str(), &act.hold, act.now) {
+        return hold_now(tx, act.task, hold, trace);
+    }
     let held = match (act.act.as_str(), &act.hold) {
         ("hold", Some(hold)) => Some(crate::hold::hold(tx, act.task, hold, factory)?),
         ("release", _) => Some(crate::hold::release_task(tx, act.task)?),
@@ -4436,10 +4566,11 @@ pub(crate) fn act_in_tx(
             };
             // A fixed first line keeps a text starting with `/` from running as a slash command.
             let text = format!("{SAYS}{text}");
-            Ok((
-                say_or_hold(tx, act.task, &text, &state, &factory.workflows)?,
-                None,
-            ))
+            let said = match state.as_str() {
+                "done" => say_reopens(tx, trace, act.task, &text)?,
+                _ => say_or_hold(tx, act.task, &text, &state, &factory.workflows)?,
+            };
+            Ok((said, None))
         }
         "cancel" if ["done", "failed", "dropped"].contains(&state.as_str()) => {
             Ok((Err(format!("task {} is already {state}", act.task)), None))
@@ -4509,6 +4640,108 @@ pub(crate) fn say_or_hold(
         )));
     }
     say(tx, task, text, state, workflows)
+}
+
+/// Reopens the done `task` with `text` as its first prompt while a pull request of it is open, or
+/// says why not.
+fn say_reopens(
+    tx: &Transaction,
+    trace: &Trace,
+    task: i64,
+    text: &str,
+) -> rusqlite::Result<Result<String, String>> {
+    let resource = match open_pull_request(tx, task)? {
+        Ok(resource) => resource,
+        Err(why) => return Ok(Err(format!("task {task} is done and {why}"))),
+    };
+    let target = match reopens_at(tx, &trace.factory.workflows, task, &resource)? {
+        Ok(target) => target,
+        Err(why) => return Ok(Err(format!("task {task} is done and {why}"))),
+    };
+    let (workflow, at, generation): (String, String, i64) = tx.query_row(
+        "SELECT workflow, step, generation FROM tasks WHERE id = ?1",
+        [task],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    let generation = reenter(tx, trace, task, &workflow, &at, generation, &resource)?;
+    let prompt = format!(
+        "{text}\nThis reopened your done task as generation {generation}: {resource} is still open. Check the worktree, then continue."
+    );
+    wake_on(tx, task, &prompt, None)?;
+    trace::reopened(tx, trace, task, &resource, Some(&resource))?;
+    Ok(Ok(format!(
+        "task {task} reopened at {target}, generation {generation}"
+    )))
+}
+
+/// The step the done `task` reopens at for `resource`, or why it cannot: an active task holds its
+/// key or a resource of it, or no agent runs that step.
+fn reopens_at(
+    tx: &Transaction,
+    workflows: &Workflows,
+    task: i64,
+    resource: &str,
+) -> rusqlite::Result<Result<String, String>> {
+    let (key, workflow, at): (String, String, String) = tx.query_row(
+        "SELECT key, workflow, step FROM tasks WHERE id = ?1",
+        [task],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    if let Some(rival) = rival(tx, task, &key)? {
+        return Ok(Err(rival));
+    }
+    let target = reentry(tx, workflows, task, &workflow, &at, resource)?;
+    if step(workflows, &workflow, &target).is_none_or(|step| step.decides != Decider::Model) {
+        return Ok(Err(format!(
+            "would reopen at step {target}, which no agent runs"
+        )));
+    }
+    Ok(Ok(target))
+}
+
+/// The lowest open pull request of `task`, or why it has none: it owns none, or they merged or
+/// closed.
+fn open_pull_request(tx: &Transaction, task: i64) -> rusqlite::Result<Result<String, String>> {
+    let stack = crate::stack::of(tx, task)?;
+    let pulls = match stack.is_empty() {
+        true => pull_request(tx, task)?
+            .map(|resource| (resource, "open".to_owned()))
+            .into_iter()
+            .collect(),
+        false => stack
+            .into_iter()
+            .map(|pull| (pull.resource, pull.state))
+            .collect::<Vec<_>>(),
+    };
+    let mut why = "owns no pull request".to_owned();
+    for (resource, mut state) in pulls {
+        if state == "open" {
+            state = last_read(tx, &resource)?;
+        }
+        if state == "open" {
+            return Ok(Ok(resource));
+        }
+        why = format!("its pull request {resource} is {state}");
+    }
+    Ok(Err(why))
+}
+
+/// Whether the newest event that says so read the pull request `resource` `open`, `closed` or
+/// `merged`. A merge stands whatever came after it; `open` when none says.
+fn last_read(tx: &Transaction, resource: &str) -> rusqlite::Result<String> {
+    tx.query_row(
+        "SELECT state FROM (
+           SELECT seq, CASE WHEN type = ?2 AND json_extract(data, '$.merged') = 1 THEN 'merged'
+             WHEN type != ?2 AND json_extract(data, '$.open') = 1 THEN 'open' ELSE 'closed' END AS state
+           FROM inbox
+           WHERE 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1
+           AND (type = ?2 OR json_extract(data, '$.open') IS NOT NULL))
+         ORDER BY state = 'merged' DESC, seq DESC LIMIT 1",
+        params![resource, CLOSED],
+        |row| row.get(0),
+    )
+    .optional()
+    .map(|state| state.unwrap_or_else(|| "open".to_owned()))
 }
 
 /// Queues `text` as the next prompt of the agent at the task's model step, as an answer
@@ -4703,30 +4936,8 @@ fn revive(
     let Some(entered) = step(workflows, &workflow, target) else {
         return Ok(Err(format!("step {target} is not in workflow {workflow}")));
     };
-    let active = tx
-        .query_row(
-            "SELECT id FROM tasks WHERE key = ?1 AND state NOT IN ('done', 'failed', 'dropped')",
-            [&key],
-            |row| row.get::<_, i64>(0),
-        )
-        .optional()?;
-    if let Some(active) = active {
-        return Ok(Err(format!("task {active} is already active on key {key}")));
-    }
-    let shared = tx
-        .query_row(
-            "SELECT owned.resource, tasks.id FROM owned JOIN owned AS mine ON mine.resource = owned.resource
-             JOIN tasks ON tasks.id = owned.task
-             WHERE mine.task = ?1 AND owned.task != ?1 AND tasks.state NOT IN ('done', 'failed', 'dropped')
-             ORDER BY tasks.id LIMIT 1",
-            [act.task],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
-        )
-        .optional()?;
-    if let Some((resource, active)) = shared {
-        return Ok(Err(format!(
-            "task {active} is already active on {resource}"
-        )));
+    if let Some(rival) = rival(tx, act.task, &key)? {
+        return Ok(Err(rival));
     }
     let generation = generation + 1;
     regenerate(tx, act.task, generation)?;
@@ -4746,6 +4957,37 @@ fn revive(
         "task {} is {now} at {target}, generation {generation}",
         act.task
     )))
+}
+
+/// The active task that holds the `key` or a resource of the ended `task`, as why it cannot restart.
+fn rival(tx: &Transaction, task: i64, key: &str) -> rusqlite::Result<Option<String>> {
+    let active = tx
+        .query_row(
+            "SELECT id FROM tasks WHERE key = ?1 AND state NOT IN ('done', 'failed', 'dropped')",
+            [key],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    if let Some(active) = active {
+        return Ok(Some(format!(
+            "task {active} is already active on key {key}"
+        )));
+    }
+    tx.query_row(
+        "SELECT owned.resource, tasks.id FROM owned JOIN owned AS mine ON mine.resource = owned.resource
+         JOIN tasks ON tasks.id = owned.task
+         WHERE mine.task = ?1 AND owned.task != ?1 AND tasks.state NOT IN ('done', 'failed', 'dropped')
+         ORDER BY tasks.id LIMIT 1",
+        [task],
+        |row| {
+            Ok(format!(
+                "task {} is already active on {}",
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(0)?
+            ))
+        },
+    )
+    .optional()
 }
 
 /// Makes `generation` the task's, withdrawing the open asks, waits and queued prompts of the
@@ -4899,6 +5141,22 @@ fn reenter(
     resource: &str,
 ) -> rusqlite::Result<i64> {
     let workflows = &trace.factory.workflows;
+    let target = reentry(tx, workflows, task, workflow, at, resource)?;
+    let generation = generation + 1;
+    regenerate(tx, task, generation)?;
+    enter(tx, task, workflow, &target, None, "", trace.factory)?;
+    Ok(generation)
+}
+
+/// The step a done task reopens at.
+fn reentry(
+    tx: &Transaction,
+    workflows: &Workflows,
+    task: i64,
+    workflow: &str,
+    at: &str,
+    resource: &str,
+) -> rusqlite::Result<String> {
     let opened: Option<String> = tx
         .query_row(
             "SELECT results.step FROM actions JOIN results ON results.run = actions.result
@@ -4911,11 +5169,7 @@ fn reenter(
     let named = workflows
         .get(workflow)
         .and_then(|flow| flow.value.reopen.clone());
-    let target = named.or(opened).unwrap_or_else(|| at.to_owned());
-    let generation = generation + 1;
-    regenerate(tx, task, generation)?;
-    enter(tx, task, workflow, &target, None, "", trace.factory)?;
-    Ok(generation)
+    Ok(named.or(opened).unwrap_or_else(|| at.to_owned()))
 }
 
 /// Ends the live run of `session`, whose tmux session was gone when the daemon started, as `lost`.
@@ -4933,12 +5187,7 @@ pub(crate) fn lost(
     };
     trace::account(&tx, trace, run.id, None)?;
     end(&tx, run.id, "lost")?;
-    // A run that never reached SessionStart never took the prompt it was launched with.
-    tx.execute(
-        "UPDATE outbox SET state = 'queued', run = NULL, attempted = NULL
-         WHERE run = ?1 AND state IN ('attempted', 'uncertain') AND (SELECT NOT ready FROM runs WHERE id = ?1)",
-        [run.id],
-    )?;
+    crate::state::requeue_unready(&tx, run.id)?;
     let again = tx
         .query_row(
             "SELECT ended_as = 'lost' FROM runs WHERE task = ?1 AND id < ?2 ORDER BY id DESC LIMIT 1",

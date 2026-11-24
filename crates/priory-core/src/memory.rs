@@ -26,19 +26,15 @@ pub enum Gate {
     /// Hands a held grant to the command's process `pid`, so it holds while the command runs even
     /// when `acquire` dies.
     Run { grant: i64, pid: u32 },
-    /// Ends a grant. A `lapsed` waiting grant leaves its request time to a retry of its command.
-    Release {
-        grant: i64,
-        #[serde(default)]
-        lapsed: bool,
-    },
+    /// Ends a grant. A waiting grant leaves its request time to a retry of its command.
+    Release { grant: i64 },
 }
 
 /// What comes after the id in the reply to a poll whose wait passed the limit, before the reason.
 pub const GAVE_UP: &str = " gave up: ";
 
 /// Applies `gate` and replies with the grant's id and state: `<id> held` or `<id> waiting`, or
-/// `GAVE_UP` once a poll that still waits has waited `give_up_after`.
+/// `GAVE_UP` once a poll that still waits has waited `give_up_after`, which ends the grant.
 pub(crate) fn gate(
     db: &mut Connection,
     gate: &Gate,
@@ -48,16 +44,8 @@ pub(crate) fn gate(
     room: impl FnOnce() -> Result<Room, String>,
 ) -> rusqlite::Result<Result<String, String>> {
     match gate {
-        Gate::Release { grant, lapsed } => {
-            if *lapsed {
-                db.execute(
-                    "INSERT INTO lapses (task, command, created)
-                     SELECT task, command, created FROM grants
-                     WHERE id = ?1 AND state = 'waiting' AND task IS NOT NULL",
-                    [grant],
-                )?;
-            }
-            db.execute("DELETE FROM grants WHERE id = ?1", [grant])?;
+        Gate::Release { grant } => {
+            end(db, *grant)?;
             Ok(Ok(format!("{grant} released")))
         }
         Gate::Run { grant, pid } => {
@@ -73,13 +61,12 @@ pub(crate) fn gate(
         Gate::Poll { grant, waited } => {
             let reply = reply(db, *grant, factory, share, room())?;
             match (waited, give_up_after, &reply) {
-                (Some(waited), Some(limit), Ok(state))
-                    if *waited >= limit.as_secs() && !state.ends_with(" held") =>
-                {
-                    Ok(Ok(format!(
-                        "{grant}{GAVE_UP}{}",
-                        gave_up(db, *grant, limit)?
-                    )))
+                (_, _, Ok(state)) if state.ends_with(" held") => Ok(reply),
+                (Some(waited), Some(limit), _) if *waited >= limit.as_secs() => {
+                    let why = gave_up(db, *grant, limit)?;
+                    // Ended before the reply, so no other poll can grant it after its command left.
+                    end(db, *grant)?;
+                    Ok(Ok(format!("{grant}{GAVE_UP}{why}")))
                 }
                 _ => Ok(reply),
             }
@@ -93,11 +80,20 @@ pub(crate) fn gate(
             let Some(started) = started(*pid) else {
                 return Ok(Err(format!("process {pid} is not running")));
             };
-            // An `acquire` that lost the reply asks again, and keeps its grant.
+            let task: Option<i64> = db
+                .query_row(
+                    "SELECT task FROM runs WHERE session = ?1 AND ended IS NULL",
+                    [session],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            // An `acquire` that lost the reply asks again, and keeps its grant. A pid alone does not
+            // name it: a nested `acquire` takes its parent's pid, and a jail numbers its own.
             let asked: Option<i64> = db
                 .query_row(
-                    "SELECT id FROM grants WHERE pid = ?1 AND started = ?2",
-                    params![pid, started],
+                    "SELECT id FROM grants WHERE pid = ?1 AND started = ?2 AND bytes = ?3
+                       AND command = ?4 AND task IS ?5",
+                    params![pid, started, *bytes as i64, command, task],
                     |row| row.get(0),
                 )
                 .optional()?;
@@ -115,52 +111,58 @@ pub(crate) fn gate(
                     room::ceiling(&room, share) / GB
                 )));
             }
-            db.execute(
+            // A killed waiter that no tick reclaimed yet must leave its lapse before this one takes it.
+            reclaim(db)?;
+            let tx = db.transaction()?;
+            tx.execute(
                 "DELETE FROM lapses WHERE lapsed < strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?1)",
                 [LAPSE],
             )?;
-            let task: Option<i64> = db
-                .query_row(
-                    "SELECT task FROM runs WHERE session = ?1 AND ended IS NULL",
-                    [session],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            db.execute(
+            tx.execute(
                 "INSERT INTO grants (bytes, pid, started, task, command, created)
                  VALUES (?1, ?2, ?3, ?4, ?5, coalesce(
-                   (SELECT min(created) FROM lapses WHERE task = ?4 AND command = ?5),
+                   (SELECT min(created) FROM lapses WHERE task = ?4 AND command = ?5 AND bytes = ?1),
                    strftime('%Y-%m-%dT%H:%M:%SZ', 'now')))",
                 params![*bytes as i64, pid, started, task, command],
             )?;
-            let grant = db.last_insert_rowid();
-            db.execute(
-                "DELETE FROM lapses WHERE task = ?1 AND command = ?2",
-                params![task, command],
+            let grant = tx.last_insert_rowid();
+            tx.execute(
+                "DELETE FROM lapses WHERE task = ?1 AND command = ?2 AND bytes = ?3",
+                params![task, command, *bytes as i64],
             )?;
+            tx.commit()?;
             reply(db, grant, factory, share, Ok(room))
         }
     }
 }
 
 /// Why the waiting `grant` gives up at `limit`, with the held and earlier waiting grants before it.
+/// A grant that is gone already gave up, and its command lost that reply.
 fn gave_up(db: &Connection, grant: i64, limit: Duration) -> rusqlite::Result<String> {
-    let (bytes, ahead): (i64, i64) = db.query_row(
-        "SELECT bytes, (SELECT count(*) FROM grants AS other WHERE other.id != grants.id
+    let found: Option<(i64, i64)> = db
+        .query_row(
+            "SELECT bytes, (SELECT count(*) FROM grants AS other WHERE other.id != grants.id
            AND (other.state = 'held'
              OR (other.created, other.id) < (grants.created, grants.id)))
          FROM grants WHERE id = ?1",
-        [grant],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
+            [grant],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let waited = format!(
+        "waited {:#}",
+        jiff::SignedDuration::from_secs(limit.as_secs() as i64)
+    );
+    let Some((bytes, ahead)) = found else {
+        return Ok(waited);
+    };
     let ahead = match ahead {
         0 => "with no grant ahead".to_owned(),
         1 => "behind 1 grant".to_owned(),
         count => format!("behind {count} grants"),
     };
     Ok(format!(
-        "waited {:#} for {} GB {ahead}",
-        jiff::SignedDuration::from_secs(limit.as_secs() as i64),
+        "{waited} for {} GB {ahead}",
         (bytes as f64 / GB * 10.0).round() / 10.0,
     ))
 }
@@ -227,6 +229,19 @@ fn reply(
 
 const GB: f64 = (1u64 << 30) as f64;
 
+/// Ends a grant. A task's grant that still waits leaves its request time to a retry of its command.
+fn end(db: &Connection, grant: i64) -> rusqlite::Result<()> {
+    let tx = db.unchecked_transaction()?;
+    tx.execute(
+        "INSERT INTO lapses (task, command, bytes, created)
+         SELECT task, command, bytes, created FROM grants
+         WHERE id = ?1 AND state = 'waiting' AND task IS NOT NULL",
+        [grant],
+    )?;
+    tx.execute("DELETE FROM grants WHERE id = ?1", [grant])?;
+    tx.commit()
+}
+
 /// Removes the grants whose holder process is gone, so a killed holder frees its memory.
 pub(crate) fn reclaim(db: &Connection) -> rusqlite::Result<()> {
     let mut statement = db.prepare("SELECT id, pid, started FROM grants")?;
@@ -244,7 +259,7 @@ pub(crate) fn reclaim(db: &Connection) -> rusqlite::Result<()> {
         .into_iter()
         .filter(|(_, pid, at)| started(*pid) != Some(*at))
     {
-        db.execute("DELETE FROM grants WHERE id = ?1", [id])?;
+        end(db, id)?;
     }
     Ok(())
 }
@@ -268,6 +283,10 @@ const PATIENCE: &str = "-300 seconds";
 /// towards it.
 const STARVING: &str = "-900 seconds";
 
+/// How long after its grant a held grant counts as one that will end. A head waits for no older one,
+/// such as a hung test or a dev server's lease.
+const RELEASE: &str = "-1800 seconds";
+
 /// How long a timed-out grant's request time waits for a retry of its command.
 const LAPSE: &str = "-3600 seconds";
 
@@ -275,8 +294,8 @@ const LAPSE: &str = "-3600 seconds";
 /// the time `now`. A grant does not count its own run's promise, which would make it wait for that
 /// run to end. The first that does not fit holds back the rest, so a large build is never starved.
 /// Once it has waited past `PATIENCE`, later grants that fit go first, and it keeps its place ahead
-/// of them for the next room. Past `STARVING`, it holds them back again while any grant is held:
-/// only a release can make room for it, and a grant nothing held can free never blocks the queue.
+/// of them for the next room. Past `STARVING`, it holds them back again while the
+/// held grants within `RELEASE` would make it fit by ending.
 fn admit(
     db: &Connection,
     factory: &Factory,
@@ -300,15 +319,12 @@ fn admit(
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut holding: bool = db.query_row(
-        "SELECT EXISTS (SELECT 1 FROM grants WHERE state = 'held')",
-        [],
-        |row| row.get(0),
-    )?;
     for (id, bytes, task, overdue, starving) in waiting {
         let promised = state::promised(db, factory, task)?.memory;
         if !room::fits(room, share, promised, bytes) {
-            if !overdue || (starving && holding) {
+            if !overdue
+                || (starving && room::fits(room, share, promised - releasable(db, now)?, bytes))
+            {
                 break;
             }
             continue;
@@ -317,9 +333,19 @@ fn admit(
             "UPDATE grants SET state = 'held', granted = ?2 WHERE id = ?1",
             params![id, now],
         )?;
-        holding = true;
     }
     Ok(())
+}
+
+/// The bytes of the held grants that may still end soon, at the time `now`.
+fn releasable(db: &Connection, now: &str) -> rusqlite::Result<u64> {
+    db.query_row(
+        "SELECT coalesce(sum(bytes), 0) FROM grants
+         WHERE state = 'held' AND granted > strftime('%Y-%m-%dT%H:%M:%SZ', ?1, ?2)",
+        params![now, RELEASE],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|bytes| bytes as u64)
 }
 
 #[cfg(test)]
@@ -388,10 +414,15 @@ mod tests {
 
     /// A held grant of `gb` GB, which leaves the room 19 - `gb` GB for the rest.
     fn hold(db: &Connection, gb: u64) {
+        hold_since(db, gb, 0);
+    }
+
+    /// `hold`, granted `ago` seconds before `NOW`.
+    fn hold_since(db: &Connection, gb: u64, ago: u64) {
         db.execute(
-            "INSERT INTO grants (bytes, pid, started, command, state)
-             VALUES (?1, 1, 1, 'build', 'held')",
-            [(gb * GB) as i64],
+            "INSERT INTO grants (bytes, pid, started, command, state, granted)
+             VALUES (?1, 1, 1, 'build', 'held', strftime('%Y-%m-%dT%H:%M:%SZ', ?2, ?3))",
+            params![(gb * GB) as i64, NOW, format!("-{ago} seconds")],
         )
         .unwrap();
     }
@@ -444,7 +475,7 @@ mod tests {
     }
 
     #[test]
-    fn past_the_second_bound_a_head_that_cannot_fit_holds_back_smaller_grants_while_grants_are_held()
+    fn past_the_second_bound_a_head_that_cannot_fit_holds_back_smaller_grants_while_releases_would_fit_it()
      {
         let db = state::memory();
         hold(&db, 8);
@@ -479,6 +510,47 @@ mod tests {
         admit_now(&db);
 
         assert_eq!(states(&db), [wait(17), held(4), held(2)]);
+    }
+
+    #[test]
+    fn a_starving_head_that_releases_cannot_fit_lets_a_smaller_grant_through() {
+        let db = state::memory();
+        hold(&db, 2);
+        // 17 GB plus the 3 GB kept is above 19 GB even once the 2 GB holder ends.
+        waiting(&db, 17, 16 * 60);
+        waiting(&db, 4, 10);
+
+        admit_now(&db);
+
+        assert_eq!(states(&db), [held(2), wait(17), held(4)]);
+    }
+
+    #[test]
+    fn a_starving_head_stops_holding_back_for_a_holder_that_never_ends() {
+        for (ago, small) in [(29 * 60, wait(4)), (30 * 60, held(4))] {
+            let db = state::memory();
+            hold_since(&db, 8, ago);
+            // A retry keeps an old request time, which renews nothing.
+            waiting(&db, 10, 3 * 3600);
+            waiting(&db, 4, 10);
+
+            admit_now(&db);
+
+            assert_eq!(states(&db), [held(8), wait(10), small]);
+        }
+    }
+
+    #[test]
+    fn a_holder_that_never_ends_leaves_a_head_the_release_of_a_newer_grant() {
+        let db = state::memory();
+        hold_since(&db, 4, 2 * 3600);
+        hold(&db, 6);
+        waiting(&db, 10, 16 * 60);
+        waiting(&db, 2, 10);
+
+        admit_now(&db);
+
+        assert_eq!(states(&db), [held(4), held(6), wait(10), wait(2)]);
     }
 
     /// Sends `message` to the gate with the test machine's room.
@@ -565,11 +637,57 @@ mod tests {
         let (mut db, grant) = behind_one(8);
         parents(&db, 4, "waiting", "2026-11-23T11:00:00Z");
         parents(&db, 4, "waiting", "2099-01-01T00:00:00Z");
+        let asked = created(&db, &format!("{grant} waiting"));
 
         assert_eq!(poll(&mut db, grant, Some(599)), format!("{grant} waiting"));
-        let gave_up = format!("{grant} gave up: waited 10m for 8 GB behind 2 grants");
-        assert_eq!(poll(&mut db, grant, Some(600)), gave_up);
-        assert_eq!(poll(&mut db, grant, Some(601)), gave_up);
+        assert_eq!(
+            poll(&mut db, grant, Some(600)),
+            format!("{grant} gave up: waited 10m for 8 GB behind 2 grants")
+        );
+        assert_eq!(
+            poll(&mut db, grant, Some(601)),
+            format!("{grant} gave up: waited 10m")
+        );
+        let lapses: Vec<(i64, i64, String)> = db
+            .prepare("SELECT task, bytes, created FROM lapses")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(lapses, [(1, (8 * GB) as i64, asked)]);
+    }
+
+    #[test]
+    fn room_that_frees_after_a_give_up_goes_to_the_next_grant_and_the_retry_keeps_its_request_time()
+    {
+        let (mut db, grant) = behind_one(8);
+        db.execute(
+            "UPDATE grants SET created = '2026-11-23T10:00:00Z' WHERE id = ?1",
+            [grant],
+        )
+        .unwrap();
+        poll(&mut db, grant, Some(600));
+        db.execute("DELETE FROM grants WHERE state = 'held'", [])
+            .unwrap();
+        let next = parents(&db, 4, "waiting", "2026-11-23T11:00:00Z");
+
+        assert_eq!(poll(&mut db, next, Some(1)), format!("{next} held"));
+        assert_eq!(states(&db), [held(4)]);
+        let retry = send(&mut db, acquire(8, "cargo build"));
+        assert_eq!(created(&db, &retry), "2026-11-23T10:00:00Z");
+    }
+
+    #[test]
+    fn a_held_reply_lost_at_the_limit_is_held_again_at_the_next_poll() {
+        let (mut db, grant) = behind_one(8);
+        db.execute("DELETE FROM grants WHERE id != ?1", [grant])
+            .unwrap();
+        poll(&mut db, grant, Some(600));
+        parents(&db, 4, "waiting", "2026-11-23T11:00:00Z");
+
+        assert_eq!(poll(&mut db, grant, Some(640)), format!("{grant} held"));
+        assert_eq!(states(&db)[0], held(8));
     }
 
     #[test]
@@ -638,22 +756,10 @@ mod tests {
             [id],
         )
         .unwrap();
-        send(
-            &mut db,
-            Gate::Release {
-                grant: id,
-                lapsed: true,
-            },
-        );
+        send(&mut db, Gate::Release { grant: id });
         let other = send(&mut db, acquire(4, "cargo test"));
         assert_ne!(created(&db, &other), "2026-11-23T10:00:00Z");
-        send(
-            &mut db,
-            Gate::Release {
-                grant: id + 1,
-                lapsed: false,
-            },
-        );
+        send(&mut db, Gate::Release { grant: id + 1 });
         parents(&db, 4, "waiting", "2026-11-23T11:00:00Z");
         // 19 - 12 GB leaves room for one 4 GB grant beside the 3 GB the share keeps.
         db.execute(
@@ -667,5 +773,129 @@ mod tests {
         assert_eq!(retry, format!("{} held", id + 3));
         assert_eq!(created(&db, &retry), "2026-11-23T10:00:00Z");
         assert_eq!(states(&db), [held(12), wait(4), held(4)]);
+    }
+
+    fn id(reply: &str) -> i64 {
+        reply.split_once(' ').unwrap().0.parse().unwrap()
+    }
+
+    #[test]
+    fn a_nested_acquire_in_the_same_process_gets_its_own_grant() {
+        let mut db = one_run();
+
+        let outer = send(
+            &mut db,
+            acquire(4, "bash -c 'priory memory acquire -- make'"),
+        );
+        let command = send(&mut db, acquire(4, "make"));
+        let bytes = send(&mut db, acquire(2, "make"));
+
+        assert_eq!(outer, "1 held");
+        assert_eq!(command, "2 held");
+        assert_eq!(bytes, "3 held");
+    }
+
+    #[test]
+    fn two_jailed_runs_with_one_pid_get_a_grant_each() {
+        let mut db = one_run();
+        db.execute_batch(
+            "INSERT INTO tasks
+               (key, workflow, step, state, band, lane, lane_derived, trigger, source, entered)
+             SELECT 'cli:2', workflow, step, state, band, lane, lane_derived, trigger, source, entered
+             FROM tasks;
+             INSERT INTO runs (task, step, agent, tmux, session)
+             VALUES (2, 'implement', 'implementer', 'priory-2', 's2');",
+        )
+        .unwrap();
+        let mut other = acquire(4, "make");
+        if let Gate::Acquire { session, .. } = &mut other {
+            *session = Some("s2".to_owned());
+        }
+
+        assert_eq!(send(&mut db, acquire(4, "make")), "1 held");
+        assert_eq!(send(&mut db, other), "2 held");
+    }
+
+    /// A waiting grant of task 1 requested at 10:00, beside a 16 GB grant that holds the room.
+    fn old_waiter(db: &mut Connection) -> i64 {
+        parents(db, 16, "held", "2026-11-23T12:00:00Z");
+        let grant = id(&send(db, acquire(4, "make")));
+        db.execute(
+            "UPDATE grants SET created = '2026-11-23T10:00:00Z' WHERE id = ?1",
+            [grant],
+        )
+        .unwrap();
+        grant
+    }
+
+    #[test]
+    fn a_waiter_reclaimed_before_its_release_leaves_its_request_time_once() {
+        let mut db = one_run();
+        let grant = old_waiter(&mut db);
+        db.execute("UPDATE grants SET started = 0 WHERE id = ?1", [grant])
+            .unwrap();
+
+        reclaim(&db).unwrap();
+        send(&mut db, Gate::Release { grant });
+        let retry = send(&mut db, acquire(4, "make"));
+
+        assert_eq!(created(&db, &retry), "2026-11-23T10:00:00Z");
+        db.execute("DELETE FROM grants WHERE id = ?1", [id(&retry)])
+            .unwrap();
+        let later = send(&mut db, acquire(4, "make"));
+        assert_ne!(created(&db, &later), "2026-11-23T10:00:00Z");
+    }
+
+    #[test]
+    fn a_retry_that_arrives_before_any_reclaim_keeps_a_dead_waiters_request_time() {
+        let mut db = one_run();
+        let grant = old_waiter(&mut db);
+        db.execute("UPDATE grants SET started = 0 WHERE id = ?1", [grant])
+            .unwrap();
+
+        let retry = send(&mut db, acquire(4, "make"));
+
+        assert_eq!(created(&db, &retry), "2026-11-23T10:00:00Z");
+    }
+
+    #[test]
+    fn a_retry_that_asks_for_other_bytes_queues_at_the_back() {
+        let mut db = one_run();
+        let grant = old_waiter(&mut db);
+        send(&mut db, Gate::Release { grant });
+
+        let other = send(&mut db, acquire(5, "make"));
+
+        assert_ne!(created(&db, &other), "2026-11-23T10:00:00Z");
+    }
+
+    fn lapses(db: &Connection) -> i64 {
+        db.query_row("SELECT count(*) FROM lapses", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn a_grant_and_its_lapse_change_together_or_not_at_all() {
+        let mut db = one_run();
+        let grant = old_waiter(&mut db);
+        let refused = |db: &mut Connection, change: &str, message: Gate| {
+            db.execute_batch(&format!(
+                "CREATE TEMP TRIGGER refuse BEFORE {change}
+                 BEGIN SELECT raise(ABORT, 'refused'); END;"
+            ))
+            .unwrap();
+            gate(db, &message, &Factory::default(), &share(), None, || {
+                Ok(room())
+            })
+            .unwrap_err();
+            db.execute_batch("DROP TRIGGER refuse").unwrap();
+        };
+
+        refused(&mut db, "DELETE ON main.grants", Gate::Release { grant });
+        assert_eq!((states(&db).len(), lapses(&db)), (2, 0));
+
+        send(&mut db, Gate::Release { grant });
+        refused(&mut db, "DELETE ON main.lapses", acquire(4, "make"));
+        assert_eq!((states(&db).len(), lapses(&db)), (1, 1));
     }
 }

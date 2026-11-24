@@ -6,7 +6,7 @@ The daemon admits a run only when the machine has room for it, measured live:
 | ------- | --------- | ----------- |
 | Memory | `MemAvailable` and `MemTotal` in `/proc/meminfo` | free memory, minus the memory live runs promised and do not use yet and the memory grants hold, minus the agent's `memory`, stays at or above `(1 - memory share) × MemTotal` |
 | Disk | `df -Pk` on `PRIORY_HOME`, which reads `statvfs` | free disk, minus the disk promised to live runs, minus the agent's `disk`, stays above 10 % of the disk, or above 20 GB on a disk over 200 GB |
-| CPU | the 1-minute load in `/proc/loadavg`, and the CPUs this process may use | the load stays below `cpu share × CPUs` |
+| CPU | the 1-minute load in `/proc/loadavg`, and the machine's online CPUs in `/proc/stat` | the load stays below `cpu share × CPUs` |
 
 Shares come from `agents` in `runners/<host>.toml`, where `<host>` is the name in
 `/proc/sys/kernel/hostname`. Each part defaults to 90 % when the file or field is missing. By
@@ -105,6 +105,7 @@ The daemon never marks these runs, and withdraws a mark it finds on one at the t
 | Has an open keyboard grant | A person is typing in it |
 | Has a tmux client attached that can type | A person may type. A read-only client does not count. A `tmux list-clients` that fails counts as a client |
 | Runs in a shared session | It serves several tasks |
+| Holds after its turn | A [hold](runs.md#holding-a-running-task) ends it already |
 | Belongs to the sweeper | It frees the room the queue waits for |
 | Belongs to a task in the head's band or a higher one | A band never stops itself. `priory move --band` protects a task |
 | Belongs to a task already stopped since its last `result`, `ask` or `wait` | Each resume gets one whole turn |

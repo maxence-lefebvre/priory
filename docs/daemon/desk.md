@@ -14,13 +14,13 @@ reading each task.
 | `failed` | the task | its reason, then `revive: priory revive <task>` | the task last changed state |
 | `prompt` | the outbox prompt | its text, for an `uncertain` prompt | it was attempted |
 | `command` | the answer's action | `Priory stopped while answer <answer> to ask <ask> ran <argv> in <dir>: check the target`, for an `uncertain` command (see [tools.md](../reference/tools.md#commands-an-answer-runs)) | it ended |
-| `held` | the hold | the task's reason: why it is held, and until what | it was held |
+| `held` | the hold | the task's reason: why it is held, and until what. For a running task marked to be held, `holds after this turn: <reason>`, and for one that sleeps or is blocked since, `holds once it is ready: <reason>` (see [runs.md](runs.md#holding-a-running-task)) | it was held, or marked |
 | `batch` | the batch | its title and counts, then which entries start next: `Invoice exports: 1 merged, 3 started, 2 planned. Next: ENG-41 and ENG-42 start when ENG-40 merges.`, each task named by its key without the source. One row per going batch, in place of the `held` rows of its entries (see Batches) | the go |
 | `memory` | the memory grant | `waits for <N> GB: <command>`, then `; grant <id> of task <task> holds <N> GB for <time>` for the longest held grant. A grant held past an hour while others wait has its own row: `holds <N> GB for <time> while <n> grants wait: <command>` (see [memory-gate.md](memory-gate.md)) | it was requested, or granted for the held row |
 | `memories` | `memories` | `` <n> memory candidates wait for a person: <name>, <name>; see them with `priory memories` ``. One row while any candidate waits (see Memory candidates) | the oldest candidate was written |
 | `pattern` | the failure pattern's id | `` <workflow>/<step>: <n> tasks stopped for one reason: <text>; see it with `priory patterns show <id>` ``, for an open pattern of at least 2 tasks (see [patterns.md](patterns.md)) | its latest task stopped |
 | `queue` | the task's place in the queue | its band, then its reason when it has one | the task last changed state |
-| `sweep` | the script's run | its command, then `running`, or its status and output, for the open stall | it started |
+| `sweep` | the script's run | its command, then `running`, or its status and output: for the open stall, or for a scheduled run, with no task, while it runs or after it failed | it started |
 | `report` | the report's inbox sequence number | `<source>: <line>`, for an unread report | it was posted |
 | `todo` | the to-do | its text, then `, due <time>` when it has one (see To-dos). `priory desk` prints the time in UTC; the web and Herdr Desks show it in local time | it was added |
 | `retired` | the task | `its worktree was removed to free disk; it resurrects from <branch> when its wait fires` | it retired |
@@ -31,7 +31,7 @@ The lane column is the task's lane, or `-` for a `worktree` row.
 In `priory desk --json`, an `ask` item carries `routed_to`: the lead it is routed to, or null. The
 web Desk and the Herdr Desk show it as "with <lead>" on the ask's row and in the next thing.
 
-It lists only asks and prompts of active tasks, holds of held tasks and waiting or long-held memory grants. Then the `queue` rows in start order, then one `worktree` row per worktree the sweep keeps. `priory asks` prints every open ask. Both leave snoozed items out, unless you pass `--all` (see Snooze).
+It lists only asks and prompts of active tasks, holds of held tasks and of tasks marked to be held, and waiting or long-held memory grants. Then the `queue` rows in start order, then one `worktree` row per worktree the sweep keeps. `priory asks` prints every open ask. Both leave snoozed items out, unless you pass `--all` (see Snooze).
 
 ## Batches
 
@@ -237,6 +237,11 @@ remote is gone, remove <home>/worktrees/<owner>/<name> and <home>/repos/<owner>/
 daemon reads it from Priory home, not the state, so a client sees it at its next read. See
 [sweep.md](sweep.md#a-clone-that-fails-to-fetch).
 
+For 24 hours after the sweep restored the agents slice's limits, the banner ends with `another
+process set <slice> to <limits>; the sweep restored its limits at <time>`. While the daemon may not
+set them, it ends with `left the limits of <slice> alone: <why>` instead. The daemon reads both from
+Priory home too. See [agents-slice.md](agents-slice.md#restoring-the-limits).
+
 The banner is `intake` in `priory desk --json` and `/api/desk`. A source that starts failing, or
 recovers, moves the state's revision, so a client that waits on `/api/events` redraws the banner at
 once. A repeated poll with the same outcome moves nothing. The stopped banner comes from time
@@ -292,7 +297,15 @@ prompts.
   debater reads it. It replies `task <id> is in a debate at step <step>: the step after the debate
   reads it`.
 
-Otherwise it replies `task <id> will hear it`. It refuses a `done`, `failed` or `dropped` task, a
+- A `done` task whose pull request is open reopens as its next generation, with TEXT as the first
+  prompt. Its step, session and branch are those of [feedback that reopens a done
+  task](routing.md#feedback-reopens-a-done-task). It replies `task <id> reopened at <step>,
+  generation <n>`. It is refused, with the reason, when the task owns no pull request, when that
+  pull request merged or closed, when another active task holds its key or a resource it owns, or
+  when no agent runs the step it would reopen at. A merge the intake has not published yet does not
+  refuse it. A pick or comment on a done task's report reopens nothing.
+
+Otherwise it replies `task <id> will hear it`. It refuses a `failed` or `dropped` task, a
 task at a human or code step with no open ask, and a task that has neither a run nor a queued
 prompt, such as a `queued` one, since its first run builds the step's prompt then.
 
