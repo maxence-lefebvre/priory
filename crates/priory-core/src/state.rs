@@ -4737,6 +4737,19 @@ pub(crate) fn unsubmitted(db: &Connection, outbox: i64) -> rusqlite::Result<bool
         .unwrap_or(false))
 }
 
+/// Whether a person holds the keyboard of the run the prompt `outbox` was pasted into.
+pub(crate) fn keyboard_held(db: &Connection, outbox: i64) -> rusqlite::Result<bool> {
+    db.query_row(
+        &format!(
+            "SELECT EXISTS (SELECT 1 FROM outbox JOIN runs ON runs.id = outbox.run
+               WHERE outbox.id = ?1 AND {})",
+            crate::preempt::KEYBOARD_HELD
+        ),
+        [outbox],
+        |row| row.get(0),
+    )
+}
+
 /// Marks the attempted prompt `outbox` `uncertain`: Enter was pressed twice and no
 /// `UserPromptSubmit` came, so its text may still sit in the agent's input.
 pub(crate) fn unconfirmed(db: &Connection, outbox: i64) -> rusqlite::Result<()> {
