@@ -2930,7 +2930,7 @@ function signIn() {
 function loading() {
   return state.failed
     ? html`${staleStrip()}<p class="empty">Could not load the desk: ${state.failed}. Check that <code>priory serve</code> or the daemon runs, then retry.</p>`
-    : "";
+    : html`<p class="empty" role="status">Loading the desk…</p>`;
 }
 
 const routeKey = () => location.pathname + location.search;
@@ -3380,5 +3380,7 @@ addEventListener("beforeinstallprompt", (event) => {
   render();
 });
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
+// The desk can take seconds: the kept listing or the loading line shows until it arrives.
+render();
 follow();
 refresh();

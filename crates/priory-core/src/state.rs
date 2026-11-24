@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 112;
+const VERSION: i64 = 113;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1976,9 +1976,33 @@ CREATE TABLE lapses (
 PRAGMA user_version = 111;
 ";
 
+// A scheduled sweep script runs outside any stall.
+const SCHEMA_112: &str = concat!(
+    "CREATE TABLE sweeps_112 (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  stall   INTEGER REFERENCES stalls (id),
+  script  TEXT NOT NULL,
+  started TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  ended   TEXT,
+  status  TEXT,
+  output  TEXT,
+  pid     INTEGER,
+  pid_started INTEGER
+);
+INSERT INTO sweeps_112 SELECT id, stall, script, started, ended, status, output, pid, pid_started
+  FROM sweeps;
+DROP TABLE sweeps;
+ALTER TABLE sweeps_112 RENAME TO sweeps;
+CREATE INDEX sweeps_by_script ON sweeps (script, started);
+",
+    bumps!("sweeps"),
+    "PRAGMA user_version = 112;
+"
+);
+
 // The plan an approval ask shows, as it was when the ask's revision was raised, and the latest run
 // each task had when a later generation of it began.
-const SCHEMA_112: &str = concat!(
+const SCHEMA_113: &str = concat!(
     "CREATE TABLE IF NOT EXISTS ask_plans (
   ask       INTEGER PRIMARY KEY,
   step      TEXT NOT NULL,
@@ -1995,7 +2019,7 @@ CREATE TABLE IF NOT EXISTS generations (
 CREATE INDEX IF NOT EXISTS generations_of_task ON generations (task);
 ",
     bumps!("ask_plans"),
-    "PRAGMA user_version = 112;
+    "PRAGMA user_version = 113;
 "
 );
 
@@ -2014,7 +2038,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
-    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112,
+    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112, SCHEMA_113,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
