@@ -23958,18 +23958,9 @@ fn a_runner_that_joins_late_reads_a_finished_task_without_running_it_again() {
     );
 
     b.start_with(exe, &[("PRIORY_NOW", T0)]);
-    logged(
-        &b,
-        "priory.task.claimed",
-        json!({ "key": "github:owner/repo#1", "runner": "b" }),
-    );
-    b.until("inbox", |rows| {
-        rows.iter().any(|row| row.contains(&"refused".to_owned()))
-    });
-    assert!(
-        b.own_tasks().is_empty(),
-        "b's late claim of the finished request loses"
-    );
+    until_alive(&b, "b");
+    assert!(b.own_tasks().is_empty());
+    assert_eq!(claimants(&b, "github:owner/repo#1"), ["a"]);
 }
 
 #[test]
@@ -24193,10 +24184,12 @@ fn a_copy_reopened_on_a_runner_whose_key_another_runner_owns_drops_with_the_owne
     b.start_with(exe, &[("PRIORY_NOW", T0)]);
     b.until_own_tasks(|rows| rows.len() == 1);
     a.start_with(exe, &[("PRIORY_NOW", T0)]);
-    a.until("inbox", |rows| {
-        rows.iter()
-            .any(|row| row[1] == "priory.task.claimed" && row[4] == "refused")
-    });
+    until_outcome(
+        &a,
+        "factory.task.requested",
+        "github:owner/repo#1",
+        "elsewhere",
+    );
     // The comment comes after the task was done, to the second.
     std::thread::sleep(Duration::from_millis(1100));
 
