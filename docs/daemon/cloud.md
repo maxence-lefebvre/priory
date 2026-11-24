@@ -28,9 +28,10 @@ When a task reaches a step whose agent runs in the cloud, the daemon:
 1. creates the task's worktree as for any run, on the task's own branch, `priory/<task>`;
 2. checks that the worktree is on that branch with no staged, unstaged or untracked file, since the
    session would not see it. Otherwise the task blocks with the files;
-   A trigger with `staged = true` starts no cloud run: the task blocks, since a start pushes. A task
-   stacked on another blocks while its branch holds commits of its parent's branch that are not on
-   `origin`, since the push would carry them. Push the parent's branch, then resume the task;
+   A trigger with `staged = true` starts no cloud run: the task blocks, since a start pushes. A
+   replay starts none either, and ends with `agent error`. A task stacked on another blocks while
+   its branch holds commits of its parent's branch that are not on `origin`, since the push would
+   carry them. The state of the parent's pull request does not matter. Push the parent's branch, then resume the task;
 3. records the run, with a harness session id of its own and the commit the branch is at;
 4. records Claude's trust of the folder below, when the factory sets `trust_worktrees`, since
    `claude --cloud` shows Claude's trust dialog in a folder it does not trust;
@@ -115,8 +116,9 @@ becomes the result's evidence, for the human step after it. A session that waits
 instead pushes nothing, and the deadline ends the step `failed` with the session's link.
 
 Feedback that comes before the start is in the prompt. The session sorts none of it into the classes
-a local run's result gives, so the human step after it is where a person reads what it did. Feedback that comes during the run does not
-hold up its push: the next model step's prompt has it, and an ask that opens next shows it.
+a local run's result gives. A person's own items are still recorded as `persons-call`. The rest
+has no class, so the human step after it is where a person reads what it did. Feedback that comes
+during the run does not hold up its push: the next model step's prompt has it, and an ask that opens next shows it.
 
 ## What still applies, and what a cloud run gives up
 

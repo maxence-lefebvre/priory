@@ -2,7 +2,7 @@
 //! runs in, and the commit its session pushes. Nothing here moves a commit it did not check.
 
 use crate::runtime::{
-    ClaudeCode, Harness, NESTED, changes, command_timeout, fed_within, git, head, is_ancestor,
+    ClaudeCode, Harness, NESTED, changes, command_timeout, descends, fed, fed_within, git, head,
     kill, one_line, run, shown, tmux, tmux_socket, tmux_socket_fits, write_private,
 };
 use std::fs;
@@ -75,11 +75,23 @@ pub fn clean_head(worktree: &Path, branch: &str) -> Result<String, String> {
     head(worktree, branch).ok_or_else(|| format!("branch {branch} is gone"))
 }
 
-/// Whether `head` holds a commit of the local branch `parent` that no branch of `origin` has, as
-/// Priory's clone last saw `origin`.
-pub fn holds_unpushed(worktree: &Path, head: &str, parent: &str) -> Result<bool, String> {
-    let parent = format!("refs/heads/{parent}");
-    let shared = run(git(worktree).args(["merge-base", head, &parent]))?;
+/// Whether `at` holds a commit of the local branch `parent` that no branch of `origin` has, as
+/// Priory's clone last saw `origin`. Once that branch is gone, its commit `started` stands for it.
+pub fn holds_unpushed(
+    worktree: &Path,
+    at: &str,
+    parent: &str,
+    started: Option<&str>,
+) -> Result<bool, String> {
+    let asked = format!("refs/heads/{parent}\n{}\n", started.unwrap_or_default());
+    let mut check = git(worktree);
+    check.args(["cat-file", "--batch-check=%(objectname)"]);
+    let found = fed(&mut check, Some(asked.into_bytes()))?;
+    // A commit the clone no longer has is not below `at`.
+    let Some(parent) = found.lines().find(|line| !line.ends_with(" missing")) else {
+        return Ok(false);
+    };
+    let shared = run(git(worktree).args(["merge-base", at, parent]))?;
     let listed = ["rev-list", "--max-count=1", shared.trim()];
     let unpushed = run(git(worktree)
         .args(listed)
@@ -348,7 +360,7 @@ pub fn adopt(
     if commit == base {
         return Ok(None);
     }
-    if !is_ancestor(worktree, base, commit) {
+    if !descends(worktree, base, commit).map_err(NotTaken::Later)? {
         return Err(NotTaken::Never(format!(
             "{commit} does not descend from {base}, where the session started"
         )));

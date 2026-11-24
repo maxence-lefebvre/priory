@@ -358,10 +358,10 @@ fn result(
         Ok(merge_risk) => merge_risk,
         Err(error) => return Ok(Err(error)),
     };
-    let triage = match crate::triage::sorted(tx, run.task, &arguments["feedback"])? {
+    // A cloud session has no `result` tool to class its feedback with.
+    let cloud = crate::cloud::is_cloud_run(tx, run.id)?;
+    let triage = match crate::triage::sorted(tx, run.task, &arguments["feedback"], !cloud)? {
         Ok(triage) => triage,
-        // A cloud session has no `result` tool to class its feedback with.
-        Err(_) if crate::cloud::is_cloud_run(tx, run.id)? => Vec::new(),
         Err(error) => return Ok(Err(error)),
     };
     let Some(step) = step(workflows, &run.workflow, &run.step) else {

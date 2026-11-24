@@ -1890,6 +1890,19 @@ fn base_branch(db: &Connection, task: i64) -> rusqlite::Result<Option<String>> {
     .optional()
 }
 
+/// The branch of the task that `task` stacks on, whatever its pull request's state, and the commit
+/// of it that `task` started from.
+fn parent_branch(db: &Connection, task: i64) -> rusqlite::Result<Option<(String, Option<String>)>> {
+    db.query_row(
+        "SELECT base.branch, tasks.parent_head
+         FROM tasks JOIN tasks AS base ON base.id = tasks.base_task
+         WHERE tasks.id = ?1 AND base.branch IS NOT NULL",
+        [task],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()
+}
+
 /// Whether the branch of the task that `task` stacks on moved since the `waiting` moment recorded
 /// it, before `task`'s first run: then `task` is held until a person answers its ask.
 fn parent_moved(db: &mut Connection, home: &Path, task: i64) -> rusqlite::Result<bool> {
@@ -2528,6 +2541,12 @@ fn start(
         )));
     }
     if crate::cloud::is_cloud(&agent.value) {
+        if state::replaying(db)? {
+            return Ok(Err(format!(
+                "a replay starts no cloud session, and step {} needs one",
+                step.id
+            )));
+        }
         if factory.staged(&admission.trigger) {
             return Ok(Err(format!(
                 "staged: step {} pushes the task's branch to GitHub, so its cloud run did not start",
@@ -2543,8 +2562,13 @@ fn start(
             Ok(head) => head,
             Err(reason) => return Ok(Err(reason)),
         };
-        if let Some(parent) = &base {
-            match priory_runtime::cloud::holds_unpushed(&worktree, &head, parent) {
+        if let Some((parent, started)) = parent_branch(db, admission.task)? {
+            match priory_runtime::cloud::holds_unpushed(
+                &worktree,
+                &head,
+                &parent,
+                started.as_deref(),
+            ) {
                 Ok(false) => {}
                 Ok(true) => {
                     return Ok(Err(format!(

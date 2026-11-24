@@ -171,7 +171,7 @@ pub(crate) fn run(command: &mut Command) -> Result<String, String> {
 }
 
 /// As `run`, with `input` on the command's stdin.
-fn fed(command: &mut Command, input: Option<Vec<u8>>) -> Result<String, String> {
+pub(crate) fn fed(command: &mut Command, input: Option<Vec<u8>>) -> Result<String, String> {
     fed_raw(command, input).map(|out| String::from_utf8_lossy(&out).into_owned())
 }
 
@@ -782,10 +782,24 @@ pub fn default_branch(worktree: &Path) -> Result<String, String> {
 
 /// Whether commit `below` is `commit` or one of its ancestors, in the repository of `worktree`.
 pub fn is_ancestor(worktree: &Path, below: &str, commit: &str) -> bool {
-    git(worktree)
-        .args(["merge-base", "--is-ancestor", below, commit])
-        .status()
-        .is_ok_and(|status| status.success())
+    descends(worktree, below, commit).unwrap_or(false)
+}
+
+/// As `is_ancestor`, with an error when git could not tell.
+pub(crate) fn descends(worktree: &Path, below: &str, commit: &str) -> Result<bool, String> {
+    let mut command = git(worktree);
+    command.args(["merge-base", "--is-ancestor", below, commit]);
+    let output = fed_within(&mut command, None, command_timeout())
+        .map_err(|error| format!("{command:?}: {error}"))?
+        .ok_or_else(|| format!("{command:?}: timed out"))?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(format!(
+            "{command:?}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )),
+    }
 }
 
 /// The open pull requests of `repo` that `author` opened, or every open one without an author,
