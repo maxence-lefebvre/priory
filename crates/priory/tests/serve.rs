@@ -3562,6 +3562,14 @@ fn an_answer_through_the_endpoint_wakes_the_task_as_priory_answer_does() {
     let mut setup = Setup::new("web-answer", SERVE);
     setup.asleep_on_ask();
     let address = setup.start(&["daemon", &setup.factory()]);
+    let (status, body) = post(
+        &address,
+        "/api/asks/1/answer",
+        "",
+        r#"{"text": " ", "revision": 2}"#,
+    );
+    assert_eq!(status, 422, "{body}");
+    assert!(body.contains("ask 1 takes no blank answer"), "{body}");
 
     let (status, body) = post(
         &address,

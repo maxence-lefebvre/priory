@@ -659,15 +659,32 @@ mod tests {
         }
 
         fn answer(&mut self, revision: i64) -> Result<String, String> {
+            self.answer_with(revision, "approved")
+        }
+
+        fn answer_with(&mut self, revision: i64, text: &str) -> Result<String, String> {
             let trace = trace_of(&self.factory);
             let answer = Answer {
                 ask: 1,
-                text: "approved".to_owned(),
+                text: text.to_owned(),
                 revision,
                 run: false,
                 by: "cli".to_owned(),
             };
             tools::answer(&mut self.db, &answer, &trace, &|_, _| None).unwrap()
+        }
+
+        /// The commit of the task's approval.
+        fn approved(&self) -> Option<String> {
+            self.db
+                .query_row("SELECT commit_sha FROM approvals", [], |row| row.get(0))
+                .unwrap()
+        }
+
+        fn queued(&self) -> Vec<String> {
+            let mut queued = self.db.prepare("SELECT text FROM outbox").unwrap();
+            let rows = queued.query_map([], |row| row.get(0)).unwrap();
+            rows.map(Result::unwrap).collect()
         }
 
         fn step(&self) -> String {
@@ -697,6 +714,35 @@ mod tests {
         assert!(setup.answer(1).is_err(), "the old revision stays refused");
         setup.answer(2).unwrap();
         assert_eq!(setup.step(), "implement");
+    }
+
+    #[test]
+    fn plan_edited_before_a_written_answer_refuses_the_text_and_keeps_the_approvals() {
+        let mut setup = Setup::new("written");
+        setup.write("brief.md", "as read", 30);
+        setup.raise();
+        setup
+            .db
+            .execute(
+                "INSERT INTO approvals (ask, revision, task, step, commit_sha, generation)
+                 SELECT 1, 1, id, 'implement', 'abc', generation FROM tasks",
+                [],
+            )
+            .unwrap();
+        setup.write("brief.md", "edited", 0);
+        let text = "Page with an opaque cursor instead";
+
+        let refused = setup.answer_with(1, text).unwrap_err();
+
+        assert!(refused.contains("changed since revision 1"), "{refused}");
+        setup.refused("edited");
+        assert_eq!(setup.approved().as_deref(), Some("abc"));
+        assert_eq!(setup.queued(), Vec::<String>::new());
+
+        setup.answer_with(2, text).unwrap();
+        assert_eq!(setup.step(), "groom");
+        assert_eq!(setup.approved(), None);
+        assert!(setup.queued().concat().contains(text));
     }
 
     #[test]
