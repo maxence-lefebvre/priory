@@ -33893,8 +33893,8 @@ fn a_person_cancels_a_request_no_runner_accepts_and_no_machine_lists_or_claims_i
         Some(&desktop),
     );
     with_serve(&laptop);
-    let (key, request) = ("github:owner/repo#1", oss(1));
-    desktop.publish(&request);
+    let key = "github:owner/repo#1";
+    desktop.publish(&oss(1));
     let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
     desktop.start_with(exe, &[("PRIORY_NOW", WORK_HOURS)]);
     server.start_with(exe, &[("PRIORY_NOW", WORK_HOURS)]);
@@ -33904,10 +33904,10 @@ fn a_person_cancels_a_request_no_runner_accepts_and_no_machine_lists_or_claims_i
         until_outcome(setup, "factory.task.requested", key, "unaccepted");
     }
 
-    let unknown = laptop.priory(&["cancel", &factory, "github:owner/repo#9"]);
+    let unknown = laptop.priory(&["cancel", &factory, "serveer:github:owner/repo#1"]);
     assert_eq!(
         String::from_utf8_lossy(&unknown.stderr),
-        "priory cancel: no request of github:owner/repo#9 waits for a runner\n"
+        "priory cancel: no runner is named serveer, and no request of serveer:github:owner/repo#1 waits for a runner\n"
     );
     let cancelled = laptop.priory(&["cancel", &factory, key]);
     assert!(cancelled.status.success(), "{cancelled:?}");
@@ -33916,19 +33916,6 @@ fn a_person_cancels_a_request_no_runner_accepts_and_no_machine_lists_or_claims_i
         until_outcome(setup, "factory.task.requested", key, "dropped");
         assert!(listed_tasks(setup).is_empty());
     }
-    // A claim that was on its way when the drop reached the log loses, on every machine.
-    desktop.publish(
-        &Message::new(
-            "priory.task.claimed",
-            json!({ "key": key, "runner": "server", "request": request.id.to_string() }),
-        )
-        .subject(key),
-    );
-    for setup in [&desktop, &server, &laptop] {
-        until_outcome(setup, "priory.task.claimed", key, "refused");
-        assert!(listed_tasks(setup).is_empty());
-    }
-
     desktop.crash();
     desktop.publish(&oss(2));
     desktop.start_with(exe, &[("PRIORY_NOW", EVENING)]);
@@ -33938,6 +33925,94 @@ fn a_person_cancels_a_request_no_runner_accepts_and_no_machine_lists_or_claims_i
     desktop.crash();
     server.crash();
     laptop.crash();
+}
+
+/// The close of `owner/repo#1`, half an hour after a request of 09:00.
+fn issue_closed() -> Message {
+    Message::new(
+        "github.issues.closed",
+        json!({ "repo": "owner/repo", "issue": 1, "merged": false }),
+    )
+    .subject("owner/repo#1")
+    .time("2026-11-24T09:30:00Z".parse().unwrap())
+}
+
+#[test]
+fn a_claim_after_a_close_or_drop_still_wins_so_a_later_request_starts_no_second_task() {
+    let mut desktop = placed("filter-old-claim", "desktop", OSS_OFF_BY_DAY, NO_OSS, None);
+    let mut laptop = placed(
+        "filter-old-claim",
+        "laptop",
+        OSS_OFF_BY_DAY,
+        NO_OSS,
+        Some(&desktop),
+    );
+    with_serve(&laptop);
+    let keys = ["github:owner/repo#1", "github:owner/repo#2"];
+    let requests =
+        [oss(1), oss(2)].map(|message| message.time("2026-11-24T09:00:00Z".parse().unwrap()));
+    for request in &requests {
+        desktop.publish(request);
+    }
+    desktop.publish(&issue_closed());
+    desktop.publish(
+        &Message::new(
+            "priory.task.dropped",
+            json!({ "key": keys[1], "by": "cli" }),
+        )
+        .subject(keys[1]),
+    );
+    // A server on an older build ignores both, claims the requests and starts their tasks.
+    for (key, request) in keys.iter().zip(&requests) {
+        for (kind, data) in [
+            (
+                "priory.task.claimed",
+                json!({ "key": key, "runner": "server", "request": request.id.to_string() }),
+            ),
+            (
+                "priory.task.held",
+                json!({ "key": key, "runner": "server", "hold": "kept", "generation": 1 }),
+            ),
+        ] {
+            desktop.publish(&Message::new(kind, data).subject(*key));
+        }
+    }
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    desktop.start_with(exe, &[("PRIORY_NOW", WORK_HOURS)]);
+    laptop.start_viewing(WORK_HOURS);
+    for setup in [&desktop, &laptop] {
+        for key in keys {
+            until_outcome(setup, "factory.task.requested", key, "dropped");
+            until_outcome(setup, "priory.task.claimed", key, "claimed");
+        }
+        setup.until("tasks", |rows| with(rows, 13, "server") == 2);
+    }
+
+    desktop.crash();
+    desktop.publish(&oss(1));
+    desktop.publish(&oss(2));
+    desktop.start_with(exe, &[("PRIORY_NOW", EVENING)]);
+    for key in keys {
+        until_outcome(&desktop, "factory.task.requested", key, "elsewhere");
+        assert_eq!(claimants(&desktop, key), ["server"]);
+    }
+    desktop.crash();
+    laptop.crash();
+}
+
+#[test]
+fn a_close_leaves_a_request_whose_claim_is_on_its_way() {
+    let mut desktop = placed("filter-in-flight", "desktop", OSS_OFF_BY_DAY, NO_OSS, None);
+    let key = "github:owner/repo#1";
+    desktop.publish(&oss(1).time("2026-11-24T09:00:00Z".parse().unwrap()));
+    desktop.publish(&issue_closed());
+
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    desktop.start_with(exe, &[("PRIORY_NOW", EVENING)]);
+    until_outcome(&desktop, "priory.task.claimed", key, "claimed");
+    let tasks = desktop.until_own_tasks(|rows| with(rows, 4, "running") == 1);
+    assert_eq!(tasks[0][1], key);
+    desktop.crash();
 }
 
 #[test]
@@ -33965,7 +34040,7 @@ fn a_close_or_withdrawal_of_its_key_drops_a_request_no_runner_accepts() {
     };
     let entered = linear("linear.issue.entered", "ENG-7", "todo");
     let also = linear("linear.issue.entered", "ENG-8", "todo");
-    let review = "github:owner/repo:pulls/4:review:max";
+    let review = "github:owner/repo:pulls/4:review:reviewer";
     for message in [
         entered.clone(),
         also.clone(),
@@ -33986,7 +34061,7 @@ fn a_close_or_withdrawal_of_its_key_drops_a_request_no_runner_accepts() {
         closed("github.issues.closed", "issue", 3, "2026-11-24T08:00:00Z"),
         Message::new(
             "github.pull_request.review_request_removed",
-            json!({ "repo": "owner/repo", "pull_request": 4, "reviewer": "max", "reviewed": false }),
+            json!({ "repo": "owner/repo", "pull_request": 4, "reviewer": "reviewer", "reviewed": false }),
         )
         .subject("owner/repo#4")
         .time(at("2026-11-24T09:30:00Z")),
