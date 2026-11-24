@@ -225,7 +225,11 @@ Each is useful alone, in this order:
 2. **Call ids.** A line resent after a reset is applied once, from the MCP server or a hook.
 3. **Hooks that keep their line**, with the spool race closed.
 4. **Only the daemon migrates**, with its lock taken first.
-5. **`priory upgrade`.** Verify, back up, rehearse, install, hand over, check, and `--rollback`.
+5. **`priory upgrade`.** Verify, back up, rehearse, install, hand over, check, and `--rollback`. The
+   daemon does this by itself with `[upgrade]` ([upgrades.md](../daemon/upgrades.md)), on a herdr-bus
+   log and one machine. The verb for a person, and one runner after another on a Postgres log, are left.
+   There, a runner would wait until each runner before it by name committed the version, and stop at
+   the first rollback.
 6. **Split migrations.** A long backfill runs in batches from the daemon's loop.
 7. **Socket activation**, if the open question below says webhooks need it.
 

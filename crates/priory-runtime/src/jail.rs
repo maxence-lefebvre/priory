@@ -248,6 +248,9 @@ impl Jail {
             Mode::Write,
             true,
         );
+        // A file in it becomes the daemon's binary.
+        crate::upgrade::private(&home)?;
+        binds.add(&crate::upgrade::dir(&home), Mode::Empty, true);
         let spool = spool_dir(&home, launch.session);
         std::fs::create_dir_all(&spool).map_err(|error| format!("{}: {error}", spool.display()))?;
         binds.add(&spool, Mode::Write, true);

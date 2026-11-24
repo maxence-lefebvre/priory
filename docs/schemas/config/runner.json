@@ -148,6 +148,11 @@
     },
     "platform": {
       "$ref": "#/definitions/Platform"
+    },
+    "upgrade": {
+      "default": true,
+      "description": "Whether the factory's `[upgrade]` applies to this machine.",
+      "type": "boolean"
     }
   },
   "required": [

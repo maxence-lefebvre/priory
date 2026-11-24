@@ -12,6 +12,7 @@ use crate::snooze::{self, Snooze};
 use crate::state::{self, Admission, NewRun, Signal};
 use crate::tools::{self, Act, Answer, Call, Dismiss, Done, Repair};
 use crate::trace::Trace;
+use crate::upgrade::Upgrader;
 use crate::{
     deliver, embed, handler, hold, notify, overlap, progress, push, search, sections, stall,
     subscribe, summary, sweep,
@@ -21,7 +22,7 @@ use priory_intake::intake::{self, OUTPUT};
 use priory_intake::log::{self, Log};
 use priory_runtime::runtime::{self, Launch, Line};
 use priory_runtime::script::{self, Script};
-use priory_runtime::{room, slice, transcript};
+use priory_runtime::{room, slice, transcript, upgrade};
 use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::cell::OnceCell;
@@ -171,15 +172,15 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     // Taken first, so an edit made while the daemon starts still reloads.
     let watch = reload::Watch::new(factory);
     runtime::bound_commands(factory.command_timeout());
+    if !once {
+        upgrade::admit(&runtime::home(), true)?;
+    }
     let mut db = state::open()?;
-    tools::backfill_endings(&mut db, &factory.workflows)?;
     let bus = log::open(factory.log())?;
+    tools::backfill_endings(&mut db, &factory.workflows)?;
     state::bands(&mut db, &factory.bands(), factory.age())?;
     state::fairness(&db, factory.fair())?;
     state::irreversible_asks(&mut db, &factory.workflows)?;
-    for error in sections::dispatch(&db, factory, None)? {
-        eprintln!("priory daemon: {error}");
-    }
     let embedder = factory.search().embedder().map(|spec| embed::name(&spec));
     search::configure(&db, embedder.as_deref())?;
     let home = runtime::home();
@@ -198,6 +199,14 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     };
     let consumer = runners::consumer(trace.runner.as_deref());
     runners::name(&db, trace.runner.as_deref())?;
+    // What came before writes the state alone, which a rollback puts back. A dispatch reaches further.
+    let held = match !once && upgrade::held(&home) {
+        true => Some(hold(factory, &home)?),
+        false => None,
+    };
+    for error in sections::dispatch(&db, factory, None)? {
+        eprintln!("priory daemon: {error}");
+    }
     if trace.runner.is_none() {
         runners::unplace(&mut db, &trace, counting.get(&home))?
             .iter()
@@ -225,7 +234,10 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         eprintln!("priory daemon: notifications are off: {error}");
     }
     let searching = search::answering(state::read_only()?, home.clone());
-    let listening = runtime::listen(&home)?;
+    let listening = match held {
+        Some(listening) => listening,
+        None => runtime::listen(&home)?,
+    };
     let headers = otlp::header_file(factory, &home, "otlp-headers")?;
     let server = match factory.serve() {
         Some(config) => Some(crate::serve::start(factory, config.listen)?),
@@ -391,6 +403,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut redispatch: Option<Instant> = None;
     let mut entering = Entering::default();
     let mut live = Live::new(factory, watch, trace.revision.clone(), server);
+    let mut upgrader = Upgrader::new(factory);
     loop {
         let tick = Instant::now();
         if live.poll(&mut db, &trace, true)? {
@@ -519,6 +532,13 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             let short = || room::measure(&home).is_ok_and(|room| crate::room::short_of_disk(&room));
             sweep::retire(&db, factory, &home, short)?;
         }
+        let working = !(commands.is_empty()
+            && recipes.is_empty()
+            && scripts.is_empty()
+            && summarizing.is_empty()
+            && stalls.calls.is_empty()
+            && deliveries.is_empty());
+        upgrader.tick(&mut db, &trace, &home, working);
         priory_runtime::ticks::record(tick.elapsed());
         // A pasted prompt's Enter is due before the next whole tick.
         let wait = entering.due().map_or(EVERY, |due| due.min(EVERY));
@@ -1017,6 +1037,7 @@ fn apply(
 #[derive(serde::Deserialize)]
 #[serde(untagged)]
 enum Input {
+    Version(VersionLine),
     Guard(crate::guard::Line),
     Private(crate::private::Line),
     Evidence(crate::evidence::AddLine),
@@ -1049,6 +1070,43 @@ enum Input {
     KeyboardReturn(crate::keyboard::ReturnLine),
     Keys(crate::keyboard::KeysLine),
     Attach(crate::keyboard::AttachLine),
+}
+
+/// `{"version": true}`, which the helper of an upgrade sends.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VersionLine {
+    #[serde(rename = "version")]
+    _version: bool,
+}
+
+/// This daemon's version, as its reply to a `VersionLine`.
+fn version(_: &VersionLine) -> Result<String, String> {
+    Ok(env!("CARGO_PKG_VERSION").to_owned())
+}
+
+/// Waits until a migration's upgrade is committed. The daemon then answers its version alone, so a
+/// rollback to the backups loses nothing.
+fn hold(factory: &Factory, home: &Path) -> Result<runtime::Listening, Error> {
+    let listening = runtime::listen(home)?;
+    if let Some(config) = factory.serve() {
+        drop(std::net::TcpListener::bind(config.listen)?);
+    }
+    while upgrade::uncommitted(home) {
+        match listening.lines.recv_timeout(EVERY) {
+            Ok(line) => {
+                let reply = match serde_json::from_str::<Input>(&line.text) {
+                    Ok(Input::Version(line)) => version(&line),
+                    _ => Err(upgrade::IN_PROGRESS.to_owned()),
+                };
+                let reply = serde_json::to_string(&reply).expect("a result serializes");
+                let _ = line.applied.send(reply);
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
+        }
+    }
+    Ok(listening)
 }
 
 /// `POST /api/request`'s line: `{"add": {...}}`.
@@ -1201,6 +1259,7 @@ fn take(
         serde_json::to_string(&result).expect("a result serializes")
     };
     match serde_json::from_str::<Input>(line) {
+        Ok(Input::Version(line)) => Ok((replied(version(&line)), None)),
         Ok(Input::Guard(line)) => {
             Ok((replied(crate::guard::decide(db, &line.guard, trace)?), None))
         }

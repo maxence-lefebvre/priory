@@ -16,6 +16,7 @@ Schema: [`config/runner.json`](../schemas/config/runner.json).
 | `agents` | table | no | 90% of each | The share of the machine the runner's agents may take together. See [agents-slice.md](../daemon/agents-slice.md) | `{ cpu = "50%" }` |
 | `agents.cpu` | share | no | `"90%"` | The share of the machine's CPUs they may load | `"50%"` |
 | `agents.memory` | share | no | `"90%"` | The share of the machine's memory they may take | `"60%"` |
+| `upgrade` | boolean | no | `true` | Whether the factory's [`[upgrade]`](factory.md#upgrade) applies to this machine | `false` |
 | `filters` | list of tables | no | none | The tasks it claims and starts. See [Filters](#filters) | `[{ match = "!project=oss" }]` |
 | `filters.match` | string | yes | | `key=value` accepts only tasks with that label. `!key=value` accepts only tasks without it | `"!project=oss"` |
 | `filters.when` | table | no | always | When the filter applies. Outside it, the filter is lifted | `{ hours = "08:00-18:00" }` |

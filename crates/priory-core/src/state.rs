@@ -2266,6 +2266,7 @@ pub(crate) struct Task {
 
 /// Opens the state file `PRIORY_DB`, creating its schema on first use.
 pub fn open() -> Result<Connection, String> {
+    priory_runtime::upgrade::barrier()?;
     open_at(&path()?)
 }
 
@@ -2350,6 +2351,7 @@ fn path() -> Result<std::path::PathBuf, String> {
 /// Opens `PRIORY_DB` for reading only. It refuses a file whose schema this priory does not use,
 /// such as one no `open` has created yet.
 pub fn read_only() -> Result<Connection, String> {
+    priory_runtime::upgrade::barrier()?;
     let path = path()?;
     let at = |error: rusqlite::Error| format!("{}: {error}", path.display());
     let db = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
