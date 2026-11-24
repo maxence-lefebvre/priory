@@ -3256,14 +3256,8 @@ mod tests {
             session: "s".into(),
             worktree: Some("/w/1".into()),
             ready: false,
-<<<<<<< HEAD
-            late: true,
-            harness: None,
-||||||| ed4c38e
-            late: true,
-=======
             waited: Some(600),
->>>>>>> origin/main
+            harness: None,
             direnv: 1,
             turn: None,
             prompted: None,

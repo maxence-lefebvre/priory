@@ -4407,20 +4407,10 @@ pub(crate) struct LiveRun {
     pub worktree: Option<String>,
     /// Its `SessionStart` arrived.
     pub ready: bool,
-<<<<<<< HEAD
-    /// No `SessionStart` arrived within `READY_WITHIN` of the start, or `DIRENV_READY_WITHIN` under
-    /// direnv.
-    pub late: bool,
-    /// The name of the harness it started in, whatever its agent's is now.
-    pub harness: Option<String>,
-||||||| ed4c38e
-    /// No `SessionStart` arrived within `READY_WITHIN` of the start, or `DIRENV_READY_WITHIN` under
-    /// direnv.
-    pub late: bool,
-=======
     /// Seconds since its start while no `SessionStart` has arrived.
     pub waited: Option<i64>,
->>>>>>> origin/main
+    /// The name of the harness it started in, whatever its agent's is now.
+    pub harness: Option<String>,
     /// 1 when it started under `direnv exec`, 2 once direnv failed and it started without, else 0.
     pub direnv: i64,
     /// How long its current turn has run, in seconds.
@@ -4454,19 +4444,9 @@ pub(crate) fn live(db: &Connection) -> rusqlite::Result<Vec<LiveRun>> {
         "SELECT runs.id, runs.task, runs.step, tasks.workflow, runs.tmux, runs.session, tasks.worktree,
          CASE WHEN NOT runs.ready THEN unixepoch('now') - unixepoch(runs.started) END,
          unixepoch('now') - unixepoch(runs.turn), runs.prompted, coalesce(runs.agent, ''), runs.ready,
-<<<<<<< HEAD
          coalesce(runs.direnv, 0), runs.harness
-         FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.ended IS NULL ORDER BY runs.id"
-    ))?;
-||||||| ed4c38e
-         coalesce(runs.direnv, 0)
-         FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.ended IS NULL ORDER BY runs.id"
-    ))?;
-=======
-         coalesce(runs.direnv, 0)
          FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.ended IS NULL ORDER BY runs.id",
     )?;
->>>>>>> origin/main
     statement
         .query_map([], |row| {
             Ok(LiveRun {
