@@ -3,7 +3,10 @@ use crate::trace::{self, Trace};
 use priory_factory::factory::Factory;
 use priory_runtime::worktrees::{self, Found};
 use rusqlite::{Connection, OptionalExtension};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::thread::JoinHandle;
 
 /// A task folder under `PRIORY_HOME/worktrees` and why it stays, or `None` when it can go.
 struct Entry {
@@ -243,69 +246,127 @@ pub fn fetch_banner(home: &Path) -> Option<String> {
     (!lines.is_empty()).then(|| lines.join("; "))
 }
 
-/// Deletes the build output of idle tasks' worktrees, largest first and longest idle on a tie,
-/// while `short` says free disk is under the reclaim threshold. Idle is done, dropped, held or
-/// asleep, with no live run and no memory grant. Each deletion is traced.
-pub(crate) fn reclaim(
-    db: &mut Connection,
-    factory: &Factory,
-    home: &Path,
-    trace: &Trace,
-    mut short: impl FnMut() -> bool,
-) -> rusqlite::Result<()> {
-    if !short() {
-        return Ok(());
-    }
-    let idle = db
-        .prepare(
-            "SELECT id, worktree FROM tasks
-             WHERE state IN ('done', 'dropped', 'held', 'asleep') AND worktree IS NOT NULL
-               AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.task = tasks.id AND ended IS NULL)
-               AND NOT EXISTS (SELECT 1 FROM grants WHERE grants.task = tasks.id)
-             ORDER BY changed, id",
-        )?
-        .query_map([], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let found = worktrees::found(home);
-    let mut outputs = Vec::new();
-    for (task, worktree) in idle {
-        let Some(found) = found
-            .iter()
-            .find(|found| found.path.to_str() == Some(&worktree) && task_of(found) == Some(task))
-        else {
-            continue;
-        };
-        let cargo = [String::from("target")];
-        let build = match factory.build(&found.repo) {
-            Some(build) => build,
-            None if found.path.join("Cargo.toml").is_file() => &cargo[..],
-            None => continue,
-        };
-        if let Ok(folders) = worktrees::build_output(home, found, build) {
-            outputs.extend(
-                folders
-                    .into_iter()
-                    .map(|(path, bytes)| (task, found.path.clone(), path, bytes)),
-            );
+/// A build folder of an idle task's worktree, and the disk it takes.
+struct Output {
+    task: i64,
+    found: Arc<Found>,
+    build: Vec<String>,
+    path: PathBuf,
+    bytes: u64,
+}
+
+/// Deletes the build output of idle tasks' worktrees while free disk is under the reclaim
+/// threshold, one folder per tick, largest first and longest idle on a tie. Idle is done, dropped,
+/// held or asleep, with no live run and no memory grant. A thread lists and sizes the folders, so
+/// the tick never walks one.
+#[derive(Default)]
+pub(crate) struct Reclaim {
+    walk: Option<JoinHandle<Vec<Output>>>,
+    pending: VecDeque<Output>,
+}
+
+impl Reclaim {
+    /// With `due`, starts a walk when none runs and nothing waits. `under` says free disk is
+    /// under the threshold. Each deletion is traced.
+    pub(crate) fn tick(
+        &mut self,
+        db: &mut Connection,
+        factory: &Factory,
+        home: &Path,
+        trace: &Trace,
+        due: bool,
+        mut under: impl FnMut() -> bool,
+    ) -> rusqlite::Result<()> {
+        if let Some(walk) = self.walk.take_if(|walk| walk.is_finished()) {
+            self.pending = walk.join().unwrap_or_default().into();
         }
-    }
-    // Stable, so equal sizes keep the longest idle first.
-    outputs.sort_by_key(|(_, _, _, bytes)| std::cmp::Reverse(*bytes));
-    for (task, worktree, path, bytes) in outputs {
-        if !short() {
-            break;
+        if self.walk.is_some() {
+            return Ok(());
         }
-        if let Err(error) = worktrees::reclaim(&worktree, &path) {
-            eprintln!("priory daemon: task {task}: {error}");
-            continue;
+        let Some(output) = self.pending.pop_front() else {
+            if due && under() {
+                self.walk = Some(walk(home, idle_build(db, factory, home)?));
+            }
+            return Ok(());
+        };
+        if !under() {
+            self.pending.clear();
+            return Ok(());
+        }
+        if !idle(db)?.iter().any(|(task, _)| *task == output.task) {
+            return Ok(());
+        }
+        if let Err(error) = worktrees::reclaim(home, &output.found, &output.build, &output.path) {
+            eprintln!("priory daemon: task {}: {error}", output.task);
+            return Ok(());
         }
         let tx = db.transaction()?;
-        trace::worktree_reclaimed(&tx, trace, task, &path, bytes)?;
-        tx.commit()?;
+        trace::worktree_reclaimed(&tx, trace, output.task, &output.path, output.bytes)?;
+        tx.commit()
     }
-    Ok(())
+}
+
+/// The idle tasks and their worktree paths, longest idle first.
+fn idle(db: &Connection) -> rusqlite::Result<Vec<(i64, String)>> {
+    db.prepare(
+        "SELECT id, worktree FROM tasks
+         WHERE state IN ('done', 'dropped', 'held', 'asleep') AND worktree IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.task = tasks.id AND ended IS NULL)
+           AND NOT EXISTS (SELECT 1 FROM grants WHERE grants.task = tasks.id)
+         ORDER BY changed, id",
+    )?
+    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+    .collect()
+}
+
+/// Each idle task's worktree with the build folders its repository names, longest idle first. A
+/// worktree with a `Cargo.toml` defaults to `target`.
+fn idle_build(
+    db: &Connection,
+    factory: &Factory,
+    home: &Path,
+) -> rusqlite::Result<Vec<(i64, Found, Vec<String>)>> {
+    let mut found = worktrees::found(home);
+    let mut worktrees = Vec::new();
+    for (task, worktree) in idle(db)? {
+        let Some(at) = found.iter().position(|found| {
+            found.path.to_str() == Some(&worktree) && task_of(found) == Some(task)
+        }) else {
+            continue;
+        };
+        let found = found.swap_remove(at);
+        let build = match factory.build(&found.repo) {
+            Some(build) => build.to_vec(),
+            None if found.path.join("Cargo.toml").is_file() => vec![String::from("target")],
+            None => continue,
+        };
+        worktrees.push((task, found, build));
+    }
+    Ok(worktrees)
+}
+
+/// Lists and sizes the build folders of `worktrees` on a thread, largest first.
+fn walk(home: &Path, worktrees: Vec<(i64, Found, Vec<String>)>) -> JoinHandle<Vec<Output>> {
+    let home = home.to_path_buf();
+    std::thread::spawn(move || {
+        let mut outputs = Vec::new();
+        for (task, found, build) in worktrees {
+            let Ok(folders) = worktrees::build_output(&home, &found, &build) else {
+                continue;
+            };
+            let found = Arc::new(found);
+            outputs.extend(folders.into_iter().map(|(path, bytes)| Output {
+                task,
+                found: found.clone(),
+                build: build.clone(),
+                path,
+                bytes,
+            }));
+        }
+        // Stable, so equal sizes keep the longest idle first.
+        outputs.sort_by_key(|output| std::cmp::Reverse(output.bytes));
+        outputs
+    })
 }
 
 /// The desk's line on the build output reclaimed in the 24 hours before `now`, if any.

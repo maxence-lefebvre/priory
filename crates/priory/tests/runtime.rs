@@ -15092,6 +15092,80 @@ fn an_idle_task_build_output_goes_under_the_reclaim_threshold_even_read_only() {
 }
 
 #[test]
+fn a_symlink_inside_the_build_output_goes_without_what_it_points_to() {
+    use std::os::unix::fs::PermissionsExt;
+    let (setup, target) = asleep_with_build_output("reclaim-escape");
+    // Empty, so the test's cleanup can still remove it.
+    let sealed = setup.dir.join("outside/sealed");
+    fs::create_dir_all(&sealed).unwrap();
+    fs::set_permissions(&sealed, fs::Permissions::from_mode(0o555)).unwrap();
+    std::os::unix::fs::symlink(&sealed, target.join("debug/escape")).unwrap();
+
+    setup.disk(30);
+    until_record(&setup, "factory.worktree.reclaimed");
+
+    assert!(!target.exists());
+    let mode = fs::metadata(&sealed).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o555, "a chmod does not follow the symlink");
+}
+
+#[test]
+fn a_build_folder_holding_a_tracked_file_stays() {
+    let (setup, target) = asleep_with_build_output("reclaim-tracked");
+    setup.commit(1, "target/app.js");
+
+    setup.disk(30);
+    std::thread::sleep(Duration::from_millis(2100));
+
+    assert!(target.join("app.js").exists());
+    assert!(target.join("debug/locked/lib.rlib").exists());
+    assert!(trace_records(&setup, "factory.worktree.reclaimed").is_empty());
+}
+
+#[test]
+fn a_staged_deletion_inside_a_build_folder_keeps_it() {
+    let (setup, target) = asleep_with_build_output("reclaim-staged");
+    setup.commit(1, "target/app.js");
+    setup.git(&setup.worktree(1), &["rm", "-q", "target/app.js"]);
+
+    setup.disk(30);
+    std::thread::sleep(Duration::from_millis(2100));
+
+    assert!(target.join("debug/locked/lib.rlib").exists());
+    assert!(trace_records(&setup, "factory.worktree.reclaimed").is_empty());
+}
+
+#[test]
+fn the_sweep_deletes_one_build_folder_per_tick() {
+    let (setup, target) = asleep_with_build_output("reclaim-tick");
+    let link = setup.worktree(1).join("link");
+    fs::create_dir_all(&link).unwrap();
+    fs::write(link.join("out.o"), vec![1u8; 1 << 10]).unwrap();
+
+    setup.disk(30);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while trace_records(&setup, "factory.worktree.reclaimed").len() < 2 {
+        assert!(Instant::now() < deadline, "two reclaims");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    assert!(!target.exists() && !link.exists());
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    let gap: f64 = db
+        .query_row(
+            "SELECT (julianday(max(time)) - julianday(min(time))) * 86400 FROM trace
+             WHERE type = 'factory.worktree.reclaimed'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        gap >= 0.5,
+        "the second folder waits for the next tick: {gap}s"
+    );
+}
+
+#[test]
 fn a_live_run_keeps_its_build_output_until_it_ends() {
     let mut setup = Setup::new("reclaim-live");
     setup.recipes(BUILD);

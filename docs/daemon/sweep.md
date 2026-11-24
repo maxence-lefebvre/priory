@@ -54,13 +54,17 @@ acquire` keeps its grant after the run sleeps, so its output stays until it ends
 `[repos."owner/name"] build` names the build folders, relative to the worktree. Without it, a
 worktree with a `Cargo.toml` at its root has `target`, and other worktrees have none. A worktree
 keeps all its build output when any retirement check fails: it is not Priory's worktree, it is off
-its branch, a process runs in it, or it has an uncommitted change or an untracked file. Files
-inside the build folders do not count. A build folder that is a symlink, or that a symlink leads to,
-is never followed.
+its branch, a process runs in it, or it has an uncommitted change or an untracked file. Untracked
+files inside the build folders do not count; a change to a tracked file there does. A build folder
+that holds a file git tracks, such as a committed bundle, stays. A build folder that is a symlink,
+or that a symlink leads to, is never followed, and a symlink inside one goes without what it points
+to.
 
-The sweep sizes each folder as `du` does, then deletes the largest first, and on equal sizes the
-task idle longest first. It measures the disk again after each one and stops once free disk is back
-at the threshold. A folder that a test made read-only is made writable, then deleted. The worktree,
+A thread lists and sizes each folder as `du` does, off the daemon's tick. Then each tick deletes
+one folder, the largest first, and on equal sizes the task idle longest first. Right before each
+deletion, the sweep checks again that the task is idle and that every check above still passes. It
+measures the disk before each one and stops once free disk is back at the threshold. A folder that
+a test made read-only is made writable, then deleted. The worktree,
 its branch and its session stay, so the task's next run rebuilds what it needs.
 
 Each deletion appends a `factory.worktree.reclaimed` record with the task, the folder and its bytes
@@ -68,7 +72,7 @@ Each deletion appends a `factory.worktree.reclaimed` record with the task, the f
 desk show `reclaimed 14.2 GB of build output from 3 folders in the last 24 hours, last at
 2026-11-23T19:30:02Z` while any happened in the last 24 hours.
 
-A large folder takes seconds to delete, and the daemon's tick waits for it.
+A large folder takes seconds to delete, and the daemon's tick waits for that one deletion.
 
 ## Retiring asleep tasks
 

@@ -367,6 +367,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut grading = crate::gates::Grading::default();
     let every = factory.sweep().every.unwrap_or(SWEEP);
     let mut swept: Option<Instant> = None;
+    let mut reclaiming = sweep::Reclaim::default();
     let mut held: Option<Instant> = None;
     let mut alive = None;
     let mut aged = None;
@@ -480,14 +481,17 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             held = Some(Instant::now());
             crate::held::tick(&mut db, &trace, intake::now()?)?;
         }
-        if swept.is_none_or(|at| at.elapsed() >= every) {
+        let due = swept.is_none_or(|at| at.elapsed() >= every);
+        if due {
             swept = Some(Instant::now());
             sweep::run(&db, factory, &home)?;
-            let under = || {
-                room::measure(&home)
-                    .is_ok_and(|room| crate::room::under_reclaim(&room, factory.sweep().reclaim))
-            };
-            sweep::reclaim(&mut db, factory, &home, &trace, under)?;
+        }
+        let under = || {
+            room::measure(&home)
+                .is_ok_and(|room| crate::room::under_reclaim(&room, factory.sweep().reclaim))
+        };
+        reclaiming.tick(&mut db, factory, &home, &trace, due, under)?;
+        if due {
             let short = || room::measure(&home).is_ok_and(|room| crate::room::short_of_disk(&room));
             sweep::retire(&db, factory, &home, short)?;
         }

@@ -1,4 +1,4 @@
-use crate::runtime::{OWN_GIT, clone_of, git, run};
+use crate::runtime::{OWN_GIT, clone_of, git, remove_sealed, run};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -98,7 +98,8 @@ pub fn retire_blocker(home: &Path, found: &Found) -> Option<String> {
 }
 
 /// The folders of `build` that exist in the worktree, each with the disk it takes in bytes, or why
-/// none may go: the same checks as a retirement, where files inside `build` do not count.
+/// none may go: the same checks as a retirement, where untracked files inside `build` do not count.
+/// A folder that holds a tracked file is left out. It walks every file, so call it off the tick.
 pub fn build_output(
     home: &Path,
     found: &Found,
@@ -110,58 +111,51 @@ pub fn build_output(
     Ok(build
         .iter()
         .map(|folder| found.path.join(folder))
-        .filter(|path| real_folder(&found.path, path))
+        .filter(|path| deletable(found, path).is_ok())
         .map(|path| {
-            let bytes = disk_use(&path);
+            let bytes = size(&path);
             (path, bytes)
         })
         .collect())
 }
 
-/// Whether `path` is a folder inside `worktree` with no symlink on the way, which would lead out.
-fn real_folder(worktree: &Path, path: &Path) -> bool {
+/// Why the build folder `path` must stay: a symlink on the way leads out, or git tracks a file in it.
+fn deletable(found: &Found, path: &Path) -> Result<(), String> {
+    let worktree = &found.path;
     let (Ok(root), Ok(rest)) = (fs::canonicalize(worktree), path.strip_prefix(worktree)) else {
-        return false;
+        return Err(format!("{} is not inside the worktree", path.display()));
     };
-    fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir())
-        && fs::canonicalize(path).ok() == Some(root.join(rest))
-}
-
-/// Deletes the build folder `path` of `worktree` and all it holds, first making read-only folders
-/// inside it writable. Checks again that no symlink leads out, since the sizing ran a while ago.
-pub fn reclaim(worktree: &Path, path: &Path) -> Result<(), String> {
-    if !real_folder(worktree, path) {
+    let real = fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir())
+        && fs::canonicalize(path).ok() == Some(root.join(rest));
+    if !real {
         return Err(format!(
-            "{} is no longer a folder inside the worktree",
+            "{} is not a folder inside the worktree",
             path.display()
         ));
     }
-    if fs::remove_dir_all(path).is_ok() {
-        return Ok(());
+    let tracked = run(git(worktree).args(["ls-files", "--"]).arg(rest))?;
+    if !tracked.is_empty() {
+        return Err(format!("{} holds tracked files", path.display()));
     }
-    writable(path);
-    fs::remove_dir_all(path).map_err(|error| format!("cannot delete {}: {error}", path.display()))
+    Ok(())
 }
 
-fn writable(dir: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let Ok(meta) = fs::symlink_metadata(dir) else {
-        return;
-    };
-    if !meta.is_dir() {
-        return;
+/// Deletes the build folder `path` of `found` and all it holds, read-only folders included, after
+/// the checks of `build_output` pass again, since the sizing ran a while ago.
+pub fn reclaim(home: &Path, found: &Found, build: &[String], path: &Path) -> Result<(), String> {
+    if let Some(reason) = unsettled(home, found, build)? {
+        return Err(reason);
     }
-    let _ = fs::set_permissions(
-        dir,
-        fs::Permissions::from_mode(meta.permissions().mode() | 0o700),
-    );
-    for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
-        writable(&entry.path());
+    deletable(found, path)?;
+    remove_sealed(path);
+    if fs::symlink_metadata(path).is_ok() {
+        return Err(format!("cannot delete {}", path.display()));
     }
+    Ok(())
 }
 
-/// The disk the folder's files take, as `du` counts it, without following symlinks.
-fn disk_use(path: &Path) -> u64 {
+/// The disk the folder takes, in bytes, without following symbolic links.
+pub fn size(path: &Path) -> u64 {
     use std::os::unix::fs::MetadataExt;
     let Ok(meta) = fs::symlink_metadata(path) else {
         return 0;
@@ -170,13 +164,12 @@ fn disk_use(path: &Path) -> u64 {
     if !meta.is_dir() {
         return own;
     }
-    fs::read_dir(path)
+    own + fs::read_dir(path)
         .into_iter()
         .flatten()
         .flatten()
-        .map(|entry| disk_use(&entry.path()))
+        .map(|entry| size(&entry.path()))
         .sum::<u64>()
-        + own
 }
 
 /// Removes the worktree and keeps its branch. Git refuses when anything is uncommitted or untracked.
@@ -188,7 +181,7 @@ pub fn retire(home: &Path, found: &Found) -> Result<(), String> {
 }
 
 /// Why removing the worktree would lose a file or a process's folder: everything else is on its
-/// branch. Files inside the `build` folders do not count.
+/// branch. Untracked files inside the `build` folders do not count.
 fn unsettled(home: &Path, found: &Found, build: &[String]) -> Result<Option<String>, String> {
     let clone = found.clone(home);
     let path = &found.path;
@@ -204,13 +197,13 @@ fn unsettled(home: &Path, found: &Found, build: &[String]) -> Result<Option<Stri
     let status = run(git(path).args([
         "status",
         "--porcelain",
-        // A rename out of a build folder would read as a path inside it.
-        "--no-renames",
         "--untracked-files=all",
         "--ignore-submodules=none",
     ]))?;
     let built = |line: &&str| {
-        let file = line.get(3..).unwrap_or_default();
+        let Some(file) = line.strip_prefix("?? ") else {
+            return false;
+        };
         build.iter().any(|folder| {
             let folder = folder.trim_end_matches('/');
             file.strip_prefix(folder)

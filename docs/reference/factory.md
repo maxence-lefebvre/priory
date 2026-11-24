@@ -100,7 +100,7 @@ optional. See [Recipes](../daemon/runs.md#recipes) for when each runs and what a
 | `setup` | recipe | no | none | Runs after the daemon adds a task's new worktree, before its agent starts | `{ argv = ["npm", "ci"] }` |
 | `resume` | recipe | no | none | Runs after the daemon adds back a worktree that a retirement removed, before the agent starts | `{ argv = ["npm", "ci", "--prefer-offline"] }` |
 | `teardown` | recipe | no | none | Runs before the sweep or a retirement removes the worktree | `{ shell = "docker compose down" }` |
-| `build` | array of strings | no | `["target"]` when the worktree has a `Cargo.toml`, else none | The folders, relative to the worktree, that a build regenerates. The sweep deletes them in idle worktrees when disk runs low. `priory check` refuses an absolute path or one with `..`. See [sweep.md](../daemon/sweep.md#reclaiming-build-output) | `["target", "web/dist"]` |
+| `build` | array of strings | no | `["target"]` when the worktree has a `Cargo.toml`, else none | The folders, relative to the worktree, that a build regenerates. The sweep deletes them in idle worktrees when disk runs low, except a folder that holds a tracked file. `priory check` refuses an absolute path or one with `..`. See [sweep.md](../daemon/sweep.md#reclaiming-build-output) | `["target", "out"]` |
 
 Each recipe is a table with exactly one of `argv` and `shell`:
 
