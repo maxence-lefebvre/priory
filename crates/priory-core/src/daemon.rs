@@ -907,7 +907,8 @@ fn send_spans(
 }
 
 /// Records the sweep scripts that ended, then starts the scripts of a stall that just opened, for
-/// its resource. Returns whether that stall is short of disk, which the built-in sweep frees too.
+/// its resource, and the scripts due on their `every`. Returns whether that stall is short of disk,
+/// which the built-in sweep frees too.
 fn sweep_scripts(
     db: &Connection,
     factory: &Factory,
@@ -922,28 +923,52 @@ fn sweep_scripts(
         }
     }
     *running = still;
-    let Some((stall, resource)) = stall::unswept(db)? else {
-        return Ok(false);
-    };
-    for script in factory
-        .sweep()
-        .scripts
-        .iter()
-        .filter(|script| script.when.name() == resource)
-    {
-        let id = stall::started(db, stall, &script.run)?;
-        let log = log_of(home, id);
-        let timeout = script.timeout.unwrap_or(SCRIPT_TIMEOUT);
-        match script::spawn(&script.run, home, &log, timeout) {
-            Ok(child) => {
-                stall::spawned(db, id, child.pid(), memory::started(child.pid()))?;
-                running.push((id, child));
+    let scripts = &factory.sweep().scripts;
+    let scheduled = scripts.iter().filter(|script| script.every.is_some());
+    stall::prune(db, scheduled.map(|script| script.run.as_str()))?;
+    let swept = match stall::unswept(db)? {
+        Some((stall, resource)) => {
+            for script in scripts
+                .iter()
+                .filter(|script| script.when.is_some_and(|when| when.name() == resource))
+            {
+                if !stall::adopt(db, stall, &script.run)? {
+                    start_script(db, home, Some(stall), script, running)?;
+                }
             }
-            Err(error) => stall::ended(db, id, &format!("cannot start: {error}"), "")?,
+            stall::swept(db)?;
+            resource == "disk"
+        }
+        None => false,
+    };
+    for script in scripts {
+        if let Some(every) = script.every
+            && stall::due(db, &script.run, every)?
+        {
+            start_script(db, home, None, script, running)?;
         }
     }
-    stall::swept(db)?;
-    Ok(resource == "disk")
+    Ok(swept)
+}
+
+/// Starts a sweep script for `stall`, or on its schedule without one.
+fn start_script(
+    db: &Connection,
+    home: &Path,
+    stall: Option<i64>,
+    script: &factory::Script,
+    running: &mut Vec<(i64, Script)>,
+) -> Result<(), Error> {
+    let id = stall::started(db, stall, &script.run)?;
+    let timeout = script.timeout.unwrap_or(SCRIPT_TIMEOUT);
+    match script::spawn(&script.run, home, &log_of(home, id), timeout) {
+        Ok(child) => {
+            stall::spawned(db, id, child.pid(), memory::started(child.pid()))?;
+            running.push((id, child));
+        }
+        Err(error) => stall::ended(db, id, &format!("cannot start: {error}"), "")?,
+    }
+    Ok(())
 }
 
 /// Where sweep script `id` writes its output.

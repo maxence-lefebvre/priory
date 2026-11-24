@@ -1662,6 +1662,68 @@ fn a_sweep_table_passes_and_a_bad_one_names_its_line() {
 }
 
 #[test]
+fn a_sweep_script_needs_when_or_every_and_a_valid_every() {
+    let good = "name = \"demo\"\n\n[sweep]\nscripts = [\n  { run = \"nh clean all\", every = \"4h\" },\n  { run = \"cargo-prune\", every = \"7d\", when = \"disk\" },\n]\n";
+    let ok = check(&factory("sweep-every-ok", &with("factory.toml", good)));
+    let neither = good.replace(", every = \"4h\"", "");
+    let bad_neither = check(&factory("sweep-neither", &with("factory.toml", &neither)));
+    let malformed = good.replace("\"4h\"", "\"soon\"");
+    let bad_every = check(&factory(
+        "sweep-every-bad",
+        &with("factory.toml", &malformed),
+    ));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(
+        (bad_neither.code, bad_neither.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: the sweep script `nh clean all` needs `when`, `every` or both\n"
+        )
+    );
+    assert_eq!(bad_every.code, 1);
+    assert!(
+        bad_every
+            .stderr
+            .starts_with("factory.toml:5:35: \"soon\" is not a duration such as 90s, 15m or 2h"),
+        "{}",
+        bad_every.stderr
+    );
+}
+
+#[test]
+fn a_sweep_script_runs_every_10_seconds_at_most_and_every_36500_days_at_least() {
+    let least =
+        "name = \"demo\"\n\n[sweep]\nscripts = [{ run = \"nh clean all\", every = \"10s\" }]\n";
+    let ok = check(&factory("sweep-least", &with("factory.toml", least)));
+    let under = least.replace("\"10s\"", "\"9s\"");
+    let refused = check(&factory("sweep-under", &with("factory.toml", &under)));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(
+        (refused.code, refused.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: the sweep script `nh clean all` has `every` 9s: it needs to be 10s or more\n"
+        )
+    );
+
+    let most = least.replace("\"10s\"", "\"36500d\"");
+    let ok = check(&factory("sweep-most", &with("factory.toml", &most)));
+    let over = least.replace("\"10s\"", "\"36501d\"");
+    let refused = check(&factory("sweep-over", &with("factory.toml", &over)));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(
+        (refused.code, refused.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: the sweep script `nh clean all` has `every` 3153686400s: it needs to be 36500d or less\n"
+        )
+    );
+}
+
+#[test]
 fn repository_recipes_pass_and_a_bad_one_names_its_line() {
     let good = "name = \"demo\"\n\n[repos.\"owner/repo\"]\nsetup = { argv = [\"npm\", \"ci\"], timeout = \"15m\" }\nresume = { shell = \"npm ci --prefer-offline\" }\nteardown = { shell = \"docker compose down\" }\n";
     let ok = check(&factory("recipes-ok", &with("factory.toml", good)));
