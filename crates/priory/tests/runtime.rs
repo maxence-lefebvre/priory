@@ -16274,6 +16274,13 @@ fn a_gated_command_runs_once_after_the_daemon_drops_any_message() {
             String::from_utf8_lossy(&done.stderr)
         );
         assert_eq!(String::from_utf8_lossy(&done.stdout), "ran\n");
+        let stderr = String::from_utf8_lossy(&done.stderr);
+        let said = stderr.matches("grant 7 waits to start its command: the daemon closed");
+        assert_eq!(
+            said.count(),
+            usize::from(name == "gate-dropped-run"),
+            "{name}: {stderr}"
+        );
         let expected = messages.map(|message| {
             let grant = if message == "acquire" {
                 json!(null)
