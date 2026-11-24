@@ -1,5 +1,6 @@
 use crate::recipe::{self, Teardown};
 use priory_factory::factory::Factory;
+use priory_runtime::slice;
 use priory_runtime::worktrees::{self, Found, Verdict};
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::BTreeMap;
@@ -266,6 +267,59 @@ fn human(bytes: u64) -> String {
         size /= 1024.0;
     }
     format!("{size:.1} TiB")
+}
+
+/// The last time the sweep restored the agents slice's limits, kept in `<home>/slice.json`.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Restored {
+    at: jiff::Timestamp,
+    what: String,
+}
+
+/// The sweep's check of the agents slice's limits.
+#[derive(Default)]
+pub(crate) struct Limits {
+    failed: bool,
+}
+
+impl Limits {
+    /// Restores the limits of `slice` another process changed, and says so in the log and on the
+    /// desk. A check that keeps failing is logged once.
+    pub(crate) fn check(&mut self, slice: &str, share: &crate::room::Share, home: &Path) {
+        let found = match slice::restore(slice, share.cpu, share.memory) {
+            Ok(found) => found,
+            Err(error) => {
+                if !std::mem::replace(&mut self.failed, true) {
+                    eprintln!("priory daemon: checking the limits of {slice}: {error}");
+                }
+                return;
+            }
+        };
+        self.failed = false;
+        let Some(found) = found else { return };
+        let what = format!("another process set {slice} to {found}; the sweep restored its limits");
+        eprintln!("priory daemon: {what}");
+        let file = home.join("slice.json");
+        let restored = Restored {
+            at: jiff::Timestamp::now(),
+            what,
+        };
+        let json = serde_json::to_vec(&restored).expect("serializes");
+        if let Err(error) = std::fs::write(&file, json) {
+            eprintln!("priory daemon: recording {}: {error}", file.display());
+        }
+    }
+}
+
+/// The last restore of the agents slice's limits, for a day.
+pub fn slice_banner(home: &Path) -> Option<String> {
+    let json = std::fs::read(home.join("slice.json")).ok()?;
+    let restored: Restored = serde_json::from_slice(&json).ok()?;
+    let day = jiff::SignedDuration::from_hours(24);
+    (restored.at + day > jiff::Timestamp::now()).then(|| {
+        let at = restored.at.round(jiff::Unit::Second).unwrap_or(restored.at);
+        format!("{} at {at}", restored.what)
+    })
 }
 
 /// How long the sweep waits before it fetches again a clone whose fetch failed.

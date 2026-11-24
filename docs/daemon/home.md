@@ -24,6 +24,7 @@ $PRIORY_HOME/
   summaries/                   where summarizer calls run (see search.md)
   models/                      the embedding model's files (see search.md)
   push/                        the Web Push key pair and the requests in flight (see serve.md)
+  slice.json                   the last restore of the agents slice's limits (see agents-slice.md)
   fetches/owner/name.json      the failing fetch of owner/name's clone (see sweep.md)
 ```
 

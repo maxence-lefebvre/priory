@@ -352,6 +352,15 @@ pane wrapped counts as one line, so a secret that wraps is hidden whole. Both hi
 screen does (see [serve.md](serve.md#a-runs-screen)), and show `[redacted]` alone when one still
 shows.
 
+The commands give way to a cause the daemon can see, so a person does not accept a trust that is
+not missing:
+
+- In the last minute, every runnable agent of the [agents slice](agents-slice.md) waited for CPU at
+  least 10 % of the time: `priory-agents.slice was throttled: its agents had no CPU for <n>% of the
+  last minute, under CPUQuota=<quota>`.
+- Claude's pane shows its input box: `its prompt is ready and asks for no trust, so its SessionStart
+  hook is late or never reached the daemon. Resume the task to try again`.
+
 The daemon's `runs` metrics group counts both as starts that ended in `error`, and shows a start
 still waiting for `SessionStart` by its age. See [metrics.md](metrics.md#the-runs-group).
 

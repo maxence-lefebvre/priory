@@ -6,7 +6,7 @@ Each second, the daemon gives every live run one of these verdicts, in this orde
 | ------- | ----------- | -------- | ---- | ------ |
 | Unexpected exit | the tagged pane is gone, or dead under `remain-on-exit`, and no result, ask or wait ended the turn | `exited` | `failed`, then repaired: see Repair | `run <id> exited: claude no longer runs in tmux session <name>` |
 | Trust dialog | the screen of a run with no `SessionStart` shows Claude's trust dialog | `exited` | `blocked` | `claude asked whether to trust <worktree>; Priory never answers it. ...` |
-| No `SessionStart` | 60 seconds with no `SessionStart`, as under [Trusting the worktrees and the clone](sessions.md#trusting-the-worktrees-and-the-clone) | `exited` | `blocked` | `claude showed no SessionStart within 60s; ...` |
+| No `SessionStart` | 60 seconds with no `SessionStart`, as under [Trusting the worktrees and the clone](sessions.md#trusting-the-worktrees-and-the-clone) | `exited` | `blocked` | `claude showed no SessionStart within 60s; ...`, then the cause it can see, else the folders to trust |
 | Permission prompt | a `PermissionPrompt` signal | `permission` | `blocked` | `run <id> stopped on a permission prompt: <message>` |
 | Timeout | a turn older than its step's `timeout` | `timeout` | `blocked` | `run <id> timed out: its turn ran past <n>s` |
 

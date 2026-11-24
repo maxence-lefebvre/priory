@@ -232,12 +232,23 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     }
     let share = Share::of(factory, trace.machine.as_deref());
     let slice = slice::name();
-    let scope = slice::scope(&slice, share.cpu, share.memory).unwrap_or_else(|error| {
-        eprintln!(
-            "priory daemon: no systemd user manager, so runs start outside {slice} and only the room check caps them: {error}"
-        );
-        Vec::new()
-    });
+    let claimed = slice::claim(&slice, &home);
+    let scope = slice::control_group(&slice)
+        .and_then(|_| match &claimed {
+            Ok(()) => slice::cap(&slice, share.cpu, share.memory),
+            Err(_) => Ok(()),
+        })
+        .and_then(|()| slice::scope(&slice))
+        .unwrap_or_else(|error| {
+            eprintln!(
+                "priory daemon: no systemd user manager, so runs start outside {slice} and only the room check caps them: {error}"
+            );
+            Vec::new()
+        });
+    if let (Err(why), false) = (&claimed, scope.is_empty()) {
+        eprintln!("priory daemon: left the limits of {slice} alone: {why}");
+    }
+    let mut limits = (claimed.is_ok() && !scope.is_empty()).then(sweep::Limits::default);
     // Checked once, as the slice is: a jailed task never starts unjailed where this fails.
     let probe = || {
         priory_runtime::jail::probe().inspect_err(|error| {
@@ -486,6 +497,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         if swept.is_none_or(|at| at.elapsed() >= every) {
             swept = Some(Instant::now());
             sweep::run(&db, factory, &home)?;
+            if let Some(limits) = &mut limits {
+                limits.check(&slice, &share, &home);
+            }
             sweep::measure(&home);
             let short = || room::measure(&home).is_ok_and(|room| crate::room::short_of_disk(&room));
             sweep::retire(&db, factory, &home, short)?;
@@ -1666,11 +1680,20 @@ fn verdict(
                 0 => state::READY_WITHIN,
                 _ => state::DIRENV_READY_WITHIN,
             };
+            let advice = if let Some(throttled) = slice::throttled(&slice::name()) {
+                throttled
+            } else if rows.as_deref().is_some_and(|rows| harness.at_prompt(rows)) {
+                "its prompt is ready and asks for no trust, so its SessionStart hook is late or \
+                 never reached the daemon. Resume the task to try again"
+                    .to_owned()
+            } else {
+                trust()
+            };
             format!(
                 "{} showed no SessionStart within {}; {}",
                 harness.program(),
                 within.replace(" seconds", "s"),
-                trust()
+                advice
             )
         };
         let rows = rows.unwrap_or_default();

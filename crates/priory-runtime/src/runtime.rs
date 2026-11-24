@@ -971,6 +971,10 @@ pub trait Harness {
     fn asks_trust(&self, _screen: &str) -> bool {
         false
     }
+    /// Whether `screen` shows the harness at its own prompt, which it reaches only past its dialogs.
+    fn at_prompt(&self, _screen: &str) -> bool {
+        false
+    }
     /// Records the harness's trust in `worktree` and its `clone`, each a real path Priory owns.
     fn grant_trust(&self, worktree: &Path, clone: &Path) -> Vec<crate::trust::Grant>;
     /// Whether the harness's config still holds the trust `grant_trust` recorded.
@@ -1158,6 +1162,16 @@ impl Harness for ClaudeCode {
         screen.contains("Accessing workspace:")
             && (screen.contains("Yes, I trust this folder")
                 || screen.contains("Quick safety check"))
+    }
+
+    /// Claude draws its input box between two rules; a dialog's `❯` has no rule right above it.
+    fn at_prompt(&self, screen: &str) -> bool {
+        let lines: Vec<_> = screen.lines().collect();
+        lines.windows(2).enumerate().any(|(at, pair)| {
+            pair[0].starts_with("───")
+                && pair[1].starts_with('❯')
+                && lines[at + 2..].iter().any(|line| line.starts_with("───"))
+        })
     }
 
     /// The servers' definitions can hold tokens, which a command line would show to every process.
