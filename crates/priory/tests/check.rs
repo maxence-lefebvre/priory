@@ -1324,6 +1324,85 @@ fn a_linear_trigger_uses_a_supported_event_filter_and_key() {
 }
 
 #[test]
+fn a_linear_project_trigger_names_its_project_event_and_filter() {
+    let trigger =
+        |rest: &str| format!("source = \"linear.project\"\nworkflow = \"implement\"\n{rest}");
+    let good = trigger(
+        "project = \"134960a1-5996-4f1e-93c9-1464206810c0\"\non = \"issue.entered\"\nbackfill = true\nfilter = { assignee = \"max@example.com\", state = [\"triage\", \"backlog\"] }\n",
+    );
+    let one =
+        trigger("project = \"a1b2c3\"\non = \"issue.left\"\nfilter = { state = \"started\" }\n");
+    let mut files = with("triggers/agent-label.toml", &good);
+    files.push(("triggers/one.toml", &one));
+    let ok = check(&factory("linear-project", &files));
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+
+    let project = "a `linear.project` trigger names a `project`: its UUID or its slug id";
+    let assignee = "filter `assignee` is a Linear user's id or email";
+    let states = "filter `state` lists state types: `triage`, `backlog`, `unstarted`, `started`, `completed`, `canceled`, `duplicate`";
+    for (index, (rest, expected)) in [
+        ("on = \"issue.entered\"\n", project),
+        ("project = \"a:b\"\non = \"issue.entered\"\n", project),
+        (
+            "project = \"p\"\non = \"issue.created\"\n",
+            "a `linear.project` trigger handles `issue.entered`, `issue.left`, not `issue.created`",
+        ),
+        (
+            "project = \"p\"\non = \"issue.left\"\nfilter = { label = \"x\" }\n",
+            "a `linear.project` trigger filters on `assignee` or `state`",
+        ),
+        (
+            "project = \"p\"\non = \"issue.left\"\nfilter = { assignee = \"\" }\n",
+            assignee,
+        ),
+        (
+            "project = \"p\"\non = \"issue.left\"\nfilter = { assignee = \"max\" }\n",
+            assignee,
+        ),
+        (
+            "project = \"p\"\non = \"issue.left\"\nfilter = { assignee = [\"a@b.c\"] }\n",
+            "filter `assignee` is a string, not a list",
+        ),
+        (
+            "project = \"p\"\non = \"issue.left\"\nfilter = { state = [] }\n",
+            states,
+        ),
+        (
+            "project = \"p\"\non = \"issue.left\"\nfilter = { state = [\"Todo\"] }\n",
+            states,
+        ),
+        (
+            "project = \"p\"\non = \"issue.left\"\nfilter = { state = 3 }\n",
+            "expected a string or a list of strings",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let bad = trigger(rest);
+        let files = with("triggers/agent-label.toml", &bad);
+        let outcome = check(&factory(&format!("linear-project-{index}"), &files));
+        assert_eq!(outcome.code, 1, "{rest}");
+        assert!(
+            outcome.stderr.contains(expected),
+            "{rest}: {}",
+            outcome.stderr
+        );
+    }
+
+    let list = "source = \"linear\"\non = \"issue.created\"\nproject = \"p\"\nfilter = { state = [\"Todo\"] }\nworkflow = \"implement\"\n";
+    let outcome = check(&factory(
+        "linear-list",
+        &with("triggers/agent-label.toml", list),
+    ));
+    assert_eq!(
+        outcome.stderr,
+        "triggers/agent-label.toml:3: only a `linear.project` trigger names a `project`\n\
+         triggers/agent-label.toml:4: filter `state` is a string, not a list\n"
+    );
+}
+
+#[test]
 fn a_linear_or_slack_trigger_may_name_the_repo_its_tasks_work_in() {
     let linear = "source = \"linear\"\nrepo = \"owner/repo\"\non = \"issue.created\"\nworkflow = \"implement\"\n";
     let slack = "source = \"slack\"\nchannel = \"C0123\"\nrepo = \"owner/repo\"\non = \"message.posted\"\nworkflow = \"implement\"\n";

@@ -1,6 +1,6 @@
 use crate::log::{self, Log};
 use herdr_bus::{Bus, Message, Output, Timestamp, Uuid};
-use priory_factory::factory::{Factory, Trigger};
+use priory_factory::factory::{Factory, FilterValue, Trigger};
 use priory_runtime::http::Reply;
 mod cloudwatch;
 mod figma;
@@ -73,7 +73,7 @@ pub const PASSING: [&str; 3] = ["success", "neutral", "skipped"];
 /// The streams of a repo: the message type each is named after.
 const STREAMS: [&str; 4] = [LABELED, OPENED, REVIEWED, CHECKED];
 pub(crate) const TASK_REQUESTED: &str = "factory.task.requested";
-const BASELINE: &str = "factory.intake.baseline";
+pub const BASELINE: &str = "factory.intake.baseline";
 const EVERY: Duration = Duration::from_secs(60);
 
 /// The counter of the events the intake and the webhooks publish, by source, way and outcome.
@@ -328,7 +328,7 @@ pub fn run(
         .values()
         .filter_map(|trigger| trigger.value.repo.as_deref())
         .collect();
-    let linear_triggers = [from("linear"), from("linear.view")].concat();
+    let linear_triggers = [from("linear"), from("linear.view"), from("linear.project")].concat();
     let slack_triggers = from("slack");
     let review_triggers: Vec<(&str, &Trigger)> = triggers
         .iter()
@@ -894,16 +894,19 @@ impl Observed {
         let outsider = field("association")
             .is_some_and(|association| !["OWNER", "MEMBER", "COLLABORATOR"].contains(&association));
         let matches = |trigger: &Trigger| {
-            let filter = |key: &str| trigger.filter.as_ref().and_then(|filter| filter.get(key));
+            let filter = |key: &str| {
+                let value = trigger.filter.as_ref().and_then(|filter| filter.get(key));
+                value.and_then(FilterValue::one)
+            };
             // A bot's review starts a task only for a trigger that names the bot.
             let commenter = match filter("commenter") {
-                Some(commenter) => field("actor") == Some(commenter.as_str()),
+                Some(commenter) => field("actor") == Some(commenter),
                 None => self.data["bot"] != true,
             };
             trigger.repo.as_deref() == Some(self.repo.as_str())
                 && format!("github.{}", trigger.on) == self.kind
-                && filter("label").is_none_or(|label| self.label.as_ref() == Some(label))
-                && filter("author").is_none_or(|author| field("author") == Some(author.as_str()))
+                && filter("label").is_none_or(|label| self.label.as_deref() == Some(label))
+                && filter("author").is_none_or(|author| field("author") == Some(author))
                 && commenter
                 && !outsider
                 && !agent
@@ -927,7 +930,7 @@ fn task_requested(name: &str, trigger: &Trigger, source: &Message, key: String) 
         "trigger": name,
         "source": source.id.to_string(),
     });
-    for field in ["team", "project"] {
+    for field in ["team", "project", "order"] {
         if let Some(value) = source.data.get(field) {
             data[field] = value.clone();
         }

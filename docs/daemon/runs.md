@@ -188,6 +188,31 @@ its next turn end for task 12 (blocker)`. The stopped task is `ready` again in i
 own place, and its next run resumes its session. See
 [room.md](room.md#urgent-wakes).
 
+### Milestone order
+
+The tasks of `linear.view` and `linear.project` triggers follow their project in Linear. Per band, a
+project's tasks keep the places their age gives them in the queue, and fill those places in this
+order:
+
+1. Their milestone's order, then its target date. A milestone without a date comes after one with a
+   date. Issues without a milestone come last.
+2. The issue's own order within the milestone.
+
+So tasks 3 and 8 of one project trade places when the issue of task 8 is in the earlier milestone,
+and the tasks between them stay where they are. Each project is ordered by itself. A task whose issue
+has no project starts by age.
+
+A later milestone queues behind an earlier one. It does not wait until the earlier one has no open
+task, so it can start while the earlier one's tasks run, sleep or are held.
+
+The intake's next poll after a change in Linear reorders the queued tasks. Bands, aging and a
+person's order come first: a task that `priory move` placed keeps its place. Such a move places every
+active task of its band, so those tasks follow no later change in Linear. `priory move <task> --band
+<band>` gives a task's place back. With [`fair = "lane"`](#turns-between-lanes), lanes take turns
+before milestones, and the order holds within each lane.
+
+The order is neither a band nor a place: the daemon keeps it as a sort key of its own.
+
 ### Aging
 
 Strict band order lets a steady flow of `today` tasks keep a `later` task waiting forever.
@@ -415,14 +440,16 @@ task under `conditions`, with `met` and `met_as` once it is met.
 A batch's entry is held on one `merged` condition per entry it starts after, which no flag sets (see
 [batches.md](batches.md)). Its reason reads `held: batch 4, until task 31 merges`.
 
-When a task's Linear issue leaves the watched view before the task's first run, the daemon holds
+When a task's Linear issue leaves the watched view or project before the task's first run, the daemon holds
 the task and asks a person whether to drop or keep it, since the view may have said "not this one":
 `ENG-7 left the view My loop backlog. Drop the task?`, with the options `drop` and `keep`. The
 reason reads `held: left the view My loop backlog, until a person answers whether to keep it`.
-`drop` drops the task with the reason `dropped by a person after its issue left the view`. `keep`
+`drop` drops the task with the reason `dropped by a person after its issue left the view`, or `the
+project`. `keep`
 releases that hold, back to the state it was held from. When the issue enters the view it left
 again before anyone answers, the daemon answers `keep` itself and the hold's condition reads
-`ENG-7 entered the view My loop backlog again`. Entering another view answers nothing. A task that already ran gets no ask: its
+`ENG-7 entered the view My loop backlog again`. Entering another view answers nothing, nor does entering the same project through another filter. Leaving
+a second project or filter asks again; leaving a second view does not. A task that already ran gets no ask: its
 agent hears `linear.issue.left` as an event of its own key, which wakes it when it sleeps at a model
 step (see [Subscriptions in tools.md](tools.md#subscriptions)). A batch entry gets the same ask.
 

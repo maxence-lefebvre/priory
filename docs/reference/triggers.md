@@ -12,6 +12,7 @@ cannot tell which keys a source refuses; `priory check` does.
 - [`github`](#github)
 - [`linear`](#linear)
 - [`linear.view`](#linearview)
+- [`linear.project`](#linearproject)
 - [`sentry`](#sentry)
 - [`cloudwatch`](#cloudwatch)
 - [`honeycomb`](#honeycomb)
@@ -30,7 +31,7 @@ cannot tell which keys a source refuses; `priory check` does.
 
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
-| `source` | string | yes | | `github`, `linear`, `linear.view`, `sentry`, `honeycomb`, `intercom`, `cloudwatch`, `figma`, `slack` or `schedule` | `"github"` |
+| `source` | string | yes | | `github`, `linear`, `linear.view`, `linear.project`, `sentry`, `honeycomb`, `intercom`, `cloudwatch`, `figma`, `slack` or `schedule` | `"github"` |
 | `workflow` | string | yes | | The workflow a matching event starts, by file name | `"implement"` |
 | `repo` | string | per source | | The repository the trigger's tasks work in, a GitHub `owner/name`. `priory check` refuses any other shape, such as `..` or a path | `"owner/name"` |
 | `key` | string | no | per source | Which events are the same work. A factory holds at most one active task per key | `"issue.number"` |
@@ -190,6 +191,39 @@ workflow = "implement"
 key = "issue.identifier"       # the task key is linear:ENG-7
 band = "now"
 ```
+
+## `linear.project`
+
+Starts a task when an issue enters or leaves a Linear project. An issue counts as in the project
+only while it matches the whole `filter`, so an issue assigned to the filter's `assignee` enters,
+and one assigned to someone else leaves. See [linear.md](../intake/linear.md).
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `project` | string | yes | | The project: its UUID, or its slug id. The name and the URL are not taken | `"134960a1-5996-4f1e-93c9-1464206810c0"` |
+| `on` | string | yes | | `issue.entered` or `issue.left` | `"issue.entered"` |
+| `filter` | table | no | | `assignee` (a Linear user's id or email, in any case) and `state` (one state type or a list of them: `triage`, `backlog`, `unstarted`, `started`, `completed`, `canceled`, `duplicate`). Every key must match, and a list matches any of its types | `{ state = ["backlog", "unstarted"] }` |
+| `key` | string | no | the identifier | `issue.identifier`. The task key is `linear:ENG-7` | `"issue.identifier"` |
+| `backfill` | boolean | no | `false` | Whether the issues in the project at the first poll start tasks. A changed `filter` or `project` has its own first poll (see [Filter changes](../intake/linear.md#filter-changes)) | `true` |
+
+<!-- example: factory/triggers/my-project.toml -->
+```toml
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
+source = "linear.project"
+project = "134960a1-5996-4f1e-93c9-1464206810c0" # the project's UUID, or its slug id
+on = "issue.entered"           # or issue.left
+repo = "owner/name"            # where its tasks work; without it they block
+workflow = "implement"
+key = "issue.identifier"       # the task key is linear:ENG-7
+band = "today"
+
+[filter]                       # every key must match
+assignee = "max@example.com"   # a Linear user's email or id
+state = ["triage", "backlog", "unstarted"]
+```
+
+Tasks of a `linear.view` or `linear.project` trigger start in milestone order. See
+[runs.md](../daemon/runs.md#milestone-order).
 
 ## `sentry`
 

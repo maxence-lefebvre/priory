@@ -30,6 +30,7 @@ pub mod listing;
 pub mod memories;
 pub mod memory;
 pub mod metrics;
+mod milestones;
 #[cfg(feature = "model")]
 mod model;
 mod notify;
