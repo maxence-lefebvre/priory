@@ -273,7 +273,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     })?;
     // A reboot or a killed tmux server takes the agents with it; that is the host's doing, not theirs.
     for run in state::live(&db)? {
-        if runtime::pane(&run.tmux, &run.session).is_some() {
+        if runtime::pane(&run.tmux, &run.session).is_some() || cloud_run(factory, &run.agent) {
             continue;
         }
         runtime::kill(&run.tmux);
@@ -1341,12 +1341,7 @@ fn tend(
 ) -> Result<(), Error> {
     let factory = trace.factory;
     for mut run in state::live(db)? {
-        // A cloud run has no local process: its branch or its deadline ends it.
-        if factory
-            .agents
-            .get(&run.agent)
-            .is_some_and(|agent| crate::cloud::is_cloud(&agent.value))
-        {
+        if cloud_run(factory, &run.agent) {
             continue;
         }
         if run.direnv == 1
@@ -3003,6 +2998,15 @@ pub(crate) fn repo_of<'f>(
         return Some(factory.sweep().repo());
     }
     repo.or_else(|| factory.triggers.get(trigger)?.value.repo.as_deref())
+}
+
+/// Whether `agent` runs in a cloud session, which has no local process: its branch or its deadline
+/// ends the run, never its tmux pane.
+fn cloud_run(factory: &Factory, agent: &str) -> bool {
+    factory
+        .agents
+        .get(agent)
+        .is_some_and(|agent| crate::cloud::is_cloud(&agent.value))
 }
 
 /// The harness that runs `agent`; Claude Code for an agent the factory lost.

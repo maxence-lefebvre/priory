@@ -21,7 +21,11 @@ Checked against Claude Code 2.1.331 and its docs on 2026-11-24
 - `claude -p MSG --cloud ID --output-format json` queues a message into a session and prints
   `{ok, session_id, url}`.
 - No command reads a session's state or transcript, lists sessions, or stops or archives one.
-- `--cloud` takes one repository. A session clones the GitHub remote, not the local checkout.
+- `--cloud` takes one repository. A session clones the GitHub remote, not the local checkout. One
+  whose GitHub connection could not reach the repository started anyway, with the files and no
+  `origin`, and could not push.
+- `claude --cloud` shows the trust dialog in a folder Claude does not trust, and refuses a linked
+  worktree under a temporary folder.
 - Inside the session, a GitHub proxy allows branch pushes only, and blocks GraphQL, so `gh pr
   create` fails.
 - Cloud environments are made and edited only in the web UI. `--environment` takes self-hosted
@@ -91,10 +95,13 @@ On `main` with this note:
 ## Open questions
 
 1. **Does a session keep the branch name?** The prompt names `claude/priory-<task>-<token>`.
-   Recommendation: check it on the first real run, and fall back to a token in the commit message
+   The first real session used that name in its `git push`, which failed for lack of access. Recommendation: check it again with access, and fall back to a token in the commit message
    with a poll of `claude/*` branches if sessions rename it.
 2. **In which folder does the setup script run?** The docs do not say. Recommendation: the script
    `priory cloud setup-script` prints embeds each `cloud_setup` script's text, so it does not
    depend on the folder or the clone.
-3. **Which environment does a dispatch use?** The CLI's default. Recommendation: one environment
+3. **How does a missing GitHub connection show early?** The session starts and only its push fails,
+   so the step waits for its deadline. Recommendation: a doctor check that pushes a branch by hand,
+   as the how-to does, until the CLI reports access.
+4. **Which environment does a dispatch use?** The CLI's default. Recommendation: one environment
    per person for now, and per-repository environments once the CLI takes an `env_` id.

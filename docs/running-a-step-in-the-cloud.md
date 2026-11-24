@@ -16,10 +16,13 @@ how a cloud run works and what it gives up.
 4. Check it by hand from your clone of the repository:
 
    ```sh
-   claude --cloud "Reply with ok. Change nothing."
+   claude --cloud "Push an empty commit to the branch claude/access-check. Open no pull request."
    ```
 
-   It prints `Created cloud session` and a `View:` link. Archive that session on claude.ai/code.
+   It prints `Created cloud session` and a `View:` link. Wait until
+   `git ls-remote origin claude/access-check` prints a commit. A session with no access to the
+   repository still starts, from an uploaded copy with no `origin`, and its push fails. Then delete
+   the branch, and archive the session on claude.ai/code.
 
 ## Give cloud sessions your instructions and skills
 

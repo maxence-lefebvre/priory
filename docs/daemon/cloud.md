@@ -63,6 +63,12 @@ worked finds the branch at its next poll.
 A step with no `pushed` or `failed` outcome cannot store that result, so the task blocks with the
 summary and the refusal. `priory check` refuses such a step first.
 
+A daemon restart keeps a live cloud run: it has no tmux pane to lose, so it is never `lost`, and the
+next poll looks for its branch.
+
+A session whose GitHub connection cannot reach the repository still starts, from an uploaded copy
+with no `origin`. Its push fails, and the deadline ends the step `failed`.
+
 A daemon that stops while `claude --cloud` runs cannot tell whether the session started. At its
 next tick, it blocks the task with `cloud run <id> may or may not have started a cloud session`,
 and never runs the command again for that run. A person checks claude.ai/code before resuming.

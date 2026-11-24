@@ -33099,3 +33099,56 @@ fn cloud_setup_script_prints_a_script_that_writes_the_factorys_instructions_and_
         b"## Changes\n\xff\n"
     );
 }
+
+#[test]
+fn a_daemon_restart_keeps_a_live_cloud_run_and_claims_its_later_push() {
+    let mut setup = cloud("cloud-restart", CLOUD);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[4] == "session_01Fake1")
+    });
+    setup.crash();
+    let prompt = &setup.cloud_prompts()[0];
+    let branch = prompt
+        .split("git push origin HEAD:")
+        .nth(1)
+        .and_then(|rest| rest.split('`').next())
+        .unwrap()
+        .to_owned();
+    let work = setup.dir.join("session");
+    let bare = setup.dir.join("origin/owner/repo.git");
+    assert!(
+        git(&setup.dir)
+            .args(["clone", "-q"])
+            .arg(&bare)
+            .arg(&work)
+            .status()
+            .unwrap()
+            .success()
+    );
+    fs::write(work.join("cloud.txt"), "cloud\n").unwrap();
+    for args in [
+        &["add", "cloud.txt"][..],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "Add the widget",
+        ],
+        &["push", "-q", "origin", &format!("HEAD:refs/heads/{branch}")],
+    ] {
+        assert!(git(&work).args(args).status().unwrap().success());
+    }
+
+    setup.start();
+
+    setup.until("asks", |rows| rows.len() == 1);
+    let runs = setup.rows("runs");
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    assert_eq!(setup.cloud_prompts().len(), 1);
+    assert_eq!(task_json(&setup, "1")["results"][0]["outcome"], "pushed");
+}
