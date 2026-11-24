@@ -7991,6 +7991,7 @@ fn the_mcp_server_lists_its_tools() {
         )),
         "{instructions}"
     );
+    assert!(instructions.contains("If it exits 75"), "{instructions}");
     assert_eq!(
         replies[1]["result"]["tools"][0]["inputSchema"]["properties"]["feedback"]["type"],
         "object"
@@ -14981,7 +14982,11 @@ fn acquires_that_do_not_fit_together_run_one_after_the_other_in_fifo_order() {
         .rows("desk")
         .into_iter()
         .filter(|row| row[1] == "memory")
-        .map(|row| [row[3].clone(), row[5].clone()])
+        .map(|row| {
+            let (what, holder) = row[5].split_once("; grant ").unwrap();
+            assert!(holder.starts_with("1 holds 40.0 GB for "), "{holder}");
+            [row[3].clone(), what.to_owned()]
+        })
         .collect();
     assert_eq!(
         desk,
@@ -15283,6 +15288,148 @@ fn an_acquire_that_waits_past_its_timeout_gives_up_and_leaves_no_grant() {
     assert_eq!(late.status.code(), Some(125));
     assert!(a.wait_with_output().unwrap().status.success());
     assert!(setup.rows("memory").is_empty());
+}
+
+/// A daemon whose factory gives up after `factory`, with its machine's runner file `runner`, and
+/// grant 1 that holds 40 GB until `hold-a` is released.
+fn gives_up(name: &str, factory: &str, runner: &str) -> (Setup, Child) {
+    let mut setup = Setup::new(name);
+    let write = |file: &str, text: String| {
+        let file = setup.dir.join("factory").join(file);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, text).unwrap();
+    };
+    write(
+        "factory.toml",
+        format!("name = \"demo\"\n\n[memory]\ngive_up_after = \"{factory}\"\n"),
+    );
+    write(
+        "runners/runner.toml",
+        format!("platform = {{ os = \"linux\" }}\n{runner}"),
+    );
+    setup.start();
+    listening(&setup);
+    setup.hold("hold-a");
+    let a = acquire(&setup, "40", &held("a"));
+    setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
+    (setup, a)
+}
+
+/// Runs `priory memory <verb> --gb 40 <flags> -- touch ran` to its end, then ends grant 1.
+fn waits_out(setup: Setup, a: Child, verb: &str, flags: &[&str]) -> (Option<i32>, String) {
+    let done = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args(["memory", verb, "--gb", "40"])
+        .args(flags)
+        .args(["--", "touch", "ran"])
+        .current_dir(setup.dir.join("fake"))
+        .output()
+        .unwrap();
+    setup.release("hold-a");
+    assert!(a.wait_with_output().unwrap().status.success());
+    assert!(!setup.dir.join("fake/ran").exists());
+    assert!(setup.rows("memory").is_empty());
+    let stderr = String::from_utf8(done.stderr).unwrap();
+    let last = stderr.lines().last().unwrap_or_default().to_owned();
+    (done.status.code(), last)
+}
+
+#[test]
+fn an_acquire_that_waits_past_give_up_after_exits_75_and_says_to_run_it_on_ci() {
+    let (setup, a) = gives_up("gate-give-up", "1s", "");
+
+    let done = waits_out(setup, a, "acquire", &[]);
+
+    let why = "priory memory: waited 1s for 40 GB behind 1 grant; push and let CI run this";
+    assert_eq!(done, (Some(75), why.to_owned()));
+}
+
+#[test]
+fn a_runner_files_give_up_after_wins_over_the_factorys() {
+    let runner = "[memory]\ngive_up_after = \"1s\"\n";
+    let (setup, a) = gives_up("gate-give-up-runner", "1h", runner);
+
+    assert_eq!(waits_out(setup, a, "acquire", &[]).0, Some(75));
+}
+
+#[test]
+fn a_timeout_wins_over_give_up_after() {
+    let (setup, a) = gives_up("gate-give-up-timeout", "1s", "");
+
+    let began = Instant::now();
+    let done = waits_out(setup, a, "acquire", &["--timeout", "3s"]);
+
+    assert!(began.elapsed() >= Duration::from_secs(3));
+    let why = "priory memory: grant 2 still waits after 3s; the command did not run";
+    assert_eq!(done, (Some(125), why.to_owned()));
+}
+
+#[test]
+fn a_lease_never_gives_up() {
+    let (setup, a) = gives_up("gate-give-up-lease", "1s", "");
+    let lease = lease(&setup, "40", "true");
+    setup.until("memory", |rows| rows.len() == 2);
+
+    std::thread::sleep(Duration::from_secs(3));
+
+    assert_eq!(setup.rows("memory")[1][2], "waiting");
+    setup.release("hold-a");
+    assert!(a.wait_with_output().unwrap().status.success());
+    assert!(lease.wait_with_output().unwrap().status.success());
+}
+
+#[test]
+fn a_grant_held_past_an_hour_is_flagged_while_another_waits() {
+    let (setup, a) = gives_up("gate-long-hold", "1h", "");
+    let held_for = |seconds: u32| {
+        rusqlite::Connection::open(setup.dir.join("priory.db"))
+            .unwrap()
+            .execute(
+                "UPDATE grants SET granted = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?1)
+                 WHERE id = 1",
+                [format!("-{seconds} seconds")],
+            )
+            .unwrap();
+    };
+    let flags = || -> Vec<_> {
+        let rows = setup.rows("memory");
+        rows.iter()
+            .map(|row| [row[0].clone(), row[7].clone()])
+            .collect()
+    };
+    let held_command = format!("sh -c {}", held("a"));
+    let memory = || -> Vec<_> {
+        let rows = setup.rows("desk").into_iter();
+        rows.filter(|row| row[1] == "memory")
+            .map(|row| row[5].clone())
+            .collect()
+    };
+    held_for(6690);
+    assert_eq!(flags(), [["1", "-"]]);
+    assert!(memory().is_empty());
+
+    let mut b = acquire(&setup, "40", "true");
+    setup.until("memory", |rows| rows.len() == 2);
+
+    assert_eq!(flags(), [["1", "long"], ["2", "-"]]);
+    assert_eq!(setup.rows("memory")[0][5], "1h 51m");
+    assert_eq!(
+        memory(),
+        [
+            format!("holds 40.0 GB for 1h 51m while 1 grant waits: {held_command}"),
+            "waits for 40.0 GB: sh -c true; grant 1 holds 40.0 GB for 1h 51m".to_owned(),
+        ]
+    );
+    held_for(1800);
+    assert_eq!(flags(), [["1", "-"], ["2", "-"]]);
+    assert_eq!(
+        memory(),
+        ["waits for 40.0 GB: sh -c true; grant 1 holds 40.0 GB for 30m"]
+    );
+
+    setup.release("hold-a");
+    assert!(a.wait_with_output().unwrap().status.success());
+    assert!(b.wait().unwrap().success());
 }
 
 /// Starts `priory memory lease --gb <gb> -- sh -c <script>` in the test's `fake` directory.

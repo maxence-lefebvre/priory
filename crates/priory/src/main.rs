@@ -1,4 +1,4 @@
-use priory_core::memory::Gate;
+use priory_core::memory::{GAVE_UP, Gate};
 use priory_core::{
     daemon, deliver, embed, evidence, grades, label, listing, post, progress, proof, relate,
     reload, report, risk, runners, search, sections, serve, snooze, state, subscribe, todo, tools,
@@ -2572,11 +2572,8 @@ fn prompt_eval(args: Vec<String>) -> ExitCode {
 fn memory(args: Vec<OsString>) -> ExitCode {
     match args.split_first() {
         None => list(
-            "id\ttask\tstate\tgb\tcommand\tage\tpid",
-            "SELECT id, task, state, printf('%.1f', bytes / 1073741824.0),
-             replace(command, char(10), '\\n'),
-             (strftime('%s', 'now') - strftime('%s', coalesce(granted, created))) || 's', pid
-             FROM grants ORDER BY created, id",
+            "id\ttask\tstate\tgb\tcommand\tage\tpid\tflag",
+            priory_core::memory::LIST,
         ),
         Some((verb, args)) if verb == "acquire" => acquire(args, false),
         Some((verb, args)) if verb == "lease" => acquire(args, true),
@@ -2586,6 +2583,8 @@ fn memory(args: Vec<OsString>) -> ExitCode {
 
 /// The exit code of `priory memory acquire` when the gate itself fails, as `env` and `timeout` use.
 const GATE_FAILED: u8 = 125;
+/// The exit code when the wait passes the factory's `[memory] give_up_after`: `EX_TEMPFAIL`.
+const GATE_GAVE_UP: u8 = 75;
 /// How long a grant waits without `--timeout`: two runs' grants can wait on each other's promises.
 const GATE_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 /// The GB a grant asks for without `--gb`, as Fleet's gate did and agents' instructions assume.
@@ -2650,14 +2649,20 @@ fn acquire(args: &[OsString], lease: bool) -> ExitCode {
         session: std::env::var("PRIORY_SESSION").ok(),
         command: command.join(" ".as_ref()).to_string_lossy().into_owned(),
     };
+    // CI cannot replace a leased server, and `--timeout` wins over the factory's limit.
+    let gives_up = !lease && timeout.is_none();
     let timeout = timeout.unwrap_or(GATE_TIMEOUT);
-    let deadline = Instant::now() + timeout;
+    let began = Instant::now();
+    let deadline = began + timeout;
     let (mut grant, mut said, mut sent) = (None, String::new(), false);
     // The daemon keeps a waiting grant while this process lives, so a lost reply or a daemon
     // restart only delays the next poll of the same grant.
     let grant = loop {
         let asked = match grant {
-            Some(grant) => call(&Gate::Poll { grant }),
+            Some(grant) => call(&Gate::Poll {
+                grant,
+                waited: gives_up.then(|| began.elapsed().as_secs()),
+            }),
             None => call(&acquire),
         };
         sent |= !matches!(&asked, Err(error) if error.starts_with(runtime::NO_DAEMON));
@@ -2680,6 +2685,14 @@ fn acquire(args: &[OsString], lease: bool) -> ExitCode {
         };
         if let (Some(grant), true) = (grant, reply.ends_with(" held")) {
             break grant;
+        }
+        if let (Some(grant), Some((_, why))) = (grant, reply.split_once(GAVE_UP)) {
+            let _ = gate(&Gate::Release {
+                grant,
+                lapsed: true,
+            });
+            eprintln!("priory memory: {why}; push and let CI run this");
+            return ExitCode::from(GATE_GAVE_UP);
         }
         if said != reply {
             eprintln!("priory memory: grant {reply} for {gb} GB");

@@ -1312,7 +1312,8 @@ fn take(
         Ok(Input::Gate(gate)) => {
             let share = Share::of(trace.factory, trace.machine.as_deref());
             let room = || room::measure(&runtime::home());
-            let reply = memory::gate(db, &gate, trace.factory, &share, room)?;
+            let limit = trace.factory.give_up_after(trace.machine.as_deref());
+            let reply = memory::gate(db, &gate, trace.factory, &share, limit, room)?;
             Ok((replied(reply), None))
         }
         Err(error) => {

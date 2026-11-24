@@ -1,5 +1,6 @@
 //! The state the listing commands and the HTTP server show, one JSON payload per listing.
 
+use crate::memory::{grant_age, grant_long};
 use crate::{post, snooze, stall, state, sweep};
 use jiff::Timestamp;
 use priory_factory::explain;
@@ -218,8 +219,23 @@ const DESK: &str = concat!(
                UNION ALL
                SELECT 0, grants.created, 'memory', grants.id, grants.task, tasks.lane,
                  'waits for ' || printf('%.1f', grants.bytes / 1073741824.0) || ' GB: '
-                 || grants.command
+                 || grants.command || coalesce((SELECT '; grant ' || id
+                     || coalesce(' of task ' || task, '') || ' holds '
+                     || printf('%.1f', bytes / 1073741824.0) || ' GB for ' || ",
+    grant_age!(),
+    "              FROM grants WHERE state = 'held'
+                   ORDER BY coalesce(granted, created), id LIMIT 1), '')
                FROM grants LEFT JOIN tasks ON tasks.id = grants.task WHERE grants.state = 'waiting'
+               UNION ALL
+               SELECT 0, grants.granted, 'memory', grants.id, grants.task, tasks.lane,
+                 'holds ' || printf('%.1f', grants.bytes / 1073741824.0) || ' GB for ' || ",
+    grant_age!(),
+    "            || ' while ' || (SELECT count(*) || CASE count(*) WHEN 1 THEN ' grant waits'
+                     ELSE ' grants wait' END FROM grants AS other WHERE other.state = 'waiting')
+                 || ': ' || grants.command
+               FROM grants LEFT JOIN tasks ON tasks.id = grants.task WHERE ",
+    grant_long!(),
+    "
                UNION ALL
                SELECT 0, retired, 'retired', id, id, lane,
                  'its worktree was removed to free disk; it resurrects from ' || branch

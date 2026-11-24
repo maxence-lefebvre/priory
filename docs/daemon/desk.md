@@ -16,7 +16,7 @@ reading each task.
 | `command` | the answer's action | `Priory stopped while answer <answer> to ask <ask> ran <argv> in <dir>: check the target`, for an `uncertain` command (see [tools.md](../reference/tools.md#commands-an-answer-runs)) | it ended |
 | `held` | the hold | the task's reason: why it is held, and until what | it was held |
 | `batch` | the batch | its title and counts, then which entries start next: `Invoice exports: 1 merged, 3 started, 2 planned. Next: ENG-41 and ENG-42 start when ENG-40 merges.`, each task named by its key without the source. One row per going batch, in place of the `held` rows of its entries (see Batches) | the go |
-| `memory` | the memory grant | `waits for <N> GB: <command>` | it was requested |
+| `memory` | the memory grant | `waits for <N> GB: <command>`, then `; grant <id> of task <task> holds <N> GB for <time>` for the longest held grant. A grant held past an hour while others wait has its own row: `holds <N> GB for <time> while <n> grants wait: <command>` (see [memory-gate.md](memory-gate.md)) | it was requested, or granted for the held row |
 | `memories` | `memories` | `` <n> memory candidates wait for a person: <name>, <name>; see them with `priory memories` ``. One row while any candidate waits (see Memory candidates) | the oldest candidate was written |
 | `pattern` | the failure pattern's id | `` <workflow>/<step>: <n> tasks stopped for one reason: <text>; see it with `priory patterns show <id>` ``, for an open pattern of at least 2 tasks (see [patterns.md](patterns.md)) | its latest task stopped |
 | `queue` | the task's place in the queue | its band, then its reason when it has one | the task last changed state |
@@ -31,7 +31,7 @@ The lane column is the task's lane, or `-` for a `worktree` row.
 In `priory desk --json`, an `ask` item carries `routed_to`: the lead it is routed to, or null. The
 web Desk and the Herdr Desk show it as "with <lead>" on the ask's row and in the next thing.
 
-It lists only asks and prompts of active tasks, holds of held tasks and waiting memory grants. Then the `queue` rows in start order, then one `worktree` row per worktree the sweep keeps. `priory asks` prints every open ask. Both leave snoozed items out, unless you pass `--all` (see Snooze).
+It lists only asks and prompts of active tasks, holds of held tasks and waiting or long-held memory grants. Then the `queue` rows in start order, then one `worktree` row per worktree the sweep keeps. `priory asks` prints every open ask. Both leave snoozed items out, unless you pass `--all` (see Snooze).
 
 ## Batches
 

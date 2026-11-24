@@ -259,8 +259,8 @@ An agent's settings and its shell call these. A person rarely does.
   worktree to the run's result, once it passes the admission checks. It refuses an image or a
   video. See [evidence.md](../daemon/evidence.md#a-cast-the-agent-adds).
 - `priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]`: runs a heavy command once
-  the machine has the memory for it, or prints the grants. See
-  [memory-gate.md](../daemon/memory-gate.md).
+  the machine has the memory for it, or prints the grants. `acquire` exits 75 when its wait passes
+  the factory's `[memory] give_up_after`. See [memory-gate.md](../daemon/memory-gate.md).
 
 ## Columns
 

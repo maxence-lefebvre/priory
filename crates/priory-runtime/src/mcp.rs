@@ -7,10 +7,17 @@ use std::time::Duration;
 const VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
 /// What every agent learns on connecting: how to run a heavy command behind the memory gate.
-pub(crate) fn instructions() -> String {
+pub(crate) fn instructions(set: Tools) -> String {
     let exe = std::env::current_exe().unwrap_or_else(|_| "priory".into());
+    // An investigator has no branch to push.
+    let gave_up = match set {
+        Tools::Investigator => "",
+        Tools::Worker | Tools::Asker => {
+            " If it exits 75, the wait passed the factory's limit and the command did not run: push, and wait for CI to run it, without asking a person."
+        }
+    };
     format!(
-        "Wrap each heavy command, such as a build or a test suite, in `{} memory acquire --gb N -- <command>`, with N its peak memory in GB, so it waits for room instead of running the machine out of memory.",
+        "Wrap each heavy command, such as a build or a test suite, in `{} memory acquire --gb N -- <command>`, with N its peak memory in GB, so it waits for room instead of running the machine out of memory.{gave_up}",
         exe.display()
     )
 }
@@ -71,7 +78,7 @@ pub fn serve(session: &str, set: Tools, debate: bool) -> Result<(), String> {
     if debate {
         served.push(position());
     }
-    serve_with(&Value::from(served), &instructions(), &|params| {
+    serve_with(&Value::from(served), &instructions(set), &|params| {
         let name = params["name"].as_str().unwrap_or_default();
         if !set.serves(name) && !(debate && name == "position") {
             return Ok(content(Err(format!("unknown tool {name}"))));

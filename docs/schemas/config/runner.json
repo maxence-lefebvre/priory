@@ -3,6 +3,19 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
   "definitions": {
+    "MemoryGate": {
+      "additionalProperties": false,
+      "description": "`[memory]`: how long a command waits in the memory gate.",
+      "properties": {
+        "give_up_after": {
+          "default": null,
+          "description": "How long `priory memory acquire` without `--timeout` waits for its grant before it exits 75\nand says to run the command on CI, at most 1 hour; it never does when unset.",
+          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "Os": {
       "enum": [
         "linux",
@@ -63,6 +76,9 @@
         }
       ],
       "description": "The share of the machine its agents may take together; 90% of each when unset."
+    },
+    "memory": {
+      "$ref": "#/definitions/MemoryGate"
     },
     "platform": {
       "$ref": "#/definitions/Platform"

@@ -4,6 +4,7 @@ use priory_factory::factory::Factory;
 use priory_runtime::room::Room;
 use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
+use std::time::Duration;
 
 /// A message from `priory memory acquire`, which waits for a memory grant by polling.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -18,13 +19,13 @@ pub enum Gate {
     },
     Poll {
         grant: i64,
+        /// How many seconds the command waited, when it gives up at the factory's limit.
+        #[serde(default)]
+        waited: Option<u64>,
     },
     /// Hands a held grant to the command's process `pid`, so it holds while the command runs even
     /// when `acquire` dies.
-    Run {
-        grant: i64,
-        pid: u32,
-    },
+    Run { grant: i64, pid: u32 },
     /// Ends a grant. A `lapsed` waiting grant leaves its request time to a retry of its command.
     Release {
         grant: i64,
@@ -33,15 +34,20 @@ pub enum Gate {
     },
 }
 
-/// Applies `gate` and replies with the grant's id and state: `<id> held` or `<id> waiting`.
+/// What comes after the id in the reply to a poll whose wait passed the limit, before the reason.
+pub const GAVE_UP: &str = " gave up: ";
+
+/// Applies `gate` and replies with the grant's id and state: `<id> held` or `<id> waiting`, or
+/// `GAVE_UP` once a poll that still waits has waited `give_up_after`.
 pub(crate) fn gate(
     db: &mut Connection,
     gate: &Gate,
     factory: &Factory,
     share: &Share,
+    give_up_after: Option<Duration>,
     room: impl FnOnce() -> Result<Room, String>,
 ) -> rusqlite::Result<Result<String, String>> {
-    let grant = match gate {
+    match gate {
         Gate::Release { grant, lapsed } => {
             if *lapsed {
                 db.execute(
@@ -52,7 +58,7 @@ pub(crate) fn gate(
                 )?;
             }
             db.execute("DELETE FROM grants WHERE id = ?1", [grant])?;
-            return Ok(Ok(format!("{grant} released")));
+            Ok(Ok(format!("{grant} released")))
         }
         Gate::Run { grant, pid } => {
             let Some(started) = started(*pid) else {
@@ -62,9 +68,22 @@ pub(crate) fn gate(
                 "UPDATE grants SET pid = ?2, started = ?3 WHERE id = ?1",
                 params![grant, pid, started],
             )?;
-            return Ok(Ok(format!("{grant} held")));
+            Ok(Ok(format!("{grant} held")))
         }
-        Gate::Poll { grant } => *grant,
+        Gate::Poll { grant, waited } => {
+            let reply = reply(db, *grant, factory, share, room())?;
+            return match (waited, give_up_after, &reply) {
+                (Some(waited), Some(limit), Ok(state))
+                    if *waited >= limit.as_secs() && !state.ends_with(" held") =>
+                {
+                    Ok(Ok(format!(
+                        "{grant}{GAVE_UP}{}",
+                        gave_up(db, *grant, limit)?
+                    )))
+                }
+                _ => Ok(reply),
+            };
+        }
         Gate::Acquire {
             bytes,
             pid,
@@ -119,11 +138,63 @@ pub(crate) fn gate(
                 "DELETE FROM lapses WHERE task = ?1 AND command = ?2",
                 params![task, command],
             )?;
-            return reply(db, grant, factory, share, Ok(room));
+            reply(db, grant, factory, share, Ok(room))
         }
-    };
-    reply(db, grant, factory, share, room())
+    }
 }
+
+/// Why the waiting `grant` gives up at `limit`, with the held and earlier waiting grants before it.
+fn gave_up(db: &Connection, grant: i64, limit: Duration) -> rusqlite::Result<String> {
+    let (bytes, ahead): (i64, i64) = db.query_row(
+        "SELECT bytes, (SELECT count(*) FROM grants AS other WHERE other.id != grants.id
+           AND (other.state = 'held'
+             OR (other.created, other.id) < (grants.created, grants.id)))
+         FROM grants WHERE id = ?1",
+        [grant],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let ahead = match ahead {
+        0 => "with no grant ahead".to_owned(),
+        1 => "behind 1 grant".to_owned(),
+        count => format!("behind {count} grants"),
+    };
+    Ok(format!(
+        "waited {:#} for {} GB {ahead}",
+        jiff::SignedDuration::from_secs(limit.as_secs() as i64),
+        (bytes as f64 / GB * 10.0).round() / 10.0,
+    ))
+}
+
+/// How long the grant in the `grants` row has been in its state, such as `1h 51m`, `12m` or `40s`.
+macro_rules! grant_age {
+    () => {
+        "(SELECT CASE WHEN age >= 3600 THEN printf('%dh %dm', age / 3600, age % 3600 / 60)
+             WHEN age >= 60 THEN printf('%dm', age / 60) ELSE printf('%ds', age) END
+           FROM (SELECT unixepoch('now')
+             - unixepoch(coalesce(grants.granted, grants.created)) AS age))"
+    };
+}
+
+/// A held grant that a person should look at: it is past an hour, the gate's default timeout, while
+/// another waits. Priory keeps no usual time of a command to compare with.
+macro_rules! grant_long {
+    () => {
+        "(grants.state = 'held'
+           AND unixepoch('now') - unixepoch(coalesce(grants.granted, grants.created)) >= 3600
+           AND EXISTS (SELECT 1 FROM grants AS other WHERE other.state = 'waiting'))"
+    };
+}
+pub(crate) use {grant_age, grant_long};
+
+/// The query of `priory memory`.
+pub const LIST: &str = concat!(
+    "SELECT id, task, state, printf('%.1f', bytes / 1073741824.0),
+       replace(command, char(10), '\\n'), ",
+    grant_age!(),
+    ", pid, CASE WHEN ",
+    grant_long!(),
+    " THEN 'long' ELSE '-' END FROM grants ORDER BY created, id"
+);
 
 /// Grants what fits, then replies with `grant`'s state. An unmeasured room grants nothing.
 fn reply(
@@ -412,9 +483,11 @@ mod tests {
 
     /// Sends `message` to the gate with the test machine's room.
     fn send(db: &mut Connection, message: Gate) -> String {
-        gate(db, &message, &Factory::default(), &share(), || Ok(room()))
-            .unwrap()
-            .unwrap()
+        gate(db, &message, &Factory::default(), &share(), None, || {
+            Ok(room())
+        })
+        .unwrap()
+        .unwrap()
     }
 
     /// An `acquire` of `gb` GB from this test's process, inside run `s1`.
@@ -465,6 +538,80 @@ mod tests {
         )
         .unwrap();
         db
+    }
+
+    /// Polls `grant` as a command that waited `waited` seconds, where the limit is 10 minutes.
+    fn poll(db: &mut Connection, grant: i64, waited: Option<u64>) -> String {
+        let limit = Some(Duration::from_secs(600));
+        let poll = Gate::Poll { grant, waited };
+        gate(db, &poll, &Factory::default(), &share(), limit, || {
+            Ok(room())
+        })
+        .unwrap()
+        .unwrap()
+    }
+
+    /// A grant of `gb` GB that waits behind a held one of 16 GB.
+    fn behind_one(gb: u64) -> (Connection, i64) {
+        let mut db = one_run();
+        parents(&db, 16, "held", "2026-11-23T12:00:00Z");
+        let reply = send(&mut db, acquire(gb, "cargo build"));
+        let grant = reply.split_once(' ').unwrap().0.parse().unwrap();
+        (db, grant)
+    }
+
+    #[test]
+    fn a_poll_gives_up_once_it_has_waited_the_limit_and_again_after_a_lost_reply() {
+        let (mut db, grant) = behind_one(8);
+        parents(&db, 4, "waiting", "2026-11-23T11:00:00Z");
+        parents(&db, 4, "waiting", "2099-01-01T00:00:00Z");
+
+        assert_eq!(poll(&mut db, grant, Some(599)), format!("{grant} waiting"));
+        let gave_up = format!("{grant} gave up: waited 10m for 8 GB behind 2 grants");
+        assert_eq!(poll(&mut db, grant, Some(600)), gave_up);
+        assert_eq!(poll(&mut db, grant, Some(601)), gave_up);
+    }
+
+    #[test]
+    fn a_poll_that_says_no_wait_never_gives_up() {
+        let (mut db, grant) = behind_one(8);
+
+        assert_eq!(poll(&mut db, grant, None), format!("{grant} waiting"));
+    }
+
+    #[test]
+    fn a_grant_that_fits_at_the_limit_is_held() {
+        let (mut db, grant) = behind_one(8);
+        db.execute("DELETE FROM grants WHERE id != ?1", [grant])
+            .unwrap();
+
+        assert_eq!(poll(&mut db, grant, Some(600)), format!("{grant} held"));
+    }
+
+    #[test]
+    fn a_grant_with_an_old_request_time_gives_up_by_its_own_wait() {
+        let (mut db, grant) = behind_one(8);
+        db.execute(
+            "UPDATE grants SET created = '2026-11-23T10:00:00Z' WHERE id = ?1",
+            [grant],
+        )
+        .unwrap();
+
+        assert_eq!(poll(&mut db, grant, Some(5)), format!("{grant} waiting"));
+    }
+
+    #[test]
+    fn a_grant_that_only_runs_hold_back_gives_up_with_no_grant_ahead() {
+        let (mut db, grant) = behind_one(4);
+        db.execute("DELETE FROM grants WHERE id != ?1", [grant])
+            .unwrap();
+        db.execute("UPDATE grants SET bytes = ?1", [(17 * GB) as i64])
+            .unwrap();
+
+        assert_eq!(
+            poll(&mut db, grant, Some(600)),
+            format!("{grant} gave up: waited 10m for 17 GB with no grant ahead")
+        );
     }
 
     #[test]

@@ -42,6 +42,8 @@ pub struct Settings {
     pub queue: Queue,
     #[serde(default)]
     pub intake: IntakeSettings,
+    #[serde(default)]
+    pub memory: MemoryGate,
     /// The agent whose model reads a stalled run's screen; no handler runs without one.
     pub handler: Option<String>,
     /// How long a run goes without a hook event or a change on its pane before it counts as stalled.
@@ -1030,6 +1032,17 @@ pub struct IntakeSettings {
     #[serde(default, deserialize_with = "duration")]
     #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
     pub alarm_after: Option<Duration>,
+}
+
+/// `[memory]`: how long a command waits in the memory gate.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryGate {
+    /// How long `priory memory acquire` without `--timeout` waits for its grant before it exits 75
+    /// and says to run the command on CI, at most 1 hour; it never does when unset.
+    #[serde(default, deserialize_with = "duration")]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    pub give_up_after: Option<Duration>,
 }
 
 /// How the queue orders tasks.
@@ -2283,6 +2296,8 @@ pub struct Runner {
     pub platform: Platform,
     /// The share of the machine its agents may take together; 90% of each when unset.
     pub agents: Option<Share>,
+    #[serde(default)]
+    pub memory: MemoryGate,
 }
 
 /// The machine's operating system and CPU architecture.
@@ -2634,6 +2649,13 @@ impl Factory {
             .as_ref()
             .and_then(|settings| settings.value.intake.alarm_after)
             .unwrap_or(Duration::from_secs(15 * 60))
+    }
+
+    /// How long a gated command waits on the runner named `host` before it gives up; none never does.
+    pub fn give_up_after(&self, host: Option<&str>) -> Option<Duration> {
+        host.and_then(|host| self.runners.get(host))
+            .and_then(|runner| runner.value.memory.give_up_after)
+            .or_else(|| self.settings.as_ref()?.value.memory.give_up_after)
     }
 
     /// The OTLP/HTTP base URL the daemon exports spans to; none sends nothing.
