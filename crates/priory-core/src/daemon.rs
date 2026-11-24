@@ -232,12 +232,22 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     }
     let share = Share::of(factory, trace.machine.as_deref());
     let slice = slice::name();
-    let scope = slice::scope(&slice, share.cpu, share.memory).unwrap_or_else(|error| {
-        eprintln!(
-            "priory daemon: no systemd user manager, so runs start outside {slice} and only the room check caps them: {error}"
-        );
-        Vec::new()
-    });
+    let claimed = slice::claim(&slice, &home);
+    let scope = slice::control_group(&slice)
+        .and_then(|_| match &claimed {
+            Ok(()) => slice::cap(&slice, share.cpu, share.memory),
+            Err(_) => Ok(()),
+        })
+        .and_then(|()| slice::scope(&slice))
+        .unwrap_or_else(|error| {
+            eprintln!(
+                "priory daemon: no systemd user manager, so runs start outside {slice} and only the room check caps them: {error}"
+            );
+            Vec::new()
+        });
+    sweep::clear_refusal(&home);
+    let mut limits = (!scope.is_empty()).then(|| sweep::Limits::new(&slice, &home, claimed.err()));
+    let mut starting = HashMap::new();
     // Checked once, as the slice is: a jailed task never starts unjailed where this fails.
     let probe = || {
         priory_runtime::jail::probe().inspect_err(|error| {
@@ -445,6 +455,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             fetched,
             &mut entering,
             &mut attaching,
+            &mut starting,
         )?;
         // Committed first, so a crash before the kill leaves an ended run, not a lost one.
         for tmux in tools::over_budget_in_turn(&mut db, &trace, &mut peeked, &watched)? {
@@ -486,6 +497,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         if swept.is_none_or(|at| at.elapsed() >= every) {
             swept = Some(Instant::now());
             sweep::run(&db, factory, &home)?;
+            if let Some(limits) = &mut limits {
+                limits.check(&slice, &share, &home);
+            }
             sweep::measure(&home);
             let short = || room::measure(&home).is_ok_and(|room| crate::room::short_of_disk(&room));
             sweep::retire(&db, factory, &home, short)?;
@@ -1342,9 +1356,17 @@ fn tend(
     kit: crate::kit::Current<'_>,
     entering: &mut Entering,
     attaching: &mut Vec<crate::attach::Attaching>,
+    starting: &mut HashMap<i64, Option<slice::Cpu>>,
 ) -> Result<(), Error> {
     let factory = trace.factory;
-    for mut run in state::live(db)? {
+    let live = state::live(db)?;
+    starting.retain(|id, _| live.iter().any(|run| run.id == *id && !run.ready));
+    for mut run in live {
+        if !run.ready && !scope.is_empty() {
+            starting
+                .entry(run.id)
+                .or_insert_with(|| slice::cpu(&slice::name()));
+        }
         if run.direnv == 1
             && let Some(error) = runtime::direnv_failed(home, &run.session)
         {
@@ -1374,9 +1396,13 @@ fn tend(
                 Some(diagnose(db, factory, share, home, &run.agent)?)
             };
             tools::fail(db, trace, run.task, run.id, &reason, repair.as_ref())?;
-        } else if let Some((ended_as, reason, missed)) =
-            verdict(&run, factory, home, &|| crate::trace::granted(db, run.id))
-        {
+        } else if let Some((ended_as, reason, missed)) = verdict(
+            &run,
+            factory,
+            home,
+            &|| crate::trace::granted(db, run.id),
+            &|| slice::throttled(&slice::name(), starting.get(&run.id).copied()??),
+        ) {
             let worktree = run.worktree.as_deref().unwrap_or_default();
             let harness = harness_of(factory, &run.agent);
             // The harness may have rewritten its config from an older copy, dropping the grant.
@@ -1608,12 +1634,13 @@ fn direnv_failed(
 
 /// Why a live run must end: its harness's trust dialog, no `SessionStart`, a permission prompt, or
 /// a turn past its step's timeout. The flag says the dialog asked for trust that `granted`, the
-/// run's own grant, had recorded.
+/// run's own grant, had recorded. `throttled` says what the slice's CPU quota kept back.
 fn verdict(
     run: &state::LiveRun,
     factory: &Factory,
     home: &Path,
     granted: &dyn Fn() -> bool,
+    throttled: &dyn Fn() -> Option<String>,
 ) -> Option<(&'static str, String, bool)> {
     // Claude and Codex ask whether to trust a folder, and Codex its hooks, before any hook; Priory
     // never answers.
@@ -1666,11 +1693,22 @@ fn verdict(
                 0 => state::READY_WITHIN,
                 _ => state::DIRENV_READY_WITHIN,
             };
+            let ready = rows.as_deref().is_some_and(|rows| harness.at_prompt(rows));
+            let advice = match (ready, throttled()) {
+                (true, Some(throttled)) => throttled,
+                (true, None) => {
+                    "its prompt is ready and asks for no trust, so its SessionStart hook is late \
+                     or never reached the daemon. Resume the task to try again"
+                        .to_owned()
+                }
+                (false, Some(throttled)) => format!("{}; {throttled}", trust()),
+                (false, None) => trust(),
+            };
             format!(
                 "{} showed no SessionStart within {}; {}",
                 harness.program(),
                 within.replace(" seconds", "s"),
-                trust()
+                advice
             )
         };
         let rows = rows.unwrap_or_default();
@@ -3077,7 +3115,8 @@ mod tests {
             prompted: None,
         };
 
-        let (ended_as, reason, _) = verdict(&run, &Factory::default(), &home, &|| false).unwrap();
+        let (ended_as, reason, _) =
+            verdict(&run, &Factory::default(), &home, &|| false, &|| None).unwrap();
 
         assert_eq!(ended_as, "exited");
         assert!(

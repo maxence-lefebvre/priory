@@ -1590,6 +1590,7 @@ pub fn desk(
         post::intake_banner(db)?,
         crate::kit::banner(db)?,
         sweep::fetch_banner(home),
+        sweep::slice_banner(home),
     ]
     .into_iter()
     .flatten()
