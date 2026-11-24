@@ -4448,7 +4448,8 @@ impl Setup {
 
     /// The reason task 1 blocks with.
     fn blocked(&self) -> String {
-        self.until("tasks", |rows| rows[0][4] == "blocked")[0][7].clone()
+        let blocked = |rows: &[Vec<String>]| rows.first().is_some_and(|row| row[4] == "blocked");
+        self.until("tasks", blocked)[0][7].clone()
     }
 }
 
@@ -4500,9 +4501,11 @@ fn a_resumed_run_that_starts_slowly_gets_the_same_180_seconds() {
     setup.blocked();
     setup.gone("priory-1");
     setup.hold("silent");
+    setup.release("pid");
 
     assert!(setup.priory(&["resume", "1"]).status.success());
     let runs = setup.until("runs", |rows| rows.len() == 2);
+    setup.written("fake/pid");
     assert_eq!(runs[0][4], runs[1][4]);
     assert!(has(&launched(&setup), ["--resume", &runs[0][4]]));
     setup.started_ago(120);
