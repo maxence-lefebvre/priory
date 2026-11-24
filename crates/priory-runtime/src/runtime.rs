@@ -975,6 +975,10 @@ pub trait Harness {
     fn asks_trust(&self, _screen: &str) -> bool {
         false
     }
+    /// Whether a person must trust Priory's hooks too, which a folder grant does not cover.
+    fn reviews_hooks(&self) -> bool {
+        false
+    }
     /// Whether `screen` shows the harness at its own prompt, which it reaches only past its dialogs.
     fn at_prompt(&self, _screen: &str) -> bool {
         false
@@ -1293,6 +1297,10 @@ impl Harness for Codex {
 
     fn asks_trust(&self, screen: &str) -> bool {
         screen.contains("Trust this folder?") && screen.contains("Trust and continue")
+    }
+
+    fn reviews_hooks(&self) -> bool {
+        true
     }
 
     /// Codex runs only hooks a person trusted in its `/hooks` review, by their hash, so Priory's
