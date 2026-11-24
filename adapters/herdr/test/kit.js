@@ -93,7 +93,10 @@ export function context() {
       },
     },
     sleep: () => new Promise(() => {}),
-    focus_handle: () => ({ focus() {} }),
+    focus_handle: () => {
+      const handle = { focus() { herdr.focused = handle; }, is_focused: () => herdr.focused === handle };
+      return handle;
+    },
     write_to_clipboard(/** @type {string} */ text) { herdr.clipboard = text; },
     theme: () => ({ appearance: "light" }),
   };
@@ -162,7 +165,12 @@ export const TextView = { html: (/** @type {string} */ id, /** @type {string} */
 export const Input = { new: () => element("input") };
 export const Textarea = { new: () => element("textarea") };
 export const Popover = { new: (/** @type {string} */ id) => element("popover", id) };
-export const ScrollHandle = { new: () => ({ scroll_to_item() {} }) };
+export const ScrollHandle = {
+  new: () => {
+    const handle = { shown: /** @type {number | null} */ (null), scroll_to_item(/** @type {number} */ index) { handle.shown = index; } };
+    return handle;
+  },
+};
 const fieldState = () => {
   let value = "";
   const handlers = /** @type {Record<string, Function>} */ ({});
@@ -217,7 +225,10 @@ export const herdr = {
     this.waiting = [];
     for (const end of waiting) end();
   },
+  /** @type {unknown} the handle that took the focus last */
+  focused: null,
   reset() {
+    this.focused = null;
     this.replies = {};
     this.shared.clear();
     this.runs = [];

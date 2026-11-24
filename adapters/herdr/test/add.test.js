@@ -16,9 +16,16 @@ test("the Add dropdowns offer the factory's workflows and bands in order, and ea
   });
 });
 
+test("a factory with no default workflow asks for a pick, and an unknown factory shows default", () => {
+  const unpicked = (/** @type {object} */ queue) => addChoices({ ...fixture("queue.json"), ...queue }, []).unpicked.workflow;
+  assert.equal(unpicked({ workflows: ["fix"], default_workflow: null }), "pick one");
+  assert.equal(unpicked({ workflows: ["fix"] }), "default");
+  assert.equal(unpicked({ workflows: null, default_workflow: null }), "default");
+});
+
 test("the Add line says what to type, that it sends, why priory refused, or the new task's key", () => {
   assert.deepEqual(addStatus({ text: "", sending: false, error: null, key: null }),
-    { text: "Workflow, band and lane come from the factory's [request] table unless you pick one.", tone: "muted", ready: false });
+    { text: "Workflow and band come from the factory's [request] table, and lane from its lane rules, unless you pick one.", tone: "muted", ready: false });
   assert.deepEqual(addStatus({ text: "Fix the docs", sending: false, error: null, key: null }).ready, true);
   assert.deepEqual(addStatus({ text: "Fix the docs", sending: true, error: null, key: null }), { text: "Adding…", tone: "muted", ready: false });
   assert.deepEqual(addStatus({ text: "Fix the docs", sending: false, error: "unknown workflow `nope`", key: null }),

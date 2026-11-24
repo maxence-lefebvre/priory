@@ -36,7 +36,7 @@ function buttons(value) {
   const node = nodeOf(value);
   if (!node) return [];
   const kids = node.kind === "popover" && !node.calls.open[0] ? node.kids.slice(0, 1) : node.kids;
-  return [...(node.kind === "button" ? [node.id] : []), ...kids.flatMap(buttons)];
+  return [...(node.kind === "button" || node.calls.role?.[0] === "list_box_option" ? [node.id] : []), ...kids.flatMap(buttons)];
 }
 
 test("the closed form draws one dropdown per field, each on its default, and no choice", () => {
@@ -96,6 +96,84 @@ test("closing the form closes its menu", () => {
   assert.deepEqual(shown(tree()), []);
 });
 
+test("a picked value the choices drop stays shown, sent and clearable", async () => {
+  const { made, sent, tree } = form();
+  press(tree(), "add-lane-lane-3");
+  const without = { ...choices, lane: [] };
+  assert.equal(text(find(tree(without), "add-lane")), "Lane lane-3");
+  made.input.set_value("Fix the docs");
+  made.input.emit("submit");
+  await settle();
+  assert.deepEqual(sent, [["Fix the docs", { lane: "lane-3" }]]);
+
+  press(tree(), "add-lane-lane-3");
+  press(tree(without), "add-clear-lane");
+  assert.equal(find(tree(without), "add-lane"), null);
+  made.input.set_value("Fix the tests");
+  made.input.emit("submit");
+  await settle();
+  assert.deepEqual(sent[1], ["Fix the tests", {}]);
+});
+
+test("a listed pick is offered once", () => {
+  const { tree } = form();
+  press(tree(), "add-band-band-1");
+  assert.deepEqual(buttons(find(tree(), "add-band-list")), ["add-clear-band", ...names(4, "band").map((name) => `add-band-${name}`)]);
+});
+
+/** The highlighted row's id. @param {any} tree @param {string} field */
+const highlighted = (tree, field) => all(find(tree, `add-${field}-list`), "h_flex").filter((row) => row.calls.aria_active_descendant).map((row) => row.id);
+
+test("the arrow keys move the highlight, scroll it into view, stop at both ends, and Enter picks it", () => {
+  const { made, tree } = form();
+  made.show(context());
+  toggle(tree(), "lane", true);
+  const list = find(tree(), "add-lane-list");
+  assert.equal(list.calls.track_focus[0], find(tree(), "add-lane-menu").calls.track_focus[0]);
+  assert.deepEqual(highlighted(tree(), "lane"), ["add-clear-lane"]);
+  for (let at = 0; at < 10; at += 1) keydown(tree(), "add-lane-list", "down");
+  const scroll = find(tree(), "add-lane-list").calls.track_scroll[0];
+  assert.deepEqual([highlighted(tree(), "lane"), scroll.shown], [["add-lane-lane-9"], 10]);
+  for (let at = 0; at < 9; at += 1) keydown(tree(), "add-lane-list", "down");
+  assert.deepEqual([highlighted(tree(), "lane"), scroll.shown], [["add-lane-lane-11"], 12]);
+  for (let at = 0; at < 20; at += 1) keydown(tree(), "add-lane-list", "up");
+  assert.deepEqual([highlighted(tree(), "lane"), scroll.shown], [["add-clear-lane"], 0]);
+  keydown(tree(), "add-lane-list", "down");
+  keydown(tree(), "add-lane-list", "enter");
+  assert.deepEqual([made.picked, shown(tree())], [{ lane: "lane-0" }, []]);
+});
+
+test("a menu opens on its pick, and Space on the first row clears it", () => {
+  const { made, tree } = form();
+  press(tree(), "add-lane-lane-9");
+  toggle(tree(), "lane", true);
+  assert.deepEqual([highlighted(tree(), "lane"), find(tree(), "add-lane-list").calls.track_scroll[0].shown], [["add-lane-lane-9"], 10]);
+  for (let at = 0; at < 10; at += 1) keydown(tree(), "add-lane-list", "up");
+  keydown(tree(), "add-lane-list", "space");
+  assert.deepEqual(made.picked, {});
+});
+
+test("a held Enter that opened the menu picks nothing", () => {
+  const { made, tree } = form();
+  toggle(tree(), "lane", true);
+  keydown(tree(), "add-lane-list", "down");
+  find(tree(), "add-lane-list").on.on_key_down({ key: "enter", is_held: true }, context());
+  assert.deepEqual([made.picked, shown(tree())], [{}, ["lane"]]);
+});
+
+test("no menu row takes Tab, and a long name truncates with its full name as the label", () => {
+  const { tree } = form();
+  const name = "lane-".repeat(40);
+  const offered = { ...choices, lane: [name] };
+  press(tree(offered), `add-lane-${name}`);
+  assert.deepEqual(all(find(tree(offered), "add-lane-list"), "button"), []);
+  assert.equal(find(tree(offered), "add-lane").calls.accessibility_label[0], `Lane: ${name}`);
+  assert.equal(find(tree(offered), `add-lane-${name}`).calls.accessibility_label[0], name);
+  for (const id of ["add-lane", `add-lane-${name}`]) {
+    assert.ok(all(find(tree(offered), id), "div").some((part) => part.calls.truncate && text(part) === name), id);
+  }
+});
+
 const PANELS = /** @type {const} */ ([["priory-desk", Desk, "desk-queue"], ["priory-queue", Queue, "queue"]]);
 
 for (const [mod, Panel, queue] of PANELS) {
@@ -116,6 +194,19 @@ for (const [mod, Panel, queue] of PANELS) {
     toggle(draw(panel, cx), "workflow", true);
     keydown(draw(panel, cx), "add-workflow", "escape");
     assert.deepEqual([shown(draw(panel, cx)), panel.adding.open], [[], true]);
+    keydown(draw(panel, cx), "add-workflow", "escape");
+    assert.equal(panel.adding.open, false);
+  });
+
+  test(`${mod}: one Esc closes the form once its open menu's dropdown is gone`, async () => {
+    const { panel, cx } = await opened();
+    toggle(draw(panel, cx), "band", true);
+    panel.adding.listFocus.focus();
+    herdr.replies.queue = { .../** @type {any} */ (herdr.replies.queue), bands: [] };
+    herdr.wake();
+    await settle();
+    assert.equal(find(draw(panel, cx), "add-band"), null);
+    assert.equal(herdr.focused, panel.adding.focus);
     keydown(draw(panel, cx), "add-workflow", "escape");
     assert.equal(panel.adding.open, false);
   });
