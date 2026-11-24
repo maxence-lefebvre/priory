@@ -1818,7 +1818,7 @@ fn plan_file(db: &Connection, task: i64) -> rusqlite::Result<Value> {
              AND (results.step = 'plan' OR results.step LIKE 'plan-%')))
            AND NOT EXISTS (SELECT 1 FROM claims WHERE claims.key = tasks.key
              AND claims.hold != 'ended' AND claims.runner != (SELECT name FROM runner))
-         ORDER BY asks.id DESC LIMIT 1",
+         ORDER BY asks.answer IS NULL AND asks.withdrawn IS NULL DESC, asks.id DESC LIMIT 1",
         [task],
     )?;
     let Some(mut plan) = found.as_array_mut().and_then(Vec::pop) else {

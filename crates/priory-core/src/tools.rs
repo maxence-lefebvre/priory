@@ -249,6 +249,23 @@ pub(crate) fn call(
     if let Some(refused) = refused {
         return Ok((Err(refused), None));
     }
+    // A result moves the task, maybe to another agent's conversation, before the compact is typed.
+    if call.tool == "result" && compact_queued(&tx, run.task)? {
+        return Ok((
+            Err(
+                "a compact is queued for this run; end your turn and call result after the compaction"
+                    .to_owned(),
+            ),
+            None,
+        ));
+    }
+    // A refused answer is kept, with the ask's next revision when its plan changed.
+    if call.tool == "result"
+        && let Err(refused) = lead_answer(&tx, &run, &call.arguments, trace, head)?
+    {
+        tx.commit()?;
+        return Ok((Err(refused), None));
+    }
     // The run moves on from the asks and waits of earlier runs. A refused call rolls this back.
     tx.execute(
         "UPDATE asks SET withdrawn = 1, withdrawn_reason = 'moved-on' WHERE task = ?1
@@ -262,19 +279,9 @@ pub(crate) fn call(
     )?;
     let mut kill = None;
     let stored = match call.tool.as_str() {
-        // A result moves the task, maybe to another agent's conversation, before the compact is typed.
-        "result" if compact_queued(&tx, run.task)? => Err(
-            "a compact is queued for this run; end your turn and call result after the compaction"
-                .to_owned(),
-        ),
-        "result" => match lead_answer(&tx, &run, &call.arguments, trace, head)? {
-            Ok(()) => match result(&tx, &run, &call.arguments, factory, head, Some(kit))? {
-                Ok(stored) => {
-                    crate::consult::answer(&tx, run.task, run.id, &call.arguments, trace)?
-                        .map(|()| stored)
-                }
-                Err(refused) => Err(refused),
-            },
+        "result" => match result(&tx, &run, &call.arguments, factory, head, Some(kit))? {
+            Ok(stored) => crate::consult::answer(&tx, run.task, run.id, &call.arguments, trace)?
+                .map(|()| stored),
             Err(refused) => Err(refused),
         },
         "ask" => ask(&tx, &run, &call.arguments, trace, head)?,
@@ -3095,7 +3102,11 @@ pub(crate) fn settle(
                     ask_text(tx, run.task)?
                 ],
             )?;
-            crate::plan::snapshot(tx, tx.last_insert_rowid(), run.task, &run.step)?;
+            let ask = tx.last_insert_rowid();
+            let author = crate::plan::author(tx, run.task, &run.step, |at| {
+                step(workflows, &run.workflow, at)
+            })?;
+            crate::plan::present(tx, ask, run.task, author.as_deref())?;
             end(tx, run.id, "asleep")?;
             set(tx, run.task, "asleep", None, None)?;
             return Ok(Some(Some(run.tmux.clone())));
@@ -3276,7 +3287,7 @@ fn lead_of(
 
 /// Queues a lead task that answers `ask` in the person's place. Its source event carries the ask,
 /// so its first prompt names it.
-fn call_lead(tx: &Transaction, ask: i64, lead: &str) -> rusqlite::Result<()> {
+pub(crate) fn call_lead(tx: &Transaction, ask: i64, lead: &str) -> rusqlite::Result<()> {
     let source = uuid::Uuid::new_v4().to_string();
     tx.execute(
         "INSERT INTO tasks
@@ -3297,7 +3308,10 @@ fn call_lead(tx: &Transaction, ask: i64, lead: &str) -> rusqlite::Result<()> {
            json_object('task', asks.task, 'key', tasks.key, 'ask', asks.id,
              'revision', asks.revision, 'question', asks.question, 'options', json(asks.options),
              'recommendation', asks.recommendation, 'tradeoff', asks.tradeoff,
-             'title', asks.title, 'text', asks.text),
+             'title', asks.title, 'text', asks.text,
+             'plan', (SELECT json_object('path', path, 'text', ask_plans.text,
+               'truncated', json(iif(truncated, 'true', 'false')))
+               FROM ask_plans WHERE ask_plans.ask = asks.id)),
            '[]', ?3, 'created'
          FROM asks JOIN tasks ON tasks.id = asks.task WHERE asks.id = ?1",
         params![ask, source, task],
@@ -3347,7 +3361,9 @@ fn lead_answer(
         run: false,
         by: format!("agent:{}", run.agent.as_deref().unwrap_or_default()),
     };
-    Ok(answer_in(tx, &answer, trace, head)?.map(drop))
+    Ok(answer_in_tx(tx, &answer, trace, head)?
+        .map(drop)
+        .map_err(|why| format!("{why}. If the person has the ask now, end with skipped")))
 }
 
 /// Drops the lead task still queued for `ask`, which a person answered or dismissed first.
@@ -3818,8 +3834,8 @@ fn step_in(
                 ],
             )?;
             let ask = tx.last_insert_rowid();
-            if let Some(step) = approves {
-                crate::plan::snapshot(tx, ask, task, &step)?;
+            if let Some(author) = approves {
+                crate::plan::present(tx, ask, task, author.as_deref())?;
             }
             if let Some(lead) = &lead {
                 call_lead(tx, ask, lead)?;
@@ -5324,6 +5340,7 @@ pub(crate) fn approved(
     } else {
         "\nasked again: this was answered in an earlier generation of the task, or before Priory kept generations".to_owned()
     };
+    let unplanned = crate::plan::missing(&tx, ask)?;
     tx.execute(
         // Asked again, an ask that a revive withdrew belongs to the current generation.
         "UPDATE asks SET revision = revision + 1, answer = NULL, answered = NULL, answered_by = NULL, withdrawn = NULL,
@@ -5331,6 +5348,9 @@ pub(crate) fn approved(
         params![ask, moved, ask_text(&tx, task)?],
     )?;
     crate::plan::again(&tx, ask)?;
+    if unplanned {
+        crate::plan::present(&tx, ask, task, None)?;
+    }
     unqueue(&tx, task, &entry_prompt(&tx, task, at)?)?;
     set(&tx, task, "asleep", Some(&approving), None)?;
     tx.commit()?;

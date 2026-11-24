@@ -2010,7 +2010,7 @@ const SCHEMA_113: &str = concat!(
   path      TEXT,
   text      TEXT NOT NULL,
   truncated INTEGER NOT NULL,
-  hash      TEXT NOT NULL
+  contents  TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS generations (
   task  INTEGER NOT NULL,
