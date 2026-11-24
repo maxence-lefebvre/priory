@@ -19268,27 +19268,30 @@ terms = [
 "#;
 
 impl Setup {
-    /// A live task 1 of a factory with `[private]`, whose hook calls the test makes itself.
+    /// A daemon of a factory with `[private]`, and a clone of `owner/repo` on `priory/1`, which the
+    /// daemon does not manage, for the hook calls the test makes itself.
     fn with_private_terms(name: &str) -> Self {
         let mut setup = Setup::new(name);
         fs::write(setup.dir.join("factory/factory.toml"), PRIVATE).unwrap();
+        let cloned = setup
+            .command("git")
+            .args(["clone", "-q", "https://github.com/owner/repo"])
+            .arg(setup.private_worktree())
+            .status()
+            .unwrap();
+        assert!(cloned.success());
+        setup.private_git(&["checkout", "-q", "-b", "priory/1"]);
         setup.publish(&requested(42));
         setup.start();
         setup.until("runs", |rows| rows.len() == 1);
-        let worktree = setup.private_worktree();
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while !worktree.join("README.md").exists() {
-            assert!(Instant::now() < deadline, "no worktree");
-            std::thread::sleep(Duration::from_millis(50));
-        }
         setup
     }
 
     fn private_worktree(&self) -> PathBuf {
-        self.dir.join("home/worktrees/owner/repo/1")
+        self.dir.join("clone")
     }
 
-    /// Runs git in the task's worktree.
+    /// Runs git in the clone.
     fn private_git(&self, args: &[&str]) {
         let status = git(&self.private_worktree())
             .args(["-c", "user.name=t", "-c", "user.email=t@t"])
@@ -19298,7 +19301,7 @@ impl Setup {
         assert!(status.success(), "{args:?}");
     }
 
-    /// Commits `text` as `file` on the task's branch, with `message`.
+    /// Commits `text` as `file` in the clone, with `message`.
     fn private_commit(&self, file: &str, text: &str, message: &str) {
         fs::write(self.private_worktree().join(file), text).unwrap();
         self.private_git(&["add", "-A"]);
