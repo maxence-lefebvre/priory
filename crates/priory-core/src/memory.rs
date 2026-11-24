@@ -60,11 +60,13 @@ pub(crate) fn gate(
             Ok(Ok(format!("{grant} held")))
         }
         Gate::Poll { grant, waited } => {
-            let reply = reply(db, *grant, factory, share, room())?;
+            let room = room();
+            let measured = room.is_ok();
+            let reply = reply(db, *grant, factory, share, room)?;
             match (waited, give_up_after, &reply) {
                 (_, _, Ok(state)) if state.ends_with(" held") => Ok(reply),
                 (Some(waited), Some(limit), _) if *waited >= limit.as_secs() => {
-                    let why = gave_up(db, *grant, limit)?;
+                    let why = gave_up(db, *grant, limit, measured)?;
                     // Ended before the reply, so no other poll can grant it after its command left.
                     end(db, *grant)?;
                     Ok(Ok(format!("{grant}{GAVE_UP}{why}")))
@@ -143,7 +145,12 @@ pub(crate) fn gate(
 
 /// Why the waiting `grant` gives up at `limit`, with the held and earlier waiting grants before it.
 /// A grant that is gone already gave up, and its command lost that reply.
-fn gave_up(db: &Connection, grant: i64, limit: Duration) -> rusqlite::Result<String> {
+fn gave_up(
+    db: &Connection,
+    grant: i64,
+    limit: Duration,
+    measured: bool,
+) -> rusqlite::Result<String> {
     let found: Option<(i64, i64)> = db
         .query_row(
             "SELECT bytes, (SELECT count(*) FROM grants AS other WHERE other.id != grants.id
@@ -162,6 +169,7 @@ fn gave_up(db: &Connection, grant: i64, limit: Duration) -> rusqlite::Result<Str
         return Ok(waited);
     };
     let ahead = match ahead {
+        0 if !measured => "while the room cannot be measured".to_owned(),
         0 => "with no grant ahead".to_owned(),
         1 => "behind 1 grant".to_owned(),
         count => format!("behind {count} grants"),
@@ -1001,6 +1009,27 @@ mod tests {
         assert_eq!(
             poll(&mut db, grant, Some(600)),
             format!("{grant} gave up: waited 10m for 17 GB with no grant ahead")
+        );
+    }
+
+    #[test]
+    fn a_grant_with_none_ahead_gives_up_naming_a_room_it_cannot_measure() {
+        let (mut db, grant) = behind_one(8);
+        db.execute("DELETE FROM grants WHERE id != ?1", [grant])
+            .unwrap();
+        let poll = Gate::Poll {
+            grant,
+            waited: Some(600),
+        };
+        let limit = Some(Duration::from_secs(600));
+
+        let reply = gate(&mut db, &poll, &Factory::default(), &share(), limit, || {
+            Err("no meter".to_owned())
+        });
+
+        assert_eq!(
+            reply.unwrap().unwrap(),
+            format!("{grant} gave up: waited 10m for 8 GB while the room cannot be measured")
         );
     }
 

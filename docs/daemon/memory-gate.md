@@ -79,11 +79,12 @@ an `acquire` without `--timeout` that still waits at that limit exits 75 and nev
 It prints one line the agent can act on:
 
 ```text
-priory memory: waited 10m for 8 GB behind 2 grants; the command did not run: push and let CI run it
+priory memory: waited 10m for 8 GB behind 2 grants; the command did not run: let CI run it
 ```
 
 - The count is the held grants and the waiting ones requested earlier. With none, the line says
-  `with no grant ahead`: live runs hold the room.
+  `with no grant ahead`: live runs hold the room. With none and no measure of the room, it says
+  `while the room cannot be measured`.
 - The daemon decides on each poll, so a reloaded limit applies to commands that already wait. A
   grant that fits in the poll at the limit is held.
 - The daemon ends the grant in the step that gives up, so it cannot be granted later. Inside a run it
@@ -92,8 +93,12 @@ priory memory: waited 10m for 8 GB behind 2 grants; the command did not run: pus
 - The limit counts the command's own wait, not its request time, so a retry waits its full limit.
 - `--timeout` wins over the limit, and expires with 125. `lease` has no limit: CI cannot replace a
   server.
-- The MCP server's instructions tell an agent to push and wait for CI on exit 75, without asking a
-  person. An investigator, which never pushes, is not told, but a give-up prints it the same line.
+- When a limit is set as a run starts, its MCP server's instructions tell the agent to push what it
+  committed and wait for CI, without asking a person, when `acquire` exits 75 and prints
+  `the command did not run`. Exit 75 without that line is the command's own. An investigator, which
+  never pushes, is not told. A reload changes what later runs are told.
+- `priory gate` does not record a gate that failed because of a give-up (see
+  [tools.md](tools.md#proofs)).
 
 It is off by default because Priory cannot know that a repository's CI runs the command. A limit
 below 15 minutes ends a wait before later grants stop going first (see step 2), unless the command

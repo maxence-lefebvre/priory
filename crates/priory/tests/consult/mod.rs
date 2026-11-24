@@ -936,6 +936,7 @@ fn touch_with_real_claude(home: &Path, project: &Path, investigator: bool) -> bo
         scope: &[],
         env: &[],
         debate: false,
+        gives_up: false,
         servers: &servers,
         tools: priory_runtime::mcp::Tools::Investigator,
         jail: None,

@@ -241,8 +241,8 @@ See [Columns](#columns).
 
 An agent's settings and its shell call these. A person rarely does.
 
-- `priory mcp --session ID [--debate] [--consult | --investigator]`: the MCP server of one run, on
-  stdio. `--debate` adds the `position` tool, for a debate turn's run. `--consult` adds the
+- `priory mcp --session ID [--debate] [--gives-up] [--consult | --investigator]`: the MCP server of
+  one run, on stdio. `--gives-up` tells the agent what to do when the memory gate gives up. `--debate` adds the `position` tool, for a debate turn's run. `--consult` adds the
   `consult` tool; `--investigator` serves `result`, `memory` and `search` alone. See
   [tools.md](../daemon/tools.md#the-mcp-server).
 - `priory mcp --eval LOG [--describe TOOL TEXT]`: the fake MCP server of `priory eval`. See
