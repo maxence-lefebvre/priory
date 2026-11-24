@@ -966,7 +966,8 @@
               "log",
               "runs",
               "intake",
-              "work"
+              "work",
+              "room"
             ]
           },
           "type": "array"

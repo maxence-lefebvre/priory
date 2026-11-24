@@ -312,7 +312,7 @@ fn priory_metrics_naming_an_unknown_group_stops_the_daemon_with_its_name() {
     assert_eq!(
         stderr,
         "priory daemon: PRIORY_METRICS names `nope`, which is not a metrics group: the groups are \
-         process, log, runs, intake, work, or none\n"
+         process, log, runs, intake, work, room, or none\n"
     );
 }
 
@@ -1101,4 +1101,187 @@ fn a_daemon_sends_the_person_minutes_per_merge_that_report_attention_prints() {
     let report: Value = serde_json::from_slice(&report.stdout).unwrap();
     assert_eq!(report["person_minutes_per_merge"], 5.0);
     assert_eq!(per_merge(request), vec![(json!({}), 5.0)]);
+}
+
+const GB: f64 = (1u64 << 30) as f64;
+const ROOM: &str = "metrics = [\"room\"]\nmetrics_every = \"10s\"\n";
+
+/// The tasks waiting for room by cause, in a request with the room group.
+fn waiting(request: &Value) -> Vec<(String, f64)> {
+    points(request, "priory.room.tasks.waiting")
+        .into_iter()
+        .map(|(attributes, count)| {
+            let cause = attributes["priory.room.cause"].as_str().unwrap().to_owned();
+            (cause, count)
+        })
+        .collect()
+}
+
+/// `waiting` with `count` tasks under `cause` and none under any other.
+fn only(cause: &str, count: f64) -> Vec<(String, f64)> {
+    ["load", "memory", "disk", "unmeasured"]
+        .map(|one| (one.to_owned(), if one == cause { count } else { 0.0 }))
+        .to_vec()
+}
+
+/// Waits for a request whose tasks wait for room as `expected`, and returns it.
+fn until_waiting(setup: &Setup, collector: &Collector, expected: &[(String, f64)]) -> Value {
+    let found = |request: &Value| waiting(request) == expected;
+    let requests = collector.until(setup, |requests| requests.iter().any(found));
+    requests.into_iter().find(found).unwrap()
+}
+
+fn cpus() -> f64 {
+    std::thread::available_parallelism().unwrap().get() as f64
+}
+
+#[test]
+fn an_idle_daemon_sends_its_room_against_the_ceilings_and_a_zero_for_each_state_and_cause() {
+    let collector = Collector::start();
+    let mut setup = Setup::new("metrics-room-idle");
+    setup.metrics(&collector, ROOM);
+    fs::create_dir_all(setup.dir.join("factory/runners")).unwrap();
+    let runner = "platform = { os = \"linux\" }\nagents = { cpu = \"50%\", memory = \"75%\" }\n";
+    fs::write(setup.dir.join("factory/runners/runner.toml"), runner).unwrap();
+    setup.memory(40);
+    setup.load(1.5);
+    setup.disk(300);
+
+    setup.start();
+
+    let request = until_waiting(&setup, &collector, &only("none", 0.0));
+    let value = |name: &str| point(&request, name, &json!({}));
+    assert_eq!(value("priory.room.load"), Some(1.5));
+    assert_eq!(value("priory.room.load.limit"), Some(cpus() * 0.5));
+    assert_eq!(value("priory.room.memory.available"), Some(40.0 * GB));
+    assert_eq!(value("priory.room.memory.total"), Some(64.0 * GB));
+    assert_eq!(value("priory.room.memory.limit"), Some(48.0 * GB));
+    assert_eq!(value("priory.room.memory.promised"), Some(0.0));
+    assert_eq!(value("priory.room.disk.free"), Some(300.0 * GB));
+    assert_eq!(value("priory.room.disk.floor"), Some(20.0 * GB));
+    let none = [
+        (json!({ "priory.grant.state": "waiting" }), 0.0),
+        (json!({ "priory.grant.state": "held" }), 0.0),
+    ];
+    assert_eq!(points(&request, "priory.room.grants"), none);
+    assert_eq!(points(&request, "priory.room.grants.memory"), none);
+}
+
+#[test]
+fn a_daemon_counts_the_tasks_waiting_for_room_by_what_the_head_lacks() {
+    let collector = Collector::start();
+    let mut setup = Setup::new("metrics-room-causes");
+    with_review(&setup, "6GB");
+    setup.metrics(&collector, ROOM);
+    setup.memory(11);
+    setup.publish(&requested_in(42, Some("now")));
+    setup.publish(&review_requested(43));
+
+    setup.start();
+
+    until_waiting(&setup, &collector, &only("memory", 2.0));
+    setup.disk(10);
+    setup.memory(60);
+    until_waiting(&setup, &collector, &only("disk", 2.0));
+    setup.load(cpus());
+    setup.disk(500);
+    until_waiting(&setup, &collector, &only("load", 2.0));
+    setup.load(0.0);
+    setup.until("tasks", |rows| rows.iter().all(|row| row[4] == "running"));
+    let sent = collector.requests().len();
+    collector.until_count(&setup, sent + 2);
+    let request = collector.requests().pop().unwrap();
+    assert_eq!(waiting(&request), only("none", 0.0));
+}
+
+#[test]
+fn a_room_that_cannot_be_measured_counts_its_waiting_task_as_unmeasured_and_logs_why() {
+    let collector = Collector::start();
+    let mut setup = Setup::new("metrics-room-unmeasured");
+    setup.metrics(&collector, ROOM);
+    fs::remove_file(setup.dir.join("proc/meminfo")).unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let request = until_waiting(&setup, &collector, &only("unmeasured", 1.0));
+    assert!(!names(&request).contains(&"priory.room.load".to_owned()));
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    assert!(
+        log.contains("priory daemon: metrics: cannot measure the room: "),
+        "{log}"
+    );
+}
+
+#[test]
+fn a_daemon_sends_the_grants_by_state_and_the_runs_promise_without_the_held_memory() {
+    let collector = Collector::start();
+    let mut setup = Setup::new("metrics-room-grants");
+    setup.metrics(&collector, ROOM);
+    setup.hold("hold-stop");
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1);
+    setup.hold("hold-a");
+    setup.hold("hold-b");
+    let a = acquire(&setup, "30", &held("a"));
+    setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
+    let b = acquire(&setup, "40", &held("b"));
+    setup.until("memory", |rows| rows.len() == 2);
+
+    let of = |state: &str| json!({ "priory.grant.state": state });
+    let both = |request: &Value| {
+        ["waiting", "held"]
+            .iter()
+            .all(|state| point(request, "priory.room.grants", &of(state)) == Some(1.0))
+    };
+    let requests = collector.until(&setup, |requests| requests.iter().any(both));
+    for state in ["hold-a", "hold-b", "hold-stop"] {
+        setup.release(state);
+    }
+    assert!(a.wait_with_output().unwrap().status.success());
+    assert!(b.wait_with_output().unwrap().status.success());
+
+    let request = requests.iter().find(|request| both(request)).unwrap();
+    let memory = |state| point(request, "priory.room.grants.memory", &of(state));
+    assert_eq!(memory("held"), Some(30.0 * GB));
+    assert_eq!(memory("waiting"), Some(40.0 * GB));
+    assert_eq!(
+        point(request, "priory.room.memory.promised", &json!({})),
+        Some(4.0 * GB)
+    );
+}
+
+#[test]
+fn a_task_waiting_for_room_costs_no_second_measurement_a_tick_with_the_room_group_on() {
+    for groups in ["\"log\"", "\"log\", \"room\""] {
+        let collector = Collector::start();
+        let mut setup = Setup::new("metrics-room-once");
+        setup.metrics(
+            &collector,
+            &format!("metrics = [{groups}]\nmetrics_every = \"10s\"\n"),
+        );
+        setup.memory(5);
+        setup.publish(&requested(42));
+        setup.start();
+
+        // The log's probe times the first read of each tick, so its count is the ticks.
+        let ticks = |request: &Value| {
+            points(request, "priory.log.probe.duration")
+                .iter()
+                .map(|(_, count)| count)
+                .sum::<f64>()
+        };
+        let requests = collector.until(&setup, |requests| {
+            requests.last().is_some_and(|last| ticks(last) >= 15.0)
+        });
+
+        let measured = fake_log(&setup, "df.log").len() as f64;
+        let ticks = ticks(requests.last().unwrap());
+        assert!(
+            measured >= 10.0 && measured <= ticks + 5.0,
+            "{groups}: {measured} measurements in {ticks} ticks"
+        );
+    }
 }
