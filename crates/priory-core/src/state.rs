@@ -5,14 +5,14 @@ use herdr_bus::Message;
 use priory_factory::explain;
 use priory_factory::factory::{Factory, Fair, Loaded, Session, Workflow};
 use priory_factory::lanes::{Lanes, Subject};
-use priory_intake::intake::{CHECKED, ISSUE_CLOSED, PR_CLOSED as CLOSED, REVIEWED};
+use priory_intake::intake::{CHECKED, ISSUE_CLOSED, PR_CLOSED as CLOSED};
 use priory_runtime::room::Room;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 111;
+const VERSION: i64 = 110;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1964,12 +1964,6 @@ ALTER TABLE runs ADD COLUMN direnv INTEGER;
 PRAGMA user_version = 110;
 ";
 
-// Whether an outsider's review reopened the task with no trusted act since.
-const SCHEMA_111: &str = "
-ALTER TABLE tasks ADD COLUMN outsider_reopened INTEGER NOT NULL DEFAULT 0;
-PRAGMA user_version = 111;
-";
-
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1985,7 +1979,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
-    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111,
+    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -2316,16 +2310,7 @@ pub(crate) fn route_in(
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let factory = trace.factory;
     if route::outsider(message) {
-        let reopening = reopened_by_outsider(tx, message, trace)?;
-        let outcome = reopening.map_or("outsider", |_| "reopened");
-        let seq = record(tx, message, reopening, outcome, None)?;
-        if let Some(task) = reopening {
-            crate::tools::reopen(tx, trace, task, seq)?;
-            tx.execute(
-                "UPDATE tasks SET outsider_reopened = 1 WHERE id = ?1",
-                [task],
-            )?;
-        }
+        record(tx, message, None, "outsider", None)?;
         return Ok(Vec::new());
     }
     if crate::memories::handle(tx, message)?.is_some() {
@@ -2339,7 +2324,23 @@ pub(crate) fn route_in(
     let resources = route::resources(message);
     renamed(tx, message, resources.first())?;
     claim_pull_request(tx, message)?;
-    read_open(tx, message, resources.first())?;
+    // The intake publishes no reopen, so a later event of an open pull request or issue tells it,
+    // and gives back the subscriptions its close ended.
+    if ![CLOSED, ISSUE_CLOSED].contains(&message.kind.as_str()) && message.data["open"] == true {
+        tx.execute(
+            "UPDATE pull_requests SET state = 'open' WHERE resource = ?1 AND state = 'closed'",
+            [resources.first()],
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO subscriptions (task, resource, created, chosen)
+             SELECT task, resource, created, chosen FROM closed_subscriptions WHERE resource = ?1",
+            [resources.first()],
+        )?;
+        tx.execute(
+            "DELETE FROM closed_subscriptions WHERE resource = ?1",
+            [resources.first()],
+        )?;
+    }
     if message.kind == CLOSED {
         let state = if message.data["merged"] == true {
             "merged"
@@ -2500,11 +2501,6 @@ pub(crate) fn route_in(
         None
     };
     let seq = record(tx, message, task, outcome, outbox)?;
-    if crate::tools::trusted(message) {
-        for task in task.into_iter().chain(owners.iter().map(|owner| owner.id)) {
-            rearm(tx, task)?;
-        }
-    }
     if outcome == "ignored"
         && let Some(line) = crate::tools::unheard(tx, message)?
     {
@@ -2722,81 +2718,6 @@ fn claim_pull_request(tx: &Transaction, message: &Message) -> rusqlite::Result<(
         return Ok(());
     }
     crate::stack::record(tx, task, &resource, head, base)
-}
-
-/// Takes back what a close ended once `message` reads the pull request or issue `resource` open.
-fn read_open(
-    tx: &Transaction,
-    message: &Message,
-    resource: Option<&String>,
-) -> rusqlite::Result<()> {
-    // The intake publishes no reopen, so a later event of an open pull request or issue tells it,
-    // and gives back the subscriptions its close ended.
-    if ![CLOSED, ISSUE_CLOSED].contains(&message.kind.as_str()) && message.data["open"] == true {
-        tx.execute(
-            "UPDATE pull_requests SET state = 'open' WHERE resource = ?1 AND state = 'closed'",
-            [resource],
-        )?;
-        tx.execute(
-            "INSERT OR IGNORE INTO subscriptions (task, resource, created, chosen)
-             SELECT task, resource, created, chosen FROM closed_subscriptions WHERE resource = ?1",
-            [resource],
-        )?;
-        tx.execute(
-            "DELETE FROM closed_subscriptions WHERE resource = ?1",
-            [resource],
-        )?;
-    }
-    Ok(())
-}
-
-/// Lets an outsider's review reopen `task` again, after a trusted act on it.
-pub(crate) fn rearm(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
-    tx.execute(
-        "UPDATE tasks SET outsider_reopened = 0 WHERE id = ?1 AND outsider_reopened = 1",
-        [task],
-    )
-    .map(drop)
-}
-
-/// The done task that an outsider's review requesting changes on its own pull request reopens, when
-/// that task's workflow opts in, no outsider reopened it since a trusted act, no active task owns
-/// the pull request and an agent runs the step it goes back to.
-fn reopened_by_outsider(
-    tx: &Transaction,
-    message: &Message,
-    trace: &crate::trace::Trace,
-) -> rusqlite::Result<Option<i64>> {
-    if message.kind != REVIEWED || message.data["state"] != "changes_requested" {
-        return Ok(None);
-    }
-    let Some(task) = crate::tools::reopenable(tx, message)? else {
-        return Ok(None);
-    };
-    let (workflow, reopened): (String, bool) = tx.query_row(
-        "SELECT workflow, outsider_reopened FROM tasks WHERE id = ?1",
-        [task],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
-    let workflows = &trace.factory.workflows;
-    let opted = workflows
-        .get(&workflow)
-        .is_some_and(|flow| flow.value.reopen_on_changes_requested);
-    if !opted || reopened {
-        return Ok(None);
-    }
-    let resources = route::resources(message);
-    read_open(tx, message, resources.first())?;
-    let Some(resource) = resources.first() else {
-        return Ok(None);
-    };
-    if !owners(tx, &resources)?.is_empty()
-        || (message.data["open"] != true && crate::tools::last_read(tx, resource)? != "open")
-    {
-        return Ok(None);
-    }
-    let target = crate::tools::reopens_at(tx, workflows, task, resource)?;
-    Ok(target.is_ok().then_some(task))
 }
 
 /// Whether `task` sleeps where an event can wake it: asleep at a model step, with no daemon's

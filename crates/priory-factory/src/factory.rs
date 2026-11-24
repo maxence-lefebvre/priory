@@ -1928,11 +1928,6 @@ pub struct Workflow {
     /// The model step a done task goes back to when its open pull request gets feedback; by
     /// default, the step that opened the pull request.
     pub reopen: Option<String>,
-    /// Whether a review that requests changes on the open pull request a done task opened reopens the
-    /// task when its author has no write access to the repository, once until a trusted act; false
-    /// when unset. Anyone can review a pull request of a public repository.
-    #[serde(default)]
-    pub reopen_on_changes_requested: bool,
     /// The guarded calls every step of the workflow may make with no approval.
     #[serde(default)]
     pub guard: GuardAllow,
