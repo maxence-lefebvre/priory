@@ -2,6 +2,7 @@
 //! per-minute cap (docs/daemon/metrics.md).
 
 use crate::otlp;
+use crate::room::{CAUSES, RESTORES, Share, UNMEASURED};
 use priory_factory::factory::{Backend, Factory, METRIC_GROUPS, Price};
 use priory_intake::intake::{EVENTS, FAILURES, MISSED, OUTPUT};
 use priory_intake::log::{self, Log};
@@ -42,6 +43,11 @@ static WANT_BACKLOG: AtomicBool = AtomicBool::new(false);
 /// The backlog the daemon read since the last request, if it reached its log.
 static BACKLOG: Mutex<Option<Vec<(String, u64)>>> = Mutex::new(None);
 
+/// Whether the exporter sends the room group, which only the daemon's own thread can measure.
+static ROOM_ON: AtomicBool = AtomicBool::new(false);
+/// The room's points since the last request, and why the room could not be measured.
+static ROOM: Mutex<Option<(Vec<Point>, Option<String>)>> = Mutex::new(None);
+
 /// The groups this process sends: `PRIORY_METRICS` when set, else the factory's `metrics`.
 pub fn groups(factory: &Factory) -> Result<Vec<String>, String> {
     let Ok(text) = std::env::var("PRIORY_METRICS") else {
@@ -78,8 +84,8 @@ fn groups_of(text: &str) -> Result<Vec<String>, String> {
     Ok(groups)
 }
 
-/// The groups `service` sends of `groups`: the daemon alone owns the log, the runs and the work,
-/// and each process sends its own intake events, the polls' from the intake, the webhooks' from
+/// The groups `service` sends of `groups`: the daemon alone owns the log, the runs, the work and
+/// the room, and each process sends its own intake events, the polls' from the intake, the webhooks' from
 /// the server.
 fn owned(service: &str, groups: Vec<String>) -> Vec<String> {
     groups
@@ -117,6 +123,98 @@ pub(crate) fn unreached() {
     if let Ok(mut slot) = BACKLOG.lock() {
         *slot = None;
     }
+}
+
+/// Whether the exporter wants the room's points: each one a tick `measured` anyway, else one per
+/// request.
+pub(crate) fn wants_room(measured: bool) -> bool {
+    ROOM_ON.load(Ordering::Relaxed)
+        && (measured || ROOM.lock().is_ok_and(|points| points.is_none()))
+}
+
+/// Keeps the room group's points for the next request. `promised` is the memory live runs and held
+/// grants reserve. Without `waiting`, the pass did not see the whole queue.
+pub(crate) fn sample_room(
+    db: &Connection,
+    share: &Share,
+    room: &Result<room::Room, String>,
+    promised: u64,
+    waiting: Option<BTreeMap<&'static str, u64>>,
+) -> rusqlite::Result<()> {
+    let mut points = Vec::new();
+    let mut push = |name, unit, attributes: Attributes, value| {
+        points.push(Point {
+            group: "room",
+            kind: Kind::Gauge,
+            name,
+            unit,
+            attributes,
+            value,
+        });
+    };
+    let mut held = 0;
+    for state in ["waiting", "held"] {
+        let (count, bytes): (i64, i64) = db.query_row(
+            "SELECT count(*), coalesce(sum(bytes), 0) FROM grants WHERE state = ?1",
+            [state],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if state == "held" {
+            held = bytes as u64;
+        }
+        let attributes = vec![("priory.grant.state", state.to_owned())];
+        let count = Number::Int(count as u64);
+        push("priory.room.grants", "{grant}", attributes.clone(), count);
+        let bytes = Number::Int(bytes as u64);
+        push("priory.room.grants.memory", "By", attributes, bytes);
+    }
+    if let Ok(room) = room {
+        let limit = room.cpus as f64 * share.cpu;
+        let ceiling = crate::room::ceiling(room, share).round() as u64;
+        let floor = crate::room::disk_floor(room).round() as u64;
+        for (name, unit, value) in [
+            ("priory.room.load", "1", Number::Double(room.load)),
+            ("priory.room.load.limit", "1", Number::Double(limit)),
+            (
+                "priory.room.memory.available",
+                "By",
+                Number::Int(room.memory_free),
+            ),
+            (
+                "priory.room.memory.total",
+                "By",
+                Number::Int(room.memory_total),
+            ),
+            ("priory.room.memory.limit", "By", Number::Int(ceiling)),
+            ("priory.room.disk.free", "By", Number::Int(room.disk_free)),
+            ("priory.room.disk.floor", "By", Number::Int(floor)),
+        ] {
+            push(name, unit, Vec::new(), value);
+        }
+    }
+    let runs = Number::Int(promised.saturating_sub(held));
+    push("priory.room.memory.promised", "By", Vec::new(), runs);
+    if let Some(mut waiting) = waiting {
+        // A room that cannot be measured adds its error to the reason.
+        let (short, unmeasured): (i64, i64) = db.query_row(
+            "SELECT count(*) FILTER (WHERE reason = ?1), count(*) FILTER (WHERE reason != ?1)
+             FROM tasks WHERE substr(reason, 1, length(?1)) = ?1
+             AND state NOT IN ('done', 'failed', 'dropped')",
+            [RESTORES],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        *waiting.entry("disk").or_default() += short as u64;
+        *waiting.entry(UNMEASURED).or_default() += unmeasured as u64;
+        for cause in CAUSES {
+            let attributes = vec![("priory.room.cause", cause.to_owned())];
+            let count = Number::Int(waiting.get(cause).copied().unwrap_or_default());
+            push("priory.room.tasks.waiting", "{task}", attributes, count);
+        }
+    }
+    if let Ok(mut slot) = ROOM.lock() {
+        *slot = Some((points, room.as_ref().err().cloned()));
+    }
+    Ok(())
 }
 
 /// Starts sending `groups` on a thread of its own, as `service`: `daemon`, `intake` or `serve`.
@@ -194,6 +292,7 @@ pub fn start(factory: &Factory, service: &str, groups: Vec<String>) -> Result<()
         attention: None,
         attention_in: 0,
     };
+    ROOM_ON.store(exporter.sends("room"), Ordering::Relaxed);
     if exporter.sends("work") {
         exporter.traced = crate::state::read_only()
             .and_then(|db| last_trace(&db).map_err(|error| error.to_string()))
@@ -413,6 +512,9 @@ impl Exporter {
         }
         if self.sends("work") {
             self.work(&mut points);
+        }
+        if self.sends("room") {
+            self.room(&mut points);
         }
         points
     }
@@ -691,6 +793,18 @@ impl Exporter {
                 }
             }
             Err(error) => self.once(format!("metrics: cannot read the intake's polls: {error}")),
+        }
+    }
+
+    /// The room group: what the daemon's thread last measured. An interval in which it ended no tick
+    /// sends no point.
+    fn room(&mut self, points: &mut Vec<Point>) {
+        let Some((room, error)) = ROOM.lock().ok().and_then(|mut slot| slot.take()) else {
+            return;
+        };
+        points.extend(room);
+        if let Some(error) = error {
+            self.once(format!("metrics: cannot measure the room: {error}"));
         }
     }
 
@@ -1468,15 +1582,16 @@ mod tests {
     }
 
     #[test]
-    fn only_the_daemon_sends_the_log_runs_and_work_groups_and_every_process_its_intake_group() {
+    fn only_the_daemon_sends_the_log_runs_work_and_room_groups_and_every_process_its_intake_group()
+    {
         let groups = || {
-            ["process", "log", "runs", "intake", "work"]
+            ["process", "log", "runs", "intake", "work", "room"]
                 .map(str::to_owned)
                 .to_vec()
         };
         assert_eq!(
             owned("daemon", groups()),
-            ["process", "log", "runs", "intake", "work"]
+            ["process", "log", "runs", "intake", "work", "room"]
         );
         assert_eq!(owned("intake", groups()), ["process", "intake"]);
         assert_eq!(owned("serve", groups()), ["process", "intake"]);
@@ -1523,7 +1638,7 @@ mod tests {
         assert_eq!(
             groups_of("process,nope").unwrap_err(),
             "PRIORY_METRICS names `nope`, which is not a metrics group: the groups are process, \
-             log, runs, intake, work, or none"
+             log, runs, intake, work, room, or none"
         );
     }
 

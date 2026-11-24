@@ -98,7 +98,7 @@ pub(crate) fn short_of_disk(room: &Room) -> bool {
 }
 
 /// The free disk the room keeps: 10 % of the disk, at most 20 GB.
-fn disk_floor(room: &Room) -> f64 {
+pub(crate) fn disk_floor(room: &Room) -> f64 {
     // `agents` has no disk part, and R4.10's slice caps only CPU and memory.
     (room.disk_total as f64 * (1.0 - SHARE)).min(DISK)
 }
@@ -108,6 +108,23 @@ pub(crate) struct Short {
     pub resource: &'static str,
     pub missing: String,
     pub reason: String,
+}
+
+/// The reason of a task that waits for disk outside the queue, to add back its worktree.
+pub(crate) const RESTORES: &str = "waits for room to add back its worktree";
+
+/// Why tasks wait for room, as `priory.room.tasks.waiting` names it.
+pub(crate) const CAUSES: [&str; 4] = ["load", "memory", "disk", UNMEASURED];
+pub(crate) const UNMEASURED: &str = "unmeasured";
+
+impl Short {
+    /// The resource under the name of its cause in `CAUSES`.
+    pub(crate) fn cause(&self) -> &'static str {
+        match self.resource {
+            "CPU" => "load",
+            resource => resource,
+        }
+    }
 }
 
 /// Why a run needing `need` does not fit in `room`, where `promised` is already promised to runs
