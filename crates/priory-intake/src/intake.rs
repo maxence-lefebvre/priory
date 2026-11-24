@@ -50,6 +50,8 @@ pub const ASK_APPLIED: &str = "priory.ask.applied";
 pub const TASK_ACTED: &str = "priory.task.acted";
 /// A runner applied or refused an action on one of its tasks that another machine sent.
 pub const TASK_APPLIED: &str = "priory.task.applied";
+/// A person drops the requests of a key that no runner claimed.
+pub const TASK_DROPPED: &str = "priory.task.dropped";
 /// An agent saves or forgets a memory: a candidate that other tasks' runs get once accepted.
 pub const MEMORY_WRITTEN: &str = "priory.memory.written";
 /// A person accepts a memory candidate, so every task's runs get it.
@@ -249,6 +251,7 @@ pub fn output() -> Output {
             ASK_APPLIED,
             TASK_ACTED,
             TASK_APPLIED,
+            TASK_DROPPED,
             MEMORY_WRITTEN,
             MEMORY_ACCEPTED,
             MEMORY_DROPPED,
@@ -1003,6 +1006,9 @@ fn task_requested(name: &str, trigger: &Trigger, source: &Message, key: String) 
     }
     if let Some(hold) = &trigger.hold {
         data["hold"] = json!(hold);
+    }
+    if let Some(labels) = trigger.labels.as_ref().filter(|labels| !labels.is_empty()) {
+        data["labels"] = json!(labels);
     }
     Message::new(TASK_REQUESTED, data)
         .id(id(&format!("{TASK_REQUESTED}:{name}:{}", source.id)))

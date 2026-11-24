@@ -86,6 +86,7 @@ pub(crate) fn tool(
             intervention: None,
             session: None,
             auto_answer: None,
+            labels: Vec::new(),
         };
         match add_to(factory, &add, &fix) {
             Ok(_) | Err(Refused::Repeated(_)) => {}

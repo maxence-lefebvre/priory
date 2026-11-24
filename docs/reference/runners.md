@@ -17,6 +17,12 @@ Schema: [`config/runner.json`](../schemas/config/runner.json).
 | `agents.cpu` | share | no | `"90%"` | The share of the machine's CPUs they may load | `"50%"` |
 | `agents.memory` | share | no | `"90%"` | The share of the machine's memory they may take | `"60%"` |
 | `upgrade` | boolean | no | `true` | Whether the factory's [`[upgrade]`](factory.md#upgrade) applies to this machine | `false` |
+| `filters` | list of tables | no | none | The tasks it claims and starts. See [Filters](#filters) | `[{ match = "!project=oss" }]` |
+| `filters.match` | string | yes | | `key=value` accepts only tasks with that label. `!key=value` accepts only tasks without it | `"!project=oss"` |
+| `filters.when` | table | no | always | When the filter applies. Outside it, the filter is lifted | `{ hours = "08:00-18:00" }` |
+| `filters.when.days` | list of `mon` to `sun` | no | every day | The weekdays it applies on. With `hours` that pass midnight, the day they start on | `["mon", "tue", "wed", "thu", "fri"]` |
+| `filters.when.hours` | string | no | the whole day | `HH:MM-HH:MM`, from the first time to before the second. It may pass midnight | `"08:00-18:00"` |
+| `filters.when.timezone` | string | with two or more runner files | the machine's | The IANA zone the days and hours are read in | `"Europe/Paris"` |
 | `memory` | table | no | the factory's `[memory]` | The memory gate on this machine | `{ give_up_after = "20m" }` |
 | `memory.give_up_after` | duration, below `"1h"` | no | the factory's | Replaces the factory's [`[memory] give_up_after`](factory.md#memory) on this machine | `"20m"` |
 
@@ -30,6 +36,27 @@ A share is a number followed by `%`, above 0 and at most 100, such as `"60%"`.
 platform = { os = "linux", arch = "x86_64" }
 agents = { cpu = "50%", memory = "60%" }   # a laptop in use; omit for 90% of each
 ```
+
+## Filters
+
+A runner claims and starts only the tasks that every filter whose window is open accepts. A
+filter matches the task's labels, which its trigger's `labels` or `priory request --label` set
+(see [triggers.md](triggers.md)). This desktop keeps tasks labelled `project=oss` off it on
+weekday work hours, and takes them at night and at weekends:
+
+```toml
+platform = { os = "linux" }
+
+[[filters]]
+match = "!project=oss"
+when = { days = ["mon", "tue", "wed", "thu", "fri"], hours = "08:00-18:00", timezone = "Europe/Paris" }
+```
+
+A factory of one runner applies its runner file's filters too. A task they hold waits, queued,
+with the reason `runner desktop's filter !project=oss holds it until 18:00`. The time is in the
+filter's timezone, with the weekday when it is not today, such as `Mon 08:00`. A filter with no
+window holds its tasks with no time. [runners.md](../daemon/runners.md#placing-tasks-with-filters)
+says when each runner checks them.
 
 ## Several runners
 
@@ -59,4 +86,11 @@ A machine with no runner file serves every runner's asks and tasks with
 | `"<text>" is not a duration such as 90s, 15m or 2h` | A bad `memory.give_up_after` |
 | `` `[memory] give_up_after` is below 1h, the default timeout of a gated command `` | A limit of 1h or more |
 | `"<text>" is not a share such as 60% or 90%` | A share without `%`, or outside 0 to 100 |
+| `"<text>" is not a match such as "project=oss" or "!project=oss"` | A `match` that is not a label, with or without `!` |
+| `"<text>" is not hours such as "08:00-18:00"` | `hours` that are not two `HH:MM` times joined by `-` |
+| `"<text>" starts and ends at once: leave hours out for the whole day` | `hours` such as `"08:00-08:00"` |
+| `"<day>" is not a day: use mon, tue, wed, thu, fri, sat or sun` | An unknown entry of `days` |
+| `` `days` is empty, so it never fires `` | `days = []` |
+| `"<zone>" is not a time zone such as "Europe/Paris"` | An unknown `timezone` |
+| `` filter `<match>` has a window with no `timezone`, which a factory of <n> runners needs `` | A `when` without `timezone`, with two or more runner files |
 | `` `<hostname>` is also defined in runners/<hostname>.toml `` | `<hostname>.toml` and `<hostname>.yaml` both exist |

@@ -62,9 +62,9 @@ a group. `PRIORY_METRICS` replaces that list for one process, such as `process,l
 
 ## Asking for work
 
-- `priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... <text>`:
+- `priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... [--label KEY=VALUE]... <text>`:
   asks for a task from one line of text and prints its key. See [cli.md](../intake/cli.md).
-- `priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... [--hold <reason> [CONDITION]...] <text>`:
+- `priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... [--label KEY=VALUE]... [--hold <reason> [CONDITION]...] <text>`:
   asks for a task with a key of your own, and every field as a flag. See
   [cli.md](../intake/cli.md).
 - `priory adopt [DIR] TRIGGER [PR...]`: parks a task on each open pull request of a comment or
@@ -146,6 +146,9 @@ a group. `PRIORY_METRICS` replaces that list for one process, such as `process,l
 - `priory (resume | cancel | release | revive [--step STEP]) [--generation N] [DIR] RUNNER:KEY`,
   `priory say [--generation N] [DIR] RUNNER:KEY TEXT`: sends the action to another runner's task.
   See [runners.md](../daemon/runners.md#acting-on-another-runners-task).
+- `priory cancel [DIR] KEY`: drops the requests of a key that no runner claimed. A key that waits here
+  wins over `RUNNER:KEY`, when a runner is named like the key's first part. See
+  [runners.md](../daemon/runners.md#placing-tasks-with-filters).
 - `priory give [DIR] KEY RUNNER [--force]`: moves a task to another runner, once its runner's lease
   ended or with `--force`. See
   [runners.md](../daemon/runners.md#giving-a-task-to-another-runner).
