@@ -1,5 +1,7 @@
+use crate::runtime::fed_within;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 /// The machine's room, measured live.
 #[derive(Debug)]
@@ -101,13 +103,17 @@ fn read(path: &Path) -> Result<String, String> {
     std::fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))
 }
 
+/// How long `df` may take, since a hung mount would hold the daemon's thread.
+const DF: Duration = Duration::from_secs(5);
+
 /// Total and available bytes of the file system holding `path`, from POSIX `df -Pk`.
 fn disk(path: &Path) -> Result<(u64, u64), String> {
-    let output = Command::new("df")
-        .arg("-Pk")
-        .arg(path)
-        .output()
-        .map_err(|error| format!("df: {error}"))?;
+    let output = fed_within(Command::new("df").arg("-Pk").arg(path), None, DF)
+        .map_err(|error| format!("df: {error}"))?
+        .ok_or_else(|| {
+            let seconds = DF.as_secs();
+            format!("df -Pk {}: timed out after {seconds}s", path.display())
+        })?;
     let text = String::from_utf8_lossy(&output.stdout);
     // Columns: file system, 1024-blocks, used, available, capacity, mount point.
     let fields: Vec<&str> = text
