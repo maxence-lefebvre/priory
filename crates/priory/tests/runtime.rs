@@ -272,11 +272,17 @@ impl Setup {
 
     fn start_with(&mut self, exe: &Path, env: &[(&str, &str)]) {
         let factory = self.dir.join("factory");
+        self.start_on(exe, env, &factory);
+    }
+
+    /// Starts the daemon in the test's folder on the factory folder `factory`, as typed.
+    fn start_on(&mut self, exe: &Path, env: &[(&str, &str)], factory: &Path) {
         let log = fs::File::create(self.dir.join("daemon.log")).unwrap();
         self.daemon = Some(
             self.command(exe.to_str().unwrap())
                 .envs(env.iter().copied())
                 .args(["daemon", factory.to_str().unwrap()])
+                .current_dir(&self.dir)
                 .env("CLAUDECODE", "1")
                 .env("CLAUDE_CODE_ENTRYPOINT", "cli")
                 .env("CLAUDE_CODE_USE_BEDROCK", "0")
@@ -6306,6 +6312,25 @@ fn an_answered_outside_ask_runs_the_deliver_command_once_with_its_name_revision_
     assert_eq!(
         delivered(&setup),
         [["cache.ship", "1", "cache-worker", "answered", "ship"]]
+    );
+}
+
+#[test]
+fn deliver_runs_the_command_of_a_relative_factory_folder() {
+    let mut setup = delivering("deliver-relative", "exit 0");
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    setup.start_on(exe, &[], Path::new("factory"));
+    listening(&setup);
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+
+    setup.priory(&["answer", "--expected", "1", "--", "cache.ship", "ship"]);
+
+    let done = delivery(&setup, "cache.ship", |delivery| {
+        ["delivered", "failed"].contains(&delivery["state"].as_str().unwrap_or_default())
+    });
+    assert_eq!(
+        (&done["state"], &done["tries"]),
+        (&"delivered".into(), &1.into())
     );
 }
 
@@ -33150,16 +33175,19 @@ fn a_parked_task_is_left_out_of_the_queue_and_the_task_list() {
 }
 
 /// A factory whose `[runs] attach` command writes its arguments and ids to `attached`, then exits
-/// with `exit`; with `flagged`, the implement step sets `attach = true`.
+/// with `exit`. The review step, after implement, sets `attach = true`; with `flagged`, implement
+/// does too.
 fn attaching(name: &str, flagged: bool, exit: u8) -> Setup {
-    let workflow = if flagged {
-        WORKFLOW.replace(
+    let mut workflow = WORKFLOW.replace("passed = \"done\"", "passed = \"review\"")
+        + "\n[[steps]]\nid = \"review\"\ndecides = \"model\"\nagent = \"reviewer\"\n\
+           prompt = \"Review the change.\"\nattach = true\neffect = \"reversible\"\n\
+           next = { passed = \"done\", failed = \"stop\" }\n";
+    if flagged {
+        workflow = workflow.replace(
             "prompt = \"Implement the issue.\"\n",
             "prompt = \"Implement the issue.\"\nattach = true\n",
-        )
-    } else {
-        WORKFLOW.to_owned()
-    };
+        );
+    }
     let setup = Setup::with_workflow(name, &workflow);
     let factory = setup.dir.join("factory");
     fs::write(
@@ -33181,45 +33209,66 @@ fn attaching(name: &str, flagged: bool, exit: u8) -> Setup {
     setup
 }
 
-fn attached(setup: &Setup) -> Option<String> {
-    fs::read_to_string(setup.dir.join("factory/attached")).ok()
+/// The lines the attach command wrote, sorted, once each of `runs` has one.
+fn attached(setup: &Setup, runs: &[i64]) -> Vec<String> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let text = fs::read_to_string(setup.dir.join("factory/attached")).unwrap_or_default();
+        let mut lines: Vec<_> = text.lines().map(str::to_owned).collect();
+        lines.sort();
+        let has = |run: &i64| {
+            lines
+                .iter()
+                .any(|line| line.starts_with(&format!("1 {run} ")))
+        };
+        if runs.iter().all(has) {
+            return lines;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{lines:?}\ndaemon: {}",
+            fs::read_to_string(setup.dir.join("daemon.log")).unwrap_or_default()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// The line the attach command writes for run `run` of task 1.
+fn attach_line(run: i64) -> String {
+    format!("1 {run} 1 {run} priory-1 {}", env!("CARGO_BIN_EXE_priory"))
 }
 
 #[test]
 fn attach_runs_the_command_once_with_the_task_and_run_when_a_flagged_steps_run_starts() {
     let mut setup = attaching("attach-flagged", true, 0);
+    setup.calls(&[result("passed")]);
     setup.publish(&requested(42));
     setup.start();
 
-    setup.until("tasks", |rows| {
-        rows.first().is_some_and(|row| row[4] == "running")
-    });
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while attached(&setup).is_none() {
-        assert!(Instant::now() < deadline, "the attach command never ran");
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    std::thread::sleep(Duration::from_secs(1));
-
-    assert_eq!(
-        attached(&setup).unwrap(),
-        format!("1 1 1 1 priory-1 {}\n", env!("CARGO_BIN_EXE_priory"))
-    );
+    // The review step's line comes after any second line of the implement step's run.
+    assert_eq!(attached(&setup, &[1, 2]), [attach_line(1), attach_line(2)]);
     assert!(traced(&setup, "factory.run.attach_failed").is_empty());
 }
 
 #[test]
 fn attach_runs_nothing_for_a_step_without_attach() {
     let mut setup = attaching("attach-unflagged", false, 0);
+    setup.calls(&[result("passed")]);
     setup.publish(&requested(42));
     setup.start();
 
-    setup.until("tasks", |rows| {
-        rows.first().is_some_and(|row| row[4] == "running")
-    });
-    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(attached(&setup, &[2]), [attach_line(2)]);
+}
 
-    assert_eq!(attached(&setup), None);
+#[test]
+fn attach_runs_the_command_of_a_relative_factory_folder() {
+    let mut setup = attaching("attach-relative", true, 0);
+    setup.publish(&requested(42));
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+
+    setup.start_on(exe, &[], Path::new("factory"));
+
+    assert_eq!(attached(&setup, &[1]), [attach_line(1)]);
 }
 
 #[test]
