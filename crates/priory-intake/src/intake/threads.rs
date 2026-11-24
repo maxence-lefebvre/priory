@@ -80,8 +80,8 @@ impl Threads {
     }
 
     /// Reads the comments of at most `LOOKUPS` reviews by `viewer` in `events` that are neither in
-    /// `published` nor on the output, newest first within equal tries, and returns the errors. A rate limit or a
-    /// timeout ends it.
+    /// `published` nor on the output, newest first within equal tries, and returns the errors. A
+    /// rate limit or a timeout ends it.
     pub(super) fn read<'a>(
         &mut self,
         bus: &dyn Log,
