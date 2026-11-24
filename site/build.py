@@ -26,6 +26,7 @@ GROUPS = [
         "docs/using-the-web-view.md",
         "docs/installing-the-herdr-adapter.md",
         "docs/running-as-services.md",
+        "docs/upgrading-automatically.md",
         "docs/testing-a-factory.md",
         "docs/adding-a-second-machine.md",
         "docs/sharing-build-caches.md",

@@ -1082,6 +1082,22 @@ after a reload, the new revision; after a refusal, the revision still live.
 | `restart_only` | reloaded | The keys the edit changed that wait for a restart, such as `[serve]`; empty for none |
 | `problems`     | refused  | Each problem, as `priory check` prints it, or each task the edit would strand |
 
+## `factory.upgrade.installed`, `factory.upgrade.rolled_back` and `factory.upgrade.refused`
+
+The daemon installed a newer release by itself, went back to the old one, or refused one before it
+changed anything (see [upgrades.md](daemon/upgrades.md)). Its `data` also holds `factory`,
+`factory_revision` and `machine`.
+
+| Field | Required | Meaning |
+| ----- | -------- | ------- |
+| `op` | installed, rolled back | The upgrade's id, one record each |
+| `from` | yes | The version that ran before |
+| `to` | installed, rolled back | The version it installed |
+| `schema_from`, `schema_to` | installed, rolled back | The state's schema before, and the one the new version uses |
+| `kept` | installed, rolled back | The old binary |
+| `backups` | installed, rolled back | The copies of the state and the log |
+| `reason` | rolled back, refused | Why. A refusal that names one release holds its version in `to` |
+
 ## Spans
 
 A factory that exports OpenTelemetry spans (Priory does: see

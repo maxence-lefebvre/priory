@@ -12,6 +12,7 @@ use crate::snooze::{self, Snooze};
 use crate::state::{self, Admission, NewRun, Signal};
 use crate::tools::{self, Act, Answer, Call, Dismiss, Done, Repair};
 use crate::trace::Trace;
+use crate::upgrade::Upgrader;
 use crate::{
     deliver, embed, handler, hold, notify, overlap, progress, push, search, sections, stall,
     subscribe, summary, sweep,
@@ -21,7 +22,7 @@ use priory_intake::intake::{self, OUTPUT};
 use priory_intake::log::{self, Log};
 use priory_runtime::runtime::{self, Launch, Line};
 use priory_runtime::script::{self, Script};
-use priory_runtime::{room, slice, transcript};
+use priory_runtime::{room, slice, transcript, upgrade};
 use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::cell::OnceCell;
@@ -171,6 +172,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     // Taken first, so an edit made while the daemon starts still reloads.
     let watch = reload::Watch::new(factory);
     runtime::bound_commands(factory.command_timeout());
+    if !once {
+        upgrade::admit(&runtime::home(), true)?;
+    }
     let mut db = state::open()?;
     tools::backfill_endings(&mut db, &factory.workflows)?;
     let bus = log::open(factory.log())?;
@@ -222,6 +226,8 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let searching = search::answering(state::read_only()?, home.clone());
     let listening = runtime::listen(&home)?;
     let headers = otlp::header_file(factory, &home, "otlp-headers")?;
+    // Before the server, whose webhooks would reach a log the upgrade may still put back.
+    hold(factory, &home, &listening)?;
     let server = match factory.serve() {
         Some(config) => Some(crate::serve::start(factory, config.listen)?),
         None => None,
@@ -375,6 +381,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut redispatch: Option<Instant> = None;
     let mut entering = Entering::default();
     let mut live = Live::new(factory, watch, trace.revision.clone(), server);
+    let mut upgrader = Upgrader::default();
     loop {
         let tick = Instant::now();
         if live.poll(&mut db, &trace, true)? {
@@ -489,6 +496,16 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             sweep::measure(&home);
             let short = || room::measure(&home).is_ok_and(|room| crate::room::short_of_disk(&room));
             sweep::retire(&db, factory, &home, short)?;
+        }
+        let working = !(commands.is_empty()
+            && recipes.is_empty()
+            && scripts.is_empty()
+            && summarizing.is_empty()
+            && stalls.calls.is_empty()
+            && deliveries.is_empty());
+        if upgrader.tick(&mut db, &trace, &home, working)? {
+            // Nothing starts from here: the helper stops this service and starts the new one.
+            return Ok(());
         }
         priory_runtime::ticks::record(tick.elapsed());
         // A pasted prompt's Enter is due before the next whole tick.
@@ -963,6 +980,7 @@ fn apply(
 #[derive(serde::Deserialize)]
 #[serde(untagged)]
 enum Input {
+    Version(VersionLine),
     Guard(crate::guard::Line),
     Evidence(crate::evidence::AddLine),
     Connector(crate::todo::ConnectorLine),
@@ -994,6 +1012,45 @@ enum Input {
     KeyboardReturn(crate::keyboard::ReturnLine),
     Keys(crate::keyboard::KeysLine),
     Attach(crate::keyboard::AttachLine),
+}
+
+/// `{"version": true}`, which the helper of an upgrade sends.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VersionLine {
+    #[serde(rename = "version")]
+    _version: bool,
+}
+
+/// This daemon's version, as its reply to a `VersionLine`.
+fn version(_: &VersionLine) -> Result<String, String> {
+    Ok(env!("CARGO_PKG_VERSION").to_owned())
+}
+
+/// Waits until a migration's upgrade is committed. The daemon then answers its version alone, so a
+/// rollback to the backups loses nothing.
+fn hold(factory: &Factory, home: &Path, listening: &runtime::Listening) -> Result<(), Error> {
+    if !upgrade::held(home) {
+        return Ok(());
+    }
+    if let Some(config) = factory.serve() {
+        drop(std::net::TcpListener::bind(config.listen)?);
+    }
+    while upgrade::held(home) {
+        match listening.lines.recv_timeout(EVERY) {
+            Ok(line) => {
+                let reply = match serde_json::from_str::<Input>(&line.text) {
+                    Ok(Input::Version(line)) => version(&line),
+                    _ => Err(upgrade::IN_PROGRESS.to_owned()),
+                };
+                let reply = serde_json::to_string(&reply).expect("a result serializes");
+                let _ = line.applied.send(reply);
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
+        }
+    }
+    Ok(())
 }
 
 /// `POST /api/request`'s line: `{"add": {...}}`.
@@ -1146,6 +1203,7 @@ fn take(
         serde_json::to_string(&result).expect("a result serializes")
     };
     match serde_json::from_str::<Input>(line) {
+        Ok(Input::Version(line)) => Ok((replied(version(&line)), None)),
         Ok(Input::Guard(line)) => {
             Ok((replied(crate::guard::decide(db, &line.guard, trace)?), None))
         }

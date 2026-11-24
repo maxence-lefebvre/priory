@@ -16,6 +16,7 @@ Schema: [`config/runner.json`](../schemas/config/runner.json).
 | `agents` | table | no | 90% of each | The share of the machine the runner's agents may take together. See [agents-slice.md](../daemon/agents-slice.md) | `{ cpu = "50%" }` |
 | `agents.cpu` | share | no | `"90%"` | The share of the machine's CPUs they may load | `"50%"` |
 | `agents.memory` | share | no | `"90%"` | The share of the machine's memory they may take | `"60%"` |
+| `upgrade` | boolean | no | `true` | Whether the factory's [`[upgrade]`](factory.md#upgrade) applies to this machine | `false` |
 
 A share is a number followed by `%`, above 0 and at most 100, such as `"60%"`.
 

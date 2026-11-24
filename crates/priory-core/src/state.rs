@@ -2111,6 +2111,7 @@ pub(crate) struct Task {
 
 /// Opens the state file `PRIORY_DB`, creating its schema on first use.
 pub fn open() -> Result<Connection, String> {
+    priory_runtime::upgrade::barrier()?;
     open_at(&path()?)
 }
 

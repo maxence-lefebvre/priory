@@ -154,6 +154,59 @@ impl Codex {
     }
 }
 
+/// Whether the agent of a Claude Code transcript or Codex session file is inside a tool call: one it
+/// made in its latest message holds no result yet. `None` when the file holds no line of either.
+pub fn in_tool_call(bytes: &[u8]) -> Option<bool> {
+    let mut open: Vec<String> = Vec::new();
+    let (mut known, mut message) = (false, None);
+    for line in bytes.split(|&byte| byte == b'\n') {
+        let Ok(entry) = serde_json::from_slice::<Value>(line) else {
+            continue;
+        };
+        let payload = &entry["payload"];
+        if let Some(id) = payload["call_id"].as_str() {
+            known = true;
+            match payload["type"].as_str() {
+                Some("function_call" | "custom_tool_call" | "local_shell_call") => {
+                    open.push(id.to_owned());
+                }
+                Some("function_call_output" | "custom_tool_call_output") => {
+                    open.retain(|call| call != id);
+                }
+                _ => {}
+            }
+            continue;
+        }
+        if entry["type"] == "event_msg" {
+            known = true;
+            if matches!(
+                payload["type"].as_str(),
+                Some("task_complete" | "turn_aborted")
+            ) {
+                open.clear();
+            }
+        }
+        let assistant = entry["type"] == "assistant";
+        if !assistant && entry["type"] != "user" {
+            continue;
+        }
+        known = true;
+        // A later message ends the calls of a session that was killed inside one.
+        if assistant && message.as_ref() != entry["message"].get("id") {
+            message = entry["message"].get("id").cloned();
+            open.clear();
+        }
+        for block in entry["message"]["content"].as_array().into_iter().flatten() {
+            match (block["type"].as_str(), &block["id"], &block["tool_use_id"]) {
+                (Some("tool_use"), Value::String(id), _) => open.push(id.clone()),
+                (Some("tool_result"), _, Value::String(id)) => open.retain(|call| call != id),
+                _ => {}
+            }
+        }
+    }
+    known.then_some(!open.is_empty())
+}
+
 /// A Bash call in a Claude Code session transcript, with what it printed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shell {
@@ -237,6 +290,48 @@ pub fn shell_calls(bytes: &[u8]) -> Vec<Shell> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tool_call_is_open_until_its_result_or_a_later_message() {
+        let call = r#"{"type":"assistant","message":{"id":"a","content":[{"type":"tool_use","id":"t1"},{"type":"tool_use","id":"t2"}]}}"#;
+        let result = |id: &str| {
+            format!(
+                r#"{{"type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"{id}"}}]}}}}"#
+            )
+        };
+        let later = r#"{"type":"assistant","message":{"id":"b","content":[{"type":"text"}]}}"#;
+        let read = |lines: &[&str]| in_tool_call(lines.join("\n").as_bytes());
+        assert_eq!(read(&[call]), Some(true));
+        assert_eq!(read(&[call, &result("t1")]), Some(true));
+        assert_eq!(read(&[call, &result("t1"), &result("t2")]), Some(false));
+        assert_eq!(read(&[call, later]), Some(false));
+        assert_eq!(read(&["", "not json", "{}"]), None);
+    }
+
+    #[test]
+    fn a_codex_call_is_open_until_its_output_or_the_end_of_its_turn() {
+        let call = r#"{"type":"response_item","payload":{"type":"function_call","call_id":"c"}}"#;
+        let output =
+            r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"c"}}"#;
+        let ended = r#"{"type":"event_msg","payload":{"type":"turn_aborted"}}"#;
+        let read = |lines: &[&str]| in_tool_call(lines.join("\n").as_bytes());
+        assert_eq!(read(&[call]), Some(true));
+        assert_eq!(read(&[call, output]), Some(false));
+        assert_eq!(read(&[call, ended]), Some(false));
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn any_transcript_reads_without_panicking(
+            lines in proptest::collection::vec("[^\n]{0,60}", 0..8),
+            kind in "(assistant|user|event_msg)",
+            content in "[\\[\\]{}\":,a-z0-9]{0,40}",
+        ) {
+            let built = format!(r#"{{"type":"{kind}","message":{{"content":{content}}}}}"#);
+            let _ = in_tool_call(lines.join("\n").as_bytes());
+            let _ = in_tool_call(built.as_bytes());
+        }
+    }
 
     #[test]
     fn the_context_is_the_last_real_message_s_and_a_synthetic_error_leaves_it() {

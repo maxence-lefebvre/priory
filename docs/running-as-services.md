@@ -171,6 +171,9 @@ them, `priory resume TASK` starts it again.
 
 ## Upgrade the binary
 
+To let the daemon do this by itself, follow
+[How to upgrade Priory automatically](upgrading-automatically.md).
+
 A newer release migrates the state database forward when it opens it. An older release then
 refuses it with `state schema N is newer than this priory knows (M)`. So back up both databases
 before every upgrade, to roll back:

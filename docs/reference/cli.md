@@ -252,6 +252,11 @@ An agent's settings and its shell call these. A person rarely does.
 - `priory hook PreToolUse --outside`: the `PreToolUse` hook of a person's own session. It denies a
   shell call that runs a verb only a person runs, and asks no daemon. See
   [tools.md](../daemon/tools.md#the-outside-hook).
+- `priory upgrade resume`: the helper of an automatic upgrade, which the daemon starts. It takes the
+  upgrade in progress to its end, and does nothing without one. See
+  [upgrades.md](../daemon/upgrades.md).
+- `priory upgrade probe DIR`: migrates the state and opens the log, on the copies an upgrade's
+  rehearsal makes.
 - `priory gate`: runs the factory's `gate` in the run's worktree and records its exit code for the
   branch's head.
   See [tools.md](../daemon/tools.md#proofs).
