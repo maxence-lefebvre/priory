@@ -1011,10 +1011,18 @@ pub fn mirrored(db: &Connection, runner: &str, ask: i64) -> rusqlite::Result<Opt
 
 /// Why the mirror refuses a write at `revision` to `ask`, as a local ask refuses it: closed, or
 /// at another revision. Only the owner's check decides; this one catches most stale answers early.
-pub fn stale(ask: &Value, revision: i64) -> Option<String> {
+pub fn stale(ask: &Value, revision: i64, answers: bool) -> Option<String> {
     let id = ask["id"].as_str().unwrap_or_default();
     match ask["state"].as_str() {
         Some("open") if ask["revision"] == revision => None,
+        // A person's answer replaces autopilot's until the agent gets it, which its runner knows.
+        Some("answered")
+            if answers
+                && ask["revision"] == revision
+                && ask["answered_by"] == crate::tools::AUTOPILOT =>
+        {
+            None
+        }
         Some("open") => Some(format!(
             "ask {id} is at revision {}, not {revision}",
             ask["revision"]

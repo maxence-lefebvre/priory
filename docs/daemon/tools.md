@@ -86,8 +86,9 @@ the desk's Since you looked ends the task request's line with `, added by sessio
 
 `answer` and `dismiss` let the session decide an ask, within the limit a [lead](#hands-off) and
 [auto](waits.md#answered-by-auto) have. The daemon refuses an ask that the same rule refuses: one
-that runs a command, one at a step that `approves` an irreversible step, and one whose answer can
-let an irreversible step run before a person decides again. It also refuses an ask no lead is sent: Priory's own asks, such as a hold's,
+that runs a command, one at a step that `approves` an irreversible step, one asked inside an irreversible step that is
+not `autonomous`, and one whose answer can let an irreversible step run before a person decides
+again. It also refuses an ask no lead is sent: Priory's own asks, such as a hold's,
 a gate's or a spend cap's, a graded plan's approval and a debate's pick, an outside ask that
 carries a command, and an outside ask the same session asked. The reply names the reason and says a person answers it:
 
@@ -383,6 +384,8 @@ session, instead of the person. These asks still go to the person:
   that `priory asks --json` marks with the `irreversible` risk;
 - the ask of a human step with `approves`, since its answer grants an approval, even after a `low`
   [merge risk](../reference/tools.md#merge-risk);
+- an ask made inside an irreversible step that is not `autonomous`, since a person approved that
+  step and the answer can steer it;
 - an ask whose answer runs a command;
 - the asks the daemon makes itself: a hold's, a stack's, and an approval asked again at a new
   commit;

@@ -614,13 +614,15 @@ pub(crate) fn auto_answered(
     append(tx, trace, "factory.ask.auto_answered", &time, data)
 }
 
-/// Appends a `factory.ask.autopilot_answered` record: the daemon answered ask `ask` of a task while a
-/// person had autopilot on, as `answered` says: the ask, its revision, the option, and why it could.
-pub(crate) fn autopilot_answered(
+/// Appends a record of type `kind` about autopilot's answer to ask `ask` of a task, with `fields`:
+/// `factory.ask.autopilot_answered` when the daemon gave it, and `factory.ask.autopilot_replaced`
+/// when a person's answer took its place.
+pub(crate) fn autopilot(
     tx: &Transaction,
     trace: &Trace,
+    kind: &str,
     ask: i64,
-    answered: serde_json::Value,
+    fields: serde_json::Value,
 ) -> rusqlite::Result<()> {
     let (task, workflow, step, key, generation, time): (i64, String, String, String, i64, String) =
         tx.query_row(
@@ -649,11 +651,11 @@ pub(crate) fn autopilot_answered(
         "step": step,
         "machine": trace.machine,
     });
-    if let (Value::Object(fields), Value::Object(answered)) = (&mut data, answered) {
-        fields.extend(answered);
-        fields.retain(|_, value| !value.is_null());
+    if let (Value::Object(data), Value::Object(fields)) = (&mut data, fields) {
+        data.extend(fields);
+        data.retain(|_, value| !value.is_null());
     }
-    append(tx, trace, "factory.ask.autopilot_answered", &time, data)
+    append(tx, trace, kind, &time, data)
 }
 
 /// Appends a `factory.ask.session_answered` record, or `factory.ask.session_dismissed` when

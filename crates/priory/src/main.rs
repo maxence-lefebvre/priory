@@ -1669,9 +1669,13 @@ fn autopilot_on(flags: &[&str]) -> ExitCode {
             "--until" => &mut at,
             "--level" => &mut level,
             "--lane" => match flags.next() {
-                Some(lane) => {
+                Some(lane) if priory_factory::lanes::well_formed(lane) => {
                     lanes.push(lane.to_owned());
                     continue;
+                }
+                Some(lane) => {
+                    let why = format!("--lane `{lane}` is not a lane such as `team/theme`");
+                    return exit("autopilot on", Err(why));
                 }
                 None => return usage(),
             },
@@ -1717,37 +1721,34 @@ fn autopilot_on(flags: &[&str]) -> ExitCode {
     exit("autopilot on", turned.map(|line| println!("{line}")))
 }
 
-/// Off takes effect in this state file whatever the factory or the log, so neither keeps autopilot on.
+/// Off takes effect in this state file first, whatever the factory or the log, so neither keeps
+/// autopilot on. Other runners that cannot be told fail the command.
 fn autopilot_off(dir: Option<&str>) -> ExitCode {
-    let mut db = match state::open() {
-        Ok(db) => db,
-        Err(error) => return exit("autopilot off", Err(error)),
-    };
-    let several = priory_core::runners::me(&db).ok().flatten().is_some();
-    let factory = match several {
-        true => load(&factory::folder(dir)),
-        false => None,
-    };
-    let host = priory_runtime::room::hostname();
-    // A view-only machine's daemon publishes nothing it queued, so its setting goes to the log here.
-    let viewer = factory
-        .filter(|factory| autopilot::role(factory, host.as_deref()) == Ok(autopilot::Role::Viewer));
-    let turned = autopilot::status(&db)
-        .and_then(|on| {
-            let message = autopilot::set(&mut db, None, several && viewer.is_none())?;
-            Ok((on, message))
-        })
-        .map_err(|error| error.to_string())
-        .and_then(|(on, message)| {
-            println!(
-                "{}",
-                match on.is_null() {
-                    true => "autopilot was not on",
-                    false => "autopilot is off: see `priory autopilot report`",
+    let turned = state::open().and_then(|mut db| {
+        let on = autopilot::status(&db).map_err(|error| error.to_string())?;
+        let message = autopilot::set(&mut db, None, false).map_err(|error| error.to_string())?;
+        println!(
+            "{}",
+            match on.is_null() {
+                true => "autopilot was not on",
+                false => "autopilot is off: see `priory autopilot report`",
+            }
+        );
+        let told = load(&factory::folder(dir))
+            .ok_or_else(|| "the factory does not load".to_owned())
+            .and_then(|factory| {
+                let host = priory_runtime::room::hostname();
+                match autopilot::role(&factory, host.as_deref())? {
+                    autopilot::Role::Alone => Ok(()),
+                    // Set again with its message, so the log's older settings wait for its echo.
+                    autopilot::Role::Runner => autopilot::set(&mut db, None, true)
+                        .map(drop)
+                        .map_err(|error| error.to_string()),
+                    autopilot::Role::Viewer => autopilot::publish(&factory, &message),
                 }
-            );
-            viewer.map_or(Ok(()), |factory| autopilot::publish(&factory, &message))
-        });
+            });
+        told.map_err(|why| format!("it is off here, and no other runner was told: {why}"))
+    });
     exit("autopilot off", turned)
 }
 
@@ -3203,7 +3204,7 @@ fn answer(mut args: Vec<String>) -> ExitCode {
             return ExitCode::FAILURE;
         };
         let label = format!("{runner}:{}", answer.ask);
-        let mirrored = match remote_ask(runner, answer.ask, answer.revision) {
+        let mirrored = match remote_ask(runner, answer.ask, answer.revision, true) {
             Ok(mirrored) => mirrored,
             Err(refused) => return exit("answer", Err(refused)),
         };
@@ -3235,16 +3236,21 @@ fn answer(mut args: Vec<String>) -> ExitCode {
 }
 
 /// Another runner's ask as this machine's mirror holds it, refused when the mirror shows it closed
-/// or at another revision. An ask the mirror lacks, or a machine without a state file, goes to its
+/// or at another revision, for one that `answers` it or dismisses it. An ask the mirror lacks, or a machine without a state file, goes to its
 /// runner unchecked, which checks it again anyway.
-fn remote_ask(runner: &str, ask: i64, revision: i64) -> Result<Option<serde_json::Value>, String> {
+fn remote_ask(
+    runner: &str,
+    ask: i64,
+    revision: i64,
+    answers: bool,
+) -> Result<Option<serde_json::Value>, String> {
     let Ok(db) = state::open() else {
         return Ok(None);
     };
     let mirrored = runners::mirrored(&db, runner, ask).map_err(|error| error.to_string())?;
     if let Some(stale) = mirrored
         .as_ref()
-        .and_then(|ask| runners::stale(ask, revision))
+        .and_then(|ask| runners::stale(ask, revision, answers))
     {
         return Err(stale);
     }
@@ -3383,7 +3389,7 @@ fn dismiss(args: Vec<String>) -> ExitCode {
         let Some(factory) = load(&factory::folder(dir)) else {
             return ExitCode::FAILURE;
         };
-        let sent = remote_ask(&runner, id, revision)
+        let sent = remote_ask(&runner, id, revision, false)
             .and_then(|_| runners::dismiss(&factory, &runner, id, revision))
             .map(|submission| {
                 format!(

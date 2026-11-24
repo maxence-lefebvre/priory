@@ -349,7 +349,7 @@ See [waits.md](../daemon/waits.md#autopilot) for what `priory autopilot` answers
 
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
-| `approve_plans` | array of strings | no | `[]`: no plan | The workflows whose green plans autopilot approves for a task with `intervention = "plan"`. `priory check` refuses a workflow where every green plan leads to a person, to a batch, or to an irreversible step before a person decides again | `["implement"]` |
+| `approve_plans` | array of strings | no | `[]`: no plan | The workflows whose green plans autopilot approves for a task with `intervention = "plan"`. `priory check` refuses a workflow where every green plan leads to a person, to a batch, or to an irreversible step before a person decides again, and any workflow in a factory with no `critic` | `["implement"]` |
 | `timezone` | string | no | the machine's zone | The IANA zone that `--until HH:MM` and the default end, 08:00, are read in | `"Europe/Paris"` |
 
 ## `[runs]`
@@ -651,6 +651,7 @@ day = 10.0                                     # dollars the lane may spend in a
 | `` the pre-review `<name>` is no scorer in scorers/ `` | `pre_review` names a scorer the factory lacks |
 | `` the pre-review `<name>` is of kind <kind>: a pre-review is a judge, which reads the lessons `` | `pre_review` names a scorer that is not a `judge` |
 | `` `approve_plans` names workflow `<name>`, which does not exist `` | `[autopilot] approve_plans` names no file under `workflows/` |
+| `` `approve_plans` names workflow `<name>`, and the factory has no `critic` to read its plans first `` | `[autopilot] approve_plans` is set and `critic` is not |
 | `` `approve_plans` names workflow `<name>`, where autopilot may approve no plan: <why> `` | No step of that workflow grades a plan that autopilot may approve |
 | `` `[guard]` command `<name>` has the name of another guard `` | A `[guard]` command takes a built-in guard's name or another command's |
 | `` `[guard]` command `<name>` needs a program in `run` `` | A `[guard]` command with an empty `run` |

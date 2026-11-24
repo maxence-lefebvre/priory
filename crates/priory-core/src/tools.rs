@@ -4001,7 +4001,7 @@ pub(crate) fn answer_in_tx(
     trace: &Trace,
     head: &dyn Fn(&Path, &str) -> Option<String>,
 ) -> rusqlite::Result<Result<String, String>> {
-    if let Some(replaced) = replace_autopilot(tx, answer)? {
+    if let Some(replaced) = replace_autopilot(tx, answer, trace)? {
         return Ok(Ok(replaced));
     }
     let mut applied = answer_in(tx, answer, trace, head)?;
@@ -4041,7 +4041,11 @@ fn autopilot_answered(tx: &Transaction, answer: &Answer) -> rusqlite::Result<Opt
 
 /// Puts a person's answer in place of the one autopilot gave an agent's ask, while the prompt that
 /// carries it is still queued. The agent then reads only the person's.
-fn replace_autopilot(tx: &Transaction, answer: &Answer) -> rusqlite::Result<Option<String>> {
+fn replace_autopilot(
+    tx: &Transaction,
+    answer: &Answer,
+    trace: &Trace,
+) -> rusqlite::Result<Option<String>> {
     if !by_person(&answer.by) {
         return Ok(None);
     }
@@ -4079,6 +4083,20 @@ fn replace_autopilot(tx: &Transaction, answer: &Answer) -> rusqlite::Result<Opti
     tx.execute(
         &format!("UPDATE asks SET answer = ?2, answered = {NOW}, answered_by = ?3 WHERE id = ?1"),
         params![answer.ask, answer.text, answer.by],
+    )?;
+    let replaced = json!({
+        "ask": answer.ask.to_string(),
+        "revision": answer.revision,
+        "option": answer.text,
+        "replaced": given,
+        "by": answer.by,
+    });
+    trace::autopilot(
+        tx,
+        trace,
+        "factory.ask.autopilot_replaced",
+        answer.ask,
+        replaced,
     )?;
     Ok(Some(format!(
         "ask {} answered, in place of autopilot's answer {given}",
@@ -4799,7 +4817,10 @@ fn reopens_at(
 
 /// The lowest open pull request of `task`, or why it has none: it owns none, or they merged or
 /// closed.
-fn open_pull_request(tx: &Transaction, task: i64) -> rusqlite::Result<Result<String, String>> {
+pub(crate) fn open_pull_request(
+    tx: &Transaction,
+    task: i64,
+) -> rusqlite::Result<Result<String, String>> {
     let stack = crate::stack::of(tx, task)?;
     let pulls = match stack.is_empty() {
         true => pull_request(tx, task)?
@@ -5058,7 +5079,7 @@ fn revive(
 }
 
 /// The active task that holds the `key` or a resource of the ended `task`, as why it cannot restart.
-fn rival(tx: &Transaction, task: i64, key: &str) -> rusqlite::Result<Option<String>> {
+pub(crate) fn rival(tx: &Transaction, task: i64, key: &str) -> rusqlite::Result<Option<String>> {
     let active = tx
         .query_row(
             "SELECT id FROM tasks WHERE key = ?1 AND state NOT IN ('done', 'failed', 'dropped')",

@@ -448,7 +448,8 @@ task	key	workflow	lane	state	wall	working	waiting on person	waiting on world	que
 
 Times are in minutes. A cell with no value reads `-`.
 
-The report reads what the state already stores. It counts one person: every act is theirs.
+The report reads what the state already stores. It counts one person: every act is theirs. An
+answer or a refused answer by `auto`, `autopilot`, a lead or a session is no act.
 
 - An act is a person's answer, dismissal, refused answer, snooze or unsnooze.
 - The person was away during each gap of 2 hours or more between two consecutive acts.
@@ -460,7 +461,7 @@ The report reads what the state already stores. It counts one person: every act 
   its dismissal, or a snooze before the next revision. `median` is the acted waits' median, and
   `p90` their nearest-rank 90th percentile. The `present` figures subtract the part of each wait that fell in
   an away gap. `open` counts revisions still waiting. A revision the agent replaced or withdrew
-  before the person acted counts in neither.
+  before the person acted, or that something else answered, counts in neither.
 - The asks counted are the revisions asked in the window. Acts count when they fall in it.
 - `--by` splits acts and waits by the task's workflow (the default) or lane, or by the ask's kind:
   `step`, `agent` or `outside`. An act or ask with no value reads `-`, such as a task snooze under

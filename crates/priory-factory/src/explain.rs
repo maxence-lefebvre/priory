@@ -227,7 +227,8 @@ fn unattended_targets(step: &Step) -> BTreeSet<&str> {
 
 /// Whether an ask made at step `at` may be answered by anyone but a person: a lead under
 /// `hands-off`, or the daemon under `auto_answer`. Never an ask that runs a command, an ask at a
-/// step that `approves`, or an ask whose answer can let an irreversible step run.
+/// step that `approves`, an ask inside an irreversible step a person approved, or an ask whose
+/// answer can let an irreversible step run.
 pub fn delegable(workflow: &Workflow, at: &str, command: bool) -> bool {
     undelegable(workflow, at, command).is_none()
 }
@@ -248,9 +249,28 @@ pub fn undelegable(workflow: &Workflow, at: &str, command: bool) -> Option<Strin
                 .join(" and ")
         ));
     }
+    // An approval covers the step, and an answer can steer it elsewhere. `autonomous` grants the step.
+    if workflow
+        .step(at)
+        .is_some_and(|step| step.effect == Effect::Irreversible && step.autonomous.is_none())
+    {
+        return Some(format!(
+            "it was asked inside irreversible step {at}, which runs on a person's approval"
+        ));
+    }
     irreversible_step_after(workflow, at).map(|step| {
         format!("answering it can let irreversible step {step} run before a person decides again")
     })
+}
+
+/// Why `delegable` allows an ask made at step `at`, in a clause.
+pub fn delegable_because(workflow: &Workflow, at: &str) -> String {
+    match workflow.step(at) {
+        Some(step) if step.effect == Effect::Irreversible => format!(
+            "the factory lets irreversible step {at} run autonomously, and a person decides again before any later irreversible step"
+        ),
+        _ => "a person decides again before any irreversible step".to_owned(),
+    }
 }
 
 /// Whether the daemon answers an agent's ask at step `at`, stated at `confidence`, with its
@@ -440,6 +460,32 @@ next = { opened = "done", failed = "stop" }
             )
         );
         assert_eq!(undelegable(&workflow, "approve-plan", false), None);
+        assert_eq!(
+            delegable_because(&workflow, "approve-plan"),
+            "a person decides again before any irreversible step"
+        );
+    }
+
+    #[test]
+    fn an_ask_inside_an_irreversible_step_is_delegable_only_when_the_step_is_autonomous() {
+        let workflow: Workflow = toml::from_str(IMPLEMENT).unwrap();
+        let autonomous: Workflow = toml::from_str(&IMPLEMENT.replace(
+            "effect = \"irreversible\"",
+            "effect = \"irreversible\"\nautonomous = \"a person merges it\"",
+        ))
+        .unwrap();
+
+        assert_eq!(
+            undelegable(&workflow, "open-pr", false).as_deref(),
+            Some(
+                "it was asked inside irreversible step open-pr, which runs on a person's approval"
+            )
+        );
+        assert_eq!(undelegable(&autonomous, "open-pr", false), None);
+        assert_eq!(
+            delegable_because(&autonomous, "open-pr"),
+            "the factory lets irreversible step open-pr run autonomously, and a person decides again before any later irreversible step"
+        );
     }
 
     #[test]
@@ -467,8 +513,9 @@ next = { opened = "done", failed = "stop" }
         const BY: [&str; 4] = ["code", "model", "human", "asleep"];
 
         /// One step: its decider, effect, outcomes with their target and `by`, and the steps it
-        /// approves, each an index into the workflow's steps or past its end for `stop`.
-        type Drawn = (usize, usize, Vec<(usize, Option<usize>)>, Vec<usize>);
+        /// approves, each an index into the workflow's steps or past its end for `stop`, and whether
+        /// it is autonomous.
+        type Drawn = (usize, usize, Vec<(usize, Option<usize>)>, Vec<usize>, bool);
 
         fn workflow(steps: &[Drawn]) -> String {
             let id = |index: usize| match index < steps.len() {
@@ -476,7 +523,9 @@ next = { opened = "done", failed = "stop" }
                 false => "stop".to_owned(),
             };
             let mut toml = "start = \"s0\"\n".to_owned();
-            for (index, (decides, effect, next_by, approves)) in steps.iter().enumerate() {
+            for (index, (decides, effect, next_by, approves, autonomous)) in
+                steps.iter().enumerate()
+            {
                 let next: Vec<String> = next_by
                     .iter()
                     .enumerate()
@@ -502,6 +551,9 @@ next = { opened = "done", failed = "stop" }
                     by.join(", "),
                     approves.join(", ")
                 );
+                if *autonomous {
+                    toml += "autonomous = \"the factory grants it\"\n";
+                }
             }
             toml
         }
@@ -513,17 +565,21 @@ next = { opened = "done", failed = "stop" }
                     0..EFFECTS.len(),
                     proptest::collection::vec((0usize..8, proptest::option::of(0..BY.len())), 1..4),
                     proptest::collection::vec(0usize..8, 0..2),
+                    any::<bool>(),
                 ),
                 1..7,
             )
         }
 
-        /// Whether a person decides before any irreversible step after `at`, read without
-        /// `irreversible_step_after`.
+        /// Whether `at` is no irreversible step a person approves and a person decides before any
+        /// irreversible step after it, read without `undelegable`.
         fn guarded(workflow: &Workflow, at: &str) -> bool {
             let Some(step) = workflow.step(at) else {
                 return true;
             };
+            if step.effect == Effect::Irreversible && step.autonomous.is_none() {
+                return false;
+            }
             let mut seen: BTreeSet<String> = BTreeSet::new();
             let mut pending: Vec<String> = step.next.values().cloned().collect();
             while let Some(id) = pending.pop() {

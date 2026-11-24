@@ -2680,12 +2680,17 @@ fn approve_plans_names_a_workflow_that_exists_and_has_a_plan_autopilot_may_appro
     .unwrap();
     let mut autonomous = with(
         "factory.toml",
-        "name = \"demo\"\n[autopilot]\napprove_plans = [\"groom\"]\n",
+        "name = \"demo\"\ncritic = \"critic\"\n[autopilot]\napprove_plans = [\"groom\"]\n",
+    );
+    let unread = with(
+        "factory.toml",
+        "name = \"demo\"\n[autopilot]\napprove_plans = [\"implement\"]\n",
     );
     autonomous.push(("workflows/groom.toml", &groom));
 
     let missing = check(&factory("approve-plans-missing", &missing));
     let autonomous = check(&factory("approve-plans-autonomous", &autonomous));
+    let unread = check(&factory("approve-plans-unread", &unread));
 
     assert_eq!(missing.code, 1);
     assert_eq!(
@@ -2695,10 +2700,15 @@ fn approve_plans_names_a_workflow_that_exists_and_has_a_plan_autopilot_may_appro
     assert_eq!(autonomous.code, 1);
     assert!(
         autonomous.stderr.contains(
-            "factory.toml:2: `approve_plans` names workflow `groom`, where autopilot may approve no plan: answering it can let irreversible step open-pr run before a person decides again\n"
+            "factory.toml:3: `approve_plans` names workflow `groom`, where autopilot may approve no plan: answering it can let irreversible step open-pr run before a person decides again\n"
         ),
         "{}",
         autonomous.stderr
+    );
+    assert_eq!(unread.code, 1);
+    assert_eq!(
+        unread.stderr,
+        "factory.toml:2: `approve_plans` names workflow `implement`, and the factory has no `critic` to read its plans first\n"
     );
 }
 

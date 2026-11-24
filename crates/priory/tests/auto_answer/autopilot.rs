@@ -62,6 +62,34 @@ fn left(setup: &Setup, ask: &str) -> String {
     }
 }
 
+fn factory(setup: &Setup) -> String {
+    setup.dir.join("factory").to_str().unwrap().to_owned()
+}
+
+/// Runs the command autopilot's report prints to reverse an answer, with `text` as its placeholder.
+fn reverses(setup: &Setup, command: &str, text: &str) {
+    for part in command.split(" && ") {
+        let words: Vec<&str> = part
+            .split(' ')
+            .map(|word| match word {
+                "TEXT" | "OPTION" => text,
+                word => word,
+            })
+            .collect();
+        assert_eq!(words[0], "priory", "{command}");
+        let ran = setup.priory(&words[1..]);
+        assert!(ran.status.success(), "{command}: {ran:?}");
+    }
+}
+
+fn reverse(setup: &Setup) -> String {
+    let report = setup.autopilot_report();
+    report["answered"][0]["reverse"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{report}"))
+        .to_owned()
+}
+
 fn done(setup: &Setup) {
     setup.until("tasks", |rows| {
         rows.first().is_some_and(|row| row[4] == "done")
@@ -129,11 +157,21 @@ fn on_answers_an_ask_already_open_and_records_it_as_autopilots() {
             &json!("Which database?"),
             &json!("sqlite"),
             &json!(why),
-            &json!("priory revive 1 --step implement")
+            &json!(null)
         ],
         "{report}"
     );
+    assert_eq!(
+        report["answered"][0]["no_reverse"],
+        "task 1 is done and owns no pull request: ask for the change in a new task, with `priory add TEXT`"
+    );
     assert_eq!(report["left"], json!([]));
+    let printed = setup.autopilot(&["report"]);
+    assert!(
+        String::from_utf8_lossy(&printed.stdout)
+            .contains("  reverse: none. task 1 is done and owns no pull request"),
+        "{printed:?}"
+    );
 }
 
 #[test]
@@ -149,7 +187,7 @@ fn a_new_ask_is_answered_before_its_lead_and_off_stops_the_next_one() {
     });
     assert_eq!(setup.rows("tasks").len(), 1, "no lead task");
 
-    assert!(setup.autopilot(&["off"]).status.success());
+    assert!(setup.autopilot(&["off", &factory(&setup)]).status.success());
     setup.release("hold-stop");
 
     let asks = setup.until("asks", |rows| rows.len() == 1);
@@ -421,14 +459,31 @@ fn a_persons_answer_replaces_autopilots_while_its_prompt_is_unsent() {
     setup.until("tasks", |_| {
         only_ask_or_null(&setup)["answered_by"] == "autopilot"
     });
+    assert_eq!(reverse(&setup), "priory answer --revision 1 1 OPTION");
+
+    reverses(&setup, &reverse(&setup), "postgres");
+
+    let replaced = until_traced(&setup, "factory.ask.autopilot_replaced");
+    let data = &replaced["data"];
     assert_eq!(
-        setup.autopilot_report()["answered"][0]["reverse"],
-        "priory answer --revision 1 1 OPTION"
+        [
+            &data["task"],
+            &data["ask"],
+            &data["revision"],
+            &data["option"],
+            &data["replaced"],
+            &data["by"]
+        ],
+        [
+            &json!("1"),
+            &json!("1"),
+            &json!(1),
+            &json!("postgres"),
+            &json!("sqlite"),
+            &json!("cli")
+        ],
+        "{data}"
     );
-
-    let answered = setup.priory(&["answer", "1", "postgres", "--revision", "1"]);
-
-    assert!(answered.status.success(), "{answered:?}");
     setup.release("hold-stop");
     done(&setup);
     let ask = only_ask(&setup);
@@ -496,15 +551,13 @@ fn a_dismissed_ask_is_never_answered_and_the_report_says_it_was_withdrawn() {
     assert_eq!(first["left"][0]["state"], "withdrawn", "{first}");
 }
 
-/// A `plan` setup whose `approve_plans` names its workflow, or not, ending its plan `grade`.
+/// A `plan` setup with a critic that passes each plan it reads, whose `approve_plans` names its
+/// workflow, or not, ending its plan `grade`.
 fn plan(name: &str, grade: &str, approve: bool) -> Setup {
     let mut setup = intervened(name, GRADED, "plan", "");
+    critic(&setup, &["pass\nThe plan is sound."]);
     if approve {
-        fs::write(
-            setup.dir.join("factory/factory.toml"),
-            "name = \"demo\"\n\n[autopilot]\napprove_plans = [\"implement\"]\n",
-        )
-        .unwrap();
+        approve_plans(&setup);
     }
     setup.calls(&[
         json!({ "name": "result", "arguments": { "outcome": grade, "summary": "Plan" } }),
@@ -513,6 +566,16 @@ fn plan(name: &str, grade: &str, approve: bool) -> Setup {
     setup.publish(&requested(42));
     setup.start();
     setup
+}
+
+fn approve_plans(setup: &Setup) {
+    let settings = setup.dir.join("factory/factory.toml");
+    let text = fs::read_to_string(&settings).unwrap();
+    fs::write(
+        &settings,
+        format!("{text}\n[autopilot]\napprove_plans = [\"implement\"]\n"),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -529,31 +592,26 @@ fn a_green_plan_of_a_named_workflow_is_approved_and_the_rest_are_left() {
         left(&unnamed, "1"),
         "it approves a plan, and approve_plans does not name implement"
     );
-    let report = green.autopilot_report();
     assert_eq!(
-        [
-            &report["answered"][0]["option"],
-            &report["answered"][0]["reverse"]
-        ],
-        [
-            &json!("approved"),
-            &json!("priory cancel 1, then priory revive 1 --step plan")
-        ],
-        "{report}"
+        green.autopilot_report()["answered"][0]["option"],
+        "approved"
     );
+    green.calls(&[]);
+    assert_eq!(
+        reverse(&green),
+        "priory cancel 1 && priory revive 1 --step plan"
+    );
+
+    reverses(&green, &reverse(&green), "");
+
+    green.until("tasks", |rows| rows[0][3] == "plan");
 }
 
 #[test]
 fn a_green_plan_autopilot_may_approve_passes_the_critic_first() {
     let mut setup = intervened("pilot-critic", CRITICIZED, "plan", "");
     critic(&setup, &["fail\nThe plan names no test."]);
-    let settings = setup.dir.join("factory/factory.toml");
-    let text = fs::read_to_string(&settings).unwrap();
-    fs::write(
-        &settings,
-        format!("{text}\n[autopilot]\napprove_plans = [\"implement\"]\n"),
-    )
-    .unwrap();
+    approve_plans(&setup);
     setup.calls(&[json!({ "name": "result", "arguments": {
         "outcome": "green", "summary": "Plan: add a flag"
     } })]);
@@ -578,13 +636,7 @@ fn a_green_plan_autopilot_may_approve_passes_the_critic_first() {
 fn a_plan_the_critic_never_read_is_left() {
     let mut setup = intervened("pilot-critic-late", CRITICIZED, "plan", "");
     critic(&setup, &[]);
-    let settings = setup.dir.join("factory/factory.toml");
-    let text = fs::read_to_string(&settings).unwrap();
-    fs::write(
-        &settings,
-        format!("{text}\n[autopilot]\napprove_plans = [\"implement\"]\n"),
-    )
-    .unwrap();
+    approve_plans(&setup);
     setup.calls(&[json!({ "name": "result", "arguments": {
         "outcome": "green", "summary": "Plan: add a flag"
     } })]);
@@ -677,4 +729,468 @@ fn a_view_only_machine_turns_it_on_for_every_runner() {
         assert!(Instant::now() < deadline, "a never read the off");
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// A step with an irreversible effect whose agent can ask, after a person's approval.
+const ANNOUNCE: &str = r#"
+start = "implement"
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the issue."
+effect = "reversible"
+next = { passed = "approve", failed = "stop" }
+
+[[steps]]
+id = "approve"
+decides = "human"
+effect = "none"
+approves = ["announce"]
+options = ["go", "stop"]
+next = { go = "announce", stop = "stop" }
+
+[[steps]]
+id = "announce"
+decides = "model"
+agent = "implementer"
+prompt = "Announce the change."
+effect = "irreversible"
+next = { passed = "done", failed = "stop" }
+"#;
+
+const INSIDE: &str =
+    "it was asked inside irreversible step announce, which runs on a person's approval";
+
+/// `ANNOUNCE` with its announcement granted by the factory, and no approval.
+fn autonomous_announce() -> String {
+    let (start, approve) = ANNOUNCE.split_once("[[steps]]\nid = \"approve\"").unwrap();
+    let (_, announce) = approve.split_once("[[steps]]").unwrap();
+    format!("{start}[[steps]]{announce}")
+        .replace("passed = \"approve\"", "passed = \"announce\"")
+        .replace(
+            "effect = \"irreversible\"",
+            "effect = \"irreversible\"\nautonomous = \"it only drafts the announcement\"",
+        )
+}
+
+/// Starts `setup`, whose workflow is `ANNOUNCE`, and approves its announcement, inside which its
+/// agent asks with a high confidence.
+fn asks_inside(setup: &mut Setup) {
+    setup.calls(&[
+        passed_with_evidence(),
+        confident_ask("high"),
+        result("passed"),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+    setup.commit(1, "widget.txt");
+    let approved = setup.priory(&["answer", "1", "go", "--revision", "1"]);
+    assert!(approved.status.success(), "{approved:?}");
+    setup.until("asks", |rows| rows.len() == 1 && rows[0][0] == "2");
+    setup.until("tasks", |rows| rows[0][4] == "asleep");
+}
+
+/// As `asks_inside`, for `autonomous_announce`, where no person approves the step first.
+fn asks_inside_autonomous(setup: &mut Setup) {
+    setup.calls(&[
+        passed_with_evidence(),
+        confident_ask("high"),
+        result("passed"),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+}
+
+fn open_for_a_person(setup: &Setup) {
+    let ask = &asks_json(setup)["asks"][1];
+    assert_eq!(
+        [&ask["state"], &ask["answered_by"], &ask["routed_to"]],
+        [&json!("open"), &json!(null), &json!(null)],
+        "{ask}"
+    );
+}
+
+#[test]
+fn autopilot_leaves_an_ask_inside_an_approved_irreversible_step_and_answers_an_autonomous_ones() {
+    let mut approved = Setup::with_workflow("pilot-inside", ANNOUNCE);
+    let mut autonomous = Setup::with_workflow("pilot-inside-auto", &autonomous_announce());
+    approved.autopilot_on(&["--for", "1h"]);
+    autonomous.autopilot_on(&["--for", "1h"]);
+
+    asks_inside(&mut approved);
+    asks_inside_autonomous(&mut autonomous);
+
+    assert_eq!(left(&approved, "2"), INSIDE);
+    open_for_a_person(&approved);
+    done(&autonomous);
+    let record = until_traced(&autonomous, "factory.ask.autopilot_answered");
+    assert_eq!(
+        record["data"]["why"],
+        "its confidence, high, meets high, and the factory lets irreversible step announce run autonomously, and a person decides again before any later irreversible step"
+    );
+}
+
+#[test]
+fn auto_answer_leaves_an_ask_inside_an_approved_irreversible_step_and_answers_an_autonomous_ones() {
+    let mut approved = auto_answering("auto-inside", ANNOUNCE, "medium", "");
+    let mut autonomous = auto_answering("auto-inside-auto", &autonomous_announce(), "medium", "");
+
+    asks_inside(&mut approved);
+    asks_inside_autonomous(&mut autonomous);
+
+    open_for_a_person(&approved);
+    done(&autonomous);
+    assert_eq!(only_ask(&autonomous)["answered_by"], "auto");
+}
+
+#[test]
+fn a_lead_gets_no_ask_inside_an_approved_irreversible_step_and_gets_an_autonomous_ones() {
+    let mut approved = hands_off("lead-inside", ANNOUNCE);
+    let mut autonomous = hands_off("lead-inside-auto", &autonomous_announce());
+
+    asks_inside(&mut approved);
+    asks_inside_autonomous(&mut autonomous);
+
+    open_for_a_person(&approved);
+    assert_eq!(approved.rows("tasks").len(), 1, "no lead task");
+    autonomous.until("tasks", |rows| rows.len() == 2);
+    assert_eq!(only_ask(&autonomous)["routed_to"], "lead");
+}
+
+#[test]
+fn an_outside_session_answers_no_ask_inside_an_approved_irreversible_step_but_an_autonomous_ones() {
+    let mut approved = Setup::with_workflow("outside-inside", ANNOUNCE);
+    let mut autonomous = Setup::with_workflow("outside-inside-auto", &autonomous_announce());
+    let session = [
+        ("HC_TERMINAL_ID", "t9"),
+        ("CLAUDE_CODE_SESSION_ID", "8f3c2a10"),
+    ];
+    asks_inside(&mut approved);
+    asks_inside_autonomous(&mut autonomous);
+    waits_for_a_person(&autonomous);
+
+    let (refused, failed) = approved.outside_call(
+        &session,
+        "answer",
+        json!({"ask": 2, "revision": 1, "answer": "sqlite"}),
+    );
+    let (_, refused_autonomous) = autonomous.outside_call(
+        &session,
+        "answer",
+        json!({"ask": 1, "revision": 1, "answer": "sqlite"}),
+    );
+
+    assert!(failed && refused.contains(INSIDE), "{refused}");
+    open_for_a_person(&approved);
+    assert!(!refused_autonomous);
+    done(&autonomous);
+}
+
+#[test]
+fn a_done_task_with_an_open_pull_request_is_told_to_reopen() {
+    let mut setup = Setup::new("pilot-reverse-done");
+    setup.calls(&[
+        confident_ask("high"),
+        wait(on_pull_7("review")),
+        passed_at("abc0000000000000000000000000000000000000"),
+    ]);
+    setup.autopilot_on(&["--for", "1h"]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    setup.publish(&reviewed());
+    setup.until("runs", |rows| rows.len() == 2 && rows[1][7] != "-");
+    setup.gone("priory-1");
+    setup.publish(&check(1, 0));
+    done(&setup);
+    std::thread::sleep(Duration::from_millis(1100));
+    assert_eq!(reverse(&setup), "priory say 1 TEXT");
+
+    reverses(&setup, &reverse(&setup), "Use postgres instead.");
+
+    setup.until("runs", |rows| rows.len() == 3);
+}
+
+#[test]
+fn a_dropped_tasks_answer_is_reversed_by_a_revive_that_works() {
+    let mut setup = Setup::new("pilot-reverse-dropped");
+    setup.calls(&[confident_ask("high"), result("failed")]);
+    setup.autopilot_on(&["--for", "1h"]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first()
+            .is_some_and(|row| row[4] == "dropped" || row[4] == "failed")
+    });
+    assert_eq!(reverse(&setup), "priory revive 1 --step implement");
+    setup.calls(&[]);
+
+    reverses(&setup, &reverse(&setup), "");
+}
+
+#[test]
+fn a_working_tasks_answer_is_reversed_by_a_say_that_works() {
+    let mut setup = Setup::new("pilot-reverse-say");
+    setup.calls(&[confident_ask("high"), serde_json::Value::Null]);
+    setup.autopilot_on(&["--for", "1h"]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    assert_eq!(reverse(&setup), "priory say 1 TEXT");
+
+    reverses(&setup, &reverse(&setup), "Use postgres instead.");
+}
+
+#[test]
+fn off_ends_it_here_and_fails_when_the_factory_names_no_runner_to_tell() {
+    let setup = Setup::new("pilot-off-broken");
+    setup.autopilot_on(&["--for", "1h"]);
+    fs::write(setup.dir.join("factory/factory.toml"), "name = [").unwrap();
+
+    let off = setup.autopilot(&["off", &factory(&setup)]);
+
+    assert!(!off.status.success(), "{off:?}");
+    assert!(
+        String::from_utf8_lossy(&off.stderr)
+            .contains("it is off here, and no other runner was told: the factory does not load"),
+        "{off:?}"
+    );
+    let status = setup.autopilot(&["status"]);
+    assert_eq!(
+        String::from_utf8_lossy(&status.stdout),
+        "autopilot is off\n"
+    );
+}
+
+/// How many autopilot settings `setup` read from the log.
+fn settings_read(setup: &Setup) -> usize {
+    let inbox = setup.rows("inbox");
+    inbox
+        .iter()
+        .filter(|row| row[1] == "priory.autopilot.set")
+        .count()
+}
+
+fn status_level(setup: &Setup) -> serde_json::Value {
+    let status = setup.autopilot(&["status", "--json"]);
+    serde_json::from_slice::<serde_json::Value>(&status.stdout).unwrap()["level"].clone()
+}
+
+fn off(setup: &Setup) {
+    let off = setup.autopilot(&["off", &factory(setup)]);
+    assert!(off.status.success(), "{off:?}");
+}
+
+/// Waits until `setup` read `count` settings from the log.
+fn until_read(setup: &Setup, count: usize) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while settings_read(setup) < count {
+        assert!(Instant::now() < deadline, "{:?}", setup.rows("inbox"));
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn an_off_then_an_on_made_while_the_daemon_is_down_stay_on_once_it_reads_them_back() {
+    let mut a = runner("pilot-off-on", "a", None);
+    let mut b = runner("pilot-off-on", "b", Some(&a));
+    a.start();
+    b.start();
+    a.autopilot_on(&["--for", "1h"]);
+    until_read(&a, 1);
+    until_read(&b, 1);
+    a.crash();
+    off(&a);
+    a.autopilot_on(&["--for", "1h", "--level", "medium"]);
+
+    a.start();
+
+    until_read(&a, 3);
+    until_read(&b, 3);
+    assert_eq!(
+        [status_level(&a), status_level(&b)],
+        [json!("medium"), json!("medium")]
+    );
+    let report = a.autopilot_report();
+    assert_eq!(
+        [&report["window"], &report["ended"]],
+        [&json!(2), &json!(null)],
+        "{report}"
+    );
+}
+
+#[test]
+fn an_off_is_not_undone_by_an_older_on_it_had_not_read() {
+    let mut a = runner("pilot-off-unread", "a", None);
+    let mut b = runner("pilot-off-unread", "b", Some(&a));
+    a.start();
+    b.start();
+    a.crash();
+    b.autopilot_on(&["--for", "1h"]);
+    logged(&b, "priory.autopilot.set", json!({ "level": "high" }));
+    off(&a);
+
+    a.start();
+
+    until_read(&a, 2);
+    until_read(&b, 2);
+    assert_eq!(
+        [status_level(&a), status_level(&b)],
+        [json!(null), json!(null)]
+    );
+    let report = a.autopilot(&["report"]);
+    assert!(
+        String::from_utf8_lossy(&report.stderr).contains("autopilot was never on"),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn a_lane_that_is_no_lane_is_refused() {
+    let setup = Setup::new("pilot-bad-lane");
+    let output = setup.autopilot(&["on", "--for", "1h", "--lane", "core"]);
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("--lane `core` is not a lane such as `team/theme`"),
+        "{output:?}"
+    );
+}
+
+#[test]
+fn the_ask_of_a_task_a_person_holds_is_left() {
+    let mut setup = Setup::new("pilot-held");
+    setup.hold("hold-stop");
+    setup.calls(&[confident_ask("high")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+    person(&setup, "hold", &["1", "--reason", "room for task 2"]);
+
+    setup.autopilot_on(&["--for", "1h"]);
+
+    assert_eq!(left(&setup, "1"), "its task is held");
+}
+
+#[test]
+fn a_clock_set_back_ends_it() {
+    let setup = asleep("pilot-clock", WORKFLOW, "medium");
+    setup.autopilot_on(&["--for", "1h"]);
+    left(&setup, "1");
+
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute(
+            "UPDATE autopilot_state SET clock = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '+2 hours')",
+            [],
+        )
+        .unwrap();
+
+    setup.until("inbox", |rows| rows.iter().any(|row| row[2] == "autopilot"));
+    assert_eq!(setup.autopilot_report()["why"], "clock");
+    assert_eq!(status_level(&setup), json!(null));
+}
+
+#[test]
+fn a_gates_ask_is_left() {
+    let (setup, _) = held_by_an_uncalibrated_judge("pilot-gate", "name = \"demo\"\n");
+
+    setup.autopilot_on(&["--for", "1h", "--level", "medium"]);
+
+    assert_eq!(left(&setup, "gate-1-1"), "Priory asked it, not an agent");
+}
+
+#[test]
+fn a_debates_ask_is_left() {
+    let setup = super::super::debate::split("pilot-debate");
+
+    setup.autopilot_on(&["--for", "1h", "--level", "medium"]);
+
+    assert_eq!(left(&setup, "1"), "it picks a debate's answer");
+}
+
+#[test]
+fn an_approval_asked_again_at_a_new_commit_is_left() {
+    let setup = asked_to_open("pilot-again", APPROVE_THEN_POLISH);
+    setup.calls(&[passed_with_evidence()]);
+    setup.hold("hold-stop");
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+    setup.written("fake/tools.log");
+    while setup.replies().len() < 2 {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    setup.commit(1, "polish.txt");
+    setup.autopilot_on(&["--for", "1h"]);
+
+    setup.release("hold-stop");
+
+    let asks = setup.until("asks", |rows| rows.len() == 1);
+    assert_eq!(asks[0][2], "2");
+    assert_eq!(
+        left(&setup, "1"),
+        "step approve-pr approves irreversible step open-pr"
+    );
+    assert!(setup.rows("actions").is_empty());
+}
+
+#[test]
+fn it_answers_the_open_revision_and_a_persons_answer_to_an_older_one_is_refused() {
+    let mut setup = hands_off("pilot-stale", WORKFLOW);
+    setup.calls(&[
+        confident_ask("high"),
+        json!({ "name": "result", "arguments": { "outcome": "skipped", "summary": "Not mine." } }),
+        result("passed"),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "done");
+
+    setup.autopilot_on(&["--for", "1h"]);
+
+    done(&setup);
+    let record = until_traced(&setup, "factory.ask.autopilot_answered");
+    assert_eq!(record["data"]["revision"], 2, "{record}");
+    let stale = setup.priory(&["answer", "1", "postgres", "--revision", "1"]);
+    assert!(!stale.status.success(), "{stale:?}");
+    assert_eq!(only_ask(&setup)["answer"], "sqlite");
+    assert!(traced(&setup, "factory.ask.autopilot_replaced").is_empty());
+}
+
+#[test]
+fn an_answer_sent_from_another_runner_replaces_autopilots_while_its_prompt_is_unsent() {
+    let mut a = runner("pilot-remote", "a", None);
+    let mut b = runner("pilot-remote", "b", Some(&a));
+    a.calls(&[confident_ask("high"), result("passed")]);
+    a.autopilot_on(&["--for", "1h"]);
+    a.hold("hold-stop");
+    a.publish(&requested(42));
+    a.start();
+    a.until("tasks", |_| {
+        only_ask_or_null(&a)["answered_by"] == "autopilot"
+    });
+    b.start();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !asks_json(&b)["asks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|ask| ask["id"] == "a:1" && ask["state"] == "answered")
+    {
+        assert!(Instant::now() < deadline, "{}", asks_json(&b));
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let sent = b.priory(&["answer", "--revision", "1", &factory(&b), "a:1", "postgres"]);
+
+    assert!(sent.status.success(), "{sent:?}");
+    until_traced(&a, "factory.ask.autopilot_replaced");
+    a.release("hold-stop");
+    done(&a);
+    assert_eq!(only_ask(&a)["answer"], "postgres");
 }

@@ -153,9 +153,12 @@ a group. `PRIORY_METRICS` replaces that list for one process, such as `process,l
 - `priory autopilot on [DIR] [--until TIME | --for DURATION] [--level high|medium] [--lane LANE]...`:
   lets the daemon answer eligible asks with their recommendation until it ends by itself. `TIME` is
   the next `HH:MM` in [`[autopilot] timezone`](factory.md#autopilot), or an RFC 3339 instant. Without
-  an end, it ends at the next 08:00. The longest is 7 days, and the default level is `high`. See
+  an end, it ends at the next 08:00. The longest is 7 days, and the default level is `high`. `LANE`
+  reads `<team>/<theme>`. See
   [waits.md](../daemon/waits.md#autopilot).
-- `priory autopilot off [DIR]`: ends it now. It works while the daemon is stopped or the log is away.
+- `priory autopilot off [DIR]`: ends it here first, whatever the daemon, the factory or the log do.
+  It then tells the other runners, and exits nonzero when it cannot: the factory does not load, this
+  machine has no role in it, or a view-only machine's publish fails.
 - `priory autopilot [status [--json]]`: prints whether it is on, until when, and its counts.
 - `priory autopilot report [WINDOW] [--json]`: prints what a window, the latest by default, answered
   and left, why, and how to reverse each answer.

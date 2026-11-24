@@ -927,6 +927,45 @@ The daemon answered an ask while a person had autopilot on (see
 | `confidence`, `rationale` | no       | What the agent stated. A plan's ask has neither        |
 | `grade`                   | no       | A plan's grade, `green`                                |
 
+## `factory.ask.autopilot_replaced`
+
+A person's answer took the place of autopilot's before the agent got it. It shares the same fields
+with `factory.step.ended` as `factory.ask.autopilot_answered`.
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d6-0000-7000-8000-000000000011",
+  "source": "factory://example/desktop",
+  "type": "factory.ask.autopilot_replaced",
+  "time": "2026-11-25T01:12:40Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "factory_revision": "999daf0",
+    "workflow": "implement",
+    "task": "14",
+    "key": "github:example/app#42",
+    "generation": 1,
+    "step": "implement",
+    "machine": "desktop",
+    "ask": "14",
+    "revision": 1,
+    "option": "drop --format",
+    "replaced": "document --format",
+    "by": "cli"
+  }
+}
+```
+
+| Field      | Required | Meaning                               |
+| ---------- | -------- | ------------------------------------- |
+| `ask`      | yes      | The ask the person answered           |
+| `revision` | yes      | The revision both answered            |
+| `option`   | yes      | The person's answer                   |
+| `replaced` | yes      | The answer autopilot gave             |
+| `by`       | yes      | Who answered, such as `cli` or `serve` |
+
 ## `factory.ask.session_answered` and `factory.ask.session_dismissed`
 
 A person's own session answered or dismissed an ask through the `answer` or `dismiss` tool of

@@ -166,7 +166,7 @@ The web and Herdr Desks show it as a plain row with its line, without Accept or 
 
 `priory post SOURCE LINE` stores one report line on the inbox for a person to read, and prints its
 sequence number. The daemon routes it to no task. `SOURCE` matches `[a-z0-9-]{1,32}`. The sources
-the intake and the daemon publish under are refused: `cli`, `factory`, `github`, `intake`, `linear`,
+the intake and the daemon publish under are refused: `autopilot`, `cli`, `factory`, `github`, `intake`, `linear`,
 `priory`, `schedule` and `slack`, so a script cannot pass for an event. `LINE` is one line, cut at 500
 characters.
 

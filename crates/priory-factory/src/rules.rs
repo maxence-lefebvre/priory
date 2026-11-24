@@ -161,6 +161,9 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 None => Some(format!(
                     "`approve_plans` names workflow `{name}`, which does not exist"
                 )),
+                Some(_) if settings.value.critic.is_none() => Some(format!(
+                    "`approve_plans` names workflow `{name}`, and the factory has no `critic` to read its plans first"
+                )),
                 Some(flow) => plan_never_approved(name, &flow.value),
             };
             if let Some(message) = refused {

@@ -2028,7 +2028,7 @@ const SCHEMA_114: &str = concat!(
   level    TEXT NOT NULL CHECK (level IN ('high', 'medium')),
   lanes    TEXT NOT NULL,
   ended    TEXT,
-  why      TEXT CHECK (why IN ('off', 'time', 'replaced')),
+  why      TEXT CHECK (why IN ('off', 'time', 'replaced', 'clock')),
   reported TEXT
 );
 CREATE TABLE IF NOT EXISTS autopilot_asks (
@@ -2041,6 +2041,25 @@ CREATE TABLE IF NOT EXISTS autopilot_asks (
   noted    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
   PRIMARY KEY (window, ask)
 );
+CREATE TABLE IF NOT EXISTS autopilot_state (
+  id      INTEGER PRIMARY KEY CHECK (id = 1),
+  unread  TEXT,
+  clock   TEXT NOT NULL DEFAULT ''
+);
+INSERT OR IGNORE INTO autopilot_state (id) VALUES (1);
+CREATE TABLE IF NOT EXISTS ask_answerers (
+  ask      INTEGER NOT NULL REFERENCES asks (id),
+  revision INTEGER NOT NULL,
+  by       TEXT NOT NULL,
+  PRIMARY KEY (ask, revision)
+);
+INSERT OR IGNORE INTO ask_answerers (ask, revision, by)
+  SELECT id, revision, answered_by FROM asks WHERE answer IS NOT NULL AND answered_by IS NOT NULL;
+CREATE TRIGGER IF NOT EXISTS ask_answered_by AFTER UPDATE OF answered_by ON asks
+  WHEN NEW.answer IS NOT NULL AND NEW.answered_by IS NOT NULL BEGIN
+  INSERT OR REPLACE INTO ask_answerers (ask, revision, by)
+  VALUES (NEW.id, NEW.revision, NEW.answered_by);
+END;
 CREATE INDEX IF NOT EXISTS autopilot_by_ask ON autopilot_asks (ask);
 CREATE TRIGGER IF NOT EXISTS ask_version_autopilot AFTER INSERT ON autopilot_asks BEGIN
   INSERT INTO ask_versions (ask, version) VALUES (NEW.ask, 2)

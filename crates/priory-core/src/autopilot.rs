@@ -97,6 +97,10 @@ pub fn set(
     if queued {
         runners::send(&tx, &message)?;
     }
+    tx.execute(
+        "UPDATE autopilot_state SET unread = ?1",
+        [queued.then(|| message.id.to_string())],
+    )?;
     tx.commit()?;
     Ok(message)
 }
@@ -160,6 +164,7 @@ fn apply(
         "UPDATE autopilot_windows SET ended = ?1, why = 'replaced' WHERE ended IS NULL",
         [stamp(now)],
     )?;
+    tx.execute("UPDATE autopilot_state SET clock = ?1", [stamp(now)])?;
     tx.execute(
         "INSERT INTO autopilot_windows (setting, started, until, level, lanes)
          VALUES (?1, ?2, ?3, ?4, ?5)
@@ -191,10 +196,19 @@ pub(crate) fn handle(
         return Ok(None);
     }
     let now = Timestamp::now();
-    let setting = parse(&message.data, now);
-    let outcome = match setting {
+    let id = message.id.to_string();
+    let unread: Option<String> =
+        tx.query_row("SELECT unread FROM autopilot_state", [], |row| row.get(0))?;
+    let echo = unread.as_ref() == Some(&id);
+    if echo {
+        tx.execute("UPDATE autopilot_state SET unread = NULL", [])?;
+    }
+    let outcome = match parse(&message.data, now) {
         Ok(setting) if several => {
-            apply(tx, &message.id.to_string(), setting.as_ref(), now)?;
+            // This runner's own setting comes after an older one on the log, and wins.
+            if echo || unread.is_none() {
+                apply(tx, &id, setting.as_ref(), now)?;
+            }
             "noted"
         }
         _ => "refused",
@@ -250,11 +264,18 @@ impl Window {
     }
 }
 
+/// Whether the clock reads over a minute earlier than it did while autopilot was on, in SQL.
+const SET_BACK: &str = "(SELECT clock FROM autopilot_state)
+  > strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '+60 seconds')";
+
 /// The window in force now, if any. Its end is read here, so no restart or pause extends it.
 pub(crate) fn window(db: &Connection) -> rusqlite::Result<Option<Window>> {
     db.query_row(
-        "SELECT id, level, lanes FROM autopilot_windows
-         WHERE ended IS NULL AND until > strftime('%Y-%m-%dT%H:%M:%SZ', 'now')",
+        &format!(
+            "SELECT id, level, lanes FROM autopilot_windows
+             WHERE ended IS NULL AND until > strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+             AND NOT {SET_BACK}"
+        ),
         [],
         |row| {
             Ok(Window {
@@ -284,7 +305,8 @@ pub(crate) fn answers(
             row.get(0)
         })?;
     let refused = explain::autopilot_refusal(workflow, at, command, window.level, confidence);
-    Ok((window.covers(lane.as_deref()) && refused.is_none()).then_some(window))
+    let answers = window.covers(lane.as_deref()) && refused.is_none() && !held(tx, task)?;
+    Ok(answers.then_some(window))
 }
 
 /// Whether autopilot may approve the plan `task` grades in `workflow`, so the critic reads it first.
@@ -362,6 +384,15 @@ fn open(db: &Connection, ask: i64) -> rusqlite::Result<Option<Open>> {
     .optional()
 }
 
+/// Whether `task` is held, or is to be at the end of its turn: a person keeps it from going on.
+fn held(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM holds WHERE task = ?1 AND released IS NULL)",
+        [task],
+        |row| row.get(0),
+    )
+}
+
 /// The option autopilot answers `ask` with and why it may, or why it leaves the ask.
 fn verdict(
     tx: &Transaction,
@@ -383,6 +414,9 @@ fn verdict(
     }
     if crate::hold::of_ask(tx, ask.id)?.is_some() || (ask.kind == "agent" && ask.run.is_none()) {
         return Ok(Err("Priory asked it, not an agent".to_owned()));
+    }
+    if held(tx, task)? {
+        return Ok(Err("its task is held".to_owned()));
     }
     let Some(flow) = factory.workflows.get(&ask.workflow) else {
         return Ok(Err(format!(
@@ -411,16 +445,13 @@ fn verdict(
             "its recommendation is not one of its options".to_owned()
         ));
     };
-    Ok(Ok((option, eligible(ask, window))))
-}
-
-/// Why autopilot answers an agent's ask it answers.
-fn eligible(ask: &Open, window: &Window) -> String {
-    format!(
-        "its confidence, {}, meets {}, and a person decides again before any irreversible step",
+    let why = format!(
+        "its confidence, {}, meets {}, and {}",
         ask.confidence.map_or("none", Confidence::as_str),
-        window.level.as_str()
-    )
+        window.level.as_str(),
+        explain::delegable_because(&flow.value, &ask.step)
+    );
+    Ok(Ok((option, why)))
 }
 
 /// As `verdict`, for a human step's ask: only a green plan of a workflow the factory names.
@@ -431,9 +462,11 @@ fn plan(
     workflow: &Workflow,
     factory: &Factory,
 ) -> rusqlite::Result<Result<(String, String), String>> {
-    let graded = workflow
-        .step(&ask.step)
-        .is_some_and(|step| step.decides == priory_factory::factory::Decider::Model);
+    let step = workflow.step(&ask.step);
+    if step.is_some_and(|step| step.debate.is_some()) {
+        return Ok(Err("it picks a debate's answer".to_owned()));
+    }
+    let graded = step.is_some_and(|step| step.decides == priory_factory::factory::Decider::Model);
     if !graded {
         return Ok(Err(
             match explain::undelegable(workflow, &ask.step, ask.command) {
@@ -457,22 +490,24 @@ fn plan(
             ask.grade.as_deref().unwrap_or("nothing")
         )));
     }
-    if let Some(critic) = factory.critic() {
-        let read: bool = tx.query_row(
-            "SELECT EXISTS (SELECT 1 FROM gates WHERE gates.task = ?1 AND gates.step = ?2
-               AND gates.state = 'passed' AND gates.outcome = 'green'
-               AND gates.run = (SELECT max(id) FROM runs WHERE runs.task = ?1 AND runs.step = ?2)
-               AND EXISTS (SELECT 1 FROM json_each(gates.scorers) WHERE value = ?3))",
-            params![task, ask.step, critic],
-            |row| row.get(0),
-        )?;
-        if !read {
-            return Ok(Err(format!("the critic {critic} did not read its plan")));
-        }
+    let Some(critic) = factory.critic() else {
+        return Ok(Err("the factory has no critic to read its plan".to_owned()));
+    };
+    let read: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM gates WHERE gates.task = ?1 AND gates.step = ?2
+           AND gates.state = 'passed' AND gates.outcome = 'green'
+           AND gates.run = (SELECT max(id) FROM runs WHERE runs.task = ?1 AND runs.step = ?2)
+           AND EXISTS (SELECT 1 FROM json_each(gates.scorers) WHERE value = ?3))",
+        params![task, ask.step, critic],
+        |row| row.get(0),
+    )?;
+    if !read {
+        return Ok(Err(format!("the critic {critic} did not read its plan")));
     }
     let why = format!(
-        "its plan is green, approve_plans names {}, and a person decides again before any irreversible step",
-        ask.workflow
+        "its plan is green, approve_plans names {}, and {}",
+        ask.workflow,
+        explain::delegable_because(workflow, &ask.step)
     );
     Ok(Ok(("approved".to_owned(), why)))
 }
@@ -524,7 +559,7 @@ pub(crate) fn judge(
             fields["rationale"] = json!(ask.rationale);
         }
     }
-    trace::autopilot_answered(tx, trace, id, fields)?;
+    trace::autopilot(tx, trace, "factory.ask.autopilot_answered", id, fields)?;
     Ok(true)
 }
 
@@ -577,11 +612,38 @@ pub(crate) fn tick(db: &mut Connection, trace: &Trace, head: Head) -> rusqlite::
     Ok(())
 }
 
+/// Ends the window whose time passed or whose clock was set back, and reports each that ended.
 fn finish(db: &mut Connection) -> rusqlite::Result<()> {
+    // Read first: a write transaction on each tick would hold up every other writer.
+    let due: bool = db.query_row(
+        &format!(
+            "SELECT EXISTS (SELECT 1 FROM autopilot_windows WHERE reported IS NULL AND (ended IS NOT NULL
+               OR until <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now') OR {SET_BACK}
+               OR (SELECT clock FROM autopilot_state)
+                 < strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-60 seconds')))"
+        ),
+        [],
+        |row| row.get(0),
+    )?;
+    if !due {
+        return Ok(());
+    }
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.execute(
         "UPDATE autopilot_windows SET ended = until, why = 'time'
          WHERE ended IS NULL AND until <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now')",
+        [],
+    )?;
+    // Its end would come later than the person meant.
+    tx.execute(
+        &format!(
+            "UPDATE autopilot_windows SET ended = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), why = 'clock'
+             WHERE ended IS NULL AND {SET_BACK}"
+        ),
+        [],
+    )?;
+    tx.execute(
+        "UPDATE autopilot_state SET clock = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')",
         [],
     )?;
     let ended = tx
@@ -671,7 +733,7 @@ pub fn report(db: &Connection, id: Option<i64>) -> rusqlite::Result<Option<Value
            noted.verdict, noted.option, noted.why, noted.noted AS at, asks.kind,
            CASE WHEN asks.withdrawn IS NOT NULL THEN 'withdrawn' WHEN asks.answer IS NOT NULL
              THEN 'answered' ELSE 'open' END AS state, asks.answer, asks.answered_by,
-           tasks.state AS task_state, EXISTS (SELECT 1 FROM outbox WHERE outbox.task = asks.task
+           tasks.state AS task_state, tasks.key, EXISTS (SELECT 1 FROM outbox WHERE outbox.task = asks.task
              AND outbox.state = 'queued'
              AND instr(outbox.text, 'Answer to ask ' || asks.id || ' (revision ') > 0) AS unsent
          FROM autopilot_asks AS noted JOIN asks ON asks.id = noted.ask
@@ -681,9 +743,17 @@ pub fn report(db: &Connection, id: Option<i64>) -> rusqlite::Result<Option<Value
     )?;
     let (mut answered, mut left) = (Vec::new(), Vec::new());
     for mut ask in noted.as_array().cloned().unwrap_or_default() {
-        ask["reverse"] = json!(reverse(&ask));
+        match reverse(db, &ask)? {
+            Some(Ok(command)) => ask["reverse"] = json!(command),
+            Some(Err(why)) => {
+                ask["reverse"] = Value::Null;
+                ask["no_reverse"] = json!(why);
+            }
+            None => ask["reverse"] = Value::Null,
+        }
         let fields = ask.as_object_mut().expect("rows are objects");
         fields.remove("unsent");
+        fields.remove("key");
         match fields
             .remove("verdict")
             .and_then(|it| it.as_str().map(str::to_owned))
@@ -697,7 +767,7 @@ pub fn report(db: &Connection, id: Option<i64>) -> rusqlite::Result<Option<Value
         report["ended"].as_str().map(str::to_owned),
     );
     for ask in runners::remote_rows(db, None)? {
-        remote(&ask, &window, &mut answered, &mut left);
+        remote(db, &ask, &window, &mut answered, &mut left)?;
     }
     report["answered"] = json!(answered);
     report["left"] = json!(left);
@@ -707,11 +777,12 @@ pub fn report(db: &Connection, id: Option<i64>) -> rusqlite::Result<Option<Value
 /// Adds another runner's `ask` as its last post shows it, when autopilot answered it between the
 /// window's start and end, or left it open.
 fn remote(
+    db: &Connection,
     ask: &Value,
     (since, ended): &(String, Option<String>),
     answered: &mut Vec<Value>,
     left: &mut Vec<Value>,
-) {
+) -> rusqlite::Result<()> {
     let mut row = json!({
         "ask": ask["id"], "task": ask["task"], "revision": ask["revision"], "step": ask["step"],
         "question": ask["question"], "state": ask["state"], "answer": ask["answer"],
@@ -725,32 +796,64 @@ fn remote(
         row["at"] = ask["answered_at"].clone();
         let runner = ask["runner"].as_str().unwrap_or_default();
         let key = ask["key"].as_str().unwrap_or_default();
-        row["reverse"] = json!(format!("priory say {runner}:{key} TEXT"));
+        let over: bool = db.query_row(
+            "SELECT EXISTS (SELECT 1 FROM claims WHERE key = ?1 AND runner = ?2
+               AND coalesce(published, hold) = 'ended')",
+            [key, runner],
+            |row| row.get(0),
+        )?;
+        row["reverse"] = match over {
+            true => Value::Null,
+            false => json!(format!("priory say {runner}:{key} TEXT")),
+        };
+        if over {
+            row["no_reverse"] = json!(format!("its task ended on {runner}: see it there"));
+        }
         answered.push(row);
     } else if ask["state"] == "open" && !ask["autopilot_left"].is_null() {
         row["why"] = ask["autopilot_left"].clone();
         row["reverse"] = json!(null);
         left.push(row);
     }
+    Ok(())
 }
 
-/// The command that reverses an answer autopilot gave: another answer while its prompt is unsent,
-/// else word to the agent, or for a plan a cancel and a revive at the graded step.
-fn reverse(ask: &Value) -> Option<String> {
+/// The command that reverses an answer autopilot gave, or why none does: another answer while its
+/// prompt is unsent, else word to the agent, or for a plan a cancel and a revive at the graded step.
+fn reverse(db: &Connection, ask: &Value) -> rusqlite::Result<Option<Result<String, String>>> {
     if ask["verdict"] != "answered" || ask["answered_by"] != AUTOPILOT {
-        return None;
+        return Ok(None);
     }
-    let (task, step) = (&ask["task"], ask["step"].as_str()?);
-    let over = ["done", "failed", "dropped"].contains(&ask["task_state"].as_str()?);
-    Some(match (ask["kind"] == "step", over) {
-        (_, true) => format!("priory revive {task} --step {step}"),
-        (true, false) => format!("priory cancel {task}, then priory revive {task} --step {step}"),
-        (false, false) if ask["unsent"] == 1 => format!(
+    let (Some(task), Some(step), Some(state)) = (
+        ask["task"].as_i64(),
+        ask["step"].as_str(),
+        ask["task_state"].as_str(),
+    ) else {
+        return Ok(None);
+    };
+    let tx = db.unchecked_transaction()?;
+    let over = ["done", "failed", "dropped"].contains(&state);
+    if over && let Some(rival) = tools::rival(&tx, task, ask["key"].as_str().unwrap_or_default())? {
+        return Ok(Some(Err(format!("task {task} is {state}, and {rival}"))));
+    }
+    Ok(Some(match (state, ask["kind"] == "step") {
+        // shortcut: a step no agent runs refuses the say, which the report, with no factory, cannot see.
+        ("done", _) => match tools::open_pull_request(&tx, task)? {
+            Ok(_) => Ok(format!("priory say {task} TEXT")),
+            Err(why) => Err(format!(
+                "task {task} is done and {why}: ask for the change in a new task, with `priory add TEXT`"
+            )),
+        },
+        _ if over => Ok(format!("priory revive {task} --step {step}")),
+        (_, true) => Ok(format!(
+            "priory cancel {task} && priory revive {task} --step {step}"
+        )),
+        (_, false) if ask["unsent"] == 1 => Ok(format!(
             "priory answer --revision {} {} OPTION",
             ask["revision"], ask["ask"]
-        ),
-        (false, false) => format!("priory say {task} TEXT"),
-    })
+        )),
+        (_, false) => Ok(format!("priory say {task} TEXT")),
+    }))
 }
 
 /// Prints `report` as `priory autopilot report` does.
@@ -785,6 +888,10 @@ pub fn print(report: &Value) {
                 text(&ask["question"])
             ));
             crate::state::emit(&format!("  why: {}", text(&ask["why"])));
+            if let Some(why) = ask["no_reverse"].as_str() {
+                crate::state::emit(&format!("  reverse: none. {why}"));
+                continue;
+            }
             match (&ask["reverse"], ask["state"].as_str()) {
                 (Value::String(command), _) => crate::state::emit(&format!("  reverse: {command}")),
                 (_, Some("answered")) => crate::state::emit(&format!(
