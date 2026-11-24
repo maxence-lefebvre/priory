@@ -286,7 +286,9 @@ impl Limits {
     /// Restores the limits of `slice` another process changed, and says so in the log and on the
     /// desk. A check that keeps failing is logged once.
     pub(crate) fn check(&mut self, slice: &str, share: &crate::room::Share, home: &Path) {
-        let found = match slice::restore(slice, share.cpu, share.memory) {
+        let checked =
+            slice::claim(slice, home).and_then(|()| slice::restore(slice, share.cpu, share.memory));
+        let found = match checked {
             Ok(found) => found,
             Err(error) => {
                 if !std::mem::replace(&mut self.failed, true) {

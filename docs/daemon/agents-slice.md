@@ -49,7 +49,8 @@ It leaves them alone when:
 - Another home took the slice. The first daemon to set the limits writes its Priory home to
   `$XDG_RUNTIME_DIR/priory/<slice>.owner`. The slice stays with that home until the reboot, or until
   the home's folder is gone. To give the slice to another home, remove the file and restart that
-  home's daemon.
+  home's daemon. The old owner sees the new home at its next sweep and stops setting the limits.
+- `XDG_RUNTIME_DIR` is not set, so no owner can be recorded.
 
 `PRIORY_SLICE` names another slice, so two Priory daemons on one user manager, such as a test
 daemon beside a real one, cap their agents apart. Its weight goes on the slice named by the part

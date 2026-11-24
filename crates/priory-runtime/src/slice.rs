@@ -22,7 +22,7 @@ pub fn claim(slice: &str, home: &Path) -> Result<(), String> {
         return Err("this daemon runs inside it".to_owned());
     }
     let Some(run) = std::env::var_os("XDG_RUNTIME_DIR").filter(|run| !run.is_empty()) else {
-        return Ok(());
+        return Err("XDG_RUNTIME_DIR, which holds its owner, is not set".to_owned());
     };
     let file = Path::new(&run)
         .join("priory")
@@ -32,7 +32,10 @@ pub fn claim(slice: &str, home: &Path) -> Result<(), String> {
     match fs::read(&file) {
         Ok(owner) => {
             let owner = Path::new(OsStr::from_bytes(&owner));
-            if owner != home && owner.is_dir() {
+            if owner == home {
+                return Ok(());
+            }
+            if owner.is_dir() {
                 return Err(format!(
                     "the daemon of {} set them; name another slice in PRIORY_SLICE, or remove {} to take this one",
                     owner.display(),
@@ -43,7 +46,8 @@ pub fn claim(slice: &str, home: &Path) -> Result<(), String> {
         Err(error) if error.kind() == ErrorKind::NotFound => {}
         Err(error) => return Err(at(error)),
     }
-    // A rename, so a daemon that starts beside this one never reads half a path.
+    // A rename, so no daemon reads half a path. Of two that start at once, the last one owns the
+    // slice, and the other's next sweep sees it.
     let new = file.with_extension(format!("owner.{}", std::process::id()));
     fs::write(&new, home.as_os_str().as_bytes())
         .and_then(|()| fs::rename(&new, &file))

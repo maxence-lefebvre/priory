@@ -3744,11 +3744,17 @@ fn the_slices_quota_counts_the_machines_cpus_not_the_daemons_own_limit() {
     )
     .unwrap();
     // One CPU for the daemon, as under a one-CPU quota.
+    let status = fs::read_to_string("/proc/self/status").unwrap();
+    let allowed = status
+        .lines()
+        .find_map(|line| line.strip_prefix("Cpus_allowed_list:"))
+        .unwrap();
+    let cpu = allowed.trim().split([',', '-']).next().unwrap();
     let pinned = setup.dir.join("pinned");
     fs::write(
         &pinned,
         format!(
-            "#!/bin/sh\nexec taskset -c 0 '{}' \"$@\"\n",
+            "#!/bin/sh\nexec taskset -c {cpu} '{}' \"$@\"\n",
             env!("CARGO_BIN_EXE_priory")
         ),
     )
@@ -3813,8 +3819,11 @@ fn a_daemon_of_another_home_leaves_the_slices_limits_alone_until_that_home_is_go
     setup.crash();
     fs::remove_dir_all(&owner).unwrap();
     setup.start();
-    listening(&setup);
-    assert_eq!(fake_log(&setup, "systemctl.log").len(), 2);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while fake_log(&setup, "systemctl.log").len() < 2 {
+        assert!(Instant::now() < deadline, "the slice was not capped");
+        std::thread::sleep(Duration::from_millis(20));
+    }
     let home = fs::canonicalize(setup.dir.join("home")).unwrap();
     assert_eq!(fs::read_to_string(&file).unwrap(), home.to_str().unwrap());
 }
@@ -3837,13 +3846,13 @@ fn the_sweep_restores_the_slices_limits_another_process_changed_and_says_so_once
     std::thread::sleep(Duration::from_millis(2500));
     assert_eq!(fake_log(&setup, "systemctl.log").len(), 2);
 
+    fs::write(setup.dir.join("fake/capped"), "1980000 100000\n").unwrap();
     slice_file(&setup, "cpu.max", "90000 100000\n");
     let deadline = Instant::now() + Duration::from_secs(30);
     while fake_log(&setup, "systemctl.log").len() < 4 {
         assert!(Instant::now() < deadline, "nothing restored the slice");
         std::thread::sleep(Duration::from_millis(20));
     }
-    slice_file(&setup, "cpu.max", "1980000 100000\n");
     std::thread::sleep(Duration::from_millis(2500));
 
     let calls = fake_log(&setup, "systemctl.log");
@@ -3858,6 +3867,15 @@ fn the_sweep_restores_the_slices_limits_another_process_changed_and_says_so_once
     let desk = setup.priory(&["desk"]);
     let desk = String::from_utf8(desk.stdout).unwrap();
     assert_eq!(desk.matches(said).count(), 1, "{desk}");
+
+    // Another home takes the slice, so this daemon's next sweep leaves a change alone.
+    let owner = setup.dir.join("other-home");
+    fs::create_dir_all(&owner).unwrap();
+    let file = setup.tmux.path().join("priory/priory-agents.slice.owner");
+    write_atomic(&file, owner.to_str().unwrap());
+    slice_file(&setup, "cpu.max", "90000 100000\n");
+    std::thread::sleep(Duration::from_millis(2500));
+    assert_eq!(fake_log(&setup, "systemctl.log").len(), 4);
 }
 
 /// Claude Code 2.1.331 at its prompt, as a run whose hook came late showed it.

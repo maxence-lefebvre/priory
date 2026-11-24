@@ -10,4 +10,8 @@ if [ "${2-}" = show ]; then
   cat "$FAKE_DIR/slice-cgroup" 2>/dev/null || echo /priory-agents.slice
   exit 0
 fi
+# Setting the agents slice puts FAKE_DIR/capped, if any, in its cgroup's cpu.max.
+if [ "${4-}" = priory-agents.slice ] && [ -e "$FAKE_DIR/capped" ]; then
+  cp "$FAKE_DIR/capped" "$FAKE_DIR/../cgroup/priory-agents.slice/cpu.max"
+fi
 echo "$*" >> "$FAKE_DIR/systemctl.log"
