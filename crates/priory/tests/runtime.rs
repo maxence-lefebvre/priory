@@ -7224,7 +7224,7 @@ fn say_to_a_done_task_is_refused() {
     assert!(!said.status.success());
     assert_eq!(
         String::from_utf8_lossy(&said.stderr),
-        "priory say: task 1 is done\n"
+        "priory say: task 1 is done and owns no pull request\n"
     );
 }
 
@@ -9132,6 +9132,157 @@ fn a_comment_on_the_merged_pull_request_of_a_done_task_reopens_nothing() {
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(setup.rows("tasks")[0][4], "done");
     assert_eq!(setup.rows("runs").len(), 2);
+}
+
+/// Task 1 of `gated`, done at green checks with pull request 7 open, a second ago.
+fn done_with_open_pull_request(name: &str) -> Setup {
+    let setup = gated(name);
+    setup.publish(&check(1, 0));
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    std::thread::sleep(Duration::from_millis(1100));
+    setup
+}
+
+/// Asserts `say` on task 1 is refused with `why`, starting no run.
+fn say_refused(setup: &Setup, why: &str) {
+    let (runs, before) = (setup.rows("runs").len(), generation(setup));
+    let said = setup.priory(&["say", "1", "Fix the empty case."]);
+    assert!(!said.status.success(), "{said:?}");
+    let error = String::from_utf8_lossy(&said.stderr);
+    assert!(error.contains(why), "{error}");
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("runs").len(), runs);
+    assert_eq!(generation(setup), before);
+}
+
+/// The branch and worktree of task 1.
+fn branch(setup: &Setup) -> (String, String) {
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .query_row(
+            "SELECT branch, worktree FROM tasks WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+}
+
+/// The generation of task 1.
+fn generation(setup: &Setup) -> i64 {
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .query_row("SELECT generation FROM tasks WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap()
+}
+
+#[test]
+fn a_say_on_a_done_task_whose_pull_request_is_open_reopens_it_and_resumes_its_session() {
+    let setup = done_with_open_pull_request("say-reopen");
+    let before = branch(&setup);
+
+    let said = setup.priory(&["say", "1", "/fix the empty case."]);
+
+    assert!(said.status.success(), "{said:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&said.stdout).trim(),
+        "task 1 reopened at implement, generation 2"
+    );
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    assert!(
+        typed[2].starts_with(
+            "A person says: /fix the empty case.\nThis reopened your done task as generation 2: github:owner/repo#7 is still open."
+        ),
+        "{typed:?}"
+    );
+    let runs = setup.rows("runs");
+    assert_eq!(runs[2][4], runs[0][4], "the run resumes the session");
+    assert_eq!(generation(&setup), 2);
+    assert_eq!(branch(&setup), before, "the run keeps the branch");
+    assert_eq!(
+        setup
+            .trace()
+            .iter()
+            .filter(|record| record["type"] == "factory.task.reopened"
+                && record["data"]["pull_request"] == "github:owner/repo#7")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_say_on_a_done_task_whose_pull_request_merged_is_refused() {
+    let setup = gated("say-merged");
+    setup.publish(&closed());
+    setup.until("tasks", |rows| rows[0][4] == "done");
+
+    say_refused(
+        &setup,
+        "task 1 is done and its pull request github:owner/repo#7 is merged",
+    );
+}
+
+#[test]
+fn a_say_on_a_done_task_is_refused_once_its_pull_request_closed_until_it_reads_open() {
+    let setup = done_with_open_pull_request("say-closed");
+    let mut close = closed().time(herdr_bus::Timestamp::now());
+    close.data["merged"] = json!(false);
+    setup.publish(&close);
+    setup.until("inbox", |rows| rows.len() == 4);
+
+    say_refused(
+        &setup,
+        "task 1 is done and its pull request github:owner/repo#7 is closed",
+    );
+
+    let mut green = check(2, 0);
+    green.data["open"] = json!(true);
+    setup.publish(&green);
+    setup.until("inbox", |rows| rows.len() == 5);
+    let said = setup.priory(&["say", "1", "Fix the empty case."]);
+    assert!(said.status.success(), "{said:?}");
+}
+
+#[test]
+fn a_say_on_a_done_task_is_refused_once_feedback_reads_its_pull_request_closed() {
+    let setup = done_with_open_pull_request("say-read-closed");
+    let mut late = review_in("approved", 350);
+    late.data["open"] = json!(false);
+    setup.publish(&late);
+    setup.until("inbox", |rows| rows.len() == 4);
+
+    say_refused(
+        &setup,
+        "task 1 is done and its pull request github:owner/repo#7 is closed",
+    );
+}
+
+#[test]
+fn a_say_on_a_done_task_whose_pull_request_another_active_task_owns_is_refused() {
+    let setup = done_with_open_pull_request("say-rival");
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "INSERT INTO tasks (key, workflow, step, state, band, trigger, source)
+           SELECT 'cli:rival', workflow, step, 'blocked', band, trigger, source FROM tasks WHERE id = 1;
+         INSERT INTO subscriptions (task, resource) VALUES (2, 'github:owner/repo#7');",
+    )
+    .unwrap();
+
+    say_refused(&setup, "task 2 is already active on github:owner/repo#7");
+}
+
+#[test]
+fn a_say_on_a_failed_or_dropped_task_with_an_open_pull_request_is_refused() {
+    let setup = done_with_open_pull_request("say-failed");
+    for state in ["failed", "dropped"] {
+        rusqlite::Connection::open(setup.dir.join("priory.db"))
+            .unwrap()
+            .execute("UPDATE tasks SET state = ?1 WHERE id = 1", [state])
+            .unwrap();
+        say_refused(&setup, &format!("task 1 is {state}"));
+    }
 }
 
 #[test]
