@@ -42,6 +42,8 @@ pub struct Settings {
     pub queue: Queue,
     #[serde(default)]
     pub intake: IntakeSettings,
+    #[serde(default)]
+    pub memory: MemoryGate,
     /// The agent whose model reads a stalled run's screen; no handler runs without one.
     pub handler: Option<String>,
     /// How long a run goes without a hook event or a change on its pane before it counts as stalled.
@@ -1052,6 +1054,17 @@ pub struct IntakeSettings {
     pub alarm_after: Option<Duration>,
 }
 
+/// `[memory]`: how long a command waits in the memory gate.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryGate {
+    /// How long `priory memory acquire` without `--timeout` waits for its grant before it exits 75
+    /// and says to run the command on CI, below 1 hour; it never does when unset.
+    #[serde(default, deserialize_with = "duration")]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    pub give_up_after: Option<Duration>,
+}
+
 /// How the queue orders tasks.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -1681,6 +1694,16 @@ pub struct Trigger {
     pub band: Option<String>,
     /// The lane of its tasks, `<team>/<theme>`; `lanes.toml` derives it when unset.
     pub lane: Option<String>,
+    /// The labels of its tasks, such as `{ project = "oss" }`, which runner filters match.
+    #[serde(default, deserialize_with = "crate::filters::labels")]
+    #[schemars(
+        with = "BTreeMap<String, String>",
+        extend(
+            "propertyNames" = { "pattern": "^[a-z0-9][a-z0-9_.-]*$" },
+            "additionalProperties" = { "type": "string", "pattern": "^[A-Za-z0-9_.:/-]+$" }
+        )
+    )]
+    pub labels: Option<BTreeMap<String, String>>,
     /// Whether the events of the first poll start tasks too.
     pub backfill: Option<bool>,
     /// The local time of day a schedule fires, `HH:MM`.
@@ -1936,12 +1959,13 @@ fn time_of_day<'de, D: Deserializer<'de>>(input: D) -> Result<Option<jiff::civil
         .map_err(|_| D::Error::custom(format!("{text:?} is not a time of day such as \"09:00\"")))
 }
 
-fn weekdays<'de, D: Deserializer<'de>>(
+pub(crate) fn weekdays<'de, D: Deserializer<'de>>(
     input: D,
 ) -> Result<Option<Vec<jiff::civil::Weekday>>, D::Error> {
     use jiff::civil::Weekday::*;
     const NAMES: [&str; 7] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
-    let names = Vec::<String>::deserialize(input)?;
+    let names = Vec::<String>::deserialize(input)
+        .map_err(|_| D::Error::custom("`days` is not a list such as [\"mon\", \"fri\"]"))?;
     if names.is_empty() {
         return Err(D::Error::custom("`days` is empty, so it never fires"));
     }
@@ -1959,7 +1983,9 @@ fn weekdays<'de, D: Deserializer<'de>>(
         .map(Some)
 }
 
-fn time_zone<'de, D: Deserializer<'de>>(input: D) -> Result<Option<jiff::tz::TimeZone>, D::Error> {
+pub(crate) fn time_zone<'de, D: Deserializer<'de>>(
+    input: D,
+) -> Result<Option<jiff::tz::TimeZone>, D::Error> {
     let text = String::deserialize(input)?;
     jiff::tz::TimeZone::get(&text).map(Some).map_err(|_| {
         D::Error::custom(format!(
@@ -2341,6 +2367,11 @@ pub struct Runner {
     pub platform: Platform,
     /// The share of the machine its agents may take together; 90% of each when unset.
     pub agents: Option<Share>,
+    /// The tasks it claims and starts: only those every filter whose window is open accepts.
+    #[serde(default)]
+    pub filters: Vec<crate::filters::Filter>,
+    #[serde(default)]
+    pub memory: MemoryGate,
 }
 
 /// The machine's operating system and CPU architecture.
@@ -2710,6 +2741,13 @@ impl Factory {
             .as_ref()
             .and_then(|settings| settings.value.intake.alarm_after)
             .unwrap_or(Duration::from_secs(15 * 60))
+    }
+
+    /// How long a gated command waits on the runner named `host` before it gives up; none never does.
+    pub fn give_up_after(&self, host: Option<&str>) -> Option<Duration> {
+        host.and_then(|host| self.runners.get(host))
+            .and_then(|runner| runner.value.memory.give_up_after)
+            .or_else(|| self.settings.as_ref()?.value.memory.give_up_after)
     }
 
     /// The OTLP/HTTP base URL the daemon exports spans to; none sends nothing.

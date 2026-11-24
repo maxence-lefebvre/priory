@@ -6,11 +6,19 @@ use std::time::Duration;
 // shortcut: hand-written JSON-RPC over stdio for initialize, ping, tools/list and tools/call; switch to rmcp if Priory needs more of MCP.
 const VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
-/// What every agent learns on connecting: how to run a heavy command behind the memory gate.
-pub(crate) fn instructions() -> String {
+/// What every agent learns on connecting: how to run a heavy command behind the memory gate, and,
+/// when a wait there `gives_up` at a limit, what to do then.
+pub(crate) fn instructions(set: Tools, gives_up: bool) -> String {
     let exe = std::env::current_exe().unwrap_or_else(|_| "priory".into());
+    // An investigator has no branch to push.
+    let gave_up = match set {
+        Tools::Worker | Tools::Asker if gives_up => {
+            " If it exits 75 and prints `the command did not run`, the wait passed the factory's limit: push what you committed, and wait for CI to run the command, without asking a person. Exit 75 without that line is the command's own."
+        }
+        _ => "",
+    };
     format!(
-        "Wrap each heavy command, such as a build or a test suite, in `{} memory acquire --gb N -- <command>`, with N its peak memory in GB, so it waits for room instead of running the machine out of memory.",
+        "Wrap each heavy command, such as a build or a test suite, in `{} memory acquire --gb N -- <command>`, with N its peak memory in GB, so it waits for room instead of running the machine out of memory.{gave_up}",
         exe.display()
     )
 }
@@ -58,9 +66,10 @@ impl Tools {
 }
 
 /// Serves Priory's agent tools in `set` over MCP on stdin and stdout, for the run whose harness
-/// session is `session`, with `position` for a debate turn. Every call goes to the daemon, which
+/// session is `session`, with `position` for a debate turn. `gives_up` says that the memory gate has
+/// a limit. Every call goes to the daemon, which
 /// applies it and replies; this process never opens the state. A tool outside the set is unknown.
-pub fn serve(session: &str, set: Tools, debate: bool) -> Result<(), String> {
+pub fn serve(session: &str, set: Tools, debate: bool, gives_up: bool) -> Result<(), String> {
     let mut served: Vec<Value> = tools()
         .as_array()
         .expect("the tools are a list")
@@ -71,13 +80,17 @@ pub fn serve(session: &str, set: Tools, debate: bool) -> Result<(), String> {
     if debate {
         served.push(position());
     }
-    serve_with(&Value::from(served), &instructions(), &|params| {
-        let name = params["name"].as_str().unwrap_or_default();
-        if !set.serves(name) && !(debate && name == "position") {
-            return Ok(content(Err(format!("unknown tool {name}"))));
-        }
-        Ok(call(session, params))
-    })
+    serve_with(
+        &Value::from(served),
+        &instructions(set, gives_up),
+        &|params| {
+            let name = params["name"].as_str().unwrap_or_default();
+            if !set.serves(name) && !(debate && name == "position") {
+                return Ok(content(Err(format!("unknown tool {name}"))));
+            }
+            Ok(call(session, params))
+        },
+    )
 }
 
 /// The tool that ends a debate turn, served only to a debate turn's run.

@@ -1,5 +1,6 @@
 //! The state the listing commands and the HTTP server show, one JSON payload per listing.
 
+use crate::memory::{grant_age, grant_long};
 use crate::{post, snooze, stall, state, sweep};
 use jiff::Timestamp;
 use priory_factory::explain;
@@ -228,8 +229,23 @@ const DESK: &str = concat!(
                UNION ALL
                SELECT 0, grants.created, 'memory', grants.id, grants.task, tasks.lane,
                  'waits for ' || printf('%.1f', grants.bytes / 1073741824.0) || ' GB: '
-                 || grants.command
+                 || grants.command || coalesce((SELECT '; grant ' || id
+                     || coalesce(' of task ' || task, '') || ' holds '
+                     || printf('%.1f', bytes / 1073741824.0) || ' GB for ' || ",
+    grant_age!(),
+    "              FROM grants WHERE state = 'held'
+                   ORDER BY coalesce(granted, created), id LIMIT 1), '')
                FROM grants LEFT JOIN tasks ON tasks.id = grants.task WHERE grants.state = 'waiting'
+               UNION ALL
+               SELECT 0, grants.granted, 'memory', grants.id, grants.task, tasks.lane,
+                 'holds ' || printf('%.1f', grants.bytes / 1073741824.0) || ' GB for ' || ",
+    grant_age!(),
+    "            || ' while ' || (SELECT count(*) || CASE count(*) WHEN 1 THEN ' grant waits'
+                     ELSE ' grants wait' END FROM grants AS other WHERE other.state = 'waiting')
+                 || ': ' || grants.command
+               FROM grants LEFT JOIN tasks ON tasks.id = grants.task WHERE ",
+    grant_long!(),
+    "
                UNION ALL
                SELECT 0, retired, 'retired', id, id, lane,
                  'its worktree was removed to free disk; it resurrects from ' || branch
@@ -314,7 +330,7 @@ fn asks_query() -> String {
       FROM (SELECT * FROM ask_refusals WHERE ask = asks.id ORDER BY id)) AS refused,
      {IRREVERSIBLE} AS irreversible, {LETS} AS lets, tasks.merge_risk, tasks.grade,
      asks.kind != 'step' AND NOT EXISTS (SELECT 1 FROM holds
-       WHERE holds.ask = asks.id AND holds.released IS NULL) AS free_text,
+       WHERE holds.ask = asks.id AND holds.released IS NULL) AS dismissable,
      EXISTS (SELECT 1 FROM ask_plans WHERE ask_plans.ask = asks.id) AS approves_plan, {}
    FROM asks LEFT JOIN tasks ON tasks.id = asks.task
    LEFT JOIN snoozes ON snoozes.kind = 'ask' AND snoozes.item = asks.id
@@ -770,7 +786,7 @@ fn tasks_since(
     let query = format!(
         "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place AS position,
            generation, retired, tldr, changed AS since, grade, grade_reason, progress, {CONDITIONS},
-           {TITLE}, batch, added_by
+           {TITLE}, batch, added_by, coalesce(labels, '{{}}') AS labels
          FROM tasks LEFT JOIN queue USING (id)
          WHERE (?1 IS NULL OR lane = ?1) AND (?2 IS NULL OR grade = ?2)
            AND (?3 IS NULL OR state NOT IN ('done', 'failed', 'dropped') OR changed >= ?3)
@@ -831,7 +847,14 @@ pub fn holding(db: &Connection, repo: &str, number: u64) -> rusqlite::Result<Val
 }
 
 fn parse_json(task: &mut Value) {
-    for field in ["progress", "conditions", "waits", "stops", "protected"] {
+    for field in [
+        "progress",
+        "conditions",
+        "waits",
+        "stops",
+        "protected",
+        "labels",
+    ] {
         if let Some(text) = task[field].as_str() {
             task[field] = serde_json::from_str(text).unwrap_or(Value::Null);
         }
@@ -983,8 +1006,8 @@ fn asks_of(
             .chain(object.remove("grade").filter(Value::is_string))
             .collect();
         object.insert("risk".to_owned(), risk.into());
-        let free_text = object["free_text"].as_i64() == Some(1);
-        object.insert("free_text".to_owned(), free_text.into());
+        let dismissable = object["dismissable"].as_i64() == Some(1);
+        object.insert("dismissable".to_owned(), dismissable.into());
         let approves_plan = object["approves_plan"].as_i64() == Some(1);
         object.insert("approves_plan".to_owned(), approves_plan.into());
     }
@@ -1578,6 +1601,7 @@ pub fn desk(
         item.remove("title");
     }
     list.retain(|item| all || item["snoozed_until"].is_null());
+    list.extend(crate::runners::unaccepted_desk_items(db)?);
     for (path, task, reason) in sweep::stays(db, home)? {
         list.push(json!({
             "since": null, "kind": "worktree", "id": path, "task": task, "key": null,
@@ -1644,7 +1668,7 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
             "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place AS position,
                generation, retired, tldr, changed AS since, repo, branch, base_sha, grade, grade_reason,
                merge_risk, progress, plan_goal, plan_testing, plan_brief, verification, intervention, lead, auto_answer, batch, added_by,
-               intent, noop, {CONDITIONS}
+               intent, noop, coalesce(labels, '{{}}') AS labels, {CONDITIONS}
              FROM tasks LEFT JOIN queue USING (id) WHERE id = ?1",
             places()
         ),

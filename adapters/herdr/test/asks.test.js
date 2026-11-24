@@ -480,9 +480,11 @@ test("the panel answers an option on its second press or key, with no Undo wait"
   assert.deepEqual(answers()[0].slice(-2), ["review-7", "Ship"]);
 });
 
-test("a step's ask offers no free text and no dismissal, and an agent's ask does", () => {
-  assert.equal(askDetail({ ...asks[0], free_text: false }, { now, armed: null }).takesText, false);
-  assert.equal(askDetail({ ...asks[0], free_text: true }, { now, armed: null }).takesText, true);
+test("every open ask takes a written answer; a step's ask offers no dismissal, and an agent's ask does", () => {
+  const step = askDetail({ ...asks[0], dismissable: false }, { now, armed: null });
+  assert.equal(step.takesText, true);
+  assert.equal(step.dismissable, false);
+  assert.equal(askDetail({ ...asks[0], dismissable: true }, { now, armed: null }).dismissable, true);
 });
 
 test("the Attach menu's Open task opens the ask's task in the Task panel", async () => {

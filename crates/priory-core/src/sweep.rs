@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 /// A task folder under `PRIORY_HOME/worktrees` and why it stays, or `None` when it can go.
 /// `retire` keeps the branch when the folder goes. `judged` is the reason git gave, which the
@@ -538,19 +539,47 @@ pub(crate) struct Reclaim {
     reported: HashSet<PathBuf>,
     /// The build folders on another filesystem than `home`, which cannot move.
     elsewhere: HashSet<PathBuf>,
+    /// A sweep came due and its retirement has not run yet.
+    retires: bool,
 }
+
+/// How long a retirement waits for one delete.
+const OVERDUE: Duration = Duration::from_secs(10 * 60);
 
 /// A thread that deletes `output`, moved to `home/reclaim`, or what a stopped daemon left there. It
 /// returns each folder it could not delete, and why.
 struct Delete {
     output: Option<Output>,
     thread: JoinHandle<Vec<(PathBuf, String)>>,
+    started: Instant,
+    /// It ran past `OVERDUE`, so retirement no longer waits for it.
+    overdue: bool,
+}
+
+impl Delete {
+    fn new(output: Option<Output>, thread: JoinHandle<Vec<(PathBuf, String)>>) -> Delete {
+        Delete {
+            output,
+            thread,
+            started: Instant::now(),
+            overdue: false,
+        }
+    }
 }
 
 impl Reclaim {
     /// Whether no walk and no delete runs and no folder waits.
-    pub(crate) fn settled(&self) -> bool {
+    fn settled(&self) -> bool {
         self.walk.is_none() && self.delete.is_none() && self.pending.is_empty()
+    }
+
+    /// Whether to retire now: once per due sweep, when all that sweep can reclaim is gone or its
+    /// delete is overdue.
+    pub(crate) fn retires(&mut self) -> bool {
+        let overdue = self.delete.as_ref().is_some_and(|delete| delete.overdue);
+        let now = self.retires && (overdue || self.settled());
+        self.retires &= !now;
+        now
     }
 
     fn report(&mut self, path: PathBuf, reason: &str) {
@@ -559,8 +588,8 @@ impl Reclaim {
         }
     }
 
-    /// With `due`, starts a walk when none runs and nothing waits. `under` says free disk is
-    /// under the threshold. Each deletion is traced once it ends.
+    /// With `due`, starts a walk when none runs, nothing waits and no retirement is pending. `under`
+    /// says free disk is under the threshold. Each deletion is traced once it ends.
     pub(crate) fn tick(
         &mut self,
         db: &mut Connection,
@@ -570,6 +599,10 @@ impl Reclaim {
         due: bool,
         mut under: impl FnMut() -> bool,
     ) -> rusqlite::Result<()> {
+        // A walk per due tick would postpone a pending retirement for ever.
+        let pending = self.retires;
+        self.retires |= due;
+        let due = due && !pending;
         if let Some(delete) = self.delete.take_if(|delete| delete.thread.is_finished()) {
             let stuck = delete.thread.join().unwrap_or_else(|_| {
                 let reason = "a delete thread panicked".to_owned();
@@ -587,6 +620,21 @@ impl Reclaim {
         if let Some(walk) = self.walk.take_if(|walk| walk.is_finished()) {
             self.pending = walk.join().unwrap_or_default().into();
         }
+        if let Some(delete) = &mut self.delete
+            && !delete.overdue
+            && delete.started.elapsed() >= OVERDUE
+        {
+            delete.overdue = true;
+            let path = match &delete.output {
+                Some(output) => output.path.clone(),
+                None => home.join(RECLAIM),
+            };
+            eprintln!(
+                "priory daemon: reclaiming build output: deleting {} takes over 10 minutes; \
+                 retirement no longer waits for it",
+                path.display()
+            );
+        }
         if self.walk.is_some() || self.delete.is_some() {
             return Ok(());
         }
@@ -600,10 +648,7 @@ impl Reclaim {
             }
             let left = leftovers(home);
             if !left.is_empty() {
-                self.delete = Some(Delete {
-                    output: None,
-                    thread: delete(home, left, None),
-                });
+                self.delete = Some(Delete::new(None, delete(home, left, None)));
             }
             if under() {
                 let worktrees = idle_build(db, factory, home)?;
@@ -643,10 +688,7 @@ impl Reclaim {
             return Ok(());
         }
         let thread = delete(home, vec![aside], Some(output.path.clone()));
-        self.delete = Some(Delete {
-            output: Some(output),
-            thread,
-        });
+        self.delete = Some(Delete::new(Some(output), thread));
         Ok(())
     }
 }
@@ -669,12 +711,13 @@ fn reclaim_folder(home: &Path) -> Result<PathBuf, String> {
 }
 
 /// The folders a stopped daemon left under `home/reclaim`: real ones the daemon named, a task and
-/// nanoseconds.
+/// nanoseconds, which have 18 digits or more.
 fn leftovers(home: &Path) -> Vec<PathBuf> {
-    let digits = |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
+    let digits =
+        |part: &str, least| part.len() >= least && part.bytes().all(|byte| byte.is_ascii_digit());
     let named = |name: &str| {
         name.split_once('-')
-            .is_some_and(|(task, nanoseconds)| digits(task) && digits(nanoseconds))
+            .is_some_and(|(task, nanoseconds)| digits(task, 1) && digits(nanoseconds, 18))
     };
     let Ok(folder) = reclaim_folder(home) else {
         return Vec::new();
@@ -916,7 +959,6 @@ mod tests {
     use priory_runtime::runtime::{self, remove_sealed};
     use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
-    use std::time::{Duration, Instant};
 
     /// A home with a clone of `o/r` and the worktree of each task it adds, removed on drop.
     struct Home {
@@ -985,7 +1027,8 @@ mod tests {
             self.factory = priory_factory::factory::load(&self.dir).0;
         }
 
-        fn tick(&mut self, due: bool, under: bool) {
+        /// Ticks as the daemon does and returns whether it retires.
+        fn tick(&mut self, due: bool, under: bool) -> bool {
             let trace = Trace {
                 factory: &self.factory,
                 revision: None,
@@ -998,6 +1041,7 @@ mod tests {
                     under
                 })
                 .unwrap();
+            self.reclaim.retires()
         }
 
         /// Runs a due tick and waits for the walk it starts. The next tick takes its first folder.
@@ -1074,7 +1118,7 @@ mod tests {
     #[test]
     fn reclaim_clears_what_a_stopped_daemon_left_even_with_room() {
         let mut home = Home::new("left");
-        std::fs::create_dir_all(home.dir.join("reclaim/7-1/debug")).unwrap();
+        std::fs::create_dir_all(home.dir.join("reclaim/7-111111111111111111/debug")).unwrap();
         home.tick(true, false);
         home.deleted();
         home.tick(false, false);
@@ -1224,7 +1268,7 @@ mod tests {
         let mut home = Home::new("symlink");
         let tree = home.task(1, "asleep");
         let outside = home.dir.join("outside");
-        std::fs::create_dir_all(outside.join("7-1")).unwrap();
+        std::fs::create_dir_all(outside.join("7-111111111111111111")).unwrap();
         std::os::unix::fs::symlink(&outside, home.dir.join("reclaim")).unwrap();
         home.tick(true, true);
         assert!(home.reclaim.settled());
@@ -1242,10 +1286,23 @@ mod tests {
     fn reclaim_deletes_only_folders_it_named() {
         let mut home = Home::new("foreign");
         let reclaim = home.dir.join("reclaim");
-        for name in ["7-1", "notes", "7-", "-1", "7-1-2", "7-x"] {
+        let file = format!("8-{}", "1".repeat(18));
+        let kept = [
+            "-111111111111111111",
+            "7-",
+            "7-11111111111111111",
+            "7-111111111111111111-2",
+            "7-x",
+            "notes",
+        ];
+        for name in kept {
             std::fs::create_dir_all(reclaim.join(name)).unwrap();
         }
-        std::fs::write(reclaim.join("8-1"), "a file").unwrap();
+        for digits in [18, 19] {
+            let named = format!("7-{}", "1".repeat(digits));
+            std::fs::create_dir_all(reclaim.join(named)).unwrap();
+        }
+        std::fs::write(reclaim.join(&file), "a file").unwrap();
         home.tick(true, false);
         home.deleted();
         let mut left: Vec<_> = std::fs::read_dir(&reclaim)
@@ -1253,14 +1310,17 @@ mod tests {
             .map(|entry| entry.unwrap().file_name())
             .collect();
         left.sort();
-        assert_eq!(left, ["-1", "7-", "7-1-2", "7-x", "8-1", "notes"]);
+        let mut kept: Vec<_> = kept.map(std::ffi::OsString::from).into();
+        kept.push(file.into());
+        kept.sort();
+        assert_eq!(left, kept);
     }
 
     #[test]
     fn a_stuck_leftover_is_reported_once_and_later_output_is_traced() {
         let mut home = Home::new("stuck");
         home.task(1, "asleep");
-        let stuck = home.dir.join("reclaim/7-1");
+        let stuck = home.dir.join("reclaim/7-111111111111111111");
         std::fs::create_dir_all(stuck.join("nested/.git")).unwrap();
         for _ in 0..2 {
             home.tick(true, false);
@@ -1283,7 +1343,7 @@ mod tests {
         let mut home = Home::new("undeletable");
         home.task(1, "asleep");
         let reclaim = home.dir.join("reclaim");
-        let stuck = reclaim.join("7-1");
+        let stuck = reclaim.join("7-111111111111111111");
         std::fs::create_dir_all(&stuck).unwrap();
         std::fs::set_permissions(&reclaim, std::fs::Permissions::from_mode(0o555)).unwrap();
         home.tick(true, false);
@@ -1311,6 +1371,108 @@ mod tests {
         home.tick(false, true);
         assert!(tree.join("target/debug/lib.rlib").exists(), "it moved back");
         assert_eq!(home.traced(), 0);
+    }
+
+    #[test]
+    fn reclaim_keeps_a_folder_that_holds_a_bare_repository() {
+        let mut home = Home::new("bare");
+        let tree = home.task(1, "asleep");
+        git(&tree, &["init", "-q", "--bare", "target/debug/cache/o.git"]);
+        home.walk();
+        home.keeps(&tree);
+
+        std::fs::rename(tree.join("target/debug/cache"), tree.join("target/tmp")).unwrap();
+        std::fs::write(tree.join("target/CACHEDIR.TAG"), CARGO).unwrap();
+        take(&mut home);
+        assert!(!tree.join("target").exists());
+        assert_eq!(home.traced(), 1);
+    }
+
+    #[test]
+    fn reclaim_keeps_a_build_folder_that_is_a_bare_repository() {
+        let mut home = Home::new("bare-root");
+        let tree = home.task(1, "asleep");
+        git(&tree, &["init", "-q", "--bare", "target"]);
+        home.walk();
+        home.keeps(&tree);
+    }
+
+    /// Ticks with every tick due until a retirement runs, and returns whether it ran.
+    fn retires_while_always_due(home: &mut Home) -> bool {
+        (0..20).any(|_| {
+            let retires = home.tick(true, true);
+            // What is in flight ends before the next tick, as when ticks are slower than it.
+            if let Some(walk) = &home.reclaim.walk {
+                until(|| walk.is_finished());
+            }
+            if let Some(delete) = &home.reclaim.delete {
+                until(|| delete.thread.is_finished());
+            }
+            retires
+        })
+    }
+
+    #[test]
+    fn a_retirement_runs_though_every_tick_is_due() {
+        let mut home = Home::new("always-due");
+        assert!(retires_while_always_due(&mut home), "nothing to take");
+
+        let tree = home.task(1, "asleep");
+        assert!(retires_while_always_due(&mut home), "a folder to take");
+        assert!(!tree.join("target").exists(), "the reclaim goes first");
+        assert_eq!(home.traced(), 1);
+        assert!(!home.tick(false, true), "once per due sweep");
+
+        home.walk();
+    }
+
+    #[test]
+    fn a_retirement_runs_though_a_stuck_leftover_is_retried_at_every_sweep() {
+        let mut home = Home::new("due-stuck");
+        let stuck = home.dir.join("reclaim/7-111111111111111111");
+        std::fs::create_dir_all(stuck.join("nested/.git")).unwrap();
+        assert!(retires_while_always_due(&mut home));
+    }
+
+    #[test]
+    fn a_retirement_waits_10_minutes_for_a_delete_that_hangs() {
+        let mut home = Home::new("hangs");
+        let trees = [home.task(1, "asleep"), home.task(2, "asleep")];
+        home.walk();
+        let (release, hung) = std::sync::mpsc::channel::<()>();
+        let output = home.reclaim.walk.take().unwrap().join().unwrap();
+        home.reclaim.pending = output.into();
+        let first = home.reclaim.pending.pop_front();
+        home.reclaim.delete = Some(Delete::new(
+            first,
+            std::thread::spawn(move || {
+                let _ = hung.recv();
+                Vec::new()
+            }),
+        ));
+        assert!(!home.tick(true, true));
+
+        home.reclaim.delete.as_mut().unwrap().started = Instant::now() - OVERDUE;
+        assert!(home.tick(true, true));
+        assert!(!home.tick(false, true), "once per due sweep");
+        assert!(home.tick(true, true), "the next sweep waits no longer");
+        assert!(trees.iter().all(|tree| tree.join("target").exists()));
+
+        release.send(()).unwrap();
+        home.deleted();
+        home.tick(false, true);
+        assert_eq!(home.traced(), 1);
+        home.deleted();
+        home.tick(false, true);
+        assert_eq!(home.traced(), 2);
+        assert_eq!(
+            trees
+                .iter()
+                .filter(|tree| tree.join("target").exists())
+                .count(),
+            1,
+            "the next folder goes once the delete ends"
+        );
     }
 
     #[test]

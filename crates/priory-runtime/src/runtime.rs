@@ -1028,6 +1028,9 @@ pub struct Launch<'a> {
     pub env: &'a [String],
     /// The run takes a turn of a debate, so its MCP server serves `position`.
     pub debate: bool,
+    /// A command that waits on the memory gate gives up at a limit, so the run's agent learns what
+    /// to do then.
+    pub gives_up: bool,
     /// The MCP servers of the person's config the run gets, or turns off, beside Priory's own.
     pub servers: &'a Servers,
     /// Which of Priory's own tools its MCP server serves the run.
@@ -2156,12 +2159,15 @@ pub(crate) fn write_private(file: &Path, text: &[u8]) -> std::io::Result<()> {
     written.write_all(text)
 }
 
-/// `priory mcp --session <id>`, with `--debate` for a debate turn and the flag of its tool set, if
-/// any.
+/// `priory mcp --session <id>`, with `--debate` for a debate turn, `--gives-up` when the memory gate has
+/// a limit and the flag of its tool set, if any.
 fn mcp_args<'a>(launch: &Launch<'a>) -> Vec<&'a str> {
     let mut args = vec!["mcp", "--session", launch.session];
     if launch.debate {
         args.push("--debate");
+    }
+    if launch.gives_up {
+        args.push("--gives-up");
     }
     args.extend(launch.tools.flag());
     args
@@ -3081,6 +3087,7 @@ mod tests {
             scope: &[],
             env: &[],
             debate: false,
+            gives_up: false,
             servers,
             tools,
             jail: None,

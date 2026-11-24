@@ -236,7 +236,7 @@ fn scratch(path: &Path) -> Option<PathBuf> {
     cargo.then_some(tmp)
 }
 
-/// Refuses a folder with a `.git` entry in it, except in a cargo target's `tmp`.
+/// Refuses a folder with a `.git` entry or a bare repository in it, except in a cargo target's `tmp`.
 fn no_repository(path: &Path) -> Result<(), String> {
     let scratch = scratch(path);
     let mut folders = vec![path.to_path_buf()];
@@ -244,7 +244,12 @@ fn no_repository(path: &Path) -> Result<(), String> {
         let unread = |error| format!("cannot read {}: {error}", folder.display());
         for entry in fs::read_dir(&folder).map_err(unread)? {
             let entry = entry.map_err(unread)?;
-            if entry.file_name() == ".git" {
+            let bare = || {
+                ["objects", "refs"]
+                    .iter()
+                    .all(|name| fs::symlink_metadata(folder.join(name)).is_ok())
+            };
+            if entry.file_name() == ".git" || entry.file_name() == "HEAD" && bare() {
                 return Err(format!("{} holds a git repository", folder.display()));
             }
             if entry.file_type().map_err(unread)?.is_dir() && Some(entry.path()) != scratch {

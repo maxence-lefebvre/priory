@@ -3,6 +3,45 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
   "definitions": {
+    "Filter": {
+      "additionalProperties": false,
+      "description": "One filter of a runner file: the tasks it accepts, while its window is open.",
+      "properties": {
+        "match": {
+          "description": "`key=value` accepts only tasks with that label; `!key=value` accepts only tasks without it.",
+          "pattern": "^!?[a-z0-9][a-z0-9_.-]*=[A-Za-z0-9_.:/-]+$",
+          "type": "string"
+        },
+        "when": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Window"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "When the filter applies; always when unset. Outside it, the filter is lifted."
+        }
+      },
+      "required": [
+        "match"
+      ],
+      "type": "object"
+    },
+    "MemoryGate": {
+      "additionalProperties": false,
+      "description": "`[memory]`: how long a command waits in the memory gate.",
+      "properties": {
+        "give_up_after": {
+          "default": null,
+          "description": "How long `priory memory acquire` without `--timeout` waits for its grant before it exits 75\nand says to run the command on CI, below 1 hour; it never does when unset.",
+          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "Os": {
       "enum": [
         "linux",
@@ -49,6 +88,39 @@
         }
       },
       "type": "object"
+    },
+    "Window": {
+      "additionalProperties": false,
+      "description": "The days and hours a filter applies, in `timezone`.",
+      "properties": {
+        "days": {
+          "description": "The weekdays it applies on; every day when unset. With `hours` that pass midnight, the day\nthe hours start on.",
+          "items": {
+            "enum": [
+              "mon",
+              "tue",
+              "wed",
+              "thu",
+              "fri",
+              "sat",
+              "sun"
+            ]
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "hours": {
+          "default": null,
+          "description": "The hours it applies, `HH:MM-HH:MM`, which may pass midnight; the whole day when unset.",
+          "pattern": "^([01]?[0-9]|2[0-3]):[0-5][0-9]-([01]?[0-9]|2[0-3]):[0-5][0-9]$",
+          "type": "string"
+        },
+        "timezone": {
+          "description": "The IANA zone the days and hours are read in, such as `Europe/Paris`; the machine's own\nwhen unset, which only a factory of one runner allows.",
+          "type": "string"
+        }
+      },
+      "type": "object"
     }
   },
   "description": "`runners/<tailscale-hostname>.toml` or `.yaml`: a machine that runs agents. Capacity is\nmeasured live, so the file holds the platform and the share its agents may take.",
@@ -63,6 +135,16 @@
         }
       ],
       "description": "The share of the machine its agents may take together; 90% of each when unset."
+    },
+    "filters": {
+      "description": "The tasks it claims and starts: only those every filter whose window is open accepts.",
+      "items": {
+        "$ref": "#/definitions/Filter"
+      },
+      "type": "array"
+    },
+    "memory": {
+      "$ref": "#/definitions/MemoryGate"
     },
     "platform": {
       "$ref": "#/definitions/Platform"

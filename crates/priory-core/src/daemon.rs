@@ -198,6 +198,11 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     };
     let consumer = runners::consumer(trace.runner.as_deref());
     runners::name(&db, trace.runner.as_deref())?;
+    if trace.runner.is_none() {
+        runners::unplace(&mut db, &trace, counting.get(&home))?
+            .iter()
+            .for_each(|tmux| runtime::kill(tmux));
+    }
     if once {
         drain(&*bus, &consumer, &mut db, &trace, counting.get(&home))?;
         runners::flush(&db, &*bus)?;
@@ -379,7 +384,6 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let every = factory.sweep().every.unwrap_or(SWEEP);
     let mut swept: Option<Instant> = None;
     let mut reclaiming = sweep::Reclaim::default();
-    let mut retires = false;
     let mut held: Option<Instant> = None;
     let mut alive = None;
     let mut aged = None;
@@ -409,7 +413,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             drain_probed(&*bus, &consumer, &mut db, &trace, counter, true)
         });
         if let Some(me) = &trace.runner {
-            runners::tick(&mut db, me, intake::now()?, &mut alive)?;
+            runners::tick(&mut db, me, factory, intake::now()?, &mut alive)?;
         }
         if let Some(drained) = drained {
             let tried = drained.and_then(|()| runners::flush(&db, &*bus));
@@ -511,9 +515,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         };
         reclaiming.tick(&mut db, factory, &home, &trace, due, under)?;
         // A retirement costs a worktree, so it waits for what the reclaim frees.
-        retires |= due;
-        if retires && reclaiming.settled() {
-            retires = false;
+        if reclaiming.retires() {
             let short = || room::measure(&home).is_ok_and(|room| crate::room::short_of_disk(&room));
             sweep::retire(&db, factory, &home, short)?;
         }
@@ -1370,7 +1372,8 @@ fn take(
         Ok(Input::Gate(gate)) => {
             let share = Share::of(trace.factory, trace.machine.as_deref());
             let room = || room::measure(&runtime::home());
-            let reply = memory::gate(db, &gate, trace.factory, &share, room)?;
+            let limit = trace.factory.give_up_after(trace.machine.as_deref());
+            let reply = memory::gate(db, &gate, trace.factory, &share, limit, room)?;
             Ok((replied(reply), None))
         }
         Err(error) => {
@@ -1838,7 +1841,15 @@ fn act(
     commands: &mut Vec<(i64, Script)>,
     due: &state::Due,
 ) -> Result<bool, Error> {
-    // A code step's action is a start like a run's: it waits until the log says this runner keeps it.
+    // A code step's action is a start like a run's: this runner's filters hold it as they hold a run,
+    // and it waits until the log says this runner keeps it.
+    if let Some(reason) = state::filtered(db, trace.factory, trace.runner.as_deref(), due.task)? {
+        db.execute(
+            "UPDATE tasks SET reason = ?2 WHERE id = ?1 AND reason IS NOT ?2",
+            rusqlite::params![due.task, reason],
+        )?;
+        return Ok(true);
+    }
     if let Some(me) = &trace.runner
         && runners::cleared(db, me, due.task)? != Some(true)
     {
@@ -2634,6 +2645,10 @@ fn start(
             crate::connectors::Before::Blocked(reason) => return Ok(Err(reason)),
         }
     }
+    // Preparing the worktree takes time, in which a filter's window can open.
+    if state::filtered(db, factory, runner, admission.task)?.is_some() {
+        return Ok(Ok(()));
+    }
     let shared = matches!(agent.value.session, Session::Shared);
     let resumed = match &turn {
         Some(turn) => turn.resume.clone(),
@@ -2763,6 +2778,7 @@ fn start(
         resume: resume.as_deref(),
         prompt: first.as_deref(),
         debate: turn.is_some(),
+        gives_up: factory.give_up_after(trace.machine.as_deref()).is_some(),
         servers: &servers,
         jail: jail.as_ref(),
         trust,
@@ -2841,6 +2857,7 @@ struct Started<'a> {
     resume: Option<&'a str>,
     prompt: Option<&'a str>,
     debate: bool,
+    gives_up: bool,
     servers: &'a priory_runtime::servers::Servers,
     /// The sandbox its harness starts in, if its workflow turns one on.
     jail: Option<&'a priory_runtime::jail::Jail>,
@@ -2943,6 +2960,7 @@ fn launch(
             scope,
             env: &env,
             debate: started.debate,
+            gives_up: started.gives_up,
             servers: started.servers,
             tools,
             jail: started.jail,
@@ -3043,6 +3061,10 @@ fn compact_idle(
             resume: Some(&due.session),
             prompt: None,
             debate: false,
+            gives_up: trace
+                .factory
+                .give_up_after(trace.machine.as_deref())
+                .is_some(),
             servers: &servers,
             jail: None,
             trust: false,

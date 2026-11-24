@@ -65,6 +65,9 @@ pub(crate) struct NewTask {
     pub pre: Option<PreScript>,
     #[serde(default)]
     pub session: Option<String>,
+    /// Which runner filters accept the task.
+    #[serde(default)]
+    pub labels: priory_factory::filters::Labels,
 }
 
 /// The `pre` object of a request, as far as a task keeps it.

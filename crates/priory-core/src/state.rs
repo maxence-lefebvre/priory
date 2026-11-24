@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 117;
+const VERSION: i64 = 118;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -2068,13 +2068,22 @@ AND (SELECT min(json_extract(run.data, '$.conclusion') IS 'cancelled')
 PRAGMA user_version = 116;
 ";
 
-// The commit a task's `.envrc` is checked against, when the daemon read it outside the clone.
+// A task's labels, as a JSON object, which runner filters match, and why a request no runner's
+// filters accept waits.
 const SCHEMA_117: &str = "
+ALTER TABLE tasks ADD COLUMN labels TEXT;
+ALTER TABLE inbox ADD COLUMN reason TEXT;
+CREATE INDEX inbox_unaccepted ON inbox (subject, seq) WHERE outcome = 'unaccepted';
+PRAGMA user_version = 117;
+";
+
+// The commit a task's `.envrc` is checked against, when the daemon read it outside the clone.
+const SCHEMA_118: &str = "
 CREATE TABLE IF NOT EXISTS envrc_bases (
   task  INTEGER PRIMARY KEY,
   sha   TEXT NOT NULL
 );
-PRAGMA user_version = 117;
+PRAGMA user_version = 118;
 ";
 
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
@@ -2093,7 +2102,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
     SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112, SCHEMA_113,
-    SCHEMA_114, SCHEMA_115, SCHEMA_116, SCHEMA_117,
+    SCHEMA_114, SCHEMA_115, SCHEMA_116, SCHEMA_117, SCHEMA_118,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -2404,8 +2413,13 @@ pub(crate) fn handle_in(
 }
 
 /// Moves what names a Linear issue moved to another team onto its new identifier `to`: the keys
-/// of its tasks and their batch entries, what they own and subscribe to, and open waits and holds.
-fn renamed(tx: &Transaction, message: &Message, to: Option<&String>) -> rusqlite::Result<()> {
+/// of its tasks and their batch entries, its requests that wait for a runner, what they own and
+/// subscribe to, and open waits and holds.
+pub(crate) fn renamed(
+    tx: &Transaction,
+    message: &Message,
+    to: Option<&String>,
+) -> rusqlite::Result<()> {
     let (Some(to), Some(previous)) = (to, message.data["previous_issue"].as_str()) else {
         return Ok(());
     };
@@ -2427,6 +2441,20 @@ fn renamed(tx: &Transaction, message: &Message, to: Option<&String>) -> rusqlite
             params![from, to],
         )?;
     }
+    // A hold published under the old key and not read yet names no claim now, so it is said again.
+    tx.execute(
+        "UPDATE claims SET published = NULL, published_generation = NULL
+         WHERE key = ?1 OR substr(key, 1, length(?1) + 1) = ?1 || '.'",
+        [to],
+    )?;
+    crate::runners::unclaim(tx, &from, true)?;
+    tx.execute(
+        "UPDATE inbox SET subject = ?2 || substr(subject, length(?1) + 1),
+           data = json_replace(data, '$.key', ?2 || substr(subject, length(?1) + 1))
+         WHERE outcome = 'unaccepted'
+           AND (subject = ?1 OR substr(subject, 1, length(?1) + 1) = ?1 || '.')",
+        params![from, to],
+    )?;
     for table in ["owns", "subscriptions", "closed_subscriptions"] {
         tx.execute(
             &format!("UPDATE OR IGNORE {table} SET resource = ?2 WHERE resource = ?1"),
@@ -2469,6 +2497,12 @@ pub(crate) fn route_in(
     }
     let resources = route::resources(message);
     renamed(tx, message, resources.first())?;
+    let settled = match trace.runner.as_deref() {
+        Some(me) if message.kind == "linear.issue.updated" => {
+            crate::runners::settle(tx, me, trace, counter)?
+        }
+        _ => Vec::new(),
+    };
     claim_pull_request(tx, message)?;
     // The intake publishes no reopen, so a later event of an open pull request or issue tells it,
     // and gives back the subscriptions its close ended.
@@ -2527,9 +2561,9 @@ pub(crate) fn route_in(
             tx.execute(
                 "INSERT INTO tasks
                    (key, workflow, step, state, band, lane, team, project, lane_derived, trigger, source, repo, entered, tldr, intervention, lead,
-                    pre_title, pre_text, pre_context, pre_script, added_by, auto_answer, intent, noop, issue_order)
+                    pre_title, pre_text, pre_context, pre_script, added_by, auto_answer, intent, noop, issue_order, labels)
                  VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?12, ?13, ?14,
-                   ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+                   ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
                 params![
                     new.key,
                     new.workflow,
@@ -2557,7 +2591,8 @@ pub(crate) fn route_in(
                     new.auto_answer.map(|level| level.as_str()),
                     new.intent,
                     (!new.noop.is_empty()).then(|| serde_json::json!(new.noop).to_string()),
-                    new.order.is_object().then(|| new.order.to_string())
+                    new.order.is_object().then(|| new.order.to_string()),
+                    (!new.labels.is_empty()).then(|| serde_json::json!(new.labels).to_string())
                 ],
             )?;
             let id = tx.last_insert_rowid();
@@ -2675,7 +2710,7 @@ pub(crate) fn route_in(
     }
     // The keyed task keeps the event; another task that shares the resource hears it through its
     // wait or its subscription. A merge that fires a gate may end a run a person's `say` started.
-    let mut kill = Vec::new();
+    let mut kill = settled;
     for other in owners.iter().filter(|other| Some(other.id) != task) {
         let (fired, ended) = crate::tools::event(tx, other.id, seq, factory)?;
         kill.extend(ended);
@@ -3549,10 +3584,11 @@ pub(crate) fn admissible<'r>(
                AND recipes.ended IS NULL
                AND (recipes.started IS NOT NULL OR recipes.moment = 'teardown'))
              -- With several runners, only a task whose key the log gives this one, and not one
-             -- whose `kept` it waits to read back. A lead task stays on its ask's runner.
+             -- whose `kept`, or `waiting` after one, it waits to read back. A lead task stays on its ask's runner.
              AND (?1 IS NULL OR tasks.trigger IN (?2, 'priory/consult') OR EXISTS (SELECT 1 FROM claims WHERE claims.key = tasks.key
                AND claims.runner = ?1
-               AND NOT (claims.hold != 'kept' AND claims.published IS 'kept')))
+               AND NOT (claims.hold != 'kept' AND claims.published IS 'kept')
+               AND NOT (claims.hold = 'kept' AND claims.published IS 'waiting')))
              ORDER BY {START_ORDER}"
     ))?;
     let queued = statement
@@ -3611,6 +3647,10 @@ pub(crate) fn admissible<'r>(
         let new_work = admission.fresh && !helper;
         // A pause holds only new tasks: a woken, resumed or revived one is `ready` and goes on.
         let busy = busy.or_else(|| paused.clone().filter(|_| new_work));
+        let busy = match busy {
+            Some(reason) => Some(reason),
+            None => filtered(db, factory, runner, admission.task)?,
+        };
         let busy = match busy {
             Some(reason) => Some(reason),
             None => crate::spend::waits(db, &book, admission.task)?,
@@ -3724,6 +3764,43 @@ pub(crate) fn admissible<'r>(
         promised,
         waiting,
     })
+}
+
+/// Why this runner's filters hold `task` now, if they do. They hold only a task that never ran a
+/// step, since one that started stays on its runner, and never a lead's, an investigator's or a sweeper's. A
+/// factory of one runner has no runner name, so its one runner file applies.
+pub(crate) fn filtered(
+    db: &Connection,
+    factory: &Factory,
+    runner: Option<&str>,
+    task: i64,
+) -> rusqlite::Result<Option<String>> {
+    let Some(runner) = runner.or_else(|| match factory.runners.keys().collect::<Vec<_>>()[..] {
+        [one] => Some(one.as_str()),
+        _ => None,
+    }) else {
+        return Ok(None);
+    };
+    let (labels, started): (Option<String>, bool) = db.query_row(
+        "SELECT labels, trigger IN (?2, ?3, ?4) OR EXISTS (SELECT 1 FROM runs WHERE runs.task = tasks.id)
+           OR EXISTS (SELECT 1 FROM actions WHERE actions.task = tasks.id)
+         FROM tasks WHERE id = ?1",
+        params![
+            task,
+            crate::tools::LEAD_TRIGGER,
+            crate::consult::TRIGGER,
+            crate::stall::TRIGGER
+        ],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if started {
+        return Ok(None);
+    }
+    let labels = labels
+        .and_then(|labels| serde_json::from_str(&labels).ok())
+        .unwrap_or_default();
+    let now = priory_intake::intake::now().unwrap_or_else(|_| jiff::Timestamp::now());
+    Ok(crate::runners::refusal(factory, runner, &labels, now))
 }
 
 /// Why a task waits for its lane's or trigger's `max_running`: `waits: lane core/intake has 2
