@@ -1,4 +1,5 @@
 use crate::recipe::{self, Teardown};
+use crate::trace::{self, Trace};
 use priory_factory::factory::Factory;
 use priory_runtime::worktrees::{self, Found};
 use rusqlite::{Connection, OptionalExtension};
@@ -240,6 +241,89 @@ pub fn fetch_banner(home: &Path) -> Option<String> {
         })
         .collect();
     (!lines.is_empty()).then(|| lines.join("; "))
+}
+
+/// Deletes the build output of idle tasks' worktrees, largest first and longest idle on a tie,
+/// while `short` says free disk is under the reclaim threshold. Idle is done, dropped, held or
+/// asleep, with no live run and no memory grant. Each deletion is traced.
+pub(crate) fn reclaim(
+    db: &mut Connection,
+    factory: &Factory,
+    home: &Path,
+    trace: &Trace,
+    mut short: impl FnMut() -> bool,
+) -> rusqlite::Result<()> {
+    if !short() {
+        return Ok(());
+    }
+    let idle = db
+        .prepare(
+            "SELECT id, worktree FROM tasks
+             WHERE state IN ('done', 'dropped', 'held', 'asleep') AND worktree IS NOT NULL
+               AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.task = tasks.id AND ended IS NULL)
+               AND NOT EXISTS (SELECT 1 FROM grants WHERE grants.task = tasks.id)
+             ORDER BY changed, id",
+        )?
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let found = worktrees::found(home);
+    let mut outputs = Vec::new();
+    for (task, worktree) in idle {
+        let Some(found) = found
+            .iter()
+            .find(|found| found.path.to_str() == Some(&worktree) && task_of(found) == Some(task))
+        else {
+            continue;
+        };
+        let cargo = [String::from("target")];
+        let build = match factory.build(&found.repo) {
+            Some(build) => build,
+            None if found.path.join("Cargo.toml").is_file() => &cargo[..],
+            None => continue,
+        };
+        if let Ok(folders) = worktrees::build_output(home, found, build) {
+            outputs.extend(folders.into_iter().map(|(path, bytes)| (task, path, bytes)));
+        }
+    }
+    // Stable, so equal sizes keep the longest idle first.
+    outputs.sort_by_key(|(_, _, bytes)| std::cmp::Reverse(*bytes));
+    for (task, path, bytes) in outputs {
+        if !short() {
+            break;
+        }
+        if let Err(error) = worktrees::reclaim(&path) {
+            eprintln!("priory daemon: task {task}: {error}");
+            continue;
+        }
+        let tx = db.transaction()?;
+        trace::worktree_reclaimed(&tx, trace, task, &path, bytes)?;
+        tx.commit()?;
+    }
+    Ok(())
+}
+
+/// The desk's line on the build output reclaimed in the 24 hours before `now`, if any.
+pub fn reclaim_line(db: &Connection, now: jiff::Timestamp) -> rusqlite::Result<Option<String>> {
+    let since = (now - jiff::SignedDuration::from_hours(24)).to_string();
+    let (count, bytes, last): (i64, Option<f64>, Option<String>) = db.query_row(
+        "SELECT count(*), sum(json_extract(event, '$.data.bytes')), max(time) FROM trace
+         WHERE type = 'factory.worktree.reclaimed' AND time >= ?1",
+        [since],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    let Some(last) = last else {
+        return Ok(None);
+    };
+    let folders = if count == 1 { "folder" } else { "folders" };
+    let last = last
+        .get(..19)
+        .map_or(last.clone(), |second| format!("{second}Z"));
+    Ok(Some(format!(
+        "reclaimed {:.1} GB of build output from {count} {folders} in the last 24 hours, last at {last}",
+        bytes.unwrap_or(0.0) / (1u64 << 30) as f64
+    )))
 }
 
 /// Retires asleep tasks, longest asleep first, while `short` says the disk is short: removes each

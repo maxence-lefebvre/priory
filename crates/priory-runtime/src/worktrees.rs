@@ -70,7 +70,7 @@ fn blocked(
     found: &Found,
     merged_head: Option<&str>,
 ) -> Result<Option<String>, String> {
-    if let Some(reason) = unsettled(home, found)? {
+    if let Some(reason) = unsettled(home, found, &[])? {
         return Ok(Some(reason));
     }
     let path = &found.path;
@@ -94,7 +94,82 @@ fn blocked(
 /// Why the worktree of an asleep task must stay, or `None` when it can retire. Retiring keeps the
 /// branch in the clone, so its commits need not be pushed.
 pub fn retire_blocker(home: &Path, found: &Found) -> Option<String> {
-    unsettled(home, found).unwrap_or_else(|error| Some(format!("cannot check: {error}")))
+    unsettled(home, found, &[]).unwrap_or_else(|error| Some(format!("cannot check: {error}")))
+}
+
+/// The folders of `build` that exist in the worktree, each with the disk it takes in bytes, or why
+/// none may go: the same checks as a retirement, where files inside `build` do not count.
+pub fn build_output(
+    home: &Path,
+    found: &Found,
+    build: &[String],
+) -> Result<Vec<(PathBuf, u64)>, String> {
+    if let Some(reason) = unsettled(home, found, build)? {
+        return Err(reason);
+    }
+    let root = fs::canonicalize(&found.path).map_err(|error| error.to_string())?;
+    Ok(build
+        .iter()
+        .map(|folder| found.path.join(folder))
+        // A symlink anywhere on the way would lead outside the worktree.
+        .filter(|path| {
+            fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir())
+                && fs::canonicalize(path).ok()
+                    == path
+                        .strip_prefix(&found.path)
+                        .ok()
+                        .map(|rest| root.join(rest))
+        })
+        .map(|path| {
+            let bytes = disk_use(&path);
+            (path, bytes)
+        })
+        .collect())
+}
+
+/// Deletes the folder and all it holds, first making read-only folders inside it writable.
+pub fn reclaim(path: &Path) -> Result<(), String> {
+    if fs::remove_dir_all(path).is_ok() {
+        return Ok(());
+    }
+    writable(path);
+    fs::remove_dir_all(path).map_err(|error| format!("cannot delete {}: {error}", path.display()))
+}
+
+fn writable(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(meta) = fs::symlink_metadata(dir) else {
+        return;
+    };
+    if !meta.is_dir() {
+        return;
+    }
+    let _ = fs::set_permissions(
+        dir,
+        fs::Permissions::from_mode(meta.permissions().mode() | 0o700),
+    );
+    for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+        writable(&entry.path());
+    }
+}
+
+/// The disk the folder's files take, as `du` counts it, without following symlinks.
+fn disk_use(path: &Path) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(meta) = fs::symlink_metadata(path) else {
+        return 0;
+    };
+    let own = meta.blocks() * 512;
+    if !meta.is_dir() {
+        return own;
+    }
+    fs::read_dir(path)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| disk_use(&entry.path()))
+        .sum::<u64>()
+        + own
 }
 
 /// Removes the worktree and keeps its branch. Git refuses when anything is uncommitted or untracked.
@@ -105,8 +180,9 @@ pub fn retire(home: &Path, found: &Found) -> Result<(), String> {
     .map(drop)
 }
 
-/// Why removing the worktree would lose a file or a process's folder: everything else is on its branch.
-fn unsettled(home: &Path, found: &Found) -> Result<Option<String>, String> {
+/// Why removing the worktree would lose a file or a process's folder: everything else is on its
+/// branch. Files inside the `build` folders do not count.
+fn unsettled(home: &Path, found: &Found, build: &[String]) -> Result<Option<String>, String> {
     let clone = found.clone(home);
     let path = &found.path;
     let ours =
@@ -124,7 +200,16 @@ fn unsettled(home: &Path, found: &Found) -> Result<Option<String>, String> {
         "--untracked-files=all",
         "--ignore-submodules=none",
     ]))?;
-    if status.lines().any(|line| !line.starts_with("??")) {
+    let built = |line: &&str| {
+        let file = line.get(3..).unwrap_or_default();
+        build.iter().any(|folder| {
+            let folder = folder.trim_end_matches('/');
+            file.strip_prefix(folder)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+        })
+    };
+    let status: Vec<&str> = status.lines().filter(|line| !built(line)).collect();
+    if status.iter().any(|line| !line.starts_with("??")) {
         return Ok(Some("uncommitted changes".to_owned()));
     }
     if !status.is_empty() {

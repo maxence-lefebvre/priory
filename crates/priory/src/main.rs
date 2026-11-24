@@ -1910,6 +1910,9 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                 if let Some(intake) = value["intake"].as_str() {
                     state::emit(intake);
                 }
+                if let Some(reclaim) = value["reclaim"].as_str() {
+                    state::emit(reclaim);
+                }
                 if let Some(unrouted) = value["counts"]["unrouted"].as_u64().filter(|n| *n > 0) {
                     let events = if unrouted == 1 { "event" } else { "events" };
                     state::emit(&format!(

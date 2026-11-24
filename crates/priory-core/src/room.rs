@@ -9,6 +9,8 @@ const SHARE: f64 = 0.9;
 const GB: f64 = (1u64 << 30) as f64;
 /// The most disk the room keeps free, so a large disk with tens of GB free still admits runs.
 const DISK: f64 = 20.0 * GB;
+/// The free disk under which the sweep deletes idle tasks' build output, when the factory sets none.
+const RECLAIM: f64 = 40.0 * GB;
 
 /// The share of this machine's memory and CPUs that its agents may take together.
 pub(crate) struct Share {
@@ -95,6 +97,12 @@ fn keep(room: &Room, share: &Share) -> f64 {
 /// Whether free disk is down to the floor the room keeps.
 pub(crate) fn short_of_disk(room: &Room) -> bool {
     room.disk_free as f64 <= disk_floor(room)
+}
+
+/// Whether free disk is under `[sweep] reclaim`, 40 GB when unset, or under the floor.
+pub(crate) fn under_reclaim(room: &Room, reclaim: Option<u64>) -> bool {
+    let threshold = reclaim.map_or(RECLAIM, |bytes| bytes as f64);
+    (room.disk_free as f64) < threshold.max(disk_floor(room))
 }
 
 /// The free disk the room keeps: 10 % of the disk, at most 20 GB.

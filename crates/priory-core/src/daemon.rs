@@ -483,6 +483,11 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         if swept.is_none_or(|at| at.elapsed() >= every) {
             swept = Some(Instant::now());
             sweep::run(&db, factory, &home)?;
+            let under = || {
+                room::measure(&home)
+                    .is_ok_and(|room| crate::room::under_reclaim(&room, factory.sweep().reclaim))
+            };
+            sweep::reclaim(&mut db, factory, &home, &trace, under)?;
             let short = || room::measure(&home).is_ok_and(|room| crate::room::short_of_disk(&room));
             sweep::retire(&db, factory, &home, short)?;
         }

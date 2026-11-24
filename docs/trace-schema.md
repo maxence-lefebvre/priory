@@ -214,6 +214,38 @@ it back on the task's branch. It shares `factory`, `factory_revision`, `workflow
 | `kept_branch`  | no       | The branch Priory made to keep the commits of a detached HEAD that no remote holds |
 | `kept_commits` | yes      | How many commits of the old HEAD no remote holds, as is or rebased. `kept_branch` keeps them, or `from_branch` when the HEAD was on a branch |
 
+## `factory.worktree.reclaimed`
+
+The sweep deleted one build output folder in an idle task's worktree, because free disk was under
+`[sweep] reclaim`. It shares `factory`, `factory_revision`, `workflow`, `task`, `key` and `machine`
+with `factory.step.ended`. See [sweep.md](daemon/sweep.md#reclaiming-build-output).
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d4-0000-7000-8000-00000000000a",
+  "source": "factory://example/desktop",
+  "type": "factory.worktree.reclaimed",
+  "time": "2026-11-23T19:30:02.412Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "factory_revision": "999daf0",
+    "workflow": "implement",
+    "task": "304",
+    "key": "github:example/app#20",
+    "machine": "desktop",
+    "path": "/home/me/.local/share/priory/worktrees/example/app/304/target",
+    "bytes": 6979321856
+  }
+}
+```
+
+| Field   | Required | Meaning                                                    |
+| ------- | -------- | ---------------------------------------------------------- |
+| `path`  | yes      | The folder the sweep deleted                               |
+| `bytes` | yes      | The disk its files took before the deletion, as `du` counts |
+
 ## `factory.run.preempted`
 
 A run ended at its turn end to make room for the head of the queue, in a band of `[queue]

@@ -727,6 +727,36 @@ pub(crate) fn worktree_recovered(
     append(tx, trace, "factory.worktree.recovered", &time, data)
 }
 
+/// Appends a `factory.worktree.reclaimed` record: the sweep deleted `bytes` of build output at
+/// `path` in the worktree of idle `task`.
+pub(crate) fn worktree_reclaimed(
+    tx: &Transaction,
+    trace: &Trace,
+    task: i64,
+    path: &Path,
+    bytes: u64,
+) -> rusqlite::Result<()> {
+    let (workflow, key, time): (String, String, String) = tx.query_row(
+        "SELECT workflow, key, strftime('%Y-%m-%dT%H:%M:%fZ', 'now') FROM tasks WHERE id = ?1",
+        [task],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    let mut data = json!({
+        "factory": trace.factory.name,
+        "factory_revision": trace.revision,
+        "workflow": workflow,
+        "task": task.to_string(),
+        "key": key,
+        "machine": trace.machine,
+        "path": path.display().to_string(),
+        "bytes": bytes,
+    });
+    if let Value::Object(fields) = &mut data {
+        fields.retain(|_, value| !value.is_null());
+    }
+    append(tx, trace, "factory.worktree.reclaimed", &time, data)
+}
+
 /// Appends a `factory.task.snoozed` record for a person's snooze of a desk item of `task` until
 /// `until`, or a `factory.task.unsnoozed` one when `until` is `None`.
 pub(crate) fn snoozed(

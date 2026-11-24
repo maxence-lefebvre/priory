@@ -40,6 +40,36 @@ reason: `no task <id>`, `kept while task <id> is <state>`, `not a worktree of <c
 `untracked files`, `a process runs in it`, `unpushed commits`, `not merged`, `teardown runs` or
 `teardown failed: ...`. It reads the refs of the last fetch.
 
+## Reclaiming build output
+
+Before it retires asleep tasks, each sweep deletes the build output of idle tasks while free disk is
+under `[sweep] reclaim`, 40 GB by default. A threshold under the room's disk floor (see Room) acts
+as the floor. So build output goes before the floor stops new runs, and before a whole worktree
+retires.
+
+A task is idle when it is `done`, `dropped`, `held` or `asleep`, has no live run, and holds no
+memory grant, waiting or held (see Memory gate). A build that a run wrapped in `priory memory
+acquire` keeps its grant after the run sleeps, so its output stays until it ends.
+
+`[repos."owner/name"] build` names the build folders, relative to the worktree. Without it, a
+worktree with a `Cargo.toml` at its root has `target`, and other worktrees have none. A worktree
+keeps all its build output when any retirement check fails: it is not Priory's worktree, it is off
+its branch, a process runs in it, or it has an uncommitted change or an untracked file. Files
+inside the build folders do not count. A build folder that is a symlink, or that a symlink leads to,
+is never followed.
+
+The sweep sizes each folder as `du` does, then deletes the largest first, and on equal sizes the
+task idle longest first. It measures the disk again after each one and stops once free disk is back
+at the threshold. A folder that a test made read-only is made writable, then deleted. The worktree,
+its branch and its session stay, so the task's next run rebuilds what it needs.
+
+Each deletion appends a `factory.worktree.reclaimed` record with the task, the folder and its bytes
+(see [trace-schema.md](../trace-schema.md#factoryworktreereclaimed)). `priory desk` and the web
+desk show `reclaimed 14.2 GB of build output from 3 folders in the last 24 hours, last at
+2026-11-23T19:30:02Z` while any happened in the last 24 hours.
+
+A large folder takes seconds to delete, and the daemon's tick waits for it.
+
 ## Retiring asleep tasks
 
 After each sweep, while free disk is at or under the room's disk floor (see Room), the daemon

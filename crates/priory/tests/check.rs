@@ -1662,6 +1662,42 @@ fn a_sweep_table_passes_and_a_bad_one_names_its_line() {
 }
 
 #[test]
+fn build_output_paths_must_stay_inside_the_worktree() {
+    let text = |build: &str| {
+        format!(
+            "name = \"demo\"\n\n[sweep]\nreclaim = \"60GB\"\n\n[repos.\"owner/repo\"]\nbuild = [{build}]\n"
+        )
+    };
+    let ok = check(&factory(
+        "build-ok",
+        &with("factory.toml", &text("\"target\", \"web/dist\"")),
+    ));
+    let up = check(&factory(
+        "build-up",
+        &with("factory.toml", &text("\"../x\"")),
+    ));
+    let root = check(&factory(
+        "build-root",
+        &with("factory.toml", &text("\"/tmp\"")),
+    ));
+    let empty = check(&factory(
+        "build-empty",
+        &with("factory.toml", &text("\"\"")),
+    ));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    for (path, out) in [("../x", up), ("/tmp", root), ("", empty)] {
+        assert_eq!(
+            (out.code, out.stderr.as_str()),
+            (
+                1,
+                format!("factory.toml:6: `[repos.\"owner/repo\"] build` path `{path}` needs to be a folder inside the worktree, with no `..`\n").as_str()
+            )
+        );
+    }
+}
+
+#[test]
 fn repository_recipes_pass_and_a_bad_one_names_its_line() {
     let good = "name = \"demo\"\n\n[repos.\"owner/repo\"]\nsetup = { argv = [\"npm\", \"ci\"], timeout = \"15m\" }\nresume = { shell = \"npm ci --prefer-offline\" }\nteardown = { shell = \"docker compose down\" }\n";
     let ok = check(&factory("recipes-ok", &with("factory.toml", good)));
