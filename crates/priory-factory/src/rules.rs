@@ -10,6 +10,7 @@ use crate::lanes::{self, Lanes};
 use priory_runtime::servers;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 const ENDS: [&str; 2] = ["done", "stop"];
 
@@ -27,8 +28,31 @@ pub fn validated(dir: &Path) -> Result<Factory, Vec<Problem>> {
     }
 }
 
+/// The gate's default timeout, which `[memory] give_up_after` stays below.
+const GIVE_UP_LIMIT: Duration = Duration::from_secs(60 * 60);
+
+fn check_give_up<T>(
+    loaded: &Loaded<T>,
+    give_up_after: Option<Duration>,
+    problems: &mut Vec<Problem>,
+) {
+    if give_up_after.is_some_and(|after| after >= GIVE_UP_LIMIT) {
+        problems.push(problem(
+            loaded,
+            loaded.lines.field("memory"),
+            "`[memory] give_up_after` is below 1h, the default timeout of a gated command".into(),
+        ));
+    }
+}
+
 pub fn check(factory: &Factory) -> Vec<Problem> {
     let mut problems = Vec::new();
+    if let Some(settings) = &factory.settings {
+        check_give_up(settings, settings.value.memory.give_up_after, &mut problems);
+    }
+    for runner in factory.runners.values() {
+        check_give_up(runner, runner.value.memory.give_up_after, &mut problems);
+    }
     let bands = factory.bands();
     if let Some(settings) = &factory.settings {
         let unique: BTreeSet<_> = bands.iter().collect();

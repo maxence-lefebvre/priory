@@ -93,6 +93,7 @@ These build folders stay too:
 - One inside a submodule or a nested repository.
 - One that holds a `.git` entry. A `.git` in the `tmp` folder of a cargo target does not count: tests
   keep scratch files there. Cargo's `CACHEDIR.TAG` marks such a target.
+- One that is or holds a bare repository: a `HEAD` beside `objects` and `refs`. The same `tmp` does not count.
 
 A thread lists and sizes each folder as `du` does, off the daemon's tick. Then each tick
 takes one folder, the largest first, and on equal sizes the task idle longest first. The tick checks
@@ -109,13 +110,13 @@ and its bytes (see [trace-schema.md](../trace-schema.md#factoryworktreereclaimed
 desk show `reclaimed 14.2 GB of build output from 3 folders in the last 24 hours, last at
 2026-11-23T19:30:02Z` while any happened in the last 24 hours.
 
-The thread looks for mounts and `.git` entries once more before it deletes a moved folder. If it finds
+The thread looks for mounts and repositories once more before it deletes a moved folder. If it finds
 one, it moves the folder back. If a new build folder took its place, the moved one stays in
 `PRIORY_HOME/reclaim/`.
 
 A daemon that stops during a delete leaves files in `PRIORY_HOME/reclaim/`, and the next sweep
-deletes them. It deletes only folders with a name it gave, a task's id and nanoseconds such as
-`304-1763926202412000000`. When `reclaim` is not a real folder, such as a symlink, nothing moves and
+deletes them. It deletes only folders with a name it gave, a task's id and 18 or more digits of
+nanoseconds, such as `304-1763926202412000000`. When `reclaim` is not a real folder, such as a symlink, nothing moves and
 nothing goes.
 
 The daemon logs a folder it cannot delete once, tries it again each sweep, and goes on with other
@@ -130,7 +131,10 @@ the folder with its mode, and does not try that folder again until it restarts.
 ## Retiring asleep tasks
 
 After each sweep, once the reclaim has nothing left to take, while free disk is at or under the room's disk floor (see Room), the daemon
-retires asleep tasks, longest asleep first, until the floor is met again. Retiring runs
+retires asleep tasks, longest asleep first, until the floor is met again. While a retirement waits,
+no sweep starts a walk or a delete of leftover files, so sweeps that come often cannot postpone it
+for ever. A delete that runs for 10 minutes no longer holds it up: the daemon logs the folder once
+and retires. Nothing else is reclaimed until that delete ends. Retiring runs
 `git worktree remove` without force. The worktree goes, while the branch `priory/<id>` and the
 task's sessions stay. A task retires only when its worktree is Priory's, on its branch, has nothing
 uncommitted or untracked, and no process runs in it. The daemon marks the task before removing the
