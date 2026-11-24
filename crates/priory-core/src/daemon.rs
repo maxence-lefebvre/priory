@@ -12,6 +12,7 @@ use crate::snooze::{self, Snooze};
 use crate::state::{self, Admission, NewRun, Signal};
 use crate::tools::{self, Act, Answer, Call, Dismiss, Done, Repair};
 use crate::trace::Trace;
+use crate::upgrade::Upgrader;
 use crate::{
     deliver, embed, handler, hold, notify, overlap, progress, push, search, sections, stall,
     subscribe, summary, sweep,
@@ -21,7 +22,7 @@ use priory_intake::intake::{self, OUTPUT};
 use priory_intake::log::{self, Log};
 use priory_runtime::runtime::{self, Launch, Line};
 use priory_runtime::script::{self, Script};
-use priory_runtime::{room, slice, transcript};
+use priory_runtime::{room, slice, transcript, upgrade};
 use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::cell::OnceCell;
@@ -171,15 +172,15 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     // Taken first, so an edit made while the daemon starts still reloads.
     let watch = reload::Watch::new(factory);
     runtime::bound_commands(factory.command_timeout());
+    if !once {
+        upgrade::admit(&runtime::home(), true)?;
+    }
     let mut db = state::open()?;
-    tools::backfill_endings(&mut db, &factory.workflows)?;
     let bus = log::open(factory.log())?;
+    tools::backfill_endings(&mut db, &factory.workflows)?;
     state::bands(&mut db, &factory.bands(), factory.age())?;
     state::fairness(&db, factory.fair())?;
     state::irreversible_asks(&mut db, &factory.workflows)?;
-    for error in sections::dispatch(&db, factory, None)? {
-        eprintln!("priory daemon: {error}");
-    }
     let embedder = factory.search().embedder().map(|spec| embed::name(&spec));
     search::configure(&db, embedder.as_deref())?;
     let home = runtime::home();
@@ -198,6 +199,14 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     };
     let consumer = runners::consumer(trace.runner.as_deref());
     runners::name(&db, trace.runner.as_deref())?;
+    // What came before writes the state alone, which a rollback puts back. A dispatch reaches further.
+    let held = match !once && upgrade::held(&home) {
+        true => Some(hold(factory, &home)?),
+        false => None,
+    };
+    for error in sections::dispatch(&db, factory, None)? {
+        eprintln!("priory daemon: {error}");
+    }
     if trace.runner.is_none() {
         runners::unplace(&mut db, &trace, counting.get(&home))?
             .iter()
@@ -225,7 +234,10 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         eprintln!("priory daemon: notifications are off: {error}");
     }
     let searching = search::answering(state::read_only()?, home.clone());
-    let listening = runtime::listen(&home)?;
+    let listening = match held {
+        Some(listening) => listening,
+        None => runtime::listen(&home)?,
+    };
     let headers = otlp::header_file(factory, &home, "otlp-headers")?;
     let server = match factory.serve() {
         Some(config) => Some(crate::serve::start(factory, config.listen)?),
@@ -391,6 +403,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut redispatch: Option<Instant> = None;
     let mut entering = Entering::default();
     let mut live = Live::new(factory, watch, trace.revision.clone(), server);
+    let mut upgrader = Upgrader::new(factory);
     loop {
         let tick = Instant::now();
         if live.poll(&mut db, &trace, true)? {
@@ -522,6 +535,13 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             let short = || room::measure(&home).is_ok_and(|room| crate::room::short_of_disk(&room));
             sweep::retire(&db, factory, &home, short)?;
         }
+        let working = !(commands.is_empty()
+            && recipes.is_empty()
+            && scripts.is_empty()
+            && summarizing.is_empty()
+            && stalls.calls.is_empty()
+            && deliveries.is_empty());
+        upgrader.tick(&mut db, &trace, &home, working);
         priory_runtime::ticks::record(tick.elapsed());
         // A pasted prompt's Enter is due before the next whole tick.
         let wait = entering.due().map_or(EVERY, |due| due.min(EVERY));
@@ -1020,6 +1040,7 @@ fn apply(
 #[derive(serde::Deserialize)]
 #[serde(untagged)]
 enum Input {
+    Version(VersionLine),
     Guard(crate::guard::Line),
     Private(crate::private::Line),
     Evidence(crate::evidence::AddLine),
@@ -1052,6 +1073,43 @@ enum Input {
     KeyboardReturn(crate::keyboard::ReturnLine),
     Keys(crate::keyboard::KeysLine),
     Attach(crate::keyboard::AttachLine),
+}
+
+/// `{"version": true}`, which the helper of an upgrade sends.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VersionLine {
+    #[serde(rename = "version")]
+    _version: bool,
+}
+
+/// This daemon's version, as its reply to a `VersionLine`.
+fn version(_: &VersionLine) -> Result<String, String> {
+    Ok(env!("CARGO_PKG_VERSION").to_owned())
+}
+
+/// Waits until a migration's upgrade is committed. The daemon then answers its version alone, so a
+/// rollback to the backups loses nothing.
+fn hold(factory: &Factory, home: &Path) -> Result<runtime::Listening, Error> {
+    let listening = runtime::listen(home)?;
+    if let Some(config) = factory.serve() {
+        drop(std::net::TcpListener::bind(config.listen)?);
+    }
+    while upgrade::uncommitted(home) {
+        match listening.lines.recv_timeout(EVERY) {
+            Ok(line) => {
+                let reply = match serde_json::from_str::<Input>(&line.text) {
+                    Ok(Input::Version(line)) => version(&line),
+                    _ => Err(upgrade::IN_PROGRESS.to_owned()),
+                };
+                let reply = serde_json::to_string(&reply).expect("a result serializes");
+                let _ = line.applied.send(reply);
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
+        }
+    }
+    Ok(listening)
 }
 
 /// `POST /api/request`'s line: `{"add": {...}}`.
@@ -1204,6 +1262,7 @@ fn take(
         serde_json::to_string(&result).expect("a result serializes")
     };
     match serde_json::from_str::<Input>(line) {
+        Ok(Input::Version(line)) => Ok((replied(version(&line)), None)),
         Ok(Input::Guard(line)) => {
             Ok((replied(crate::guard::decide(db, &line.guard, trace)?), None))
         }
@@ -1410,6 +1469,9 @@ fn tend(
 ) -> Result<(), Error> {
     let factory = trace.factory;
     let live = state::live(db)?;
+    priory_runtime::trust::forget_direnv(home, &|session| {
+        live.iter().any(|run| run.session == session)
+    });
     starting.retain(|id, _| live.iter().any(|run| run.id == *id && !run.ready));
     for mut run in live {
         if !run.ready && !scope.is_empty() {
@@ -1653,6 +1715,19 @@ fn diagnose(
     }
 }
 
+/// direnv's stderr `error` as one line with `secrets` hidden. They are hidden before the lines join,
+/// since a joined value would no longer match one that spans lines.
+fn envrc_error(error: &str, secrets: &[String]) -> String {
+    let error = crate::screen::plain(error);
+    crate::screen::redact(&error, secrets, None)
+        .map(|(shown, _)| shown)
+        .filter(|shown| !crate::screen::holds_any_secret(shown, secrets))
+        .map_or_else(
+            || "[redacted]".to_owned(),
+            |shown| runtime::one_line(&shown),
+        )
+}
+
 /// Records that direnv failed with `error` before run `run`'s harness started, which then started
 /// without the `.envrc`: in the trace and as its task's reason.
 fn direnv_failed(
@@ -1661,10 +1736,11 @@ fn direnv_failed(
     run: &state::LiveRun,
     error: &str,
 ) -> Result<(), Error> {
-    let error = crate::screen::plain(error);
     let secrets = crate::screen::secrets(&trace.factory.secret_envs());
-    let error = crate::screen::redact(&error, &secrets, None)
-        .map_or_else(|| "[redacted]".to_owned(), |(shown, _)| shown);
+    let mut error = envrc_error(error, &secrets);
+    if let Some(worktree) = &run.worktree {
+        error = error.replace(&format!("{worktree}/"), "");
+    }
     let why = if error.is_empty() {
         "direnv exited before the harness started".to_owned()
     } else {
@@ -1679,10 +1755,7 @@ fn direnv_failed(
     let tx = db.transaction()?;
     crate::trace::trusted(&tx, trace, run.id, "direnv", &grant, None)?;
     state::direnv(&tx, run.id, 2)?;
-    tx.execute(
-        "UPDATE tasks SET reason = ?2 WHERE id = ?1",
-        rusqlite::params![run.task, format!("started without its .envrc: {why}")],
-    )?;
+    state::without_envrc(&tx, run.task, &why)?;
     tx.commit()?;
     Ok(())
 }
@@ -1734,11 +1807,12 @@ fn verdict(
         );
         return Some(("exited", reason, false));
     }
+    let handed = || runtime::direnv_handed(home, &run.session).map(|ago| ago.as_secs() as i64);
     let late = run.waited.and_then(|waited| {
         // Read only past the shortest window, since each read is a query.
-        let trusted = waited >= state::ready_within(0, false) && granted();
-        let within = state::ready_within(run.direnv, trusted);
-        (waited >= within).then_some((within, trusted))
+        let trusted = waited >= state::READY_WITHIN && granted();
+        let handed = (run.direnv != 0).then(handed).flatten();
+        state::late(waited, run.direnv != 0, handed, trusted).map(|within| (within, trusted))
     });
     if let Some((within, trusted)) = late {
         let program = harness.program();
@@ -2035,9 +2109,15 @@ fn restore_worktree(
         )?;
         return Ok(Restored::Waits);
     }
-    match runtime::worktree(home, repo, &worktree_name(db, runner, task)?, None) {
+    match runtime::worktree(
+        home,
+        repo,
+        &worktree_name(db, runner, task)?,
+        None,
+        factory.trust_worktrees(),
+    ) {
         Ok((worktree, _, added)) => {
-            state::set_base(db, task, added.base())?;
+            state::set_base(db, task, added.base(), factory.trust_worktrees())?;
             db.execute(
                 "UPDATE tasks SET reason = NULL WHERE id = ?1 AND substr(reason, 1, length(?2)) = ?2",
                 rusqlite::params![task, crate::room::RESTORES],
@@ -2558,7 +2638,13 @@ fn start(
     if base.is_some() && parent_moved(db, home, admission.task)? {
         return Ok(Ok(()));
     }
-    let (worktree, branch, added) = match runtime::worktree(home, repo, &folder, base.as_deref()) {
+    let (worktree, branch, added) = match runtime::worktree(
+        home,
+        repo,
+        &folder,
+        base.as_deref(),
+        factory.trust_worktrees(),
+    ) {
         Ok((worktree, branch, added)) => {
             if let runtime::Added::Kept(Some(recovery)) = &added {
                 let tx = db.transaction()?;
@@ -2566,7 +2652,7 @@ fn start(
                 tx.commit()?;
             }
             let start = added.base();
-            state::set_base(db, admission.task, start)?;
+            state::set_base(db, admission.task, start, factory.trust_worktrees())?;
             if base.is_some() && start.is_some() {
                 db.execute(
                     "UPDATE tasks SET parent_head = ?2 WHERE id = ?1",
@@ -2726,10 +2812,15 @@ fn start(
         });
         if factory.names_repo(repo) {
             let folder = priory_runtime::trust::direnv_folder(home, &session);
-            let grants = priory_runtime::trust::direnv(home, repo, &worktree, &folder);
+            let base = state::root_base(db, admission.task)?;
+            let grants =
+                priory_runtime::trust::direnv(home, repo, &worktree, base.as_deref(), &folder);
             let tx = db.transaction()?;
             for grant in &grants {
                 crate::trace::trusted(&tx, trace, run, "direnv", grant, None)?;
+            }
+            if let Some(why) = grants.iter().find_map(|grant| grant.why.as_deref()) {
+                state::without_envrc(&tx, admission.task, why)?;
             }
             tx.commit()?;
             if grants
@@ -3217,6 +3308,19 @@ mod tests {
             reason.contains("fix the .envrc. Resume the task to try again"),
             "{reason}"
         );
+    }
+
+    #[test]
+    fn a_secret_that_spans_lines_of_direnvs_error_is_hidden() {
+        let secrets = ["first-half\n  second-half".to_owned()];
+
+        let shown = envrc_error("direnv: first-half\n  second-half\nexit 1\n", &secrets);
+
+        assert!(shown.contains("[redacted]"), "{shown}");
+        assert!(!shown.contains("half"), "{shown}");
+        assert!(shown.ends_with("exit 1"), "{shown}");
+        let split = "first-\u{200b}half\n  second-half";
+        assert_eq!(envrc_error(split, &secrets), "[redacted]");
     }
 
     /// Writes the factory's file once `reload::EVERY` passed, then polls.

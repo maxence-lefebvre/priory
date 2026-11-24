@@ -128,11 +128,11 @@ when its harness asks anyway, and one when direnv fails before its harness start
 
 | Field     | Required | Meaning |
 | --------- | -------- | ------- |
-| `harness` | yes      | `claude-code`, `codex`, or `direnv` for direnv's trust in a worktree with an `.envrc` |
+| `harness` | yes      | `claude-code`, `codex`, or `direnv` for direnv's trust in a worktree's checked `.envrc` |
 | `path`    | yes      | The worktree or clone the trust covers |
 | `file`    | no       | The config the daemon wrote or read: Claude's `.claude.json`, `$CODEX_HOME/priory-trust.config.toml`, or the run's `direnv/<session>/direnv.toml` in Priory home |
 | `outcome` | yes      | `granted` when the daemon wrote it, `present` when it was already there, `refused` when it wrote nothing, `missed` when the harness asked anyway, `failed` when direnv failed before the harness started, which then started without the `.envrc` |
-| `why`     | no       | For `refused`: why, such as a path outside Priory home or a repository the factory does not name. For `missed`: `the grant was gone from the config` when the harness overwrote it. For `failed`: direnv's error, redacted, such as `direnv: error exit status 1` |
+| `why`     | no       | For `refused`: why, such as a path outside Priory home, a repository the factory does not name, or an `.envrc` that a person denied, is untracked, or differs from the commit the task started from and from the default branch. For `missed`: `the grant was gone from the config` when the harness overwrote it. For `failed`: direnv's error, redacted, such as `direnv: error .envrc is blocked` |
 | `version` | no       | For `missed`: the first line of the harness's `--version` |
 
 ## `factory.run.attach_failed`
@@ -1200,6 +1200,22 @@ after a reload, the new revision; after a refusal, the revision still live.
 | -------------- | -------- | ------------------------------------------------------------------ |
 | `restart_only` | reloaded | The keys the edit changed that wait for a restart, such as `[serve]`; empty for none |
 | `problems`     | refused  | Each problem, as `priory check` prints it, or each task the edit would strand |
+
+## `factory.upgrade.installed`, `factory.upgrade.rolled_back`, `factory.upgrade.put_off` and `factory.upgrade.refused`
+
+The daemon installed a newer release by itself, went back to the old one, put one off for a fault that is
+not its own, or refused one before it changed anything (see [upgrades.md](daemon/upgrades.md)). Its `data` also holds `factory`,
+`factory_revision` and `machine`.
+
+| Field | Required | Meaning |
+| ----- | -------- | ------- |
+| `op` | installed, rolled back, put off | The upgrade's id, one record each |
+| `from` | yes | The version that ran before |
+| `to` | installed, rolled back, put off | The version it installed or tries again later |
+| `schema_from`, `schema_to` | installed, rolled back | The state's schema before, and the one the new version uses |
+| `kept` | installed, rolled back | The old binary |
+| `backups` | installed, rolled back | The copies of the state and the log, without those a rollback used |
+| `reason` | rolled back, put off, refused | Why. A refusal that names one release holds its version in `to` |
 
 ## Spans
 

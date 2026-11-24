@@ -116,6 +116,89 @@ pub struct Settings {
     /// creates for the repositories the factory names, so no run stops on a trust dialog.
     #[serde(default)]
     pub trust_worktrees: bool,
+    /// The daemon installs newer releases by itself; nothing is looked up or installed when unset.
+    pub upgrade: Option<Upgrade>,
+}
+
+/// `[upgrade]`: which releases the daemon installs by itself, and when.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Upgrade {
+    /// `patch` takes releases of the running major and minor version; `minor` takes releases of the
+    /// running major version.
+    pub channel: Channel,
+    /// How often the daemon looks for a release; every hour when unset, and at least 10 minutes.
+    #[serde(default, deserialize_with = "duration")]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    pub every: Option<Duration>,
+    /// When the daemon never upgrades, such as working hours; it may at any time when unset.
+    pub not_during: Option<Quiet>,
+    /// The systemd user units of the daemon and the intake, in that order.
+    #[serde(default = "units")]
+    pub units: [String; 2],
+}
+
+fn units() -> [String; 2] {
+    ["priory-daemon", "priory-intake"].map(|unit| format!("{unit}.service"))
+}
+
+/// The releases the daemon installs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Channel {
+    Patch,
+    Minor,
+}
+
+/// The days and hours the daemon never upgrades in.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Quiet {
+    /// When it starts, `HH:MM`.
+    #[serde(deserialize_with = "time_of_day")]
+    #[schemars(with = "String", regex(pattern = r"^([01]?[0-9]|2[0-3]):[0-5][0-9]$"))]
+    pub from: Option<jiff::civil::Time>,
+    /// When it ends, `HH:MM`; the next day when it is not after `from`.
+    #[serde(deserialize_with = "time_of_day")]
+    #[schemars(with = "String", regex(pattern = r"^([01]?[0-9]|2[0-3]):[0-5][0-9]$"))]
+    pub until: Option<jiff::civil::Time>,
+    /// The weekdays it starts on; every day when unset.
+    #[serde(default, deserialize_with = "weekdays")]
+    #[schemars(
+        with = "Vec<String>",
+        length(min = 1),
+        extend("items" = { "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] })
+    )]
+    pub days: Option<Vec<jiff::civil::Weekday>>,
+    /// The IANA zone of the hours, such as `Europe/Paris`; the machine's own when unset.
+    #[serde(default, deserialize_with = "time_zone")]
+    #[schemars(with = "String")]
+    pub timezone: Option<jiff::tz::TimeZone>,
+}
+
+impl Quiet {
+    /// Whether the daemon must not upgrade at `at`.
+    pub fn hold(&self, at: jiff::Timestamp) -> bool {
+        let zone = self
+            .timezone
+            .clone()
+            .unwrap_or_else(jiff::tz::TimeZone::system);
+        let now = at.to_zoned(zone);
+        let on = |date: jiff::civil::Date| {
+            self.days
+                .as_ref()
+                .is_none_or(|days| days.contains(&date.weekday()))
+        };
+        // Serde refuses hours without either.
+        let (Some(from), Some(until)) = (self.from, self.until) else {
+            return true;
+        };
+        let (date, time) = (now.date(), now.time());
+        if from < until {
+            return on(date) && from <= time && time < until;
+        }
+        (time >= from && on(date)) || (time < until && date.yesterday().is_ok_and(on))
+    }
 }
 
 /// `[sandboxes.<name>]`: a jail around a run's agent, which sees its worktree, its harness's own
@@ -2384,6 +2467,9 @@ pub struct Runner {
     pub platform: Platform,
     /// The share of the machine its agents may take together; 90% of each when unset.
     pub agents: Option<Share>,
+    /// Whether the factory's `[upgrade]` applies to this machine.
+    #[serde(default = "on")]
+    pub upgrade: bool,
     /// The tasks it claims and starts: only those every filter whose window is open accepts.
     #[serde(default)]
     pub filters: Vec<crate::filters::Filter>,
@@ -2843,6 +2929,11 @@ impl Factory {
     /// The `[batch]` table: how `priory batch add` plans batches.
     pub fn batch(&self) -> Option<&BatchDefaults> {
         self.settings.as_ref()?.value.batch.as_ref()
+    }
+
+    /// Which releases the daemon installs by itself; none when unset.
+    pub fn upgrade(&self) -> Option<&Upgrade> {
+        self.settings.as_ref()?.value.upgrade.as_ref()
     }
 
     /// The HTTP server's settings; none listens nowhere.

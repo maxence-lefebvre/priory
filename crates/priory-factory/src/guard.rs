@@ -151,6 +151,7 @@ pub const PERSON_VERBS: &[&str] = &[
     "eval",
     "bench",
     "label",
+    "upgrade",
 ];
 
 /// Whether `args`, the arguments after `priory`, run a person verb.
@@ -2119,6 +2120,8 @@ mod tests {
             "priory give github:o/r#12 b",
             "priory eval prompts/review.md",
             "priory label 7 wrong --evidence https://example.com/pull/9",
+            "priory upgrade resume",
+            "priory upgrade retry 1.4.0",
             "priory memories accept 3",
             "priory memories drop ~/factory 3",
             "priory score --budget 5 --calibrate review",

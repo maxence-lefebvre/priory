@@ -9,15 +9,7 @@ pub const REPORT: &str = "priory.report";
 
 /// The first segment of every message type the intake and the daemon publish.
 const DAEMON_SOURCES: [&str; 9] = [
-    "autopilot",
-    "cli",
-    "factory",
-    "github",
-    "intake",
-    "linear",
-    "priory",
-    "schedule",
-    "slack",
+    "cli", "factory", "github", "intake", "linear", "priory", "schedule", "slack", "upgrade",
 ];
 
 /// The source of the reports the intake posts when a poll fails.

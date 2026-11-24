@@ -44,7 +44,8 @@ one: [reload.md](../daemon/reload.md#what-a-reload-changes) lists them.
 | `guard` | table | no | the built-in guards alone | Irreversible commands and MCP tools the tool guard denies on top of the built-in ones. See [`[guard]`](#guard) | |
 | `private` | table | no | no term is private | Terms no run may publish to the repositories it lists. See [`[private]`](#private) | |
 | `sandboxes` | table of tables | no | no sandbox | The jails a workflow can start its agents in, by name. See [`[sandboxes.<name>]`](#sandboxesname) | |
-| `trust_worktrees` | bool | no | `false`: a person trusts each folder by hand | The daemon records Claude Code's, Codex's and direnv's folder trust for each run's worktree and clone, for the repositories the factory names. When the worktree has an `.envrc` and `direnv` is installed, the run starts in its environment. See [sessions.md](../daemon/sessions.md#trusting-the-worktrees-and-the-clone) | `true` |
+| `trust_worktrees` | bool | no | `false`: a person trusts each folder by hand | The daemon records Claude Code's, Codex's and direnv's folder trust for each run's worktree and clone, for the repositories the factory names. When the worktree has an `.envrc` that passes the check against the commit the task started from or the default branch, and `direnv` is installed, the run starts in its environment. See [sessions.md](../daemon/sessions.md#trusting-the-worktrees-and-the-clone) | `true` |
+| `upgrade` | table | no | nothing is looked up or installed | Which releases the daemon installs by itself. See [`[upgrade]`](#upgrade) | |
 | `repos` | table of tables | no | no recipe runs | The setup, resume and teardown recipes of each repository. See [`[repos]`](#repos) | |
 
 A duration is a whole number followed by `s`, `m`, `h` or `d`, such as `"90s"`, `"15m"`, `"2h"` or `"7d"`.
@@ -201,6 +202,27 @@ On Postgres, `timeout` bounds the connect, sets the server's `statement_timeout`
 `tcp_user_timeout` on the socket. TCP keepalives probe a quiet connection after 10 seconds, every
 10 seconds, 3 times. A call that gets no answer within `timeout`, such as over an ssh tunnel that
 hangs, is given up on.
+
+## `[upgrade]`
+
+The releases the daemon installs by itself, and when. See [upgrades.md](../daemon/upgrades.md) for
+how, and [How to upgrade Priory automatically](../upgrading-automatically.md) to turn it on.
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `channel` | `"patch"` or `"minor"` | yes | | `patch` takes releases of the running major and minor version, `minor` those of the running major version. Neither takes a pre-release or an older version | `"patch"` |
+| `every` | duration | no | `"1h"` | How often the daemon looks for a release. At least `"10m"` | `"6h"` |
+| `units` | list of two strings | no | `["priory-daemon.service", "priory-intake.service"]` | The systemd user units of the daemon and the intake, in that order | `["acme-daemon.service", "acme-intake.service"]` |
+| `not_during` | table | no | it may upgrade at any time | When the daemon never upgrades. See below | |
+
+### `[upgrade.not_during]`
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `from` | `HH:MM` | yes | | When it starts | `"09:00"` |
+| `until` | `HH:MM` | yes | | When it ends: the next day when it is not after `from` | `"19:00"` |
+| `days` | list of weekdays | no | every day | The days it starts on: `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun` | `["mon", "fri"]` |
+| `timezone` | string | no | the machine's own | The IANA zone of the hours | `"Europe/Paris"` |
 
 ## `[telemetry]`
 
@@ -776,6 +798,9 @@ day = 10.0                                     # dollars the lane may spend in a
 | `` `[consult.allow]` names investigator `<name>` as an asker: an investigator cannot consult, so a consult is one hop `` | An investigator as a key of `[consult.allow]` |
 | `` `[consult.allow]` lets `<asker>` consult `<name>`, which is no agent `` | A target with no folder under `agents/` |
 | `` `[consult.allow]` lets `<asker>` consult `<name>`, which is no investigator: set `investigator = true` on it `` | A target that is no investigator |
+| `` `[upgrade]` needs the herdr-bus log: Priory cannot tell whether a release changes a Postgres log's tables, so upgrade these machines by hand `` | `[upgrade]` beside `[log] backend = "postgres"` |
+| `` `[upgrade] units` names one unit twice: give the daemon's, then the intake's `` | The same unit twice in `units` |
+| `` `[upgrade] every` is under 10 minutes: GitHub limits anonymous requests `` | `every` under `"10m"` |
 | `invalid socket address syntax` | `listen` is not an IP address and port, such as `127.0.0.1:7340` |
 
 Each line starts with the file and line, such as `factory.toml:3:1:`. A file that does not parse

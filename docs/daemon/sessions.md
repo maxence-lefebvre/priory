@@ -263,30 +263,84 @@ a worktree or clone that a symlink leads elsewhere.
   it. It also refuses a profile that is not a regular file, such as a FIFO. When the daemon cannot
   read a config back after a dialog, it blocks the task without the restart. Codex still runs only the hooks a person trusted with
   `/hooks`, so that step stays manual.
-- **direnv** refuses a folder's `.envrc` until a person runs `direnv allow`, unless its
-  `direnv.toml` whitelists the folder. When `direnv` is on the daemon's PATH and the worktree has
-  an `.envrc`, the daemon writes a direnv config folder of its own for the run,
-  `direnv/<session>/` in Priory home. Its `direnv.toml`, which only the person can read, is the
-  person's own (from `DIRENV_CONFIG`, else `$XDG_CONFIG_HOME/direnv`, else `~/.config/direnv`)
-  with the worktree and the clone added to `[whitelist] exact`, each as the daemon spells it and
-  as its real path, since direnv matches the path it is given and Priory home may go through a
-  symlink. Its `direnvrc` and `lib` link to the real paths of the person's, so a home-manager
-  link into `/nix/store` still resolves in a jail and libraries such as nix-direnv still load.
-  The run's harness then starts as `direnv exec <worktree> <harness>`, with `DIRENV_CONFIG`
-  naming that folder, so every command the agent runs gets the `.envrc` environment, such as a
-  nix flake's toolchain. The daemon never edits the person's `direnv.toml` or direnv's allow
-  folder. It refuses the grant, and starts the run without direnv, when the person's
-  `direnv.toml` cannot be read or parsed. Without `direnv` or without an `.envrc`, nothing
-  changes. An agent that edits `.envrc` reloads it with `direnv exec . <command>`.
+- **direnv** refuses a folder's `.envrc` until a person runs `direnv allow`. When `direnv` is on the
+  daemon's PATH and the worktree has an `.envrc`, the daemon checks its content, as below, and writes
+  a direnv config folder of its own for the run, `direnv/<session>/` in Priory home. It holds:
 
-  Whitelisting a path in `exact` skips direnv's content check: an `.envrc` that changes, by a
-  commit or by the agent, loads without a new `direnv allow`. The variables an `.envrc` exports
+  - `direnv.toml`: the person's own (from `DIRENV_CONFIG`, else `$XDG_CONFIG_HOME/direnv`, else
+    `~/.config/direnv`) without its `[whitelist]`, which skips direnv's content check.
+  - `data/direnv/allow/`: direnv's allow file for the worktree's `.envrc` with the checked content.
+    direnv matches the path it is given, and Priory home may go through a symlink, so the path as
+    the daemon spells it and its real path each get one.
+  - `envrc`: the checked bytes.
+  - `direnvrc`: Priory's own. It runs the person's `direnvrc`, or else their `~/.direnvrc`, then makes
+    direnv run `envrc` where it would read the worktree's `.envrc` a second time. It does that in the
+    daemon's load alone, so an agent's own `direnv exec` runs the `.envrc` of the folder it names.
+    `BASH_SOURCE` in the `.envrc` names the copy, `envrc` in the run's folder, and `$PWD` the
+    worktree.
+  - `direnvrc.person` and `lib`: links to the real paths of the person's, so a home-manager link into
+    `/nix/store` still resolves in a jail and libraries such as nix-direnv still load.
+
+  The run's harness then starts as `direnv exec <worktree> <harness>`, with `DIRENV_CONFIG` naming
+  that folder, so every command the agent runs gets the `.envrc` environment, such as a nix flake's
+  toolchain. direnv alone gets that `data` folder as its `XDG_DATA_HOME`: the `.envrc`, the person's
+  `direnvrc` and the harness see the old one. The daemon never edits the person's `direnv.toml` or
+  direnv's allow folder. It refuses the grant, and starts the run without direnv, when the person's
+  `direnv.toml` cannot be read or parsed, when the person denied the `.envrc` with `direnv deny`, when
+  `direnv/` in Priory home is a symlink, or when the `.envrc` fails the check below. The task's reason
+  then says `started without its .envrc:` and why. The daemon deletes the folder once the run ended.
+  Without `direnv` or without an `.envrc`, nothing changes. An agent's own `direnv exec . <command>`
+  needs the person's own `direnv allow`, and sees `XDG_DATA_HOME` unset when the task's `.envrc`
+  exports one.
+
+  A worktree outlives its run. So without a check, an `.envrc` that one run's agent wrote would run
+  at the start of the next, outside the tool guard and the harness's permissions. The daemon grants
+  direnv only when the worktree's `.envrc` is a regular file with the same content as the one on the
+  commit the task started from. direnv refuses an `.envrc` that changed after the check, and the run
+  starts without it. direnv reads the file once to hash it and again to run it: a change between the
+  two has no effect, since direnv runs the checked copy.
+  That commit is the default branch's head, which the daemon reads from GitHub outside the clone:
+  every worktree shares the clone's refs and objects, and an agent can write both. The daemon hashes
+  the commit and its tree again before it compares, so a forged object does not pass.
+  A stacked task is checked against the commit its bottom task started from, since its own base
+  is another agent's branch. Failing that, the `.envrc` must match the one on the repository's default
+  branch. The daemon reads that branch's head from GitHub, fetches the commit when the clone lacks it,
+  and waits for each at most 10s. It hashes that commit and its tree again too.
+
+  A run starts without its `.envrc`, although no agent wrote it, in these cases:
+
+  - The `.envrc` is a symlink, or is over 1 MiB.
+  - The `.envrc` is untracked, such as one that a setup recipe writes. The daemon does not ask GitHub
+    for it. An untracked copy of the file on the commit the task started from passes.
+  - The task changed the `.envrc`, or merged a branch that did. Its later runs start without it until
+    the change is on the default branch.
+  - The `.envrc` is an older honest version, from neither the commit the task started from nor the
+    default branch, as after a reset to an earlier commit. A rebase on the default branch fixes it.
+  - Git writes the file with other content than it stores, as `core.autocrlf` or a filter does.
+
+  The check has limits:
+
+  - It covers `.envrc` alone. What the `.envrc` loads runs as the worktree has it, so an agent's edit
+    of it runs at the next start: `flake.nix` and `flake.lock`, the caches in `.direnv/`, `.env`, a
+    sourced script, a parent's `.envrc` through `source_up`, and programs in a `PATH_add` folder.
+  - A process outside a jail that runs as the same user can write the run's `direnv/<session>/` folder
+    itself, as it can write any file of the person's.
+  - The copy depends on direnv's `source_env` function. A direnv that loads an `.envrc` without it still
+    refuses a change before its hash, and runs one made after it.
+  - The daemon's git reads the clone's config, which an unjailed agent can write. Its
+    `core.sshCommand`, filters and credential helpers can run commands as the daemon, at any start.
+  - A task that started before the daemon stored a base for this check has none, and neither has one
+    that started while `trust_worktrees` was off, when the daemon does not ask GitHub. Their `.envrc`
+    must match the default branch.
+
+  The variables an `.envrc` exports
   reach the harness's environment as they are, outside the daemon's secret redaction, so keep
   secrets out of a repository's `.envrc`.
 
   The harness starts only after the `.envrc` loads: a `use flake` took 12s on a fresh worktree
-  and under 1s after. A run under direnv gets 600s, rather than 60s, to reach `SessionStart`,
-  and one whose `.envrc` is still loading then blocks with a reason that names direnv. When
+  and under 1s after. direnv gets 600s to load it, and a run whose `.envrc` is still loading then
+  blocks with a reason that names direnv. Once direnv hands over, the harness gets its usual window,
+  60s or 180s with recorded trust, to reach `SessionStart`. When
   direnv itself fails before the harness starts, for example because the `.envrc` exits non-zero
   or `nix` is not on PATH in a jail, the harness starts without the `.envrc`. The daemon records
   direnv's error as a `failed` `factory.run.trusted` record and in the task's reason, which a
@@ -297,7 +351,10 @@ or `refused` (see [trace-schema.md](../trace-schema.md#factoryruntrusted)).
 
 A trusted folder lets the repository's own settings run, as a person's trust does: Claude's
 `.claude/settings.json` hooks, `env` and `permissions.allow` rules, `CLAUDE.md` and skills, and
-Codex's `.codex/config.toml`. Those settings run beside Priory's guard, and a hostile one may
+Codex's `.codex/config.toml`. The daemon does not compare those files with the commit the task
+started from, as it does an `.envrc`: hooks that an agent wrote into `.claude/settings.json` run in
+the next run on the same worktree, or on a branch stacked on it, outside the tool guard.
+Those settings run beside Priory's guard, and a hostile one may
 weaken it, for example with Claude's `disableAllHooks`. So turning the key on vouches for every
 repository the factory names. A run without claude.ai connectors still gets `--strict-mcp-config`,
 which keeps `.mcp.json` servers out. A run with connectors goes without that flag, and its guard
@@ -344,8 +401,8 @@ exit, then cd <clone path> && claude, accept, exit`. The desk shows the blocked 
 reason. After both folders are trusted, `priory resume` starts the task again.
 
 A run that sends no `SessionStart` within its window, for another reason, also ends as `exited`.
-The window is 60 seconds from its start, 180 when Priory recorded the run's trust, and 600 under
-direnv. The daemon kills its tmux session and blocks its task with the reason `claude showed
+The window is 60 seconds from its start, or 180 when Priory recorded the run's trust. Under direnv,
+the `.envrc` gets 600 seconds to load, and the window counts from there. The daemon kills its tmux session and blocks its task with the reason `claude showed
 no SessionStart within 60s; trust the worktrees folder and the clone once: ...`, the same commands,
 `. Resume the task to try again`, then `. Its pane ended with: ` and the last 5 non-empty lines of its pane, joined by ` | `, so a
 person sees the dialog or warning that stopped it. The daemon log gets the last 30. A line the
