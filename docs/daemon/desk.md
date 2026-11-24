@@ -178,6 +178,10 @@ An unread report shows on the desk as a `report` row. `priory inbox read SEQ` ma
 leaves the desk. It is refused for a sequence number that is not a report. `POST /api/inbox/{seq}/read`
 is its twin. The Herdr library's `read` and the web desk's Read button run it.
 
+The intake marks a `landed wrong` report of a red merge read once the base branch recovers (see
+[pull-requests.md](../intake/pull-requests.md#when-the-base-branch-recovers)). A revert's report
+stays until a person marks it read.
+
 A held task's row shows its reason. The web desk's Release button on it runs `POST /api/tasks/{id}/release`
 with the state revision the page drew, as `priory release --expected` does. A newer state gets `409`,
 and the desk redraws.
