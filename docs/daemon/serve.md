@@ -305,7 +305,10 @@ desktop takes everything. [The reference](../reference/serve.md#notifications) l
 that landed wrong and a stall are off until a person turns them on. The daemon stores what a person
 turned on or off, not the whole list, so a kind added later takes its default. It reads the choice
 before each send and each retry. The page and the service worker keep the choice on the device too.
-The page sends it again when the daemon's differs, such as after a new state file.
+The page sends it again when the daemon's differs, such as after a new state file. Each save sends
+the whole kept choice. A refused save puts the old choice back. When the reply is lost, the daemon
+may have stored the save, so the page keeps the new choice and hides the boxes as unconfirmed. The
+next time it loads, the daemon and the device agree on that choice.
 
 The daemon sends the queue one notification at a time. Before it sends one, it reads the item
 again, and sends nothing when the ask closed, the task left that state, a cap is no longer
@@ -352,10 +355,10 @@ at 1 again, does not repeat an old id.
 
 A push service can replace or expire a subscription, and the browser then fires
 `pushsubscriptionchange` at the service worker. The worker subscribes again with the same key and
-sends the new subscription, with the kinds the device keeps, to `POST /api/push/subscribe`, and the old endpoint to
-`/api/push/unsubscribe`. It reads the token from a copy the page keeps in the browser's Cache
-Storage for the worker, since a worker cannot read local storage. Signing out deletes that copy.
-Without it, the worker still subscribes again, and the page sends the new subscription the next
+sends the new subscription, with the kinds the device keeps, to `POST /api/push/subscribe`. Once the
+daemon stored it, the worker sends the old endpoint to `/api/push/unsubscribe`. It reads the token from a copy the page keeps in the browser's Cache
+Storage for the worker, since a worker cannot read local storage. Signing out deletes that copy
+and the kept kinds. Without it, the worker still subscribes again, and the page sends the new subscription the next
 time the Notifications screen opens.
 
 ### Desktop notifications

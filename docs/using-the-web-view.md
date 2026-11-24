@@ -71,8 +71,13 @@ Under More, then Notifications, tap Turn on notifications, and allow them.
 
 A new ask now shows its title on the phone, or its task and step, and tapping it opens the ask. A
 task that turns blocked or failed shows `task <key> <state>`, and an intake that has failed to poll a
-source for 15 minutes shows `the intake fails to poll <source>`. A snoozed item sends nothing. Turn notifications off on the
-same screen. [serve.md](daemon/serve.md#notifications) explains when a notification is sent and
+source for 15 minutes shows `the intake fails to poll <source>`. A snoozed item sends nothing.
+
+Check the kinds this device gets on the same screen, such as Asks alone on a phone. Landed wrong and
+Queue stalls are off until you check them. [The reference](reference/serve.md#notifications) lists
+each kind. If the screen says the daemon did not confirm it, reload the page to see the choice again.
+
+Turn notifications off on the same screen. [serve.md](daemon/serve.md#notifications) explains when a notification is sent and
 retried.
 
 On the machine that runs the daemon, `[notify] desktop = true` in `factory.toml` shows the same

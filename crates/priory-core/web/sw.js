@@ -106,10 +106,10 @@ async function resubscribe(old, given) {
   if (!token) return;
   // The daemon knows the choice by the endpoint that went away, so the kept copy goes with the new one.
   const kinds = await keptText(KINDS).then(JSON.parse).catch(() => null);
-  const stored = await send("/api/push/subscribe", { ...fresh.toJSON(), ...(kinds ? { kinds } : {}) });
+  let stored = await send("/api/push/subscribe", { ...fresh.toJSON(), ...(kinds ? { kinds } : {}) });
   // A daemon that does not know the kinds refuses them; it still takes the subscription.
-  if (kinds && stored.status === 400) await send("/api/push/subscribe", fresh.toJSON());
-  if (old?.endpoint && old.endpoint !== fresh.endpoint) await send("/api/push/unsubscribe", { endpoint: old.endpoint });
+  if (kinds && stored.status === 400) stored = await send("/api/push/subscribe", fresh.toJSON());
+  if (stored.status === 200 && old?.endpoint && old.endpoint !== fresh.endpoint) await send("/api/push/unsubscribe", { endpoint: old.endpoint });
 }
 
 self.addEventListener("pushsubscriptionchange", (event) => {

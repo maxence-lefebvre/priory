@@ -888,9 +888,10 @@ screens. It turns Web Push on or off for this device. It holds:
    it: a 20 px box in `--action`, the kind's name at 600, and a sentence in `--type-caption` and
    `--text-2`. The kinds are Asks, Stopped tasks, Intake failures, Uncertain work, Spend caps, Landed
    wrong and Queue stalls. A change applies at once. While it saves, the boxes are `aria-disabled`.
-   A failure puts the box back and shows a `--warn-text` alert: "Could not save what this device
-   gets: why. Check that the daemon runs, then try again." With no box checked, a note says "Nothing
-   is chosen, so this device gets no notification." Under it: "Each device keeps its own choice. A
+   A refusal puts the box back and shows a `--warn-text` alert: "Could not save what this device
+   gets: why. Check that the daemon runs, then try again." A lost reply proves nothing, so the boxes
+   hide and the status note reads as unconfirmed. With no box checked, a note says "Nothing is
+   chosen, so this device gets no notification." Under it: "Each device keeps its own choice. A
    change applies at once."
 5. One button: "Turn on notifications", primary, while they are off; "Turn off notifications",
    secondary, while they are on or unconfirmed. The permission prompt opens only from this tap,

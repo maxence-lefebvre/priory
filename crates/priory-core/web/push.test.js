@@ -7,7 +7,7 @@ const ASKS = Object.fromEntries(Object.keys(DEFAULTS).map((kind) => [kind, kind 
 const phone = { endpoint: "https://web.push.apple.com/phone", keys: { p256dh: "p", auth: "a" } };
 
 /** A daemon that stores the kinds it is sent over the defaults, and a device that keeps a choice. */
-function world({ kept = null, refuse = null, old = false } = {}) {
+function world({ kept = null, refuse = null, drop = null, old = false } = {}) {
   const sent = [];
   const device = { kept };
   let stored = {};
@@ -19,7 +19,14 @@ function world({ kept = null, refuse = null, old = false } = {}) {
         sent.push(body);
         if (refuse && body.kinds) return refuse();
         if (old) return body.kinds ? { status: 400, body: { error: "unknown field `kinds`" } } : { status: 200, body: { ok: "subscribed" } };
+        for (const kind of Object.keys(body.kinds || {})) if (!(kind in DEFAULTS)) return { status: 400, body: { error: "unknown kind" } };
         stored = { ...stored, ...body.kinds };
+        // The daemon stored the save, and its reply is lost once.
+        if (drop && body.kinds) {
+          const lost = drop;
+          drop = null;
+          return lost();
+        }
         return { status: 200, body: { ok: "subscribed", kinds: { ...DEFAULTS, ...stored } } };
       },
       kept: async () => device.kept,
@@ -46,7 +53,7 @@ test("no kind chosen says so, and a daemon without kinds draws nothing", () => {
 
 test("a save sends the choice, keeps it, and a reload shows it", async () => {
   const { io, sent, device } = world();
-  assert.deepEqual(await saveKinds(phone, ASKS, io), ASKS);
+  assert.deepEqual(await saveKinds(phone, ASKS, DEFAULTS, io), ASKS);
   assert.deepEqual(sent, [{ ...phone, kinds: ASKS }]);
   assert.deepEqual(device.kept, ASKS);
 
@@ -55,11 +62,24 @@ test("a save sends the choice, keeps it, and a reload shows it", async () => {
   assert.deepEqual(sent[1], phone);
 });
 
-test("a save of one kind leaves the others unpinned", async () => {
+test("a save of one kind sends the kept choice with it, and leaves the others unpinned", async () => {
   const { io, sent, device } = world({ kept: { cap: false } });
-  await saveKinds(phone, { landed: true }, io);
-  assert.deepEqual(sent[0].kinds, { landed: true });
+  await saveKinds(phone, { landed: true }, DEFAULTS, io);
+  assert.deepEqual(sent[0].kinds, { cap: false, landed: true });
   assert.deepEqual(device.kept, { cap: false, landed: true });
+});
+
+test("a toggle after the daemon lost the row keeps the opt-ins and the opt-outs", async () => {
+  const { io } = world({ kept: { cap: false, landed: true } });
+  const kinds = await saveKinds(phone, { ask: false }, DEFAULTS, io);
+  assert.deepEqual(kinds, { ...DEFAULTS, ask: false, cap: false, landed: true });
+});
+
+test("a save leaves out a kept kind the daemon does not know, and the device keeps it", async () => {
+  const { io, sent, device } = world({ kept: { weather: true, cap: false } });
+  await saveKinds(phone, { ask: false }, DEFAULTS, io);
+  assert.deepEqual(sent[0].kinds, { cap: false, ask: false });
+  assert.deepEqual(device.kept, { weather: true, cap: false, ask: false });
 });
 
 test("a kept choice the daemon will not take back is not confirmed", async () => {
@@ -68,12 +88,34 @@ test("a kept choice the daemon will not take back is not confirmed", async () =>
   assert.deepEqual([status, kinds, confirmed], [200, DEFAULTS, false]);
 });
 
-test("a refused save and a dropped connection put the kept choice back", async () => {
-  for (const refuse of [async () => ({ status: 422, body: { error: "no" } }), async () => { throw new TypeError("dropped"); }]) {
+test("a refused save puts the kept choice back", async () => {
+  for (const status of [400, 401, 422]) {
     for (const kept of [null, DEFAULTS]) {
-      const { io, device } = world({ kept, refuse });
-      await assert.rejects(saveKinds(phone, ASKS, io));
+      const { io, device } = world({ kept, refuse: async () => ({ status, body: { error: "no" } }) });
+      await assert.rejects(saveKinds(phone, ASKS, DEFAULTS, io), { message: "no" });
       assert.deepEqual(device.kept, kept);
+    }
+  }
+});
+
+test("a save whose reply is lost is unconfirmed, and the next read agrees with the device", async () => {
+  const losses = [
+    async () => { throw new TypeError("dropped"); },
+    async () => ({ status: 502, body: {} }),
+    async () => ({ status: 200, body: {} }),
+  ];
+  for (const lose of losses) {
+    for (const committed of [true, false]) {
+      let lost = false;
+      const { io, device } = world({ kept: DEFAULTS, drop: committed ? lose : null });
+      const { send } = io;
+      if (!committed) io.send = async (body) => (body.kinds && !lost ? ((lost = true), lose()) : send(body));
+      assert.equal(await saveKinds(phone, { ask: false }, DEFAULTS, io), null);
+      assert.deepEqual(device.kept, { ...DEFAULTS, ask: false });
+
+      const read = await confirmPush(phone, io);
+      assert.deepEqual([read.kinds, read.confirmed], [{ ...DEFAULTS, ask: false }, true]);
+      assert.deepEqual(device.kept, read.kinds);
     }
   }
 });

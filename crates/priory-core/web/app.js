@@ -316,12 +316,17 @@ function keep() {
   } catch {}
 }
 
+// The service worker reads the same copy when the push service replaces the subscription.
+const KEPT_KINDS = "/api/worker/kinds";
+
 // The service worker cannot read local storage, so it gets its own copy of the token to tell the
-// daemon about a subscription the push service replaced. Signing out drops it.
+// daemon about a subscription the push service replaced. Signing out drops it, and the kept kinds.
 function keepTokenForWorker(token) {
   if (!("caches" in window)) return;
   caches.open("priory-push")
-    .then((cache) => (token ? cache.put("/api/worker/token", new Response(token)) : cache.delete("/api/worker/token")))
+    .then((cache) => token
+      ? cache.put("/api/worker/token", new Response(token))
+      : Promise.all(["/api/worker/token", KEPT_KINDS].map((key) => cache.delete(key))))
     .catch(() => {});
 }
 if (state.token) keepTokenForWorker(state.token);
@@ -2691,8 +2696,6 @@ const settingsScreen = () => (route()[1] === "notifications" ? notifications() :
 // iOS lets only a Home Screen web app subscribe, so Safari in a tab lacks PushManager.
 const iosTab = () => /iPhone|iPad|iPod/.test(navigator.userAgent) && !navigator.standalone;
 
-// The service worker reads the same copy when the push service replaces the subscription.
-const KEPT_KINDS = "/api/worker/kinds";
 const pushIo = {
   send: (body) => post("/api/push/subscribe", body),
   async kept() {
@@ -2701,25 +2704,28 @@ const pushIo = {
   },
   async keep(kinds) {
     const cache = await caches.open("priory-push");
-    return kinds ? cache.put(KEPT_KINDS, new Response(JSON.stringify(kinds))) : cache.delete(KEPT_KINDS);
+    if (!kinds) return cache.delete(KEPT_KINDS);
+    return cache.put(KEPT_KINDS, new Response(JSON.stringify(kinds)));
   },
 };
 
 async function pushStatus() {
-  if (!window.isSecureContext) return "insecure";
-  if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) return iosTab() ? "install" : "unsupported";
-  if (Notification.permission === "denied") return "blocked";
+  if (!window.isSecureContext) return { status: "insecure" };
+  if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
+    return { status: iosTab() ? "install" : "unsupported" };
+  }
+  if (Notification.permission === "denied") return { status: "blocked" };
   const registration = await navigator.serviceWorker.ready;
   const subscription = await registration.pushManager.getSubscription();
-  if (!subscription) return "off";
+  if (!subscription) return { status: "off" };
   // The browser keeps a subscription the daemon may have dropped or never stored: send it again.
   // Only the daemon's refusal ends it; a dropped connection or a stopped daemon proves nothing.
-  const { status, kinds, confirmed } = await confirmPush(subscription.toJSON(), pushIo).catch(() => ({ status: 0, kinds: null, confirmed: false }));
-  state.push.kinds = kinds;
-  if (status === 200) return confirmed ? "on" : "unconfirmed";
-  if (status !== 422) return "unconfirmed";
+  const { status, kinds, confirmed } = await confirmPush(subscription.toJSON(), pushIo)
+    .catch(() => ({ status: 0, kinds: null, confirmed: false }));
+  if (status === 200) return { status: confirmed ? "on" : "unconfirmed", kinds };
+  if (status !== 422) return { status: "unconfirmed" };
   await subscription.unsubscribe().catch(() => {});
-  return "off";
+  return { status: "off" };
 }
 
 const PUSH_NOTES = {
@@ -2736,12 +2742,12 @@ function notifications() {
   if (status === null && !state.push.checking) {
     const check = ++state.push.check;
     state.push.checking = true;
-    const settle = (found) => {
+    const settle = ({ status, kinds = null }) => {
       if (check !== state.push.check) return;
-      Object.assign(state.push, { status: found, checking: false });
+      Object.assign(state.push, { status, kinds, checking: false });
       render();
     };
-    pushStatus().then(settle, () => settle("unsupported"));
+    pushStatus().then(settle, () => settle({ status: "unsupported" }));
   }
   const button = status === "on" || status === "unconfirmed"
     ? html`<button class="btn secondary" data-action="push-off" aria-disabled="${busy}">Turn off notifications</button>`
@@ -2804,7 +2810,8 @@ async function turnPush(on) {
   }
 }
 
-// A failed save leaves the browser subscribed and shows the choice as it was.
+// A refused save shows the choice as it was. A lost reply proves nothing, so the boxes hide until the
+// next status read.
 async function chooseKind(kind, on) {
   if (state.push.busy) return render();
   const before = state.push.kinds;
@@ -2813,11 +2820,11 @@ async function chooseKind(kind, on) {
   try {
     const subscription = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
     if (!subscription) throw new Error("this browser is no longer subscribed");
-    state.push.kinds = await saveKinds(subscription.toJSON(), { [kind]: on }, pushIo);
+    const kinds = await saveKinds(subscription.toJSON(), { [kind]: on }, before, pushIo);
+    Object.assign(state.push, { kinds, status: kinds ? "on" : "unconfirmed" });
   } catch (error) {
-    state.push.kinds = before;
-    const why = error instanceof TypeError ? "the connection dropped" : error.message;
-    state.push.error = `Could not save what this device gets: ${why}. Check that the daemon runs, then try again.`;
+    const why = `Could not save what this device gets: ${error.message}.`;
+    Object.assign(state.push, { kinds: before, error: `${why} Check that the daemon runs, then try again.` });
   } finally {
     state.push.busy = false;
     render();

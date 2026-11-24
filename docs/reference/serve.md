@@ -949,8 +949,8 @@ same `endpoint`. The daemon refuses it with `422` when:
 when none had it, with `{"ok": "unsubscribed"}`.
 
 `kinds` turns kinds of notification on or off for that subscription. It adds to the stored choice,
-and a kind no one turned on or off takes its default. Without `kinds`, a known `endpoint` keeps its choice.
-The reply is `{"ok": "subscribed", "kinds": {...}}`, with every kind and whether the subscription
+and a kind no one turned on or off takes its default. Without `kinds`, a known `endpoint`
+keeps its choice. The reply is `{"ok": "subscribed", "kinds": {...}}`, with every kind and whether the subscription
 gets it:
 
 | Kind | Default | Notifies for |

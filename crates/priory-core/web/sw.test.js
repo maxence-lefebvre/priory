@@ -7,7 +7,7 @@ const SOURCE = readFileSync(new URL("./sw.js", import.meta.url), "utf8");
 
 // Loads sw.js as a browser would, with stand-ins for the worker's globals: one Cache Storage, a
 // registration that records notifications and subscriptions, and a fetch that records requests.
-function worker({ token = null, refuseKinds = false } = {}) {
+function worker({ token = null, refuseKinds = false, subscribeStatus = 200 } = {}) {
   const stores = new Map();
   const caches = {
     async open(name) {
@@ -62,6 +62,7 @@ function worker({ token = null, refuseKinds = false } = {}) {
     requests.push({ path, method: init.method || "GET", auth: init.headers?.Authorization, body: init.body ? JSON.parse(init.body) : null });
     if (path === "/api/push/key") return new Response(JSON.stringify({ key: "AQID" }));
     if (refuseKinds && requests.at(-1).body?.kinds) return new Response("{}", { status: 400 });
+    if (path === "/api/push/subscribe") return new Response("{}", { status: subscribeStatus });
     return new Response("{}");
   };
   vm.runInNewContext(SOURCE, { self, caches, fetch, location: { origin: "https://priory.test" }, URL, Response, atob, Uint8Array, JSON });
@@ -157,6 +158,19 @@ test("a daemon that refuses the kinds still gets the replaced subscription", asy
   await fire("pushsubscriptionchange", { oldSubscription: null });
   const sent = requests.filter((request) => request.path === "/api/push/subscribe");
   assert.deepEqual(sent.map((request) => request.body.kinds), [{ ask: true }, undefined]);
+});
+
+test("the old endpoint goes only once the daemon has the new one", async () => {
+  for (const refuseKinds of [false, true]) {
+    for (const subscribeStatus of [200, 422, 500]) {
+      const { fire, requests, ready, stores } = worker({ token: "secret", refuseKinds, subscribeStatus });
+      await ready;
+      stores.get("priory-push").set("/api/worker/kinds", JSON.stringify({ ask: true }));
+      await fire("pushsubscriptionchange", { oldSubscription: { endpoint: "https://fcm.googleapis.com/fcm/send/old", options: { applicationServerKey: new Uint8Array([1]).buffer } } });
+      const dropped = requests.some((request) => request.path === "/api/push/unsubscribe");
+      assert.equal(dropped, subscribeStatus === 200, `refuseKinds ${refuseKinds}, status ${subscribeStatus}`);
+    }
+  }
 });
 
 test("with no token kept, the worker subscribes again and leaves telling the daemon to the page", async () => {
