@@ -38,6 +38,7 @@ pub mod outside;
 mod overlap;
 pub mod patterns;
 pub mod pending;
+mod plan;
 pub mod post;
 mod preempt;
 pub mod progress;

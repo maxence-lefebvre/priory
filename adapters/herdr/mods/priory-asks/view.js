@@ -1,6 +1,6 @@
 // The Asks panel's view model: `priory asks --all --json` in, rows and states out. No drawing, no IO.
 
-import { age, ago, answeredBy, askBody, askHeading, autolink, checkState, planName, plansFirst, plural, stateWords, prStack, routedMark, routedNote, runnerOf, seenAgo, sentNote, submitted } from "./priory.js";
+import { age, ago, answeredBy, askBody, askHeading, autolink, checkState, planFrom, planUnread, plansFirst, plural, stateWords, prStack, routedMark, routedNote, runnerOf, seenAgo, sentNote, submitted } from "./priory.js";
 
 /** @typedef {{ pattern: string, url: string }[]} Links the rules `priory links` lists */
 
@@ -171,10 +171,10 @@ function history(ask) {
 
 const minutes = (/** @type {string} */ from, /** @type {string} */ to) => Math.round((Date.parse(to) - Date.parse(from)) / 60_000);
 
-/** The plan document in the task's worktree, else the plan step's latest result, else the progress the agent last published. @param {any} task */
+/** The plan its latest approval ask shows, else the plan step's latest result, else the progress the agent last published. @param {any} task */
 function plan(task) {
   const file = task.plan_file;
-  if (file) return { text: file.truncated ? `${file.text}\n\nShowing the first 64 KB. Read the rest at ${file.path}.` : file.text, from: planName(file.path) };
+  if (file) return { text: file.truncated ? `${file.text}\n\nShowing the first 64 KB. Read the rest at ${file.path ?? planFrom(file)}.` : file.text, from: planFrom(file) };
   if (task.plan) return { text: task.plan.summary, from: `${task.plan.step}, run ${task.plan.run}` };
   const progress = task.progress;
   if (!progress) return null;
@@ -231,9 +231,10 @@ export function askDetail(ask, { now, armed, task = null, links = [] }) {
   const request = task?.brief?.request;
   const groomed = task?.brief?.result;
   const brief = request || groomed ? { request, text: groomed?.summary ?? null, from: groomed ? `${groomed.step}, run ${groomed.run}` : null } : null;
-  const planned = task ? plan(task) : null;
-  // A step ask with a plan approves that plan: its Plan section comes first and opens by default.
-  const first = plansFirst(ask, task) ? "plan" : "why";
+  // An ask that approves a plan shows only the one its revision approves, first and by default.
+  const locked = planUnread(ask, task);
+  const planned = task && !locked ? plan(task) : null;
+  const first = plansFirst(ask) ? "plan" : "why";
   const pr = pullRequest(task?.pull_request, task?.stack);
   const runs = trace(task?.runs ?? [], now);
   // A long untitled question heads the detail with a short title and reads whole in Why.
@@ -259,10 +260,11 @@ export function askDetail(ask, { now, armed, task = null, links = [] }) {
       dimmed: arming !== null && arming !== index,
     })),
     chips: /** @type {[string, string][]} */ ([
-      first === "plan" && ["plan", "Plan"], ["why", "Why"], brief && ["brief", "Brief"], first === "why" && planned && ["plan", "Plan"], pr && ["pr", "PR"],
+      first === "plan" && planned && ["plan", "Plan"], ["why", "Why"], brief && ["brief", "Brief"], first === "why" && planned && ["plan", "Plan"], pr && ["pr", "PR"],
       runs.length > 0 && ["trace", "Trace"], ["history", "History"], ask.command && ["command", "Command"],
     ].filter(Boolean)),
     first,
+    locked,
     brief,
     plan: planned,
     pr,

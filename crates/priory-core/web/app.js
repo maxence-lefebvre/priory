@@ -1,6 +1,6 @@
 // Priory's web view (DESIGN.md): the frame, the Desk and the Asks, with answering through the CLI's verbs.
 // Agent text is untrusted: every value goes through `html`, which escapes it.
-import { ARM_MS, ASK_VIEWS, answeredAsks, answeredBy, askBody, askGroups, askHeading, confidenceNote, openAsksOf, planName, plansFirst, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, optionKey, press, runsCommand, submitted, takesText, writeNote } from "./asks.js";
+import { ARM_MS, ASK_VIEWS, answeredAsks, answeredBy, askBody, askGroups, askHeading, confidenceNote, openAsksOf, planFrom, planUnread, plansFirst, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, optionKey, press, runsCommand, submitted, takesText, writeNote } from "./asks.js";
 import { SPLITS, attentionView, costTiles, dayBars, money, scoreTable, splitTable } from "./costs.js";
 import { addBody, addOutcome } from "./add.js";
 import { linked } from "./links.js";
@@ -1148,8 +1148,9 @@ function askDetail(id, wide) {
   const bound = `${runnerOf(ask) ? `Runs on ${runnerOf(ask)}. ` : ""}Bound to revision ${ask.revision}.`;
   const optionButtons = optionList(ask, wide);
   const notice = state.notices.get(ask.id);
+  const planError = (ask.approves_plan ? state.task : state.batch)?.error;
   const lockedNote = locked === "offline" ? html`<p class="note" id="answer-locked">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>`
-    : locked ? html`<p class="note" id="answer-locked">${icon("layers", "s15")}<span>${state.batch?.error ? `Could not read the plan: ${state.batch.error}. It must load before you answer.` : `Reading the plan of revision ${ask.revision} before you answer.`}</span></p>` : "";
+    : locked ? html`<p class="note" id="answer-locked">${icon("layers", "s15")}<span>${planError ? `Could not read the plan: ${planError}. It must load before you answer.` : `Reading the plan of revision ${ask.revision} before you answer.`}</span></p>` : "";
   const writing = state.writing.has(ask.id) && !locked;
   const write = !takesText(ask)
     ? ""
@@ -1191,8 +1192,9 @@ function askDetail(id, wide) {
     ...(batch.closes?.length ? [["closes", "Closes", closesSection(batch)]] : []),
     ...(splitsOf(batch).length ? [["splits", "Splits", splitsSection(batch)]] : []),
   ] : [];
-  const sectionsRead = taskSections(taskOf(ask)).filter(([key]) => !batch || key !== "plan");
-  const lead = batch || !plansFirst(ask, taskOf(ask)) ? [] : sectionsRead.filter(([key]) => key === "plan");
+  const task = taskOf(ask);
+  const sectionsRead = taskSections(task).filter(([key]) => key !== "plan" || (!batch && !planUnread(ask, task)));
+  const lead = batch || !plansFirst(ask) ? [] : sectionsRead.filter(([key]) => key === "plan");
   const read = sectionsRead.filter((section) => !lead.includes(section));
   const sections = [...planned.map(([key, label]) => [key, label]), ...lead.map(([key, label]) => [key, label]), ["why", "Why"], ...read.map(([key, label]) => [key, label]), ["history", "History"], ...(ask.command ? [["command", "Command"]] : [])];
   const jump = html`<nav class="jump" aria-label="Sections">${sections.map(([key, label], i) => html`<a href="#${key}" aria-current="${i === 0 ? "true" : "false"}">${label}</a>`)}</nav>`;
@@ -1279,11 +1281,12 @@ function batchOf(which, version = null) {
   return state.batch.body;
 }
 
-// Why the options of an ask are disabled: offline, or a batch's ask whose plan is not read yet for
-// this revision, so a Go never answers a plan the page did not show.
+// Why the options of an ask are disabled: offline, or an ask whose plan is not read yet for this
+// revision, so no answer approves a plan the page did not show.
 function lockOf(ask) {
   if (state.failed) return "offline";
   if (runnerOf(ask)) return null;
+  if (planUnread(ask, state.task?.id === ask.task ? state.task.body : null)) return "plan";
   const read = state.batch?.which === ask.key && state.batch.version === ask.revision && state.batch.body;
   return ask.state === "open" && ask.key?.startsWith("batch:") && !read ? "plan" : null;
 }
@@ -1572,7 +1575,7 @@ function taskSections(task) {
   }
   const file = task.plan_file;
   if (file) {
-    sections.push(["plan", "Plan", sect("plan", "check", "Plan", html`<span class="mono" title="${file.path}">${planName(file.path)}</span>`, html`${md(file.text, task.repo)}${file.truncated ? html`<p class="note">${icon("file-text", "s15")}<span>Showing the first 64 KB. Read the rest at ${file.path}.</span></p>` : ""}`)]);
+    sections.push(["plan", "Plan", sect("plan", "check", "Plan", html`<span class="mono" title="${file.path || ""}">${planFrom(file)}</span>`, html`${md(file.text, task.repo)}${file.truncated ? html`<p class="note">${icon("file-text", "s15")}<span>Showing the first 64 KB. Read the rest at ${file.path || planFrom(file)}.</span></p>` : ""}`)]);
   } else if (task.plan) sections.push(["plan", "Plan", sect("plan", "check", "Plan", `${task.plan.step}, run ${task.plan.run}`, md(task.plan.summary, task.repo))]);
   const pr = task.pull_request;
   if (pr) {

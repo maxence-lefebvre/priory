@@ -270,21 +270,63 @@ test("Plan falls back to the task's progress when no plan step ran", () => {
   assert.deepEqual(detail.plan, { text: "Goal: Export the board\n- AC1: a CSV per board\nLatest change: wrote the exporter\nNext: merge", from: "progress" });
 });
 
-test("Plan shows the plan file of the task's worktree, and leads an open step ask", () => {
+const approval = () => {
   const [answered] = fixture("asks-history.json").asks;
-  const plan_file = { path: "/home/max/worktrees/acme/shop/7/.priory/brief.md", text: "## Decisions\nD1: cursor", truncated: false };
-  const task = { ...fixture("task.json"), plan_file };
-  const step = { ...answered, state: "open", kind: "step", options: ["approve", "revise"] };
+  const step = { ...answered, state: "open", kind: "step", options: ["approve", "revise"], approves_plan: true };
+  const plan_file = { ask: step.id, revision: step.revision, step: "groom", run: 2, path: "/home/me/worktrees/acme/shop/7/.priory/brief.md", text: "## Decisions\nD1: cursor", truncated: false };
+  return { answered, step, plan_file, task: { ...fixture("task.json"), plan_file } };
+};
+
+test("Plan shows the plan an open approval ask approves, and leads it", () => {
+  const { answered, step, plan_file, task } = approval();
   const detail = askDetail(step, { now, armed: null, task });
   assert.deepEqual(detail.plan, { text: "## Decisions\nD1: cursor", from: ".priory/brief.md" });
   assert.equal(detail.first, "plan");
+  assert.equal(detail.locked, false);
   assert.deepEqual(detail.chips.slice(0, 2), [["plan", "Plan"], ["why", "Why"]]);
 
   const cut = askDetail(step, { now, armed: null, task: { ...task, plan_file: { ...plan_file, truncated: true } } }).plan;
   assert.equal(cut?.text, `## Decisions\nD1: cursor\n\nShowing the first 64 KB. Read the rest at ${plan_file.path}.`);
-  // An outside ask, or one already answered, keeps Why first.
-  assert.equal(askDetail({ ...step, kind: "outside" }, { now, armed: null, task }).first, "why");
-  assert.equal(askDetail({ ...answered, kind: "step" }, { now, armed: null, task }).chips[0][0], "why");
+  // An ask that approves no plan, or one already answered, keeps Why first.
+  assert.equal(askDetail({ ...step, approves_plan: false }, { now, armed: null, task }).first, "why");
+  assert.equal(askDetail({ ...answered, kind: "step", approves_plan: true }, { now, armed: null, task }).chips[0][0], "why");
+});
+
+test("an approval ask shows no plan and takes no answer until the plan of its revision is read", () => {
+  const { step, task } = approval();
+  for (const read of [null, { ...task, plan_file: null }]) assert.equal(askDetail(step, { now, armed: null, task: read }).locked, true);
+  const raised = askDetail({ ...step, revision: step.revision + 1 }, { now, armed: null, task });
+  assert.equal(raised.locked, true);
+  assert.equal(raised.plan, null, "the plan of the earlier revision is not shown");
+});
+
+test("next and previous below 720 px open an approval ask on its plan, and an option waits for the plan", async () => {
+  const { context, draw, herdr, press: tap, settle } = await import("./kit.js");
+  const { default: Asks } = await import("../mods/priory-asks/main.js");
+  const { step, task } = approval();
+  const before = { ...step, id: 901, since: "2026-11-01T00:00:00Z", approves_plan: false };
+  const approving = { ...step, id: 902, since: "2026-11-02T00:00:00Z", task: step.task };
+  const after = { ...before, id: 903, since: "2026-11-03T00:00:00Z" };
+  herdr.reset();
+  herdr.replies = { asks: { revision: 1, bands: [], asks: [before, approving, after] }, task: { ...task, plan_file: { ...task.plan_file, ask: 902 } }, links: { links: [] } };
+  const panel = new Asks();
+  const cx = context();
+  panel.init({}, cx);
+  await settle();
+  panel.select(901, cx);
+  panel.reading = "why";
+  tap(draw(panel, cx), "next");
+  assert.deepEqual([panel.selected, panel.reading], [902, "plan"]);
+  panel.task = null;
+  panel.choose(approving, 0, cx);
+  assert.equal(panel.armed, null, "no plan was read");
+  await settle();
+  panel.choose(approving, 0, cx);
+  assert.equal(panel.armed?.option, 0);
+  tap(draw(panel, cx), "next");
+  assert.deepEqual([panel.selected, panel.reading], [903, "why"]);
+  tap(draw(panel, cx), "previous");
+  assert.deepEqual([panel.selected, panel.reading], [902, "plan"]);
 });
 
 test("History keeps entries of the same second newest first", () => {

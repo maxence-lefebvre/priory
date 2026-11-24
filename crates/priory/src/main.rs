@@ -3432,7 +3432,7 @@ fn task_text(task: &str) -> ExitCode {
         return usage();
     };
     let shown = state::open().and_then(|db| {
-        let task = listing::revised(&db, "task", |db| listing::task(db, &runtime::home(), id))
+        let task = listing::revised(&db, "task", |db| listing::task(db, id))
             .map_err(|error| error.to_string())?
             .ok_or_else(|| format!("no task {id}"))?;
         let text = |value: &serde_json::Value| value.as_str().unwrap_or("-").to_owned();
@@ -3510,7 +3510,7 @@ fn task_json(task: &str) -> ExitCode {
         return usage();
     };
     let shown = state::open().and_then(|db| {
-        match listing::revised(&db, "task", |db| listing::task(db, &runtime::home(), id))
+        match listing::revised(&db, "task", |db| listing::task(db, id))
             .map_err(|error| error.to_string())?
         {
             Some(task) => {

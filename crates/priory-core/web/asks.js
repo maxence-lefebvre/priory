@@ -41,8 +41,14 @@ export const routedNote = (ask) => (routedMark(ask) ? `${ask.routed_to} is answe
 /** A plan file's path from its worktree, such as `.priory/brief.md`. @param {string} path */
 export const planName = (path) => path.slice(path.lastIndexOf("/.priory/") + 1);
 
-/** Whether an ask approves its task's plan: an open step ask whose task has one. Its Plan section then leads. @param {any} ask @param {any} task */
-export const plansFirst = (ask, task) => ask.state === "open" && ask.kind === "step" && Boolean(task?.plan_file || task?.plan);
+/** Whether an open ask of this runner approves its task's plan. Its Plan section then leads. @param {any} ask */
+export const plansFirst = (ask) => ask.state === "open" && Boolean(ask.approves_plan) && !runnerOf(ask);
+
+/** Whether `task`, as last read, lacks the plan this revision of the ask approves: no answer goes until it is read. @param {any} ask @param {any} task */
+export const planUnread = (ask, task) => plansFirst(ask) && !(task?.plan_file?.ask === ask.id && task.plan_file.revision === ask.revision);
+
+/** Where a plan came from: its file, else its result. @param {any} plan */
+export const planFrom = (plan) => (plan.path ? planName(plan.path) : `${plan.step}, run ${plan.run}`);
 
 /** The runner of another runner's ask, which alone lists `submissions`, else null. @param {any} ask */
 export const runnerOf = (ask) => (Array.isArray(ask?.submissions) ? ask.runner : null);

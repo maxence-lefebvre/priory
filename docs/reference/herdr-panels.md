@@ -165,7 +165,7 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
   draw with their [links](#links).
 
 The detail shows the sections Why, Brief, Plan, PR, Trace, History and Command. Brief shows the
-request and the `groom` step's result, Plan the task's plan document (`plan_file`, see
+request and the `groom` step's result, Plan the plan its latest approval ask shows (`plan_file`, see
 [the task endpoint](serve.md)) with its path, or else the `plan` step's result, or else the latest result of a step
 whose name starts with `plan-`, or else the task's `progress`, PR the pull request's title, branches, state, review and checks, then the task's stack when it
 has two or more pull requests (see [Stacks](#stacks)), and Trace each run with its
@@ -173,7 +173,8 @@ span, outcome and tokens. A check shows a check, a cross, a clock while it has n
 dash when skipped or neutral; review and check states read in plain words, such as "changes
 requested" and "passed", as `checkState` and `stateWords` in `lib/priory.js` say them for the web too.
 A section the task lacks is left out with its chip, as DESIGN.md says.
-An open step ask whose task has a plan puts Plan first, and its detail opens on Plan rather than Why.
+An open ask that approves a plan puts Plan first, and its detail opens on Plan rather than Why. Its
+options wait until the plan of its revision is read.
 History lists every revision and refused answer of the ask, and its answer, newest first. A refused
 answer shows on a warn tile. Briefs, plans and results draw as plain text, like the agent's text.
 

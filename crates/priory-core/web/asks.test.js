@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, submitted, seenAgo, sentNote, shownGroups, snoozeShortcut, stillArmed, press, optionKey, takesText, openAsksOf, planName, plansFirst, writeNote, shrunkHead, answeredAsks, confidenceNote, askHeading, askBody, cutAt, HEADING_MAX } from "./asks.js";
+import { ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, submitted, seenAgo, sentNote, shownGroups, snoozeShortcut, stillArmed, press, optionKey, takesText, openAsksOf, planFrom, planName, planUnread, plansFirst, writeNote, shrunkHead, answeredAsks, confidenceNote, askHeading, askBody, cutAt, HEADING_MAX } from "./asks.js";
 
 const now = Date.parse("2026-11-20T12:00:00Z");
 const ask = (id, fields) => ({ id, state: "open", snoozed_until: null, ...fields });
@@ -300,17 +300,30 @@ test("a title, or a question of one short line, is the heading itself, and the b
   assert.equal(askBody(short), null);
 });
 
-test("an open step ask leads with its task's plan, from the worktree file or the plan step", () => {
-  const ask = { state: "open", kind: "step" };
-  const file = { plan_file: { path: "/w/.priory/brief.md", text: "D1", truncated: false }, plan: null };
-  assert.equal(plansFirst(ask, file), true);
-  assert.equal(plansFirst(ask, { plan_file: null, plan: { step: "plan", run: 2, summary: "1. cursor" } }), true);
-  assert.equal(plansFirst(ask, { plan_file: null, plan: null }), false);
-  assert.equal(plansFirst(ask, null), false);
-  assert.equal(plansFirst({ ...ask, kind: "outside" }, file), false);
-  assert.equal(plansFirst({ ...ask, state: "answered" }, file), false);
+test("only an open ask that approves a plan leads with it", () => {
+  const ask = { id: 4, state: "open", kind: "step", approves_plan: true };
+  assert.equal(plansFirst(ask), true);
+  assert.equal(plansFirst({ ...ask, approves_plan: false }), false, "a merge, deploy or debate ask");
+  assert.equal(plansFirst({ ...ask, state: "answered" }), false);
+  assert.equal(plansFirst({ ...ask, runner: "desktop", submissions: [] }), false, "another runner's plan is not read here");
+});
+
+test("an approving ask is locked until its task was read with the plan of its own revision", () => {
+  const ask = { id: 4, revision: 2, state: "open", approves_plan: true };
+  const plan = (ask, revision) => ({ plan_file: { ask, revision, path: null, step: "groom", run: 9, text: "D1" } });
+  assert.equal(planUnread(ask, null), true);
+  assert.equal(planUnread(ask, { plan_file: null }), true);
+  assert.equal(planUnread(ask, plan(3, 2)), true, "an earlier ask's plan");
+  assert.equal(planUnread(ask, plan(4, 2)), false);
+  assert.equal(planUnread({ ...ask, revision: 3 }, plan(4, 2)), true, "the kept body of a re-raised ask");
+  assert.equal(planUnread({ ...ask, approves_plan: false }, null), false);
+});
+
+test("a plan names its file, else its result", () => {
+  assert.equal(planFrom({ path: "/home/me/worktrees/acme/shop/7/.priory/plan.md" }), ".priory/plan.md");
+  assert.equal(planFrom({ path: null, step: "groom", run: 9 }), "groom, run 9");
 });
 
 test("a plan file is named from its worktree", () => {
-  assert.equal(planName("/home/max/worktrees/acme/shop/7/.priory/brief.md"), ".priory/brief.md");
+  assert.equal(planName("/home/me/worktrees/acme/shop/7/.priory/brief.md"), ".priory/brief.md");
 });

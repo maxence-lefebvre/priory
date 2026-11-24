@@ -3095,6 +3095,7 @@ pub(crate) fn settle(
                     ask_text(tx, run.task)?
                 ],
             )?;
+            crate::plan::snapshot(tx, tx.last_insert_rowid(), run.task, &run.step)?;
             end(tx, run.id, "asleep")?;
             set(tx, run.task, "asleep", None, None)?;
             return Ok(Some(Some(run.tmux.clone())));
@@ -3785,9 +3786,14 @@ fn step_in(
                 (None, true, None) => target.to_owned(),
                 (None, false, None) => format!("{target}: {context}"),
             };
-            let text = match go {
-                Some((_, plan)) => Some(plan),
-                None => ask_text(tx, task)?,
+            let (text, approves) = match go {
+                Some((_, plan)) => (Some(plan), None),
+                None => (
+                    ask_text(tx, task)?,
+                    crate::plan::approved_at(tx, task, target, |at| {
+                        self::step(workflows, workflow, at)
+                    })?,
+                ),
             };
             let command = match step_command(tx, task, step, &values, factory)? {
                 Ok(command) => command,
@@ -3811,8 +3817,12 @@ fn step_in(
                     text
                 ],
             )?;
+            let ask = tx.last_insert_rowid();
+            if let Some(step) = approves {
+                crate::plan::snapshot(tx, ask, task, &step)?;
+            }
             if let Some(lead) = &lead {
-                call_lead(tx, tx.last_insert_rowid(), lead)?;
+                call_lead(tx, ask, lead)?;
             }
             set(tx, task, "asleep", Some(target), None)?;
             finish("asleep")
@@ -3867,7 +3877,8 @@ pub(crate) fn answer_in_tx(
     Ok(applied)
 }
 
-/// Applies `answer` in `tx`, writing nothing when it refuses it.
+/// Applies `answer` in `tx`. A refusal writes nothing, except that a plan that changed since the
+/// ask showed it is shown as the ask's next revision.
 fn answer_in(
     tx: &Transaction,
     answer: &Answer,
@@ -3977,6 +3988,19 @@ fn answer_in(
         if let Err(refused) = crate::batch::answering(tx, task, go, &answer.by)? {
             return Ok(Err(refused));
         }
+    }
+    if crate::plan::changed(tx, answer.ask)? {
+        crate::plan::again(tx, answer.ask)?;
+        tx.execute(
+            "UPDATE asks SET revision = revision + 1 WHERE id = ?1",
+            [answer.ask],
+        )?;
+        unroute(tx, answer.ask)?;
+        return Ok(Err(format!(
+            "the plan of ask {label} changed since revision {}: read revision {} and answer again",
+            answer.revision,
+            answer.revision + 1
+        )));
     }
     tx.execute(
         &format!("UPDATE asks SET answer = ?2, answered = {NOW}, answered_by = ?3 WHERE id = ?1"),
@@ -4616,15 +4640,7 @@ pub(crate) fn tell_ask(tx: &Transaction, task: i64, line: &str) -> rusqlite::Res
             "UPDATE asks SET revision = revision + 1, text = ?2 WHERE id = ?1",
             params![ask, text],
         )?;
-        // A lead was called for the earlier revision, so its answer would be refused: the person
-        // decides the new one.
-        tx.execute(
-            "UPDATE asks SET routed = NULL,
-               question = question || ' (' || routed || ' did not answer: the ask changed while it waited)'
-             WHERE id = ?1 AND routed IS NOT NULL",
-            [ask],
-        )?;
-        drop_lead(tx, ask, &format!("ask {ask} changed while it waited"))?;
+        unroute(tx, ask)?;
         return Ok(true);
     }
     let (kept, counted) = match text.rsplit_once("\n\n") {
@@ -4637,6 +4653,18 @@ pub(crate) fn tell_ask(tx: &Transaction, task: i64, line: &str) -> rusqlite::Res
         params![ask, text],
     )?;
     Ok(true)
+}
+
+/// Returns ask `ask` to the person at its new revision: its lead was called for the earlier one, so
+/// the lead's answer would be refused.
+fn unroute(tx: &Transaction, ask: i64) -> rusqlite::Result<()> {
+    tx.execute(
+        "UPDATE asks SET routed = NULL,
+           question = question || ' (' || routed || ' did not answer: the ask changed while it waited)'
+         WHERE id = ?1 AND routed IS NOT NULL",
+        [ask],
+    )?;
+    drop_lead(tx, ask, &format!("ask {ask} changed while it waited"))
 }
 
 /// The count in an ask's `While this waited: and N more.` line.
@@ -4751,6 +4779,11 @@ fn revive(
 /// Makes `generation` the task's, withdrawing the open asks, waits and queued prompts of the
 /// earlier ones so that no late answer or event reaches it.
 fn regenerate(tx: &Transaction, task: i64, generation: i64) -> rusqlite::Result<()> {
+    tx.execute(
+        "INSERT INTO generations (task, after)
+         SELECT ?1, coalesce(max(id), 0) FROM runs WHERE task = ?1",
+        [task],
+    )?;
     tx.execute(
         "UPDATE asks SET withdrawn = 1, withdrawn_reason = 'revived' WHERE task = ?1
          AND answer IS NULL AND withdrawn IS NULL",
@@ -5172,6 +5205,7 @@ pub(crate) fn approved(
          withdrawn_reason = NULL, question = question || ?2, text = ?3 WHERE id = ?1",
         params![ask, moved, ask_text(&tx, task)?],
     )?;
+    crate::plan::again(&tx, ask)?;
     unqueue(&tx, task, &entry_prompt(&tx, task, at)?)?;
     set(&tx, task, "asleep", Some(&approving), None)?;
     tx.commit()?;

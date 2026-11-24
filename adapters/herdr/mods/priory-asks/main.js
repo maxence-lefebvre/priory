@@ -1,7 +1,7 @@
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, Button, Popover, ScrollHandle, Textarea, TextareaState } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile, setShared, shared } from "herdr";
-import { follow, priory, runnerOf } from "./priory.js";
+import { follow, planUnread, priory, runnerOf } from "./priory.js";
 import { selectable, stateTile } from "./ui.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
 import { ARM_MS, askDetail, asksList, press, refusal, tomorrowAt } from "./view.js";
@@ -214,6 +214,13 @@ export default class PrioryAsks extends View {
     cx.notify();
   }
 
+  /** Opens an ask at the section it leads with. @param {string | number} id @param {import("gpui-kit").Context} cx */
+  read(id, cx) {
+    this.select(id, cx);
+    const ask = this.selectedAsk();
+    this.reading = ask && askDetail(ask, { now: Date.now(), armed: null }).first;
+  }
+
   /** @param {number} step @param {import("gpui-kit").Context} cx */
   move(step, cx) {
     const ids = this.rows().map((row) => row.id);
@@ -224,7 +231,7 @@ export default class PrioryAsks extends View {
 
   /** @param {any} ask @param {number} index @param {import("gpui-kit").Context} cx */
   choose(ask, index, cx) {
-    if (this.busy() || this.error) return;
+    if (this.busy() || this.error || planUnread(ask, this.task)) return;
     const now = Date.now();
     const outcome = press(ask, index, this.armed, now);
     if ("arm" in outcome) {
@@ -255,6 +262,7 @@ export default class PrioryAsks extends View {
   // deliberate press of its own. "Sending" shows only while the request is in flight.
   /** @param {any} ask @param {string} text @param {boolean} run @param {import("gpui-kit").Context} cx */
   send(ask, text, run, cx) {
+    if (planUnread(ask, this.task)) return;
     this.notices.delete(ask.id);
     this.pending = { id: ask.id, text };
     cx.notify();
@@ -550,6 +558,7 @@ export default class PrioryAsks extends View {
           .child(svg(ICON("corner-down-right")).size(14).flex_none().mt(2)).child(div().flex_1().min_w_0().whitespace_normal().child(selectable(`next-${ask.id}`, detail.recommendation?.next ?? "")))))))
       .when(detail.options.length > 0, (el) => el.child(this.options(ask, detail, t, now)))
       .when(Boolean(this.error) && ask.state === "open", (el) => el.child(this.note("x", "Reconnect to answer.", t["text-2"])))
+      .when(detail.locked && !this.error, (el) => el.child(this.note("clock", `Reading the plan of revision ${ask.revision} before you answer.`, t["text-2"])))
       .when(Boolean(this.pending && this.pending.id === ask.id), (el) => el.child(this.sending(t)))
       .when(ask.state === "open", (el) => el.child(this.actions(ask, detail, t)))
       .when(Boolean(detail.elsewhere), (el) => el.child(div().whitespace_normal().text_size(TYPE.small[0]).text_color(t["text-2"]).child(selectable(`elsewhere-${ask.id}`, detail.elsewhere ?? ""))))
@@ -558,7 +567,7 @@ export default class PrioryAsks extends View {
 
   /** @param {any} ask @param {ReturnType<typeof askDetail>} detail @param {Palette} t @param {number} now */
   options(ask, detail, t, now) {
-    const busy = this.busy() || Boolean(this.error);
+    const busy = this.busy() || Boolean(this.error) || detail.locked;
     return v_flex().gap(S["space-2"]).children(detail.options.flatMap((option) => {
       const chosen = this.pending?.id === ask.id && this.pending.text === option.label;
       const fill = option.armed ? t.emph : option.recommended ? t.action : t.surface;
@@ -809,8 +818,8 @@ export default class PrioryAsks extends View {
           .child(div().truncate().font_weight(600).text_size(TYPE.small[0]).child(detail.question))
           .child(div().truncate().text_size(TYPE.caption[0]).text_color(t["text-3"]).child(detail.context.filter((word) => word !== "Command").slice(0, 2).concat(`revision ${ask.revision}`).join(" "))))
         .when(at >= 0, (el) => el.child(div().font_family(this.font.display).font_weight(700).text_size(TYPE.small[0]).child(`${at + 1}/${open.length}`)))
-        .child(icon("previous", "chevron-up", "Previous ask", (cx) => { this.select(open[at - 1], cx); this.reading = "why"; }, at <= 0))
-        .child(icon("next", "chevron-down", "Next ask", (cx) => { this.select(open[at + 1], cx); this.reading = "why"; }, at < 0 || at >= open.length - 1)))
+        .child(icon("previous", "chevron-up", "Previous ask", (cx) => { this.read(open[at - 1], cx); }, at <= 0))
+        .child(icon("next", "chevron-down", "Next ask", (cx) => { this.read(open[at + 1], cx); }, at < 0 || at >= open.length - 1)))
       .child(div().flex_none().px(S["space-4"]).py(S["space-2"]).border_b(1).border_color(t.line).child(this.chips(ask, t)))
       .child(v_flex().id("ask-reading").flex_1().min_h_0().overflow_y_scrollbar().p(S["space-4"]).gap(S["space-3"])
         .when(this.notices.has(ask.id), (el) => el.child(div().whitespace_normal().text_size(TYPE.small[0]).text_color(t["warn-text"]).child(this.notices.get(ask.id) ?? "")))
@@ -841,7 +850,7 @@ export default class PrioryAsks extends View {
             .child(this.options(ask, detail, t, now))))
         .child(Button.new(`bar-answer-${ask.id}`).flex_1().min_w_0().min_h(PANE.control).px(S["space-3"]).py(S["space-1"]).flex().items_center().rounded(RADIUS.card)
           .bg(option.armed ? t.emph : t.action).text_color(option.armed ? t["on-emph"] : t["on-action"])
-          .when(option.armed, (el) => el.border(3).border_color(t.action)).disabled(this.busy() || Boolean(this.error))
+          .when(option.armed, (el) => el.border(3).border_color(t.action)).disabled(this.busy() || Boolean(this.error) || detail.locked)
           .focus((s) => s.border(2).border_color(t["action-text"])).on_click((_event, cx) => this.choose(ask, option.index, cx))
           .child(v_flex().min_w_0()
             .child(div().truncate().font_weight(600).child(option.armed ? `Confirm: ${option.label}` : option.label))

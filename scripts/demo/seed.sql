@@ -176,11 +176,34 @@ INSERT INTO tasks (id,key,workflow,step,state,band,lane,trigger,source,repo,tldr
 (13,'ENG-252','implement','approve-implementation','asleep','today','payments','linear','seed-13','acme/shop',NULL,strftime('%Y-%m-%dT%H:%M:%SZ','now','-90 minutes'),strftime('%Y-%m-%dT%H:%M:%SZ','now','-25 minutes'),strftime('%Y-%m-%dT%H:%M:%SZ','now','-25 minutes'),'claude-opus-5-5','eng-252');
 INSERT INTO asks (id,task,step,kind,revision,question,options,recommendation,created) VALUES
 (90,13,'approve-implementation','step',1,'approve-implementation: Plan: /home/max/acme/shop/.priory/plans/ENG-252-plan.md. Only apps/admin-api/src/mcp/routes.ts changes.'||char(10)||'The route table gains one entry for the export tool, behind the existing admin guard.'||char(10)||'No migration: the export reads the tables the list tools already read.'||char(10)||'Tests: apps/admin-api/test/mcp/routes.test.ts adds a case for the guard and one for the export.'||char(10)||'The plan leaves the client untouched; the next step regenerates its types.'||char(10)||'Risk: the guard is shared with the list tools, so a mistake there would expose them too.'||char(10)||'I checked acme/shop#198, which added the guard, for its tests.'||char(10)||'They cover an admin and a viewer; the export adds a third case for a revoked token.'||char(10)||'The change is about 40 lines with tests.'||char(10)||'Approve to start the implementation run, or revise to send the plan back.'||char(10)||'Reject drops the task.'||char(10)||'Nothing else waits on this answer.','["approve","revise","reject"]','approve',strftime('%Y-%m-%dT%H:%M:%SZ','now','-25 minutes'));
--- a groom step's plan approval: the plan lives in the worktree's .priory/brief.md, which serve.sh writes
+-- a groom step's plan approval, with the plan stored when it was asked
 INSERT INTO tasks (id,key,workflow,step,state,band,lane,trigger,source,repo,tldr,created,changed,entered,model,branch) VALUES
 (14,'ENG-270','groom','approve-plan','asleep','today','search','linear','seed-14','acme/shop','Paginate the search results page',strftime('%Y-%m-%dT%H:%M:%SZ','now','-70 minutes'),strftime('%Y-%m-%dT%H:%M:%SZ','now','-15 minutes'),strftime('%Y-%m-%dT%H:%M:%SZ','now','-15 minutes'),'claude-opus-5-5','priory/eng-270');
 INSERT INTO asks (id,task,step,kind,revision,question,options,recommendation,title,text,created) VALUES
 (91,14,'approve-plan','step',1,'Approve the plan for ENG-270?','["approve","revise","reject"]','approve','Approve the plan for ENG-270','The brief holds three decisions for you, the acceptance criteria and the plan.',strftime('%Y-%m-%dT%H:%M:%SZ','now','-15 minutes'));
+INSERT INTO ask_plans (ask,step,run,path,text,truncated,hash) VALUES
+(91,'groom',0,'/home/me/worktrees/acme/shop/eng-270/.priory/brief.md','# ENG-270: paginate the search results page
+
+## Decisions to approve
+
+- **D1.** Page with an opaque cursor, not an offset, so new products never shift a page.
+- **D2.** Show 24 results a page, the grid''s three full rows on a desktop.
+- **D3.** Keep the `?page=` links working: redirect them to the first page.
+
+## Acceptance criteria
+
+1. A search with no cursor shows the first 24 results and a Next link.
+2. The last page shows no Next link.
+3. An old `?page=3` link lands on the first page with a 301.
+
+## Plan
+
+1. Add `cursor` and `limit` to `search/query.rs`, keyed on the result''s rank and id.
+2. Render Next and Previous links in `templates/search.html`.
+3. Cover the three criteria in `tests/search_pages.rs`.
+
+Risk: the rank changes when the index rebuilds, so a cursor can skip a result during a rebuild.
+',0,'');
 -- ask 2 snoozed until tomorrow 09:00
 INSERT INTO snoozes (kind,item,task,snoozed,until) VALUES ('ask',2,2,strftime('%Y-%m-%dT%H:%M:%SZ','now','-30 minutes'),strftime('%Y-%m-%dT09:00:00Z','now','+1 day'));
 -- a stalled queue's banner, and a skipped check on task 1's pull request

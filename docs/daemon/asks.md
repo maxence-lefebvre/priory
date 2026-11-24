@@ -74,20 +74,31 @@ Known limits:
 
 ## The plan an ask approves
 
-A step that approves a plan, such as `approve-plan` in a groom workflow, asks after an agent wrote
-that plan to a file in the task's worktree: `.priory/plan.md`, or `.priory/brief.md` for a brief.
-`priory task ID --json` and `/api/tasks/ID` read that file on each call and serve it as
-`plan_file` (see [serve.md](../reference/serve.md)). The web view and the Herdr Asks panel show it
-in the ask's Plan section, as Markdown in the web view and as plain text in Herdr. For an open step
-ask, Plan comes before Why, so the decisions read before the options.
+A human step approves a plan when the task's latest result leads to it, and that result is from a
+step named `groom`, `plan` or `plan-<something>`, or graded the task red, yellow or green. So does the
+ask of a `plan` task's grading step. A merge, deploy, debate or batch ask approves no such plan.
+
+When the ask is raised, Priory stores the plan: the newer of `.priory/plan.md` and `.priory/brief.md`
+in the task's worktree, or else the summary of the step's result. A file counts only when it was
+written since the step's runs began, so a file left by an earlier step or generation never shows.
+`priory task ID --json` and `/api/tasks/ID` serve the stored plan as `plan_file` (see
+[serve.md](../reference/serve.md)). The web view and the Herdr Asks panel show it
+in the ask's Plan section, as Markdown in the web view and as plain text in Herdr. For an open ask
+that approves a plan, Plan comes before Why, and the options wait until the plan of that revision
+is read.
+
+An answer approves only the plan shown. When the plan changed since, Priory refuses the answer and
+asks again as the next revision, which shows the new plan. A lead's, a session's and another
+runner's answer are checked the same way.
 
 ![The approve-plan ask of ENG-270 in the web view: the Plan section leads, with .priory/brief.md, its three decisions, acceptance criteria and plan.](../images/web-view-plan-ask-1440-light.png)
 
-Priory reads only the task's own worktree. A file whose real path leaves it, such as a symlink to
-another folder, is skipped. Past 64 KB the text is cut, and the section says where to read the
-rest. With no file, Plan falls back to the `plan` step's result, as before.
+Priory reads only a regular file the worktree itself holds: it follows no symlink and waits on no
+FIFO. It ignores a file over 1 MB. Past 64 KB the text is cut, and the section says where to read
+the rest; an edit past the cut still refuses an answer.
 
 Known limits:
 
-- A task on another runner keeps its worktree on that machine, so this runner shows the fallback.
-- A worktree removed to free disk takes its plan file with it.
+- Another runner's ask shows no plan here, since its plan is stored on that runner.
+- A retired task has no worktree to compare, so its stored plan is the one approved.
+- An edit after the answer is not checked.
