@@ -61,7 +61,8 @@ pub(crate) fn holds_any_secret(text: &str, exact: &[String]) -> bool {
 
 /// `text` with its escape sequences and control characters gone, then with only the latter gone.
 fn readings(text: &str) -> [String; 2] {
-    let plain = CONTROL.replace_all(&ESCAPE.replace_all(text, ""), "");
+    let unescaped = ESCAPE.replace_all(text, "");
+    let plain = CONTROL.replace_all(&unescaped, "");
     [
         plain.into_owned(),
         CONTROL.replace_all(text, "").into_owned(),
