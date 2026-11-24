@@ -3385,6 +3385,9 @@ pub(crate) fn admissible<'r>(
     let mut statement = db.prepare(&format!(
         "SELECT id, workflow, step, trigger, state = 'queued', repo, preempted, lane FROM tasks
              WHERE state IN ('queued', 'ready')
+             -- A task marked to be held while it ran is held on the next tick.
+             AND NOT EXISTS (SELECT 1 FROM holds WHERE holds.task = tasks.id
+               AND holds.released IS NULL)
              -- A task waits while a recipe runs in its worktree, or a teardown is owed there.
              AND NOT EXISTS (SELECT 1 FROM recipes WHERE recipes.task = tasks.id
                AND recipes.ended IS NULL
@@ -4458,9 +4461,21 @@ pub(crate) fn signal(
         "Stop" => {
             tx.execute("UPDATE runs SET idle = 1, turn = NULL WHERE id = ?1", [run])?;
             let context = crate::trace::account(&tx, trace, run, signal.transcript.as_deref())?;
-            // A run marked for an urgent wake ends here; its resumed session compacts instead.
-            if let Some(head) = crate::preempt::due(&tx, run, watched)? {
-                kill = crate::tools::preempt(&tx, &signal.session, trace, head)?;
+            // A run marked for a hold or an urgent wake ends here; its resumed session compacts instead.
+            if crate::hold::stops(&tx, run, trace.factory)? {
+                kill = crate::tools::stop_marked(
+                    &tx,
+                    &signal.session,
+                    trace,
+                    crate::tools::Stopped::Held,
+                )?;
+            } else if let Some(head) = crate::preempt::due(&tx, run, watched)? {
+                kill = crate::tools::stop_marked(
+                    &tx,
+                    &signal.session,
+                    trace,
+                    crate::tools::Stopped::For(head),
+                )?;
             // The run settles its ask or wait once its compact is typed, so it never sleeps past it.
             // A result carried into the next step on this process compacts there. A run whose gate
             // grades waits, idle, for the verdict, which settles it.

@@ -1482,6 +1482,7 @@ fn write_line(db: &Connection, write: &Write, body: &[u8]) -> Result<(String, Se
                 hold: None,
                 text: body.text,
                 expected: body.revision,
+                now: false,
             };
             Ok((line(&act), Sent::Task(act.task, act.expected)))
         }

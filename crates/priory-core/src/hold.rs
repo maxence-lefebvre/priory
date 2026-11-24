@@ -1,10 +1,10 @@
 use priory_factory::factory::{After, Factory, Hold};
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
 
-/// Holds the queued or ready `task` with `hold`, and returns its new reason. A running or asleep
-/// task is refused: its run already started, and its own wait would race the hold.
+/// Holds the queued or ready `task` with `hold`, and returns its new reason. A running task is
+/// marked instead, by the hold's rows, and held once its turn ends. Any other is refused.
 pub(crate) fn hold(
     tx: &Transaction,
     task: i64,
@@ -19,21 +19,19 @@ pub(crate) fn hold(
     else {
         return Ok(Err(format!("there is no task {task}")));
     };
-    if state != "queued" && state != "ready" {
+    if !["queued", "ready", "running"].contains(&state.as_str()) {
         return Ok(Err(format!(
-            "task {task} is {state}: only a queued or ready task can be held"
+            "task {task} is {state}: only a queued, ready or running task can be held"
         )));
     }
     let conditions = match conditions(tx, task, hold, factory)? {
         Ok(conditions) => conditions,
         Err(error) => return Ok(Err(error)),
     };
-    let texts: Vec<&str> = conditions
-        .iter()
-        .map(|condition| &*condition.text)
-        .collect();
-    let reason = format!("held: {}, {}", hold.reason, texts.join(" and "));
-    let mut ids = vec![];
+    if state == "running" && hold.parked {
+        return Ok(Err(format!("task {task} is running: it cannot be parked")));
+    }
+    close(tx, task, "replaced by another hold")?;
     for condition in &conditions {
         tx.execute(
             "INSERT INTO holds (task, reason, kind, until, target, resource, if_closed, resume)
@@ -46,16 +44,65 @@ pub(crate) fn hold(
                 condition.target,
                 condition.resource,
                 condition.if_closed,
-                state
+                if state == "queued" { "queued" } else { "ready" }
             ],
         )?;
-        ids.push(tx.last_insert_rowid());
     }
+    if state == "running" {
+        let (_, why) = open(tx, task)?;
+        let reason = format!("{AFTER_TURN}{why}");
+        tx.execute(
+            "UPDATE tasks SET reason = ?2 WHERE id = ?1",
+            params![task, reason],
+        )?;
+        return Ok(Ok(format!("task {task} {reason}")));
+    }
+    park(tx, task).map(Ok)
+}
+
+/// What a running task's reason starts with while it has a hold to take at its turn end.
+const AFTER_TURN: &str = "holds after this turn: ";
+
+/// Whether the task in scope is marked: it has an open hold and is not held yet.
+const MARKED: &str = "tasks.state != 'held' AND EXISTS (SELECT 1 FROM holds AS marks
+  WHERE marks.task = tasks.id AND marks.released IS NULL)";
+
+/// The ids of the open hold of `task`, and why it is held and until what.
+fn open(tx: &Transaction, task: i64) -> rusqlite::Result<(Vec<i64>, String)> {
+    let mut ids = vec![];
+    let mut texts = vec![];
+    let mut reason = String::new();
+    let mut statement = tx.prepare(
+        "SELECT id, reason, kind, until, target, resource, if_closed FROM holds
+         WHERE task = ?1 AND released IS NULL ORDER BY id",
+    )?;
+    let mut rows = statement.query([task])?;
+    while let Some(row) = rows.next()? {
+        if ids.is_empty() {
+            reason = row.get("reason")?;
+        }
+        ids.push(row.get("id")?);
+        texts.push(Condition::read(row)?.text());
+    }
+    Ok((ids, format!("{reason}, {}", texts.join(" and "))))
+}
+
+/// Holds the queued or ready `task` with its open hold, and returns its new reason.
+fn park(tx: &Transaction, task: i64) -> rusqlite::Result<String> {
+    let (ids, why) = open(tx, task)?;
+    let reason = format!("held: {why}");
+    tx.execute(
+        &format!(
+            "UPDATE holds SET created = {NOW}, resume = (SELECT state FROM tasks WHERE id = ?1)
+             WHERE task = ?1 AND released IS NULL"
+        ),
+        [task],
+    )?;
     tx.execute(
         "UPDATE tasks SET state = 'held', reason = ?2 WHERE id = ?1",
         params![task, reason],
     )?;
-    due(tx)?;
+    due_conditions(tx)?;
     for &id in &ids {
         judge(tx, id)?;
     }
@@ -64,10 +111,116 @@ pub(crate) fn hold(
         [ids[0]],
         |row| row.get(0),
     )?;
-    Ok(Ok(match released {
+    Ok(match released {
         Some(how) => format!("task {task} {reason}; released at once: {how}"),
         None => format!("task {task} {reason}"),
-    }))
+    })
+}
+
+/// Closes the open hold of `task`, as `how`.
+fn close(tx: &Transaction, task: i64, how: &str) -> rusqlite::Result<()> {
+    tx.execute(
+        &format!(
+            "UPDATE holds SET released = {NOW}, released_as = ?2 WHERE task = ?1 AND released IS NULL"
+        ),
+        params![task, how],
+    )
+    .map(drop)
+}
+
+/// Holds the task of a run that just ended for its hold, ready with its prompt queued.
+pub(crate) fn stopped(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
+    park(tx, task).map(drop)
+}
+
+/// Why `task` is held at its turn end, or interrupted `now`, as its next run's prompt.
+pub(crate) fn prompt(tx: &Transaction, task: i64, now: bool) -> rusqlite::Result<String> {
+    let (_, why) = open(tx, task)?;
+    Ok(if now {
+        format!(
+            "A person interrupted your last turn to hold this task: {why}. The hold is released. Your last call may not have finished.\nYour session and worktree are as you left them. Check the worktree, then continue."
+        )
+    } else {
+        format!(
+            "A person held this task at the end of your turn: {why}. The hold is released.\nYour session and worktree are as you left them. Continue."
+        )
+    })
+}
+
+/// Why no hold may stop the live run `run` now, as `preempt::guarded` says.
+pub(crate) fn guarded(
+    tx: &Connection,
+    run: i64,
+    factory: &Factory,
+) -> rusqlite::Result<Option<String>> {
+    tx.query_row(
+        &format!(
+            "SELECT runs.task, tasks.workflow, runs.step, coalesce(runs.agent, ''), {}
+             FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.id = ?1",
+            crate::preempt::KEYBOARD_HELD
+        ),
+        [run],
+        |row| {
+            let (workflow, step, agent): (String, String, String) =
+                (row.get(1)?, row.get(2)?, row.get(3)?);
+            Ok(crate::preempt::guarded(
+                factory,
+                row.get(0)?,
+                &workflow,
+                &step,
+                &agent,
+                row.get(4)?,
+            ))
+        },
+    )
+}
+
+/// Whether the live run `run` stops for its task's hold at this turn end. A guarded run, one whose
+/// gate grades and one with an attempted, unconfirmed prompt keep the mark for a later turn end.
+pub(crate) fn stops(tx: &Connection, run: i64, factory: &Factory) -> rusqlite::Result<bool> {
+    let stops: bool = tx.query_row(
+        &format!(
+            "SELECT count(*) > 0 FROM runs JOIN tasks ON tasks.id = runs.task
+             WHERE runs.id = ?1 AND runs.ended IS NULL AND {MARKED}
+             AND NOT EXISTS (SELECT 1 FROM gates WHERE gates.run = runs.id AND gates.state = 'grading')
+             AND NOT EXISTS (SELECT 1 FROM outbox WHERE outbox.run = runs.id
+               AND outbox.state IN ('attempted', 'uncertain'))"
+        ),
+        [run],
+        |row| row.get(0),
+    )?;
+    Ok(stops && guarded(tx, run, factory)?.is_none())
+}
+
+/// The sessions of the marked live runs that sit idle between turns.
+pub(crate) fn idle(db: &Connection) -> rusqlite::Result<Vec<String>> {
+    db.prepare(&format!(
+        "SELECT runs.session FROM runs JOIN tasks ON tasks.id = runs.task
+         WHERE runs.ended IS NULL AND runs.idle = 1 AND runs.ready = 1 AND {MARKED}
+         ORDER BY runs.id"
+    ))?
+    .query_map([], |row| row.get(0))?
+    .collect()
+}
+
+/// Holds each marked task back in the queue, and closes the hold of each marked task that ended.
+fn marked(tx: &Transaction) -> rusqlite::Result<()> {
+    let found: Vec<(i64, bool)> = tx
+        .prepare(&format!(
+            "SELECT id, state IN ('queued', 'ready') FROM tasks
+             WHERE state IN ('queued', 'ready', 'done', 'failed', 'dropped') AND {MARKED} ORDER BY id"
+        ))?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (task, waits) in found {
+        if waits {
+            park(tx, task)?;
+        } else {
+            close_asks(tx, task)?;
+            close(tx, task, "its task ended")?;
+        }
+    }
+    Ok(())
 }
 
 /// Holds a task its request files held. A condition that fails leaves the hold to a person, so the
@@ -96,12 +249,49 @@ pub(crate) fn filed(
 /// What releases a hold, as the holds table stores it, and how a person reads it.
 #[derive(Default)]
 struct Condition {
-    kind: &'static str,
-    text: String,
+    kind: String,
     until: Option<String>,
     target: Option<i64>,
     resource: Option<String>,
-    if_closed: Option<&'static str>,
+    if_closed: Option<String>,
+}
+
+impl Condition {
+    fn read(row: &Row) -> rusqlite::Result<Condition> {
+        Ok(Condition {
+            kind: row.get("kind")?,
+            until: row.get("until")?,
+            target: row.get("target")?,
+            resource: row.get("resource")?,
+            if_closed: row.get("if_closed")?,
+        })
+    }
+
+    fn text(&self) -> String {
+        let resource = self.resource.as_deref().unwrap_or_default();
+        let target = self.target.unwrap_or_default();
+        match self.kind.as_str() {
+            "time" => format!("until {}", self.until.as_deref().unwrap_or_default()),
+            "blockers" => format!("until {resource} has no open blocker"),
+            "parked" => format!("until a comment or review trigger fires on {resource}"),
+            "issue" => format!(
+                "until {} is Done or Canceled",
+                resource.trim_start_matches("linear:")
+            ),
+            "task" => format!("until task {target} ends"),
+            "merged" => format!("until task {target} merges"),
+            "waiting" => format!("until task {target} waits on its pull request"),
+            "merge" => {
+                let does = match self.if_closed.as_deref() {
+                    Some("release") => "releases it",
+                    Some("drop") => "drops it",
+                    _ => "asks",
+                };
+                format!("until {resource} merges, and {does} if it closes unmerged")
+            }
+            _ => "until a person releases it".to_owned(),
+        }
+    }
 }
 
 /// The conditions `hold` names, checked; a person's when it names none.
@@ -121,8 +311,7 @@ fn conditions(
     if let Some(until) = &hold.until {
         match crate::tools::instant(tx, until)? {
             Ok(at) => conditions.push(Condition {
-                kind: "time",
-                text: format!("until {at}"),
+                kind: "time".to_owned(),
                 until: Some(at),
                 ..Condition::default()
             }),
@@ -155,16 +344,14 @@ fn conditions(
         };
         let resource = format!("linear:{issue}");
         conditions.push(Condition {
-            kind: "blockers",
-            text: format!("until {resource} has no open blocker"),
+            kind: "blockers".to_owned(),
             resource: Some(resource),
             ..Condition::default()
         });
     }
     if conditions.is_empty() {
         conditions.push(Condition {
-            kind: "person",
-            text: "until a person releases it".to_owned(),
+            kind: "person".to_owned(),
             ..Condition::default()
         });
     }
@@ -199,8 +386,7 @@ fn parked_condition(
         )));
     }
     Ok(Ok(vec![Condition {
-        kind: "parked",
-        text: format!("until a comment or review trigger fires on {key}"),
+        kind: "parked".to_owned(),
         resource: Some(key),
         ..Condition::default()
     }]))
@@ -241,8 +427,7 @@ fn after_condition(
     let other = match after {
         After::Issue(issue) => {
             return Ok(Ok(Condition {
-                kind: "issue",
-                text: format!("until {issue} is Done or Canceled"),
+                kind: "issue".to_owned(),
                 resource: Some(format!("linear:{issue}")),
                 ..Condition::default()
             }));
@@ -256,8 +441,7 @@ fn after_condition(
         return Ok(Err(format!("after must name another task, not {other}")));
     }
     Ok(Ok(Condition {
-        kind: "task",
-        text: format!("until task {other} ends"),
+        kind: "task".to_owned(),
         target: Some(other),
         ..Condition::default()
     }))
@@ -271,10 +455,9 @@ fn merge_condition(
     if_closed: Option<&str>,
     factory: &Factory,
 ) -> rusqlite::Result<Result<Condition, String>> {
-    let (if_closed, does) = match if_closed {
-        Some("release") => ("release", "releases it"),
-        Some("drop") => ("drop", "drops it"),
-        None | Some("ask") => ("ask", "asks"),
+    let if_closed = match if_closed {
+        None => "ask",
+        Some(known @ ("release" | "drop" | "ask")) => known,
         Some(other) => {
             return Ok(Err(format!(
                 "if_closed takes release, drop or ask, not {other:?}"
@@ -293,16 +476,21 @@ fn merge_condition(
         )));
     };
     Ok(Ok(Condition {
-        kind: "merge",
-        text: format!("until {resource} merges, and {does} if it closes unmerged"),
+        kind: "merge".to_owned(),
         resource: Some(resource),
-        if_closed: Some(if_closed),
+        if_closed: Some(if_closed.to_owned()),
         ..Condition::default()
     }))
 }
 
-/// Meets every open condition whose time passed or whose other task ended.
+/// Settles the marked tasks that left their run, then meets every condition that is due.
 pub(crate) fn due(tx: &Transaction) -> rusqlite::Result<()> {
+    marked(tx)?;
+    due_conditions(tx)
+}
+
+/// Meets every open condition whose time passed or whose other task ended.
+fn due_conditions(tx: &Transaction) -> rusqlite::Result<()> {
     let due: Vec<(i64, String)> = tx
         .prepare(
             "SELECT holds.id, iif(holds.kind = 'time', holds.until || ' passed',
@@ -550,7 +738,20 @@ pub(crate) fn release_task(
         )
         .optional()?;
     let Some(resume) = resume else {
-        return Ok(Err(format!("task {task} is not held")));
+        let marked: bool = tx.query_row(
+            &format!("SELECT count(*) > 0 FROM tasks WHERE id = ?1 AND {MARKED}"),
+            [task],
+            |row| row.get(0),
+        )?;
+        if !marked {
+            return Ok(Err(format!("task {task} is not held")));
+        }
+        close(tx, task, "withdrawn by a person")?;
+        tx.execute(
+            "UPDATE tasks SET reason = NULL WHERE id = ?1 AND substr(reason, 1, length(?2)) = ?2",
+            params![task, AFTER_TURN],
+        )?;
+        return Ok(Ok(format!("task {task} is no longer to be held")));
     };
     let unmet: Vec<i64> = tx
         .prepare("SELECT id FROM holds WHERE task = ?1 AND released IS NULL AND met IS NULL")?

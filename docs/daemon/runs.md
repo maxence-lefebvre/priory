@@ -353,9 +353,10 @@ it, as they hold any task.
 ## Holds
 
 `priory hold <task> --reason <text>` holds a `queued` or `ready` task, so it never starts until
-its hold is released. It refuses any other state: a running task already has a process, which a
-hold would have to kill mid-turn, and an asleep task waits on its own ask or wait, whose wake would
-race the hold. Hold such a task once it is back in the queue. `priory release <task>` lets a held
+its hold is released. A `running` task is held at the end of its turn (see
+[Holding a running task](#holding-a-running-task)). It refuses any other state: an asleep task, for
+example, waits on its own ask or wait, whose wake would race the hold. Hold such a task once it is
+back in the queue. `priory release <task>` lets a held
 task go, back to the state it was held from. Both go to the daemon over its socket, as
 `priory resume` does, so a hold and a run start never race.
 
@@ -414,6 +415,37 @@ closes unmerged`. `priory tasks --json`, `priory queue --json` and serve list ea
 task under `conditions`, with `met` and `met_as` once it is met.
 A batch's entry is held on one `merged` condition per entry it starts after, which no flag sets (see
 [batches.md](batches.md)). Its reason reads `held: batch 4, until task 31 merges`.
+
+### Holding a running task
+
+`priory hold` on a running task marks it and changes nothing until its turn ends. The task's reason
+reads `holds after this turn: <reason>, <condition>`, and the desk lists it with its `held` rows.
+The mark is stored in the state file, so it survives a daemon restart. A second hold replaces it.
+`priory release` withdraws it, with the reply `task 12 is no longer to be held`.
+
+At the turn's end, the run settles as an [urgent wake](room.md#what-happens-at-the-turn-end) does,
+but ends as `held`:
+
+- A turn that ended with no tool, or whose process would carry on, parks the task held. A result
+  moves the task to its next step first.
+- A turn that ended with an ask or a wait puts the task to sleep. The task is held once it is ready.
+- A result that ends the task closes the hold.
+
+The daemon judges the hold's conditions from when the task is held. A condition met by then releases
+it at once. The task keeps its worktree, branch, uncommitted files and session. Once released, its
+next run resumes the session, with a prompt that names the hold ahead of any other queued prompt.
+
+`--now` does not wait for the turn's end, for an emergency such as a full disk. It ends the run at
+once and kills its process. The worktree is left as it is, so a file the agent was writing may be
+incomplete, and the prompt of the next run tells the agent to check. A result, ask or wait the turn
+already sent still counts. While a gate grades the result, the turn is over, so the task is held
+after the verdict instead. A prompt typed but not confirmed when the run ends stays on the desk as
+`uncertain`. On a queued or ready task, `--now` changes nothing.
+
+A run at an `irreversible` step, in a shared session, or with a keyboard a person holds is not
+stopped. `--now` refuses it, with the reason. A hold without `--now` keeps its mark and applies at
+the next turn end, or as soon as the run is idle and none of those is true. A tmux client attached
+to the run does not keep it from being held.
 
 When a task's Linear issue leaves the watched view before the task's first run, the daemon holds
 the task and asks a person whether to drop or keep it, since the view may have said "not this one":

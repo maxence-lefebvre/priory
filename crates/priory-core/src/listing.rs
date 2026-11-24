@@ -192,9 +192,13 @@ const DESK: &str = concat!(
                WHERE actions.action = 'answer' AND actions.status = 'uncertain'
                  AND tasks.state NOT IN ('done', 'failed', 'dropped')
                UNION ALL
-               SELECT 0, holds.created, 'held', holds.id, holds.task, tasks.lane, tasks.reason
+               SELECT 0, holds.created, 'held', holds.id, holds.task, tasks.lane,
+                 CASE tasks.state WHEN 'held' THEN tasks.reason
+                   WHEN 'running' THEN 'holds after this turn: ' || holds.reason
+                   ELSE 'holds once it is ready: ' || holds.reason END
                FROM holds JOIN tasks ON tasks.id = holds.task
-               WHERE holds.released IS NULL AND tasks.state = 'held' AND holds.id = (
+               WHERE holds.released IS NULL AND tasks.state NOT IN ('done', 'failed', 'dropped')
+                 AND holds.id = (
                  SELECT min(id) FROM holds AS hold WHERE hold.task = holds.task
                  AND hold.released IS NULL) AND holds.kind != 'parked'
                  AND (tasks.batch_entry IS NULL OR EXISTS (SELECT 1 FROM holds AS hold

@@ -105,6 +105,7 @@ The daemon never marks these runs, and withdraws a mark it finds on one at the t
 | Has an open keyboard grant | A person is typing in it |
 | Has a tmux client attached that can type | A person may type. A read-only client does not count. A `tmux list-clients` that fails counts as a client |
 | Runs in a shared session | It serves several tasks |
+| Holds after its turn | A [hold](runs.md#holding-a-running-task) ends it already |
 | Belongs to the sweeper | It frees the room the queue waits for |
 | Belongs to a task in the head's band or a higher one | A band never stops itself. `priory move --band` protects a task |
 | Belongs to a task already stopped since its last `result`, `ask` or `wait` | Each resume gets one whole turn |
