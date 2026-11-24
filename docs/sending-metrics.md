@@ -169,6 +169,8 @@ before the limit acts, or as it does.
 
 The room alert counts tasks on one runner, so group it by `priory.runner`, or by `host.name` in a
 factory of one runner. A runner that you keep full on purpose fires it too: raise its time there.
+The gauge is absent while the head of the queue waits for its claim to reach the log, so read a gap
+as unknown, not as 0.
 
 `priory.asks.oldest.age` is worth an alert too, at the time you want a person to answer in. Priory
 sets no limit on how long an ask waits.

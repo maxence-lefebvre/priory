@@ -175,10 +175,11 @@ state file each interval, with the queries its desk and reports already use.
 The room group says why tasks wait: the machine's load, memory and disk against the ceilings of
 [the room check](room.md), the memory gate's grants, and the tasks waiting for room by cause.
 
-- **The measurement.** The daemon sends what its room check measured, and never measures twice for
-  it. A tick in which no task reached the room check measures once per request, so on an idle
-  runner the values are up to one `metrics_every` old. The first request may hold no room point. A
-  daemon whose tick hangs sends none, rather than old ones.
+- **The measurement.** The daemon sends what its admission check last measured in the tick. When no task
+  reached that check, it measures once per request, beside any measurement another check took in
+  that tick. So on an idle runner the values are up to one `metrics_every` old. The first request may hold no room point. A
+  daemon whose tick hangs sends none, rather than old ones. A sample that the state refuses is
+  logged once per error and skipped.
 - **The tasks waiting.** `priory.room.tasks.waiting` counts the tasks that only room holds back. The
   tasks behind the queue's head count under what the head lacks, though some would fit alone. A task
   that waits for disk to add back its worktree counts as `disk`. A task that a pause, a lane, a spend

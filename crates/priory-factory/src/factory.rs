@@ -2725,13 +2725,19 @@ impl Factory {
     /// stores it.
     pub fn deliver(&self) -> Option<PathBuf> {
         let deliver = self.settings.as_ref()?.value.asks.deliver.as_ref()?;
-        Some(self.dir.join(deliver))
+        Some(self.program(deliver))
     }
 
     /// The command that opens a new run of a step with `attach = true`, under the factory folder.
     pub fn attach(&self) -> Option<PathBuf> {
         let attach = self.settings.as_ref()?.value.runs.attach.as_ref()?;
-        Some(self.dir.join(attach))
+        Some(self.program(attach))
+    }
+
+    /// `path` under the factory folder, absolute: a command runs in another folder than the daemon.
+    fn program(&self, path: &Path) -> PathBuf {
+        let path = self.dir.join(path);
+        std::path::absolute(&path).unwrap_or(path)
     }
 
     /// The folder of the ask command target `name`, under the factory folder when relative.

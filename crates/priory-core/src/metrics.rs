@@ -45,7 +45,7 @@ static BACKLOG: Mutex<Option<Vec<(String, u64)>>> = Mutex::new(None);
 
 /// Whether the exporter sends the room group, which only the daemon's own thread can measure.
 static ROOM_ON: AtomicBool = AtomicBool::new(false);
-/// The room's points since the last request, and why the room could not be measured.
+/// The room's points since the last request, and the line to log when some could not be read.
 static ROOM: Mutex<Option<(Vec<Point>, Option<String>)>> = Mutex::new(None);
 
 /// The groups this process sends: `PRIORY_METRICS` when set, else the factory's `metrics`.
@@ -133,14 +133,37 @@ pub(crate) fn wants_room(measured: bool) -> bool {
 }
 
 /// Keeps the room group's points for the next request. `promised` is the memory live runs and held
-/// grants reserve. Without `waiting`, the pass did not see the whole queue.
+/// grants reserve. Without `waiting`, the pass did not see the whole queue. A sample the state
+/// refuses is skipped, since metrics never stop the daemon.
 pub(crate) fn sample_room(
     db: &Connection,
     share: &Share,
     room: &Result<room::Room, String>,
     promised: u64,
     waiting: Option<BTreeMap<&'static str, u64>>,
-) -> rusqlite::Result<()> {
+) {
+    let sample = match room_points(db, share, room, promised, waiting) {
+        Ok(points) => {
+            let line = |error| format!("metrics: cannot measure the room: {error}");
+            (points, room.as_ref().err().map(line))
+        }
+        Err(error) => {
+            let line = format!("metrics: cannot sample the room: {error}");
+            (Vec::new(), Some(line))
+        }
+    };
+    if let Ok(mut slot) = ROOM.lock() {
+        *slot = Some(sample);
+    }
+}
+
+fn room_points(
+    db: &Connection,
+    share: &Share,
+    room: &Result<room::Room, String>,
+    promised: u64,
+    waiting: Option<BTreeMap<&'static str, u64>>,
+) -> rusqlite::Result<Vec<Point>> {
     let mut points = Vec::new();
     let mut push = |name, unit, attributes: Attributes, value| {
         points.push(Point {
@@ -211,10 +234,7 @@ pub(crate) fn sample_room(
             push("priory.room.tasks.waiting", "{task}", attributes, count);
         }
     }
-    if let Ok(mut slot) = ROOM.lock() {
-        *slot = Some((points, room.as_ref().err().cloned()));
-    }
-    Ok(())
+    Ok(points)
 }
 
 /// Starts sending `groups` on a thread of its own, as `service`: `daemon`, `intake` or `serve`.
@@ -799,12 +819,12 @@ impl Exporter {
     /// The room group: what the daemon's thread last measured. An interval in which it ended no tick
     /// sends no point.
     fn room(&mut self, points: &mut Vec<Point>) {
-        let Some((room, error)) = ROOM.lock().ok().and_then(|mut slot| slot.take()) else {
+        let Some((room, line)) = ROOM.lock().ok().and_then(|mut slot| slot.take()) else {
             return;
         };
         points.extend(room);
-        if let Some(error) = error {
-            self.once(format!("metrics: cannot measure the room: {error}"));
+        if let Some(line) = line {
+            self.once(line);
         }
     }
 
