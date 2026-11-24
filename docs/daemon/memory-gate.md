@@ -12,7 +12,7 @@ duration such as `90s`, `15m` or `2h`.
    grant, minus N, stays at or above `(1 - memory share) × MemTotal`, as the room check for runs
    does (see [Room](room.md)). A grant leaves out the promise of its own task's run, which would
    otherwise wait for itself. A waiting grant that does not fit holds back every grant behind it,
-   even a smaller one that fits, so a large build is never starved. Once it has waited 5 minutes,
+   even a smaller one that fits, so smaller grants do not starve a large build. Once it has waited 5 minutes,
    later grants that fit go first, in order, and it keeps its place ahead of them for the next
    room. A build it waits for usually ends within 5 minutes, and a grant behind it still has most
    of its 1-hour default timeout left. Once it has waited 15 minutes, later grants stop going first
@@ -100,6 +100,8 @@ Known limits:
   a build runs on without a grant.
 - A grant that arrives in the last poll before `--timeout` still runs its command. It runs up to
   250 ms late, or up to 40 seconds late when that poll waits on a busy or restarting daemon.
+  `--timeout` does not bound the hand-over that follows: while no daemon replies to it, the command
+  waits without limit.
 - A grant that the daemon grants just as its `acquire` times out leaves no request time, and a retry
   queues at the back.
 - A lease's memory frees as soon as the lease ends, while its command may still take up to 5

@@ -95,6 +95,8 @@ pub(crate) fn gate(
                     room::ceiling(&room, share) / GB
                 )));
             }
+            // A killed waiter that no tick reclaimed yet must leave its lapse before this one takes it.
+            reclaim(db)?;
             let tx = db.transaction()?;
             tx.execute(
                 "DELETE FROM lapses WHERE lapsed < strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?1)",
@@ -643,6 +645,18 @@ mod tests {
             .unwrap();
         let later = send(&mut db, acquire(4, "make"));
         assert_ne!(created(&db, &later), "2026-11-23T10:00:00Z");
+    }
+
+    #[test]
+    fn a_retry_that_arrives_before_any_reclaim_keeps_a_dead_waiters_request_time() {
+        let mut db = one_run();
+        let grant = old_waiter(&mut db);
+        db.execute("UPDATE grants SET started = 0 WHERE id = ?1", [grant])
+            .unwrap();
+
+        let retry = send(&mut db, acquire(4, "make"));
+
+        assert_eq!(created(&db, &retry), "2026-11-23T10:00:00Z");
     }
 
     #[test]
