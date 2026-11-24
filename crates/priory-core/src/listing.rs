@@ -1816,10 +1816,13 @@ fn plan_file(db: &Connection, task: i64) -> rusqlite::Result<Value> {
            AND ((asks.answer IS NULL AND asks.withdrawn IS NULL) OR NOT EXISTS (
              SELECT 1 FROM results WHERE results.task = ?1 AND results.run > ask_plans.run
              AND (results.step = 'plan' OR results.step LIKE 'plan-%')))
+           AND ((asks.answer IS NULL AND asks.withdrawn IS NULL) OR NOT EXISTS (
+             SELECT 1 FROM asks AS open WHERE open.task = ?1 AND open.answer IS NULL
+             AND open.withdrawn IS NULL AND instr(open.text, ?2)))
            AND NOT EXISTS (SELECT 1 FROM claims WHERE claims.key = tasks.key
              AND claims.hold != 'ended' AND claims.runner != (SELECT name FROM runner))
          ORDER BY asks.answer IS NULL AND asks.withdrawn IS NULL DESC, asks.id DESC LIMIT 1",
-        [task],
+        params![task, crate::plan::NO_PLAN],
     )?;
     let Some(mut plan) = found.as_array_mut().and_then(Vec::pop) else {
         return Ok(Value::Null);

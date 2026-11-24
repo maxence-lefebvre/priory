@@ -23,7 +23,7 @@ const SHOWN: usize = 64 * 1024;
 const LONGEST: u64 = 1024 * 1024;
 
 /// What an ask that approves a plan says when it has none to show.
-const NO_PLAN: &str =
+pub(crate) const NO_PLAN: &str =
     "This ask shows no plan: no groom or plan step of this generation ended with a result.";
 
 /// The plan an ask shows.
@@ -155,10 +155,20 @@ fn snapshot(
         return Ok(());
     };
     let taken = taken.filter(|taken| taken.run == source.run);
-    let (documents, contents) = documents(source.worktree.as_deref());
-    let shown = choose(source.started, documents, &contents, taken)
-        .map(|document| Shown::new(Some(document.path), &document.bytes))
-        .unwrap_or_else(|| Shown::new(None, source.summary.as_bytes()));
+    let (documents, mut contents) = documents(source.worktree.as_deref());
+    let at = choose(source.started, &documents, &contents, taken);
+    // A second document that changed is shown at the next revision, so it stays changed until then.
+    if let Some(taken) = taken {
+        for other in (0..FILES.len()).filter(|other| Some(*other) != at) {
+            if documents[other].is_some() {
+                contents[other].clone_from(&taken.contents[other]);
+            }
+        }
+    }
+    let shown = match at.and_then(|at| documents[at].as_ref()) {
+        Some(document) => Shown::new(Some(document.path.clone()), &document.bytes),
+        None => Shown::new(None, source.summary.as_bytes()),
+    };
     tx.execute(
         "INSERT OR REPLACE INTO ask_plans (ask, step, run, path, text, truncated, contents)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -175,41 +185,29 @@ fn snapshot(
     .map(drop)
 }
 
-/// The document to show: one whose content changed since `taken`, or else the one it showed, or
-/// else the newest written since `started`. So a rewrite never hides behind an old time.
+/// The document to show, by its place in `FILES`: one whose content changed since `taken`, or else
+/// the one it showed, or else the newest written since `started`. So a rewrite never hides behind
+/// an old time.
 fn choose(
     started: Option<jiff::Timestamp>,
-    documents: [Option<Document>; FILES.len()],
+    documents: &[Option<Document>; FILES.len()],
     contents: &Contents,
     taken: Option<&Taken>,
-) -> Option<Document> {
-    let mut found: Vec<_> = documents
-        .into_iter()
-        .zip(contents)
-        .enumerate()
-        .filter_map(|(at, (document, now))| {
-            let changed = taken.is_some_and(|taken| taken.contents[at] != *now);
-            Some((changed, document?))
-        })
-        .collect();
-    found.sort_by_key(|(_, document)| document.written);
-    let mut pick = |wanted: &dyn Fn(bool, &Document) -> bool| {
-        let at = found
-            .iter()
-            .rposition(|(changed, document)| wanted(*changed, document))?;
-        Some(found.swap_remove(at).1)
-    };
-    let shown = taken.and_then(|taken| taken.path.as_deref());
-    if let Some(document) = pick(&|changed, _| changed).or_else(|| {
-        pick(&|_, document| shown.is_some_and(|shown| document.path.as_os_str() == shown))
-    }) {
-        return Some(document);
-    }
+) -> Option<usize> {
     // `runs.started` holds whole seconds: a file of that second may be an earlier step's.
-    let since = started?
-        .checked_add(jiff::SignedDuration::from_secs(1))
-        .ok()?;
-    pick(&|_, document| document.written >= since)
+    let since =
+        started.and_then(|started| started.checked_add(jiff::SignedDuration::from_secs(1)).ok());
+    let shown = taken.and_then(|taken| taken.path.as_deref());
+    (0..FILES.len())
+        .filter_map(|at| {
+            let document = documents[at].as_ref()?;
+            let changed = taken.is_some_and(|taken| taken.contents[at] != contents[at]);
+            let shown = shown.is_some_and(|shown| document.path.as_os_str() == shown);
+            let fresh = since.is_some_and(|since| document.written >= since);
+            (changed || shown || fresh).then_some((changed, shown, document.written, at))
+        })
+        .max()
+        .map(|(.., at)| at)
 }
 
 /// Takes the plan of ask `ask` again, as when the ask is asked again. An ask with no plan keeps none.
@@ -424,7 +422,7 @@ mod tests {
         db: Connection,
     }
 
-    fn trace(factory: &Factory) -> Trace<'_> {
+    fn trace_of(factory: &Factory) -> Trace<'_> {
         Trace {
             factory,
             revision: None,
@@ -581,7 +579,7 @@ mod tests {
         }
 
         fn answer(&mut self, revision: i64) -> Result<String, String> {
-            let trace = trace(&self.factory);
+            let trace = trace_of(&self.factory);
             let answer = Answer {
                 ask: 1,
                 text: "approved".to_owned(),
@@ -816,7 +814,7 @@ mod tests {
                  VALUES (1, 'grade', 'a', 't', 'split', 1);",
             )
             .unwrap();
-        let trace = trace(&setup.factory);
+        let trace = trace_of(&setup.factory);
         let tx = setup.db.transaction().unwrap();
         let run = tools::live_run(&tx, "split").unwrap().unwrap();
         crate::debate::stop(&tx, &trace, &run, 1, "the rounds ran out").unwrap();
@@ -830,7 +828,7 @@ mod tests {
             run: false,
             by: "cli".to_owned(),
         };
-        let trace = trace(&setup.factory);
+        let trace = trace_of(&setup.factory);
         tools::answer(&mut setup.db, &answer, &trace, &|_, _| None)
             .unwrap()
             .unwrap_err();
@@ -872,6 +870,43 @@ mod tests {
         setup.write("plan.md", "unseen", 3600);
         setup.answer(1).unwrap_err();
         setup.refused("unseen");
+    }
+
+    #[test]
+    fn plan_rewritten_in_both_documents_shows_each_before_an_answer_passes() {
+        let mut setup = Setup::new("both");
+        setup.write("brief.md", "as read", 0);
+        setup.write("plan.md", "as read", 0);
+        setup.raise();
+        setup.write("plan.md", "plan rewritten", 0);
+        setup.write("brief.md", "brief rewritten", 0);
+        setup.answer(1).unwrap_err();
+        let second = setup.shown()["text"].clone();
+        setup.answer(2).unwrap_err();
+        let third = setup.shown()["text"].clone();
+        let mut shown = [second.as_str().unwrap(), third.as_str().unwrap()];
+        shown.sort_unstable();
+        assert_eq!(shown, ["brief rewritten", "plan rewritten"]);
+        setup.answer(3).unwrap();
+    }
+
+    #[test]
+    fn plan_of_an_answered_ask_does_not_show_for_an_open_ask_with_none() {
+        let mut setup = Setup::new("stale");
+        setup.raise();
+        setup
+            .db
+            .execute(
+                "INSERT INTO asks (task, step, kind, question, options, text)
+                 VALUES (1, 'approve-plan', 'step', 'q', '[]', ?1)",
+                [NO_PLAN],
+            )
+            .unwrap();
+        setup
+            .db
+            .execute("UPDATE asks SET answer = 'approved' WHERE id = 1", [])
+            .unwrap();
+        assert_eq!(setup.shown(), Value::Null);
     }
 
     #[test]
@@ -919,7 +954,7 @@ mod tests {
         setup.raise();
         setup.lead();
         setup.write("brief.md", "rewritten", 3600);
-        let trace = trace(&setup.factory);
+        let trace = trace_of(&setup.factory);
         for refusals in 1..=2 {
             let call = tools::Call {
                 session: "lead".to_owned(),
@@ -949,10 +984,15 @@ mod tests {
     #[test]
     fn plan_changed_before_an_outside_sessions_answer_is_the_next_revision() {
         let mut setup = Setup::new("outside");
+        // A session never answers an ask that can let an irreversible step run.
+        let flow = &mut setup.factory.workflows.get_mut("groom").unwrap().value;
+        for step in &mut flow.steps {
+            step.effect = priory_factory::factory::Effect::Reversible;
+        }
         setup.write("brief.md", "as read", 30);
         setup.raise();
         setup.write("brief.md", "rewritten", 3600);
-        let trace = trace(&setup.factory);
+        let trace = trace_of(&setup.factory);
         let call = crate::outside::Call {
             tool: "answer".to_owned(),
             session: Some("desk".to_owned()),
@@ -971,7 +1011,7 @@ mod tests {
         setup.write("brief.md", "as read", 30);
         setup.raise();
         setup.write("brief.md", "rewritten", 3600);
-        let trace = trace(&setup.factory);
+        let trace = trace_of(&setup.factory);
         let tx = setup.db.transaction().unwrap();
         let sent = herdr_bus::Message::new(
             priory_intake::intake::ASK_ANSWERED,

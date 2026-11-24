@@ -96,7 +96,7 @@ is read.
 An answer approves only the plan shown. With the plan, Priory stores a hash of each document's
 content, and compares both when the ask is answered, whatever the files' times say. When either
 changed, appeared or went, Priory refuses the answer and asks again as the next revision, which shows
-the changed document. A lead's, a session's and another runner's answer are checked the same way. A
+the changed document. When both changed, the next answer is refused as well, to show the other. A lead's, a session's and another runner's answer are checked the same way. A
 lead that was refused ends with `skipped`, and the person answers the new revision.
 
 ![The approve-plan ask of ENG-270 in the web view: the Plan section leads, with .priory/brief.md, its three decisions, acceptance criteria and plan.](../images/web-view-plan-ask-1440-light.png)
