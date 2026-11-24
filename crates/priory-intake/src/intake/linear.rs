@@ -3,9 +3,9 @@ use super::{
 };
 use crate::log::{self, Log};
 use herdr_bus::{Message, Timestamp};
-use priory_factory::factory::Trigger;
+use priory_factory::factory::{FilterValue, Trigger};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -21,13 +21,20 @@ pub(super) const BLOCKERS: &str = "linear.issue.blockers";
 pub(super) const UPDATED: &str = "linear.issue.updated";
 const ISSUES: &str = "linear.issues";
 const COMMENTS: &str = "linear.comments";
+const PROJECT: &str = "linear.project:";
 /// How many issues or comments a stream's first poll reads.
 const FIRST: u64 = 50;
 /// How many characters of a changed description `linear.issue.updated` carries.
 const EXCERPT: usize = 200;
 
 const ISSUE: &str = "fragment issue on Issue { id identifier title url createdAt updatedAt \
-    team { key } project { id name } state { name } labels { nodes { name } } creator { displayName } }";
+    team { key } project { id name } state { name } creator { displayName } }";
+/// An issue's labels, up to Linear's default page of 50.
+const LABELS: &str = "labels { nodes { name } }";
+/// What an issue of a view or project has beyond `ISSUE`. Its order is kept off the other queries,
+/// whose cost the history of each issue already fills, and its labels cost most of a page.
+const PLACED: &str =
+    "labels(first: 20) { nodes { name } } sortOrder projectMilestone { id sortOrder targetDate }";
 /// The issues that block an issue, kept small: Linear multiplies a query's cost by page sizes.
 const BLOCKING: &str = "inverseRelations(first: 20) { nodes { type issue { identifier state { type } } } \
     pageInfo { hasNextPage } }";
@@ -67,8 +74,8 @@ impl<'a> Linear<'a> {
             })?;
         let mut streams: BTreeMap<String, Option<Value>> = triggers
             .iter()
-            .filter_map(|(_, trigger)| trigger.view.as_deref())
-            .map(|view| (view_stream(view), None))
+            .filter_map(|(_, trigger)| stream(trigger))
+            .map(|stream| (stream, None))
             .collect();
         streams.insert(ISSUES.into(), None);
         streams.insert(COMMENTS.into(), None);
@@ -95,9 +102,11 @@ impl<'a> Linear<'a> {
         })
     }
 
-    /// Queries every stream first, so that a failing query publishes nothing. `watching` names the
-    /// Linear issues whose edits the issues stream publishes, from each one's time on.
-    pub(super) fn fetch(&self, watching: &[Watch]) -> Result<Vec<Polled>, String> {
+    /// Queries every stream, so that a failing query publishes nothing of its stream, and the error of
+    /// each view or project that fails. A failing issues or comments query, which come first, fails
+    /// them all, so an outage costs one query. `watching` names the Linear issues whose edits the
+    /// issues stream publishes, from each one's time on.
+    pub(super) fn fetch(&self, watching: &[Watch]) -> Result<(Vec<Polled>, Vec<String>), String> {
         let now = Timestamp::now();
         let mut watched: BTreeMap<&str, Timestamp> = BTreeMap::new();
         for watch in watching {
@@ -107,14 +116,20 @@ impl<'a> Linear<'a> {
             }
         }
         let mut polled = Vec::new();
+        let mut failed = Vec::new();
         for (stream, marker) in &self.streams {
-            polled.push(match stream.as_str() {
-                ISSUES => self.issues(marker.as_ref(), &watched)?,
-                COMMENTS => self.comments(marker.as_ref())?,
-                _ => self.view(stream, marker.as_ref(), now)?,
-            });
+            let members = match stream.as_str() {
+                ISSUES => Ok(self.issues(marker.as_ref(), &watched)?),
+                COMMENTS => Ok(self.comments(marker.as_ref())?),
+                _ if stream.starts_with(PROJECT) => self.project(stream, marker.as_ref(), now),
+                _ => self.view(stream, marker.as_ref(), now),
+            };
+            match members {
+                Ok(members) => polled.push(members),
+                Err(error) => failed.push(format!("{stream} skipped: {error}")),
+            }
         }
-        Ok(polled)
+        Ok((polled, failed))
     }
 
     /// Publishes what a poll found. With `hooked`, the factory takes Linear's webhook, so an event it
@@ -179,7 +194,7 @@ impl<'a> Linear<'a> {
         let view = stream.trim_start_matches("linear.view:");
         let query = format!(
             "query View($view: String!, $after: String) {{ customView(id: $view) {{ \
-             filterData issues(first: 100, after: $after) {{ nodes {{ ...issue }} {PAGE} }} }} }} {ISSUE}"
+             filterData issues(first: 100, after: $after) {{ nodes {{ ...issue {PLACED} }} {PAGE} }} }} }} {ISSUE}"
         );
         let path = "/customView/issues";
         let pages = self.pages(&query, json!({ "view": view }), path, true)?;
@@ -192,15 +207,46 @@ impl<'a> Linear<'a> {
                 "Linear view {view}: its filter changed while the intake read it"
             ));
         }
-        let members: BTreeMap<String, Value> = pages
-            .iter()
-            .flat_map(|page| connection_nodes(page, path))
-            .map(|issue| {
-                (
-                    issue["id"].as_str().unwrap_or_default().to_string(),
-                    fields(issue),
-                )
-            })
+        let issues = pages.iter().flat_map(|page| connection_nodes(page, path));
+        let source = ("view", json!(view));
+        self.membership(stream, source, marker, issues, filter, now)
+    }
+
+    /// The issues that entered and left a project's members, those its filter keeps.
+    fn project(
+        &self,
+        stream: &str,
+        marker: Option<&Value>,
+        now: Timestamp,
+    ) -> Result<Polled, String> {
+        let named = stream.trim_start_matches(PROJECT);
+        let (project, filter) = named.split_once(':').unwrap_or((named, "null"));
+        let filter: Value = serde_json::from_str(filter).map_err(|error| error.to_string())?;
+        let query = format!(
+            "query Project($project: String!, $filter: IssueFilter, $after: String) {{ \
+             project(id: $project) {{ issues(first: 100, after: $after, filter: $filter) {{ \
+             nodes {{ ...issue {PLACED} }} {PAGE} }} }} }} {ISSUE}"
+        );
+        let path = "/project/issues";
+        let variables = json!({ "project": project, "filter": issue_filter(&filter) });
+        let issues = self.nodes(&query, variables, path, true)?;
+        let source = ("stream", json!(stream));
+        self.membership(stream, source, marker, issues.iter(), filter, now)
+    }
+
+    /// The issues that entered and left `stream` since its last marker, which holds its members.
+    /// `source` is the field that says which stream an event is from.
+    fn membership<'i>(
+        &self,
+        stream: &str,
+        source: (&str, Value),
+        marker: Option<&Value>,
+        issues: impl Iterator<Item = &'i Value>,
+        filter: Value,
+        now: Timestamp,
+    ) -> Result<Polled, String> {
+        let members: BTreeMap<String, Value> = issues
+            .map(|issue| (text(&issue["id"]).to_string(), member(issue)))
             .collect();
         let before: BTreeMap<String, Value> = marker
             .and_then(|marker| marker["members"].as_array())
@@ -242,7 +288,7 @@ impl<'a> Linear<'a> {
                 .chain(left)
                 .map(|(kind, member)| {
                     let mut data = member.clone();
-                    data["view"] = json!(view);
+                    data[source.0] = source.1.clone();
                     data["time"] = json!(now.to_string());
                     let name = format!("{stream}:{version}:{}:{kind}", text(&member["linear_id"]));
                     self.message(kind, &name, data, baseline)
@@ -275,7 +321,7 @@ impl<'a> Linear<'a> {
             "query Issues($filter: IssueFilter, $first: Int!, $after: String) {{ \
              issues(filter: $filter, first: $first, after: $after, orderBy: updatedAt, \
              includeArchived: true) {{ nodes {{ \
-             ...issue description history(first: 50, orderBy: createdAt) {{ nodes {{ id createdAt \
+             ...issue {LABELS} description history(first: 50, orderBy: createdAt) {{ nodes {{ id createdAt \
              fromState {{ name }} toState {{ name }} fromTeam {{ key }} toTeam {{ key }} \
              actor {{ displayName }} {EDITS} }} }} previousIdentifiers \
              {BLOCKING} relations(first: 20) {{ nodes {{ type relatedIssue {{ id }} }} }} }} {PAGE} }} }} {ISSUE}"
@@ -355,7 +401,7 @@ impl<'a> Linear<'a> {
             let query = format!(
                 "query Blocked($ids: [ID!], $first: Int!) {{ \
                  issues(filter: {{ id: {{ in: $ids }} }}, first: $first) {{ nodes {{ \
-                 ...issue {BLOCKING} }} {PAGE} }} }} {ISSUE}"
+                 ...issue {LABELS} {BLOCKING} }} {PAGE} }} }} {ISSUE}"
             );
             let found = self.nodes(&query, json!({ "ids": ids, "first": 50 }), "/issues", false)?;
             blocked.extend(
@@ -434,7 +480,7 @@ impl<'a> Linear<'a> {
         let query = format!(
             "query Comments($filter: CommentFilter, $first: Int!, $after: String) {{ \
              comments(filter: $filter, first: $first, after: $after, orderBy: createdAt) {{ nodes {{ \
-             id body url createdAt user {{ displayName }} issue {{ ...issue }} }} {PAGE} }} }} {ISSUE}"
+             id body url createdAt user {{ displayName }} issue {{ ...issue {LABELS} }} }} {PAGE} }} }} {ISSUE}"
         );
         let comments = self.nodes(
             &query,
@@ -564,7 +610,11 @@ pub(super) fn matching<'a>(
                     .view
                     .as_deref()
                     .is_none_or(|view| data["view"] == view)
-                && filtered(trigger)
+                // Linear applied a project trigger's filter, which its stream names.
+                && match trigger.project {
+                    Some(_) => stream(trigger).is_some_and(|stream| data["stream"] == stream),
+                    None => filtered(trigger),
+                }
                 && (!baseline || trigger.backfill == Some(true))
         })
         .map(|(name, _)| *name)
@@ -675,7 +725,7 @@ fn recover(marker: &Value, events: &[Message]) -> Value {
         for event in events {
             let mut member = event.data.clone();
             let fields = member.as_object_mut().expect("an object");
-            for field in ["view", "time", "baseline", "triggers"] {
+            for field in ["view", "stream", "time", "baseline", "triggers"] {
                 fields.remove(field);
             }
             let id = text(&member["linear_id"]).to_string();
@@ -721,6 +771,70 @@ fn text(value: &Value) -> &str {
 
 fn view_stream(view: &str) -> String {
     format!("linear.view:{view}")
+}
+
+/// The membership stream `trigger` reads, if any. A project's names its filter in one spelling, so
+/// triggers with the same filter share it and another filter keeps its own members.
+fn stream(trigger: &Trigger) -> Option<String> {
+    if let Some(view) = &trigger.view {
+        return Some(view_stream(view));
+    }
+    let project = trigger.project.as_deref()?;
+    let filter: BTreeMap<&str, Value> = trigger
+        .filter
+        .iter()
+        .flatten()
+        .map(|(key, value)| {
+            let value = match value {
+                FilterValue::One(value) if key == "state" => json!([value]),
+                FilterValue::One(value) => json!(value.to_lowercase()),
+                FilterValue::Any(values) => json!(values.iter().collect::<BTreeSet<_>>()),
+            };
+            (key.as_str(), value)
+        })
+        .collect();
+    Some(match filter.is_empty() {
+        true => format!("{PROJECT}{project}"),
+        false => format!("{PROJECT}{project}:{}", json!(filter)),
+    })
+}
+
+/// Linear's `IssueFilter` for a project trigger's filter; null without one.
+fn issue_filter(filter: &Value) -> Value {
+    if filter.is_null() {
+        return Value::Null;
+    }
+    let mut issues = json!({});
+    if let Some(assignee) = filter["assignee"].as_str() {
+        issues["assignee"] = match assignee.contains('@') {
+            true => json!({ "email": { "eqIgnoreCase": assignee } }),
+            false => json!({ "id": { "eq": assignee } }),
+        };
+    }
+    if filter["state"].is_array() {
+        issues["state"] = json!({ "type": { "in": filter["state"] } });
+    }
+    issues
+}
+
+/// The fields of an issue of a view or project: those every event carries, and its place in its
+/// project, null without one.
+fn member(issue: &Value) -> Value {
+    let mut member = fields(issue);
+    let milestone = &issue["projectMilestone"];
+    member["order"] = match issue["project"]["id"].is_string() {
+        false => Value::Null,
+        true => json!({
+            "project_id": issue["project"]["id"],
+            "milestone": milestone.is_object().then(|| json!({
+                "id": milestone["id"],
+                "sort_order": milestone["sortOrder"],
+                "target_date": milestone["targetDate"],
+            })),
+            "sort_order": issue["sortOrder"],
+        }),
+    };
+    member
 }
 
 /// The fields every Linear event carries about its issue.
@@ -827,7 +941,10 @@ fn resume(
             }
             let stream = match message.kind.as_str() {
                 BASELINE => text(&message.data["stream"]).to_string(),
-                ENTERED | LEFT => view_stream(text(&message.data["view"])),
+                ENTERED | LEFT => match message.data["stream"].as_str() {
+                    Some(stream) => stream.to_string(),
+                    None => view_stream(text(&message.data["view"])),
+                },
                 CREATED | STATE_CHANGED | BLOCKERS | UPDATED => ISSUES.to_string(),
                 COMMENTED => COMMENTS.to_string(),
                 _ => continue,
@@ -935,7 +1052,7 @@ mod tests {
 
         #[test]
         fn an_issue_of_any_shape_gives_its_fields_and_blockers_without_panicking(issue in json_value()) {
-            fields(&issue);
+            member(&issue);
             blockers(&issue);
             edited(&issue);
             excerpt(&issue);

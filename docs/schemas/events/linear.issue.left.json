@@ -3,6 +3,37 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
   "definitions": {
+    "IssueOrder": {
+      "description": "Where a Linear issue stands in its project, as the intake saw it.",
+      "properties": {
+        "milestone": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MilestoneOrder"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The issue's milestone; null without one."
+        },
+        "project_id": {
+          "description": "Linear's id of the project.",
+          "type": "string"
+        },
+        "sort_order": {
+          "description": "The issue's manual order in Linear. Lower comes first.",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "project_id",
+        "milestone",
+        "sort_order"
+      ],
+      "type": "object"
+    },
     "Link": {
       "additionalProperties": false,
       "description": "A link for people.",
@@ -21,9 +52,36 @@
       ],
       "type": "object"
     },
+    "MilestoneOrder": {
+      "description": "Where a milestone stands in its project.",
+      "properties": {
+        "id": {
+          "description": "Linear's id of the milestone.",
+          "type": "string"
+        },
+        "sort_order": {
+          "description": "The milestone's manual order in its project. Lower comes first.",
+          "format": "double",
+          "type": "number"
+        },
+        "target_date": {
+          "description": "The milestone's target date, `YYYY-MM-DD`; null without one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "sort_order",
+        "target_date"
+      ],
+      "type": "object"
+    },
     "ViewChanged": {
       "additionalProperties": false,
-      "description": "An issue that entered or left a saved Linear view since the previous poll.",
+      "description": "An issue that entered or left a saved Linear view, or a Linear project's issues that a trigger's\nfilter keeps, since the previous poll.",
       "properties": {
         "baseline": {
           "description": "True when the event came from the first poll of its stream.",
@@ -44,6 +102,17 @@
           "description": "Linear's id of what the event is about: the issue, history entry or comment. A webhook's\nstate change has no history entry, so it holds the issue's id.",
           "type": "string"
         },
+        "order": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/IssueOrder"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Where the issue stands in its project; null without a project, and absent from an issue the\nintake last read before it kept the order."
+        },
         "project": {
           "description": "The issue's project name; null without one.",
           "type": [
@@ -61,6 +130,13 @@
         "state": {
           "description": "The issue's state name.",
           "type": "string"
+        },
+        "stream": {
+          "description": "The stream, `linear.project:<project>`, then `:` and the trigger's filter as JSON when it has\none. Project events only.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "team": {
           "description": "The issue's team key.",
@@ -87,8 +163,11 @@
           "type": "string"
         },
         "view": {
-          "description": "The view, as the trigger names it.",
-          "type": "string"
+          "description": "The view, as the trigger names it. View events only.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -101,7 +180,6 @@
         "project_id",
         "state",
         "labels",
-        "view",
         "time",
         "baseline",
         "triggers"
@@ -109,7 +187,7 @@
       "type": "object"
     }
   },
-  "description": "An issue that entered or left a saved Linear view since the previous poll.",
+  "description": "An issue that entered or left a saved Linear view, or a Linear project's issues that a trigger's\nfilter keeps, since the previous poll.",
   "properties": {
     "data": {
       "$ref": "#/definitions/ViewChanged"
