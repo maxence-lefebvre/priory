@@ -7,6 +7,8 @@ pub mod labels;
 pub mod lanes;
 pub mod lines;
 pub mod paths;
+pub mod private;
+pub mod publish;
 pub mod readiness;
 pub mod rules;
 

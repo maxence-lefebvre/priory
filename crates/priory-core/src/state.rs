@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 112;
+const VERSION: i64 = 115;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -2000,6 +2000,53 @@ CREATE INDEX sweeps_by_script ON sweeps (script, started);
 "
 );
 
+// The notification kinds a person turned on or off for a subscription, a JSON object of booleans;
+// a kind it lacks takes its default. A merge that landed wrong and a stalled queue queue an alarm
+// too, for the subscriptions that turned it on.
+const SCHEMA_113: &str = "
+ALTER TABLE push_subscriptions ADD COLUMN kinds TEXT;
+CREATE TRIGGER push_a_landed_wrong AFTER INSERT ON inbox
+  WHEN NEW.type = 'priory.report' AND NEW.subject = 'priory'
+  AND json_extract(NEW.data, '$.line') LIKE 'landed wrong: %'
+  AND EXISTS (SELECT 1 FROM push_subscriptions) BEGIN
+  INSERT INTO push_queue (kind, item, state) VALUES ('alarm', NEW.seq, 'landed');
+END;
+CREATE TRIGGER push_a_stall AFTER INSERT ON stalls
+  WHEN EXISTS (SELECT 1 FROM push_subscriptions) BEGIN
+  INSERT INTO push_queue (kind, item, state) VALUES ('alarm', NEW.id, 'stall');
+END;
+PRAGMA user_version = 113;
+";
+
+// Where a task's Linear issue stands in its project, as JSON, and the place in the queue's age order
+// that gives it among its project's tasks.
+const SCHEMA_114: &str = "
+ALTER TABLE tasks ADD COLUMN issue_order TEXT;
+ALTER TABLE tasks ADD COLUMN slot INTEGER;
+PRAGMA user_version = 114;
+";
+
+// The plan an approval ask shows, as it was when the ask's revision was raised, and the latest run
+// each task had when a later generation of it began.
+const SCHEMA_115: &str = concat!(
+    "CREATE TABLE IF NOT EXISTS ask_plans (
+  ask       INTEGER PRIMARY KEY,
+  step      TEXT NOT NULL,
+  run       INTEGER NOT NULL,
+  files     TEXT NOT NULL,
+  contents  TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS generations (
+  task  INTEGER NOT NULL,
+  after INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS generations_of_task ON generations (task);
+",
+    bumps!("ask_plans"),
+    "PRAGMA user_version = 115;
+"
+);
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -2015,7 +2062,8 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
-    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112,
+    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112, SCHEMA_113,
+    SCHEMA_114, SCHEMA_115,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -2053,7 +2101,8 @@ macro_rules! helper {
 }
 
 /// The order the queue starts tasks in: band, then a waiting lead's or investigator's task, then
-/// a person's order, then age. A band the factory no longer has comes after the last one. A task that `[queue] age` moved up starts in the higher
+/// a person's order, then age, where the waiting tasks of a Linear project trade places to follow
+/// its milestones. A band the factory no longer has comes after the last one. A task that `[queue] age` moved up starts in the higher
 /// band after the tasks a person ordered there. With `[queue] fair = "lane"`, the tasks a person has
 /// not ordered take turns between lanes before age: the oldest of each lane first, and among those
 /// the lane whose last run started longest ago, so a lane that never ran comes first.
@@ -2075,14 +2124,15 @@ pub const START_ORDER: &str = concat!(
     AND EXISTS (SELECT 1 FROM fairness WHERE fairness.key = 'lane')
   THEN (SELECT count(*) FROM tasks AS ahead WHERE ahead.band IS tasks.band
     AND ahead.lane IS tasks.lane AND ahead.state IN ('queued', 'ready')
-    AND ahead.position IS NULL AND ahead.id < tasks.id) END,
+    AND ahead.position IS NULL
+    AND coalesce(ahead.slot, ahead.id) < coalesce(tasks.slot, tasks.id)) END,
   CASE WHEN (tasks.position IS NULL OR ",
     moved_up!(),
     ") AND tasks.state IN ('queued', 'ready')
     AND EXISTS (SELECT 1 FROM fairness WHERE fairness.key = 'lane')
   THEN (SELECT max(runs.id) FROM tasks AS served JOIN runs ON runs.task = served.id
     WHERE served.band IS tasks.band AND served.lane IS tasks.lane) END,
-  tasks.id"
+  coalesce(tasks.slot, tasks.id), tasks.id"
 );
 
 /// The band `[queue] age` moved a queued or ready task up to, null when it starts in its own.
@@ -2417,9 +2467,9 @@ pub(crate) fn route_in(
             tx.execute(
                 "INSERT INTO tasks
                    (key, workflow, step, state, band, lane, team, project, lane_derived, trigger, source, repo, entered, tldr, intervention, lead,
-                    pre_title, pre_text, pre_context, pre_script, added_by, auto_answer, intent, noop)
+                    pre_title, pre_text, pre_context, pre_script, added_by, auto_answer, intent, noop, issue_order)
                  VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?12, ?13, ?14,
-                   ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+                   ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
                 params![
                     new.key,
                     new.workflow,
@@ -2446,7 +2496,8 @@ pub(crate) fn route_in(
                     new.session,
                     new.auto_answer.map(|level| level.as_str()),
                     new.intent,
-                    (!new.noop.is_empty()).then(|| serde_json::json!(new.noop).to_string())
+                    (!new.noop.is_empty()).then(|| serde_json::json!(new.noop).to_string()),
+                    new.order.is_object().then(|| new.order.to_string())
                 ],
             )?;
             let id = tx.last_insert_rowid();
@@ -2547,16 +2598,17 @@ pub(crate) fn route_in(
     if message.kind == "linear.view.changed" {
         crate::post::report(tx, "linear", &refiltered(&message.data))?;
     }
+    crate::milestones::read(tx, factory, message)?;
     crate::hold::event(tx, &resources)?;
     if message.kind == "linear.issue.left"
         && let Some(resource) = resources.first()
     {
-        crate::hold::left(tx, resource, message.data["view"].as_str())?;
+        crate::hold::left(tx, resource, &crate::hold::origin(&message.data))?;
     }
     if message.kind == "linear.issue.entered"
         && let Some(resource) = resources.first()
     {
-        crate::hold::entered(tx, resource, message.data["view"].as_str())?;
+        crate::hold::entered(tx, resource, &crate::hold::origin(&message.data))?;
     }
     if message.kind == priory_intake::intake::PR_CLOSED && message.data["merged"] == true {
         crate::tools::restack_stacked(tx, trace, seq, &message.data)?;
@@ -3425,9 +3477,13 @@ pub(crate) fn admissible<'r>(
     watched: &dyn Fn(&str) -> bool,
     checking: &dyn Fn(i64) -> bool,
 ) -> rusqlite::Result<Pass> {
+    crate::milestones::place(db)?;
     let mut statement = db.prepare(&format!(
         "SELECT id, workflow, step, trigger, state = 'queued', repo, preempted, lane FROM tasks
              WHERE state IN ('queued', 'ready')
+             -- A task marked to be held while it ran is held on the next tick.
+             AND NOT EXISTS (SELECT 1 FROM holds WHERE holds.task = tasks.id
+               AND holds.released IS NULL)
              -- A task waits while a recipe runs in its worktree, or a teardown is owed there.
              AND NOT EXISTS (SELECT 1 FROM recipes WHERE recipes.task = tasks.id
                AND recipes.ended IS NULL
@@ -3453,7 +3509,7 @@ pub(crate) fn admissible<'r>(
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let promised = promised(db, factory, None)?;
+    let promised = promised(db, factory)?;
     let paused = paused(db)?;
     let book = crate::spend::Book::new(factory);
     // The first task that waits for room: no task behind it starts, so it is never starved.
@@ -3723,27 +3779,22 @@ fn serving(db: &Connection, agent: &str) -> rusqlite::Result<Option<i64>> {
     .optional()
 }
 
-/// The memory and disk the agents of live runs declared and do not use yet, except those of task
-/// `except`, plus every held memory grant in full. A run's use is its scope's memory, which measured
-/// free memory already leaves out. A run with no scope keeps its whole declaration until it ends.
-pub(crate) fn promised(
-    db: &Connection,
-    factory: &Factory,
-    except: Option<i64>,
-) -> rusqlite::Result<room::Need> {
+/// The memory and disk the agents of live runs declared and do not use yet, plus every held memory
+/// grant in full. A run's use is its scope's memory, which measured free memory already leaves out.
+/// A run with no scope keeps its whole declaration until it ends.
+pub(crate) fn promised(db: &Connection, factory: &Factory) -> rusqlite::Result<room::Need> {
     let mut live = Vec::new();
-    let promised = promised_with(db, factory, except, |run, tmux, session| {
+    let promised = promised_with(db, factory, None, |run, tmux, session| {
         live.push((run, session.to_owned()));
         crate::usage::memory(run, tmux, session)
     })?;
-    if except.is_none() {
-        crate::usage::keep(&live);
-    }
+    crate::usage::keep(&live);
     Ok(promised)
 }
 
-/// `promised`, with `used` measuring what a live run, its tmux session and harness session, uses.
-fn promised_with(
+/// `promised` without the runs of task `except`, with `used` measuring what a live run, its tmux
+/// session and harness session, uses.
+pub(crate) fn promised_with(
     db: &Connection,
     factory: &Factory,
     except: Option<i64>,
@@ -4316,6 +4367,17 @@ fn share(tx: &Transaction, run: &NewRun) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Queues again the prompt `run` was launched with when it never reached `SessionStart`, so it never
+/// took it.
+pub(crate) fn requeue_unready(tx: &Transaction, run: i64) -> rusqlite::Result<()> {
+    tx.execute(
+        "UPDATE outbox SET state = 'queued', run = NULL, attempted = NULL
+         WHERE run = ?1 AND state IN ('attempted', 'uncertain') AND (SELECT NOT ready FROM runs WHERE id = ?1)",
+        [run],
+    )
+    .map(drop)
+}
+
 /// Blocks `task` with `reason`, ending its live run first as `ended_as`, if it has one, after reading
 /// its transcript.
 pub(crate) fn block(
@@ -4336,12 +4398,7 @@ pub(crate) fn block(
     if let Some(run) = live {
         // The step goes on after a resume, so the turn cut short still counts toward it.
         crate::trace::account(&tx, trace, run, None)?;
-        // A run that never reached SessionStart never took the prompt it was launched with.
-        tx.execute(
-            "UPDATE outbox SET state = 'queued', run = NULL, attempted = NULL
-             WHERE run = ?1 AND state IN ('attempted', 'uncertain') AND (SELECT NOT ready FROM runs WHERE id = ?1)",
-            [run],
-        )?;
+        requeue_unready(&tx, run)?;
     }
     tx.execute(
         &format!("UPDATE runs SET ended = {NOW}, ended_as = ?2 WHERE task = ?1 AND ended IS NULL"),
@@ -4504,9 +4561,21 @@ pub(crate) fn signal(
         "Stop" => {
             tx.execute("UPDATE runs SET idle = 1, turn = NULL WHERE id = ?1", [run])?;
             let context = crate::trace::account(&tx, trace, run, signal.transcript.as_deref())?;
-            // A run marked for an urgent wake ends here; its resumed session compacts instead.
-            if let Some(head) = crate::preempt::due(&tx, run, watched)? {
-                kill = crate::tools::preempt(&tx, &signal.session, trace, head)?;
+            // A run marked for a hold or an urgent wake ends here; its resumed session compacts instead.
+            if crate::hold::stops(&tx, run, trace.factory)? {
+                kill = crate::tools::stop_marked(
+                    &tx,
+                    &signal.session,
+                    trace,
+                    crate::tools::Stopped::Held,
+                )?;
+            } else if let Some(head) = crate::preempt::due(&tx, run, watched)? {
+                kill = crate::tools::stop_marked(
+                    &tx,
+                    &signal.session,
+                    trace,
+                    crate::tools::Stopped::For(head),
+                )?;
             // The run settles its ask or wait once its compact is typed, so it never sleeps past it.
             // A result carried into the next step on this process compacts there. A run whose gate
             // grades waits, idle, for the verdict, which settles it.
@@ -4668,6 +4737,19 @@ pub(crate) fn unsubmitted(db: &Connection, outbox: i64) -> rusqlite::Result<bool
         .unwrap_or(false))
 }
 
+/// Whether a person holds the keyboard of the run the prompt `outbox` was pasted into.
+pub(crate) fn keyboard_held(db: &Connection, outbox: i64) -> rusqlite::Result<bool> {
+    db.query_row(
+        &format!(
+            "SELECT EXISTS (SELECT 1 FROM outbox JOIN runs ON runs.id = outbox.run
+               WHERE outbox.id = ?1 AND {})",
+            crate::preempt::KEYBOARD_HELD
+        ),
+        [outbox],
+        |row| row.get(0),
+    )
+}
+
 /// Marks the attempted prompt `outbox` `uncertain`: Enter was pressed twice and no
 /// `UserPromptSubmit` came, so its text may still sit in the agent's input.
 pub(crate) fn unconfirmed(db: &Connection, outbox: i64) -> rusqlite::Result<()> {
@@ -4822,6 +4904,8 @@ fn moved(
         .map_err(error)?;
         return Ok(());
     };
+    // A task that started since the last pass still has its place in the queue.
+    crate::milestones::place(tx).map_err(error)?;
     let mut order: Vec<i64> = tx
         .prepare(&format!(
             "SELECT id FROM tasks WHERE coalesce(band, '') = ?1 AND id != ?2
@@ -4876,6 +4960,33 @@ mod move_line_tests {
 
         assert_eq!(moved, Err("move takes a band, a place or both".to_owned()));
         assert_eq!(revision(&db).unwrap(), expected);
+    }
+}
+
+#[cfg(test)]
+mod push_kinds {
+    use super::*;
+
+    #[test]
+    fn an_upgrade_keeps_the_subscriptions_with_no_choice() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.execute_batch(&MIGRATIONS[..112].concat()).unwrap();
+        db.execute(
+            "INSERT INTO push_subscriptions (endpoint, p256dh, auth) VALUES ('e', 'p', 'a')",
+            [],
+        )
+        .unwrap();
+
+        migrate(&mut db).unwrap();
+
+        let row: (String, Option<String>) = db
+            .query_row(
+                "SELECT endpoint, kinds FROM push_subscriptions",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("e".to_owned(), None));
     }
 }
 

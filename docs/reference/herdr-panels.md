@@ -165,13 +165,17 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
   draw with their [links](#links).
 
 The detail shows the sections Why, Brief, Plan, PR, Trace, History and Command. Brief shows the
-request and the `groom` step's result, Plan the `plan` step's result, or else the latest result of a step
+request and the `groom` step's result, Plan the plan its latest approval ask shows (`plan_file`, see
+[the task endpoint](serve.md)) with the path of each file, or else the `plan` step's result, or else the latest result of a step
 whose name starts with `plan-`, or else the task's `progress`, PR the pull request's title, branches, state, review and checks, then the task's stack when it
 has two or more pull requests (see [Stacks](#stacks)), and Trace each run with its
 span, outcome and tokens. A check shows a check, a cross, a clock while it has no conclusion, or a
 dash when skipped or neutral; review and check states read in plain words, such as "changes
 requested" and "passed", as `checkState` and `stateWords` in `lib/priory.js` say them for the web too.
 A section the task lacks is left out with its chip, as DESIGN.md says.
+An open ask that approves a plan puts Plan first, and its detail opens on Plan rather than Why. Its
+options wait until the plan of its revision is read, and the panel and its answer bar say why while
+they wait or when the read fails. A cut plan says so beside the options.
 History lists every revision and refused answer of the ask, and its answer, newest first. A refused
 answer shows on a warn tile. Briefs, plans and results draw as plain text, like the agent's text.
 
@@ -258,18 +262,25 @@ built-in `#n` link.
 ## The Add action
 
 The Desk and Queue panels share one Add form, `lib/add-form.js`, over the view model `lib/add.js`.
-It holds one field, then chips for workflow, band and lane. The band chips are the factory's bands
-from `priory queue --json`, and the workflow chips its `workflows`, the
+It holds one field, then a dropdown each for workflow, band and lane. The bands are the factory's
+from `priory queue --json`, and the workflows its `workflows`, the
 [requestable](workflows.md#top-level-keys) ones. A queue read without the factory folder has
-`workflows` null, or `[]` from an older priory, so the chips then offer the workflows the listed
-tasks carry.
-The lane chips are the lanes the listed tasks carry. An unpicked chip leaves the
-value to the factory's [`[request]`](factory.md#request) table, as `priory add` does.
+`workflows` null, or `[]` from an older priory, so the dropdown then offers those the listed tasks
+carry. The lanes are those the listed tasks carry. A picked value that
+leaves the choices stays in its dropdown. A dropdown with nothing to offer and no pick is left out.
 
-`Enter` runs `priory add FACTORY -- TEXT` with a flag for each picked chip, and the form shows
+With no pick, the dropdowns show `default (WORKFLOW)`, `default` and `routed`. `WORKFLOW` is the
+queue's `default_workflow`. When the factory sets none, the dropdown shows `pick one`; when the queue
+lists no workflows, or comes from an older priory, it shows `default`. An unpicked dropdown leaves
+the value to the factory's [`[request]`](factory.md#request) table, and the lane to its lane rules,
+as `priory add` does. The first row of each menu clears the pick.
+
+`Enter` runs `priory add FACTORY -- TEXT` with a flag for each picked value, and the form shows
 "Added KEY." The Desk then selects the task in All tasks, and the Queue opens its row in Next, once
-the next read lists it. When priory refuses, the form says why and keeps the text. `Esc` closes the
-form. The panel's single-key shortcuts stay off while the field has focus.
+the next read lists it. When priory refuses, the form says why and keeps the text. `Tab` reaches
+each dropdown and `Enter` opens it on its pick. The up and down arrows move the highlight and scroll
+it into view, and `Enter` or `Space` picks it. A long name is truncated. `Esc` closes an open menu, else the form. The panel's
+single-key shortcuts stay off while the field or another control of the form has focus.
 
 ## The Bonjour panel
 
@@ -540,7 +551,7 @@ waiting: snoozing changes what a person sees, never what the daemon does. `prior
   `withdrawn_why`, the reason in words that the view shows, and `withdrawn_at`.
 - The detail adds the agent's text and the run that asked, `what_waits` and `next_action`, and
   the ask's `revisions` and `refused`, and another runner's ask's `submissions`, for its history. `priory task ID --json` adds the task's
-  `brief`, `plan`, `pull_request` and `runs`.
+  `brief`, `plan`, `plan_file`, `pull_request` and `runs`.
 
 ### Queue
 

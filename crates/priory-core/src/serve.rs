@@ -398,6 +398,7 @@ struct Served {
     workflows: Vec<String>,
     /// The workflows `POST /api/request` refuses.
     opted_out: Vec<String>,
+    default_workflow: Option<String>,
     /// `GET /api/request`: what the Add control prefills and offers.
     request: String,
     prices: BTreeMap<String, Price>,
@@ -426,6 +427,7 @@ impl Served {
             schedules: listing::schedule_triggers(factory),
             workflows: factory.requestable(),
             opted_out: factory.not_requestable(),
+            default_workflow: factory.request().map(|defaults| defaults.workflow.clone()),
             request: serde_json::json!({
                 "workflow": factory.request().map(|defaults| &defaults.workflow),
                 "band": factory.request().and_then(|defaults| defaults.band.as_ref()),
@@ -619,7 +621,8 @@ fn route(
         "/api/queue" => match intake::now() {
             Ok(now) => listing::revised(db, "queue", |db| {
                 let offered = Some((&served.workflows[..], &served.opted_out[..]));
-                listing::queue(db, &served.schedules, offered, now).map(Some)
+                let default_workflow = served.default_workflow.as_deref();
+                listing::queue(db, &served.schedules, offered, default_workflow, now).map(Some)
             }),
             Err(error) => return Reply::error(500, &error),
         },
@@ -1007,6 +1010,7 @@ fn write(
                 .is_ok_and(|reply| reply.get("error").is_some());
             Reply::json(if repeated { 409 } else { 200 }, added)
         }
+        Ok(Ok(subscribed)) if matches!(write, Write::Subscribe) => Reply::json(200, subscribed),
         Ok(Ok(done)) => Reply::json(200, serde_json::json!({ "ok": done }).to_string()),
         Ok(Err(refused)) => refusal(db, sent, &refused),
         Err(error) => Reply::error(500, &format!("unreadable reply {reply:?}: {error}")),
@@ -1499,6 +1503,7 @@ fn write_line(
                 hold: None,
                 text: body.text,
                 expected: body.revision,
+                now: false,
             };
             Ok((line(&act), Sent::Task(act.task, act.expected)))
         }

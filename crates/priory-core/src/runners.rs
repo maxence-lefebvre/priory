@@ -252,6 +252,7 @@ fn apply_act(
             hold: None,
             text: data["text"].as_str().map(str::to_owned),
             expected: None,
+            now: false,
         };
         // A refused action leaves nothing behind, while the message itself is still recorded.
         tx.execute_batch("SAVEPOINT acted")?;
@@ -337,7 +338,7 @@ fn acted_outcome(tx: &Transaction, message: &Message) -> rusqlite::Result<()> {
 
 /// Applies an answer or dismiss another machine sent to an ask of this runner, and queues its
 /// outcome for the log, so the sender learns what became of it.
-fn apply(
+pub(crate) fn apply(
     tx: &Transaction,
     message: &Message,
     me: &str,

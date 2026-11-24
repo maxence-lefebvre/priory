@@ -5,7 +5,11 @@ import { linked } from "./links.js";
 const LISTS = [{ tag: "ul", item: /^\s*[-*+]\s+(.*)$/s }, { tag: "ol", item: /^\s*\d+[.)]\s+(.*)$/s }];
 const BOX = /^\[([ xX])\]\s+(.*)$/s;
 const CHECK = `<svg class="ico s15" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>`;
-const FENCE = /^\s*```/;
+const FENCE = /^\s*(`{3,})\s*(.*)$/s;
+const closes = (line, opener) => {
+  const [, ticks, rest] = line.match(FENCE) ?? [];
+  return rest === "" && ticks.length >= opener.length;
+};
 // A label holds no `[`, so a line of unmatched brackets scans in linear time. Each bold token is
 // atomic (lookahead and backreference): a whole code span or link when one forms, else one character.
 const URL_PART = String.raw`https:\/\/(?:[^\s()]|\([^\s()]*\))+`;
@@ -60,11 +64,13 @@ export function markdown(text, links, repo) {
       at += 1;
       continue;
     }
-    if (FENCE.test(line)) {
+    const fence = line.match(FENCE);
+    if (fence) {
+      const [, opener, info] = fence;
       const code = [];
-      for (at += 1; at < lines.length && !FENCE.test(lines[at]); at += 1) code.push(lines[at]);
+      for (at += 1; at < lines.length && !closes(lines[at], opener); at += 1) code.push(lines[at]);
       at += 1;
-      out.push(`<pre><code>${escaped(code.join("\n"))}</code></pre>`);
+      out.push(`${info.trim() ? `<p class="info">${escaped(info.trim())}</p>` : ""}<pre><code>${escaped(code.join("\n"))}</code></pre>`);
       continue;
     }
     const heading = line.match(HEADING);

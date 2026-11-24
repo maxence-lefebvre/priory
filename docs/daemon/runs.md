@@ -188,6 +188,34 @@ its next turn end for task 12 (blocker)`. The stopped task is `ready` again in i
 own place, and its next run resumes its session. See
 [room.md](room.md#urgent-wakes).
 
+### Milestone order
+
+The tasks of `linear.view` and `linear.project` triggers follow their project in Linear. Per band, a
+project's `queued` and `ready` tasks keep the places their age gives them in the queue, and fill
+those places in this order. A task in any other state, such as running, asleep or held, gives its
+place to no one:
+
+1. Their milestone's order, then its target date. A milestone without a date comes after one with a
+   date. Issues without a milestone come last.
+2. The issue's own order within the milestone.
+
+So tasks 3 and 8 of one project trade places when the issue of task 8 is in the earlier milestone,
+and the tasks between them stay where they are. Each project is ordered by itself. A task whose issue
+has no project starts by age.
+
+A later milestone queues behind an earlier one. It does not wait until the earlier one has no open
+task, so it can start while the earlier one's tasks run, sleep or are held.
+
+A task that [age](#aging) moved up trades places only with those that start in the same band.
+
+The intake's next poll after a change in Linear reorders the queued tasks. Bands, aging and a
+person's order come first: a task that `priory move` placed keeps its place. Such a move places every
+active task of its band, so those tasks follow no later change in Linear. `priory move <task> --band
+<band>` gives a task's place back. With [`fair = "lane"`](#turns-between-lanes), lanes take turns
+before milestones, and the order holds within each lane.
+
+The order is neither a band nor a place: the daemon keeps it as a sort key of its own.
+
 ### Aging
 
 Strict band order lets a steady flow of `today` tasks keep a `later` task waiting forever.
@@ -353,9 +381,10 @@ it, as they hold any task.
 ## Holds
 
 `priory hold <task> --reason <text>` holds a `queued` or `ready` task, so it never starts until
-its hold is released. It refuses any other state: a running task already has a process, which a
-hold would have to kill mid-turn, and an asleep task waits on its own ask or wait, whose wake would
-race the hold. Hold such a task once it is back in the queue. `priory release <task>` lets a held
+its hold is released. A `running` task is held at the end of its turn (see
+[Holding a running task](#holding-a-running-task)). It refuses any other state: an asleep task, for
+example, waits on its own ask or wait, whose wake would race the hold. Hold such a task once it is
+back in the queue. `priory release <task>` lets a held
 task go, back to the state it was held from. Both go to the daemon over its socket, as
 `priory resume` does, so a hold and a run start never race.
 
@@ -415,14 +444,56 @@ task under `conditions`, with `met` and `met_as` once it is met.
 A batch's entry is held on one `merged` condition per entry it starts after, which no flag sets (see
 [batches.md](batches.md)). Its reason reads `held: batch 4, until task 31 merges`.
 
-When a task's Linear issue leaves the watched view before the task's first run, the daemon holds
+### Holding a running task
+
+`priory hold` on a running task marks it and changes nothing until its turn ends. The task's reason
+reads `holds after this turn: <reason>, <condition>`, and the desk lists it with its `held` rows.
+The mark is stored in the state file, so it survives a daemon restart. A second hold replaces it.
+`priory release` withdraws it, with the reply `task 12 is no longer to be held`.
+
+At the turn's end, the run settles as an [urgent wake](room.md#what-happens-at-the-turn-end) does,
+but ends as `held`:
+
+- A turn that ended with no tool, or whose process would carry on, parks the task held. A result
+  moves the task to its next step first.
+- A turn that ended with an ask or a wait puts the task to sleep. The task is held once it is ready.
+- A result that ends the task closes the hold.
+
+The daemon judges the hold's conditions from when the task is held. A condition met by then releases
+it at once. The task keeps its worktree, branch, uncommitted files and session. Once released, its
+next run resumes the session, with a prompt that names the hold ahead of any other queued prompt.
+
+`--now` does not wait for the turn's end, for an emergency such as a full disk. It ends the run at
+once and kills its process. The worktree is left as it is, so a file the agent was writing may be
+incomplete, and the prompt of the next run tells the agent to check. A result, ask or wait the turn
+already sent still counts. While a gate grades the result, the run goes on, since ending it would drop the result: the task is
+held after the verdict, and the reply says whether the turn still runs. A prompt typed but not
+confirmed when the run ends stays on the desk as `uncertain`. A run that never took a prompt gives it
+back to the queue, and the next run starts a new session with it. The first prompt of a resumed Codex
+run stays `uncertain` once the run has read its transcript, since the session may hold that
+prompt's turn. On a queued or ready task, `--now`
+changes nothing.
+
+`--now` kills the run's tmux pane. A process that left the pane's session, such as a daemonized
+server, goes on, and the [memory grants](memory-gate.md) of a command that goes on stay until it
+exits.
+
+A run at an `irreversible` step, in a shared session, in a debate turn, or with a keyboard a person
+holds is not stopped. A debate turn settles as usual, and the task is held before the next one. `--now` refuses it, with the reason. A hold without `--now` keeps its mark and applies at
+the next turn end, or as soon as the run is idle and none of those is true. A run whose gate grades,
+one with a prompt that is not confirmed, and one that took no prompt yet also keep the mark. A tmux client attached
+to the run does not keep it from being held.
+
+When a task's Linear issue leaves the watched view or project before the task's first run, the daemon holds
 the task and asks a person whether to drop or keep it, since the view may have said "not this one":
 `ENG-7 left the view My loop backlog. Drop the task?`, with the options `drop` and `keep`. The
 reason reads `held: left the view My loop backlog, until a person answers whether to keep it`.
-`drop` drops the task with the reason `dropped by a person after its issue left the view`. `keep`
+`drop` drops the task with the reason `dropped by a person after its issue left the view`, or `the
+project`. `keep`
 releases that hold, back to the state it was held from. When the issue enters the view it left
 again before anyone answers, the daemon answers `keep` itself and the hold's condition reads
-`ENG-7 entered the view My loop backlog again`. Entering another view answers nothing. A task that already ran gets no ask: its
+`ENG-7 entered the view My loop backlog again`. Entering another view answers nothing, nor does entering the same project through another filter. Leaving
+a second project or filter asks again; leaving a second view does not. A task that already ran gets no ask: its
 agent hears `linear.issue.left` as an event of its own key, which wakes it when it sleeps at a model
 step (see [Subscriptions in tools.md](tools.md#subscriptions)). A batch entry gets the same ask.
 
@@ -440,17 +511,38 @@ repository's default branch (`git diff origin/HEAD...<branch>`). On each tick, i
 files, the task gets an ordinary hold with the reason `overlaps task N on <files>`. The hold waits
 for the earlier task's open pull request to merge, or, when it has none yet, for that task to end.
 A pull request closed without a merge releases it. `priory release` lets the task go as for any
-hold, and the daemon does not hold it for that earlier task again. A stacked batch entry never waits on
-a task it is stacked on, since its branch starts with that task's files (see
-[batches.md](batches.md)).
+hold, and the daemon does not hold it for that earlier task again.
+
+The check keeps new work from starting beside open work. A task that already has work on an open
+pull request, such as a review fix or a CI fix, is never held by it, whichever earlier task it
+overlaps. A task has work on an open pull request of its repository in three cases:
+
+- The pull request is recorded for the task.
+- The task's key names it, with or without the `cli:` prefix.
+- The task's branch and the pull request's pushed branch are in one line: either one holds every
+  commit of the other. The task pushed to it, or is built on it.
+
+The daemon checks this only when it would place a hold. It never releases a hold already placed: a
+person does, with `priory release`.
+
+A stacked batch entry never waits on a task it is stacked on, since its branch starts with that
+task's files (see [batches.md](batches.md)). The pull requests it is stacked on do not count as its
+own work, so it can still wait on another task.
 
 Set `[queue] overlap = false` in `factory.toml` to turn this off (see
 [factory.md](../reference/factory.md#queue)).
 
 Known limits:
 
-- Only a task between runs is held: a running task has a process, which a hold would have to kill.
+- Only a task between runs is held for an overlap. A running task is not marked.
   A task that overlaps while running is held at its next queued step, if it has one.
+- The branches are compared as the clone last pushed or fetched them. When an amend or a rebase made
+  the two branches diverge, the task is held.
+- New work built on an open pull request's branch counts as work on it, unless it is a stacked batch
+  entry.
+- The daemon keeps a match until the task's next run, the pull request's close or its own restart,
+  even when the pull request's branch is rewritten.
+- When git cannot compare the branches, the daemon places no hold and asks again on the next tick.
 - The files come from the end of a run. Later commits in a running task show at its next run's end.
 
 
