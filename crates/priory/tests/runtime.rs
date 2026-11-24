@@ -19484,6 +19484,18 @@ fn the_run_itself_is_denied_and_the_denial_is_on_the_trace_without_the_term() {
     assert!(reason.contains("rule host: PR title line 1"), "{reason}");
     assert!(!reason.contains("vault9"), "{reason}");
     assert_eq!(guard_denied(&replies[1]), None, "{}", replies[1]);
+    let denials: Vec<_> = setup
+        .trace()
+        .into_iter()
+        .filter(|event| event["type"] == "factory.tool.denied")
+        .map(|event| event["data"].clone())
+        .collect();
+    assert_eq!(denials.len(), 1, "{denials:?}");
+    assert_eq!(
+        [&denials[0]["guard"], &denials[0]["call"]],
+        [&json!("private-terms"), &json!("gh pr edit")]
+    );
+    assert!(!denials[0].to_string().contains("vault9"), "{denials:?}");
 }
 
 #[test]
