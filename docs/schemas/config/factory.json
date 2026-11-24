@@ -97,6 +97,14 @@
       },
       "type": "object"
     },
+    "Channel": {
+      "description": "The releases the daemon installs.",
+      "enum": [
+        "patch",
+        "minor"
+      ],
+      "type": "string"
+    },
     "CloudwatchWebhook": {
       "additionalProperties": false,
       "description": "CloudWatch alarm state changes, from an EventBridge API destination at `POST /hooks/cloudwatch`.",
@@ -622,6 +630,47 @@
       },
       "type": "object"
     },
+    "Quiet": {
+      "additionalProperties": false,
+      "description": "The days and hours the daemon never upgrades in.",
+      "properties": {
+        "days": {
+          "description": "The weekdays it starts on; every day when unset.",
+          "items": {
+            "enum": [
+              "mon",
+              "tue",
+              "wed",
+              "thu",
+              "fri",
+              "sat",
+              "sun"
+            ]
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "from": {
+          "description": "When it starts, `HH:MM`.",
+          "pattern": "^([01]?[0-9]|2[0-3]):[0-5][0-9]$",
+          "type": "string"
+        },
+        "timezone": {
+          "description": "The IANA zone of the hours, such as `Europe/Paris`; the machine's own when unset.",
+          "type": "string"
+        },
+        "until": {
+          "description": "When it ends, `HH:MM`; the next day when it is not after `from`.",
+          "pattern": "^([01]?[0-9]|2[0-3]):[0-5][0-9]$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "from",
+        "until"
+      ],
+      "type": "object"
+    },
     "Recipe": {
       "additionalProperties": false,
       "description": "One command of a repository's recipe: `argv`, which Priory execs as it is, or `shell`, which it\nruns with `sh -c`.",
@@ -1119,6 +1168,54 @@
         }
       ]
     },
+    "Upgrade": {
+      "additionalProperties": false,
+      "description": "`[upgrade]`: which releases the daemon installs by itself, and when.",
+      "properties": {
+        "channel": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Channel"
+            }
+          ],
+          "description": "`patch` takes releases of the running major and minor version; `minor` takes releases of the\nrunning major version."
+        },
+        "every": {
+          "default": null,
+          "description": "How often the daemon looks for a release; every hour when unset, and at least 10 minutes.",
+          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "type": "string"
+        },
+        "not_during": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Quiet"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "When the daemon never upgrades, such as working hours; it may at any time when unset."
+        },
+        "units": {
+          "default": [
+            "priory-daemon.service",
+            "priory-intake.service"
+          ],
+          "description": "The systemd user units of the daemon and the intake, in that order.",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        }
+      },
+      "required": [
+        "channel"
+      ],
+      "type": "object"
+    },
     "Webhooks": {
       "additionalProperties": false,
       "description": "The signed webhooks the HTTP server accepts, by source.",
@@ -1444,6 +1541,17 @@
       "default": false,
       "description": "Priory records Claude Code's and Codex's folder trust for the worktrees and clones it\ncreates for the repositories the factory names, so no run stops on a trust dialog.",
       "type": "boolean"
+    },
+    "upgrade": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Upgrade"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The daemon installs newer releases by itself; nothing is looked up or installed when unset."
     },
     "webhooks": {
       "anyOf": [

@@ -305,6 +305,26 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 refuse("`metrics_cap` is 0: it needs to be 1 or more".to_owned());
             }
         }
+        if let Some(upgrade) = &settings.value.upgrade {
+            let line = settings.lines.field("upgrade");
+            let mut refuse = |message: &str| {
+                problems.push(problem(settings, line, message.to_owned()));
+            };
+            if settings.value.log.backend == crate::factory::Backend::Postgres {
+                refuse(
+                    "`[upgrade]` needs the herdr-bus log: Priory cannot tell whether a release \
+                     changes a Postgres log's tables, so upgrade these machines by hand",
+                );
+            }
+            if upgrade.units[0] == upgrade.units[1] {
+                refuse(
+                    "`[upgrade] units` names one unit twice: give the daemon's, then the intake's",
+                );
+            }
+            if upgrade.every.is_some_and(|every| every.as_secs() < 600) {
+                refuse("`[upgrade] every` is under 10 minutes: GitHub limits anonymous requests");
+            }
+        }
         if settings
             .value
             .log
