@@ -26501,19 +26501,12 @@ impl Setup {
     /// writes: no daemon types into it and a `sleep` replaced the agent.
     fn running(name: &str) -> Setup {
         let mut setup = Setup::new(name);
-        if !name.starts_with("before") {
-            setup.hold("hold-stop");
-        }
+        // A `Stop` after the crash is spooled, and the next daemon would nudge the pane for it.
+        setup.hold("hold-stop");
         setup.publish(&requested(42));
         setup.start();
         setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
         setup.crash();
-        if name.starts_with("forcedbefore") {
-            setup.release("hold-stop");
-        }
-        if name.starts_with("forced") {
-            std::thread::sleep(Duration::from_secs(2));
-        }
         setup.tmux_out(&["respawn-pane", "-k", "-t", "=priory-1:", "sleep 600"]);
         setup
     }
@@ -27116,88 +27109,9 @@ fn keys_refuse_a_control_character_in_text_and_a_key_off_the_list_and_send_nothi
     server.wait().unwrap();
 }
 
-fn stress(arm: &str, part: usize) {
-    let (mut pass, mut fail) = (0, 0);
-    for i in 0..25 {
-        let name = format!("{arm}-{part}-{i}");
-        match std::panic::catch_unwind(|| repeated(&name)) {
-            Ok(()) => pass += 1,
-            Err(_) => fail += 1,
-        }
-    }
-    panic!("STRESS {arm} {part} pass={pass} fail={fail}");
-}
-#[test]
-fn stress_before_0() {
-    stress("before", 0);
-}
-#[test]
-fn stress_before_1() {
-    stress("before", 1);
-}
-#[test]
-fn stress_before_2() {
-    stress("before", 2);
-}
-#[test]
-fn stress_before_3() {
-    stress("before", 3);
-}
-#[test]
-fn stress_forcedbefore_0() {
-    stress("forcedbefore", 0);
-}
-#[test]
-fn stress_forcedbefore_1() {
-    stress("forcedbefore", 1);
-}
-#[test]
-fn stress_forcedbefore_2() {
-    stress("forcedbefore", 2);
-}
-#[test]
-fn stress_forcedbefore_3() {
-    stress("forcedbefore", 3);
-}
-#[test]
-fn stress_forcedafter_0() {
-    stress("forcedafter", 0);
-}
-#[test]
-fn stress_forcedafter_1() {
-    stress("forcedafter", 1);
-}
-#[test]
-fn stress_forcedafter_2() {
-    stress("forcedafter", 2);
-}
-#[test]
-fn stress_forcedafter_3() {
-    stress("forcedafter", 3);
-}
-#[test]
-fn stress_after_0() {
-    stress("after", 0);
-}
-#[test]
-fn stress_after_1() {
-    stress("after", 1);
-}
-#[test]
-fn stress_after_2() {
-    stress("after", 2);
-}
-#[test]
-fn stress_after_3() {
-    stress("after", 3);
-}
 #[test]
 fn a_repeated_request_id_gets_the_first_outcome_and_sends_nothing() {
-    repeated("keys-repeat");
-}
-
-fn repeated(name: &str) {
-    let (setup, mut server, address) = Setup::typing(name);
+    let (setup, mut server, address) = Setup::typing("keys-repeat");
     let secret = take_keyboard(&address);
 
     let first = keys(&address, &secret, "same", json!({ "text": "once" }));
