@@ -168,6 +168,7 @@ fn the_config_schemas_accept_the_values_the_loader_accepts() {
         ("every", "60"),
         ("until", "18:00"),
         ("until", "9h"),
+        ("until", "1d"),
         ("until", "6pm"),
     ]
     .map(|(key, value)| {
