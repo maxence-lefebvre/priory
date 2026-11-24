@@ -1651,7 +1651,7 @@ pub const ASK_SHAPE: [&str; 3] = ["short", "whatWaits", "nextAction"];
 #[serde(deny_unknown_fields)]
 #[schemars(title = "trigger")]
 pub struct Trigger {
-    /// `github`, `linear`, `linear.view`, `sentry`, `honeycomb`, `intercom`, `cloudwatch`, `figma`, `slack` or `schedule`.
+    /// `github`, `linear`, `linear.view`, `linear.project`, `sentry`, `honeycomb`, `intercom`, `cloudwatch`, `figma`, `slack` or `schedule`.
     pub source: String,
     /// The repository the trigger's tasks work in, a GitHub `owner/name` with no `.` or `..` name;
     /// the polled one for `github`.
@@ -1665,11 +1665,14 @@ pub struct Trigger {
     pub teams: Option<Vec<String>>,
     /// The saved Linear view a `linear.view` trigger reads: its id, or the slug id ending its URL.
     pub view: Option<String>,
+    /// The Linear project a `linear.project` trigger reads: its UUID or its slug id.
+    pub project: Option<String>,
     /// The Slack channel id a `slack` trigger reads, such as `C0123`.
     pub channel: Option<String>,
     /// Values an event must have: `label` for GitHub, or `author` and `commenter` for a comment or
-    /// review; `team`, `project` (its name or id), `label`, `state` for Linear; `text` for Slack.
-    pub filter: Option<BTreeMap<String, String>>,
+    /// review; `team`, `project` (its name or id), `label`, `state` for Linear; `assignee` (a user id or email)
+    /// and `state` (a list of state types) for `linear.project`; `text` for Slack.
+    pub filter: Option<BTreeMap<String, FilterValue>>,
     /// The workflow a matching event starts, by file name.
     pub workflow: String,
     /// Which events are the same work, such as `issue.number`; for a schedule, a fixed key.
@@ -1740,6 +1743,31 @@ pub struct Trigger {
     #[serde(default)]
     #[schemars(extend("items" = { "minLength": 1 }))]
     pub noop: Vec<String>,
+}
+
+/// What a trigger's filter takes for one key.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(untagged, expecting = "expected a string or a list of strings")]
+pub enum FilterValue {
+    One(String),
+    /// Any of these. Only the `state` of a `linear.project` trigger takes a list.
+    Any(Vec<String>),
+}
+
+impl FilterValue {
+    /// The value, none for a list.
+    pub fn one(&self) -> Option<&str> {
+        match self {
+            FilterValue::One(value) => Some(value),
+            FilterValue::Any(_) => None,
+        }
+    }
+}
+
+impl PartialEq<FilterValue> for serde_json::Value {
+    fn eq(&self, other: &FilterValue) -> bool {
+        other.one().is_some_and(|value| self == value)
+    }
 }
 
 /// A trigger's `[pre]` script. Priory execs `argv` with no shell, writes the event and the request

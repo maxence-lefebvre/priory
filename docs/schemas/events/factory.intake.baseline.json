@@ -8,7 +8,7 @@
       "description": "Where a stream stands after a poll that moved it; a missing marker means the stream is still\nin its baseline.",
       "properties": {
         "filter": {
-          "description": "The view's filter, as Linear reported it at the poll. Linear view streams only."
+          "description": "The view's filter, as Linear reported it at the poll, or the project trigger's filter.\nLinear view and project streams only."
         },
         "members": {
           "anyOf": [
@@ -19,7 +19,7 @@
               "type": "null"
             }
           ],
-          "description": "Every issue in the view, or every pull request asking the reviewer for a review. Linear view\nand review request streams only."
+          "description": "Every issue in the view or the project, or every pull request asking the reviewer for a\nreview. Linear view, Linear project and review request streams only."
         },
         "position": {
           "$ref": "#/definitions/Position"
@@ -52,8 +52,57 @@
       ],
       "type": "object"
     },
-    "LinearIssue": {
-      "description": "The fields of a Linear issue every Linear event carries, as the intake saw it.",
+    "IssueOrder": {
+      "description": "Where a Linear issue stands in its project, as the intake saw it.",
+      "properties": {
+        "milestone": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MilestoneOrder"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The issue's milestone; null without one."
+        },
+        "project_id": {
+          "description": "Linear's id of the project.",
+          "type": "string"
+        },
+        "sort_order": {
+          "description": "The issue's manual order in Linear. Lower comes first.",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "project_id",
+        "milestone",
+        "sort_order"
+      ],
+      "type": "object"
+    },
+    "Link": {
+      "additionalProperties": false,
+      "description": "A link for people.",
+      "properties": {
+        "label": {
+          "description": "`issue` or `pull_request`.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "type": "object"
+    },
+    "Member": {
+      "description": "An issue of a Linear view or project.",
       "properties": {
         "issue": {
           "description": "The issue identifier, such as `ENG-7`.",
@@ -69,6 +118,17 @@
         "linear_id": {
           "description": "Linear's id of what the event is about: the issue, history entry or comment. A webhook's\nstate change has no history entry, so it holds the issue's id.",
           "type": "string"
+        },
+        "order": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/IssueOrder"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Where the issue stands in its project; null without a project."
         },
         "project": {
           "description": "The issue's project name; null without one.",
@@ -114,29 +174,11 @@
       ],
       "type": "object"
     },
-    "Link": {
-      "additionalProperties": false,
-      "description": "A link for people.",
-      "properties": {
-        "label": {
-          "description": "`issue` or `pull_request`.",
-          "type": "string"
-        },
-        "url": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "label",
-        "url"
-      ],
-      "type": "object"
-    },
     "Members": {
       "anyOf": [
         {
           "items": {
-            "$ref": "#/definitions/LinearIssue"
+            "$ref": "#/definitions/Member"
           },
           "type": "array"
         },
@@ -148,6 +190,33 @@
         }
       ],
       "description": "The members of a set stream."
+    },
+    "MilestoneOrder": {
+      "description": "Where a milestone stands in its project.",
+      "properties": {
+        "id": {
+          "description": "Linear's id of the milestone.",
+          "type": "string"
+        },
+        "sort_order": {
+          "description": "The milestone's manual order in its project. Lower comes first.",
+          "format": "double",
+          "type": "number"
+        },
+        "target_date": {
+          "description": "The milestone's target date, `YYYY-MM-DD`; null without one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "sort_order",
+        "target_date"
+      ],
+      "type": "object"
     },
     "Position": {
       "anyOf": [

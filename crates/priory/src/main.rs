@@ -2316,7 +2316,8 @@ fn adopt(args: Vec<String>) -> ExitCode {
         trigger
             .filter
             .as_ref()
-            .and_then(|filter| filter.get("author")),
+            .and_then(|filter| filter.get("author"))
+            .and_then(factory::FilterValue::one),
     ) else {
         return fail(&format!(
             "trigger {name} is not a pull request comment or review trigger"
