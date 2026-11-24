@@ -525,4 +525,67 @@ mod tests {
         std::os::unix::fs::symlink(home, &folder).unwrap();
         assert!(read(&setup.worktree, FILES[0]).is_none());
     }
+
+    #[test]
+    fn plan_graded_by_another_step_is_bound_to_its_file() {
+        let mut setup = Setup::new("red-grade");
+        let flow = &mut setup.factory.workflows.get_mut("groom").unwrap().value;
+        flow.steps.push(
+            serde_json::from_value(json!({
+                "id": "grade", "decides": "model", "effect": "read", "prompt": "Grade the plan.",
+                "next": { "red": "approve-plan" },
+            }))
+            .unwrap(),
+        );
+        setup
+            .db
+            .execute("UPDATE runs SET started = '2026-01-01T00:00:00Z'", [])
+            .unwrap();
+        setup.write("brief.md", "as read", 300);
+        setup.result("grade", "red", "the grade summary");
+        setup.raise();
+        setup.write("brief.md", "rewritten", 300);
+        assert!(setup.answer(1).is_err());
+    }
+
+    #[test]
+    fn plan_changed_before_a_leads_answer_raises_the_next_revision() {
+        let mut setup = Setup::new("red-lead");
+        setup.write("brief.md", "as read", 30);
+        setup.raise();
+        setup
+            .db
+            .execute_batch(
+                r#"INSERT INTO tasks (id, key, workflow, step, state, band, lane, lane_derived,
+                     trigger, source, entered)
+                   VALUES (2, 'priory:ask:1:1', 'groom', 'groom', 'running', 'now', 'cli', 0,
+                     'priory/lead', 'called', 'x');
+                   INSERT INTO inbox (id, type, time, data, links, task, outcome)
+                   VALUES ('called', 'priory.ask.routed', 'x', '{"ask":1,"revision":1}', '[]', 2,
+                     'created');
+                   INSERT INTO runs (task, step, agent, tmux, session)
+                   VALUES (2, 'groom', 'lead', 't', 'lead');"#,
+            )
+            .unwrap();
+        setup.write("brief.md", "edited", 0);
+        let trace = Trace {
+            factory: &setup.factory,
+            revision: None,
+            machine: None,
+            runner: None,
+            usage: priory_runtime::transcript::usage,
+        };
+        let call = tools::Call {
+            session: "lead".to_owned(),
+            tool: "result".to_owned(),
+            arguments: json!({ "outcome": "answered", "summary": "approved" }),
+        };
+        let kit = crate::kit::Current {
+            kit: None,
+            memories: None,
+        };
+        let (stored, _) = tools::call(&mut setup.db, &call, &trace, kit, &|_, _| None).unwrap();
+        stored.unwrap_err();
+        assert_eq!(setup.shown()["revision"], 2);
+    }
 }
