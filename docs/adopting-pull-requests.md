@@ -9,7 +9,8 @@ task routes its events is in [routing.md](daemon/routing.md#parked-pull-requests
 ## 1. Adopt every open pull request of a trigger
 
 Name the trigger. Priory lists the trigger's repository's open pull requests by its `author` with
-`gh pr list`, and parks a task on each one that no task owns:
+`gh pr list`, and parks a task on each one that no task owns. It also skips a pull request whose
+head branch an active task owns:
 
 ```sh
 priory adopt my-prs

@@ -55,12 +55,25 @@ key = "issue.number"
 
 const OUTPUT: &str = "factory.intake";
 
-/// Undoes migrations 111, memory lapses, 110, a run under direnv, 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
+/// Undoes migration 112, which lets a sweep script run with no stall.
+macro_rules! undo_scheduled_sweeps {
+    () => {
+        "CREATE TABLE sweeps_undone (id INTEGER PRIMARY KEY AUTOINCREMENT,
+    stall INTEGER NOT NULL REFERENCES stalls (id), script TEXT NOT NULL,
+    started TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    ended TEXT, status TEXT, output TEXT, pid INTEGER, pid_started INTEGER);
+  INSERT INTO sweeps_undone SELECT * FROM sweeps WHERE stall IS NOT NULL;
+  DROP TABLE sweeps; ALTER TABLE sweeps_undone RENAME TO sweeps;
+  "
+    };
+}
+
+/// Undoes migrations 112, scheduled sweeps, 111, memory lapses, 110, a run under direnv, 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
 /// `auto_answer` level, 97, the task's `added_by`, and 93: the `pre` script's task columns and the
 /// pending requests.
 macro_rules! undo_pre {
     () => {
-        "ALTER TABLE asks DROP COLUMN confidence; ALTER TABLE asks DROP COLUMN rationale;
+        concat!(undo_scheduled_sweeps!(), "ALTER TABLE asks DROP COLUMN confidence; ALTER TABLE asks DROP COLUMN rationale;
   ALTER TABLE tasks DROP COLUMN auto_answer; ALTER TABLE tasks DROP COLUMN added_by; DROP VIEW task_text; CREATE VIEW task_text AS SELECT tasks.id AS task,
     coalesce(json_extract(inbox.data, '$.title'), '') AS title,
     coalesce(json_extract(inbox.data, '$.text'), json_extract(inbox.data, '$.body'),
@@ -73,7 +86,7 @@ macro_rules! undo_pre {
   ALTER TABLE memory_candidates DROP COLUMN step; ALTER TABLE gates DROP COLUMN lessons; ALTER TABLE gates DROP COLUMN ask; ALTER TABLE gates DROP COLUMN judges;
   ALTER TABLE runs DROP COLUMN session_started; ALTER TABLE runs DROP COLUMN harness;
   ALTER TABLE runs DROP COLUMN resumes; ALTER TABLE runs DROP COLUMN sandbox; ALTER TABLE runs DROP COLUMN direnv; DROP TABLE lapses;
-  "
+  ")
     };
 }
 
@@ -1479,7 +1492,7 @@ fn a_codex_run_with_no_session_start_names_the_codex_command_whose_hooks_to_trus
     assert!(reason.starts_with(&prefix), "{reason}");
     assert!(
         reason.ends_with(
-            ", accept the folder, type /hooks and trust Priory's hooks, then exit. Its pane ended with: token [redacted] refused | Hooks need review | 3 hooks are new or changed | › 1. Review hooks"
+            ", accept the folder, type /hooks and trust Priory's hooks, then exit. Resume the task to try again. Its pane ended with: token [redacted] refused | Hooks need review | 3 hooks are new or changed | › 1. Review hooks"
         ),
         "{reason}"
     );
@@ -2993,6 +3006,320 @@ fn a_disk_stall_runs_the_disk_scripts_once_with_a_timeout_and_the_desk_shows_the
     setup.until("desk", |rows| !rows.iter().any(|row| row[1] == "sweep"));
 }
 
+/// Polls the lines of `fake/<name>` until `done` holds for them, and returns them.
+fn until_fake_lines(setup: &Setup, name: &str, done: impl Fn(&[String]) -> bool) -> Vec<String> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let text = fs::read_to_string(setup.dir.join("fake").join(name)).unwrap_or_default();
+        let lines: Vec<String> = text.lines().map(str::to_owned).collect();
+        if done(&lines) {
+            return lines;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out on fake/{name}: {lines:?}\ndaemon: {}",
+            fs::read_to_string(setup.dir.join("daemon.log")).unwrap_or_default()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn a_scheduled_script_runs_on_its_every_and_never_overlaps_itself() {
+    let mut setup = Setup::new("scheduled-cadence");
+    let factory = r#"name = "demo"
+
+[sweep]
+scripts = [
+  { run = "echo start >> \"$FAKE_DIR/log\"; sleep 12; echo end >> \"$FAKE_DIR/log\"", every = "10s" },
+]
+"#;
+    fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
+
+    setup.start();
+
+    let log = until_fake_lines(&setup, "log", |lines| lines.len() >= 4);
+    assert_eq!(log[..4], ["start", "end", "start", "end"]);
+}
+
+#[test]
+fn a_failed_scheduled_script_whose_text_changes_leaves_the_desk() {
+    let mut setup = Setup::new("scheduled-fixed");
+    let failing = r#"name = "demo"
+
+[sweep]
+scripts = [{ run = "echo nope; exit 3", every = "1h" }]
+"#;
+    let config = setup.dir.join("factory/factory.toml");
+    fs::write(&config, failing).unwrap();
+    setup.start();
+    setup.until("desk", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "sweep" && row[5] == "echo nope; exit 3: exit 3: nope")
+    });
+
+    // The added script starts right after the first prune under the reloaded factory.
+    let added = failing.replace(
+        "every = \"1h\" }]",
+        "every = \"1h\" }, { run = \"echo ran >> \\\"$FAKE_DIR/ran\\\"\", every = \"1h\" }]",
+    );
+    write_atomic(&config, &added);
+    until_fake_lines(&setup, "ran", |lines| lines.len() == 1);
+    assert!(
+        setup
+            .rows("desk")
+            .iter()
+            .any(|row| row[1] == "sweep" && row[5] == "echo nope; exit 3: exit 3: nope")
+    );
+
+    write_atomic(&config, &failing.replace("exit 3", "exit 0"));
+
+    setup.until("desk", |rows| !rows.iter().any(|row| row[1] == "sweep"));
+}
+
+#[test]
+fn pruning_scheduled_runs_keeps_a_running_one() {
+    let mut setup = Setup::new("scheduled-running");
+    let factory = r#"name = "demo"
+
+[sweep]
+scripts = [{ run = "echo start >> \"$FAKE_DIR/log\"; sleep 60", every = "1h" }]
+"#;
+    fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
+    setup.start();
+    until_fake_lines(&setup, "log", |lines| lines == ["start"]);
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "INSERT INTO sweeps (stall, script, ended, status, output)
+         SELECT NULL, value, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), 'exit 0', ''
+         FROM (SELECT script AS value FROM sweeps
+               UNION ALL SELECT 'other' UNION ALL SELECT 'other');",
+    )
+    .unwrap();
+
+    let kept = || -> Vec<(String, bool)> {
+        db.prepare("SELECT script, ended IS NULL FROM sweeps ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while kept().len() > 3 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let script = "echo start >> \"$FAKE_DIR/log\"; sleep 60".to_owned();
+    assert_eq!(
+        kept(),
+        [
+            (script.clone(), true),
+            (script, false),
+            ("other".to_owned(), false),
+        ]
+    );
+}
+
+#[test]
+fn a_state_file_at_111_keeps_its_stall_runs_and_takes_scheduled_ones() {
+    let mut setup = Setup::new("scheduled-upgrade");
+    setup.start();
+    setup.crash();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(concat!(
+        undo_scheduled_sweeps!(),
+        "PRAGMA foreign_keys = OFF;
+         INSERT INTO stalls (id, resource, missing, task, ended)
+           VALUES (7, 'disk', '1 GB', 1, '2026-01-01T00:00:00Z');
+         INSERT INTO sweeps VALUES (5, 7, 'old', '2026-01-01T00:00:00Z', '2026-01-01T00:00:01Z',
+           'exit 3', 'nope', 42, 43);
+         INSERT INTO tasks (id, key, workflow, step, state, trigger, source)
+           VALUES (1, 'k', 'w', 's', 'done', 't', 'e');
+         PRAGMA user_version = 111;"
+    ))
+    .unwrap();
+    let refused = db.execute("INSERT INTO sweeps (script) VALUES ('x')", []);
+    assert!(refused.is_err(), "schema 111 takes a run with no stall");
+    let factory = r#"name = "demo"
+
+[sweep]
+scripts = [{ run = "echo ran >> \"$FAKE_DIR/ran\"", every = "1h" }]
+"#;
+    fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
+
+    setup.start();
+
+    until_fake_lines(&setup, "ran", |lines| lines.len() == 1);
+    let mut rows: Vec<String> = db
+        .prepare(
+            "SELECT concat_ws('|', id, coalesce(stall, '-'), script, started, ended, status, output,
+               pid, pid_started) FROM sweeps WHERE stall IS NOT NULL
+             UNION ALL SELECT 'scheduled ' || id FROM sweeps WHERE stall IS NULL
+             UNION ALL SELECT name FROM sqlite_master
+               WHERE name LIKE 'revision_sweeps_%' OR name = 'sweeps_by_script'",
+        )
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    rows.sort();
+    assert_eq!(
+        rows,
+        [
+            "5|7|old|2026-01-01T00:00:00Z|2026-01-01T00:00:01Z|exit 3|nope|42|43",
+            "revision_sweeps_delete",
+            "revision_sweeps_insert",
+            "revision_sweeps_update",
+            "scheduled 6",
+            "sweeps_by_script",
+        ]
+    );
+}
+
+#[test]
+fn the_daemon_keeps_only_the_latest_ended_scheduled_run_of_each_script() {
+    let mut setup = Setup::new("scheduled-pruned");
+    let factory = r#"name = "demo"
+
+[sweep]
+scripts = [{ run = "echo ran >> \"$FAKE_DIR/ran\"", every = "1h" }]
+"#;
+    fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
+    setup.start();
+    until_fake_lines(&setup, "ran", |lines| lines.len() == 1);
+    setup.crash();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+         DELETE FROM sweeps;
+         INSERT INTO stalls (id, resource, missing, task, ended)
+           VALUES (7, 'disk', '1 GB', 1, '2026-01-01T00:00:00Z');",
+    )
+    .unwrap();
+    let script = "echo ran >> \"$FAKE_DIR/ran\"";
+    for (stall, script, status) in [
+        (Some(7), script, "exit 0"),
+        (None, script, "exit 3"),
+        (None, script, "exit 0"),
+        (None, "gone", "exit 0"),
+        (None, "gone", "exit 0"),
+        (None, "broken", "exit 3"),
+        (None, script, "exit 0"),
+    ] {
+        db.execute(
+            "INSERT INTO sweeps (stall, script, ended, status, output)
+             VALUES (?1, ?2, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), ?3, '')",
+            rusqlite::params![stall, script, status],
+        )
+        .unwrap();
+    }
+
+    setup.start();
+
+    let kept = || -> Vec<(Option<i64>, String)> {
+        db.prepare("SELECT stall, script FROM sweeps ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while kept().len() > 3 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(
+        kept(),
+        [
+            (Some(7), script.to_owned()),
+            (None, "gone".to_owned()),
+            (None, script.to_owned()),
+        ]
+    );
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(
+        fs::read_to_string(setup.dir.join("fake/ran")).unwrap(),
+        "ran\n"
+    );
+}
+
+#[test]
+fn a_restarted_daemon_keeps_each_scheduled_scripts_last_run_and_the_desk_shows_only_a_failed_one() {
+    let mut setup = Setup::new("scheduled-restart");
+    let factory = r#"name = "demo"
+
+[sweep]
+scripts = [
+  { run = "echo ran >> \"$FAKE_DIR/ran\"", every = "1h" },
+  { run = "echo nope; exit 3", every = "1h" },
+]
+"#;
+    fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
+    setup.start();
+    until_fake_lines(&setup, "ran", |lines| lines.len() == 1);
+    let desk = setup.until("desk", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "sweep" && !row[5].ends_with(": running"))
+    });
+    let sweeps: Vec<_> = desk
+        .iter()
+        .filter(|row| row[1] == "sweep")
+        .map(|row| row[5].as_str())
+        .collect();
+    assert_eq!(sweeps, ["echo nope; exit 3: exit 3: nope"]);
+
+    setup.crash();
+    setup.start();
+    setup.until("desk", |rows| rows.iter().any(|row| row[1] == "sweep"));
+    std::thread::sleep(Duration::from_secs(3));
+
+    assert_eq!(
+        fs::read_to_string(setup.dir.join("fake/ran")).unwrap(),
+        "ran\n"
+    );
+    let sweeps: Vec<_> = setup
+        .rows("desk")
+        .into_iter()
+        .filter(|row| row[1] == "sweep")
+        .map(|row| row[5].clone())
+        .collect();
+    assert_eq!(sweeps, ["echo nope; exit 3: exit 3: nope"]);
+}
+
+#[test]
+fn a_disk_stall_adopts_the_running_scheduled_run_of_its_script_instead_of_starting_another() {
+    let mut setup = Setup::new("scheduled-stall");
+    let factory = r#"name = "demo"
+
+[sweep]
+scripts = [
+  { run = "echo start >> \"$FAKE_DIR/log\"; sleep 3; echo end >> \"$FAKE_DIR/log\"", when = "disk", every = "1h" },
+]
+"#;
+    fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
+    setup.start();
+    until_fake_lines(&setup, "log", |lines| lines == ["start"]);
+
+    setup.disk(10);
+    setup.publish(&requested(42));
+
+    let desk = setup.until("desk", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "sweep" && row[5].ends_with(": exit 0"))
+    });
+    let sweeps: Vec<_> = desk
+        .iter()
+        .filter(|row| row[1] == "sweep")
+        .map(|row| row[3].as_str())
+        .collect();
+    assert_eq!(sweeps, ["1"]);
+    assert_eq!(
+        fs::read_to_string(setup.dir.join("fake/log")).unwrap(),
+        "start\nend\n"
+    );
+}
+
 #[test]
 fn a_head_that_waits_only_for_live_runs_to_end_opens_no_stall() {
     let mut setup = Setup::new("backpressure");
@@ -3733,6 +4060,353 @@ fn the_agents_slice_takes_its_name_from_priory_slice_and_its_caps_from_the_runne
     );
 }
 
+/// Writes the slice's cgroup files that the fake `systemctl show` leads to.
+fn slice_file(setup: &Setup, file: &str, text: &str) {
+    let dir = setup.dir.join("cgroup/priory-agents.slice");
+    fs::create_dir_all(&dir).unwrap();
+    write_atomic(&dir.join(file), text);
+}
+
+#[test]
+fn the_slices_quota_counts_the_machines_cpus_not_the_daemons_own_limit() {
+    let mut setup = Setup::new("slice-online-cpus");
+    let stat: String = (0..22).map(|cpu| format!("cpu{cpu} 1 2 3\n")).collect();
+    fs::write(
+        setup.dir.join("proc/stat"),
+        format!("cpu  1 2 3\n{stat}intr 1\n"),
+    )
+    .unwrap();
+    // One CPU for the daemon, as under a one-CPU quota.
+    let status = fs::read_to_string("/proc/self/status").unwrap();
+    let allowed = status
+        .lines()
+        .find_map(|line| line.strip_prefix("Cpus_allowed_list:"))
+        .unwrap();
+    let cpu = allowed.trim().split([',', '-']).next().unwrap();
+    let pinned = setup.dir.join("pinned");
+    fs::write(
+        &pinned,
+        format!(
+            "#!/bin/sh\nexec taskset -c {cpu} '{}' \"$@\"\n",
+            env!("CARGO_BIN_EXE_priory")
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&pinned, fs::Permissions::from_mode(0o755)).unwrap();
+    setup.publish(&requested(42));
+
+    setup.start_as(&pinned);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    assert_eq!(
+        fake_log(&setup, "systemctl.log")[1],
+        "--user set-property --runtime priory-agents.slice CPUQuota=1980% MemoryHigh=90%"
+    );
+}
+
+/// The daemon left the slice's limits alone, logged `why`, and started its run in the slice.
+fn left_alone(setup: &Setup, why: &str) {
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    assert!(fake_log(setup, "systemctl.log").is_empty());
+    assert_eq!(
+        fake_log(setup, "systemd-run.log"),
+        ["--user --scope --quiet --collect --expand-environment=no --slice=priory-agents.slice"]
+    );
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    let line = format!("left the limits of priory-agents.slice alone: {why}");
+    assert!(log.contains(&line), "daemon log: {log}");
+}
+
+#[test]
+fn a_daemon_inside_the_agents_slice_leaves_its_limits_alone() {
+    let mut setup = Setup::new("slice-nested");
+    fs::create_dir_all(setup.dir.join("proc/self")).unwrap();
+    fs::write(
+        setup.dir.join("proc/self/cgroup"),
+        "0::/user.slice/user@1000.service/priory.slice/priory-agents.slice/run-r1.scope/inner\n",
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    left_alone(&setup, "this daemon runs inside it");
+}
+
+/// Another home whose daemon runs until the returned lock drops, as the slice's owner.
+fn owned_by_another(setup: &Setup) -> (PathBuf, fs::File) {
+    let owner = setup.dir.join("other-home");
+    fs::create_dir_all(&owner).unwrap();
+    let lock = fs::File::create(owner.join("daemon.lock")).unwrap();
+    lock.lock().unwrap();
+    fs::create_dir_all(setup.tmux.path().join("priory")).unwrap();
+    let file = setup.tmux.path().join("priory/priory-agents.slice.owner");
+    write_atomic(&file, owner.to_str().unwrap());
+    (owner, lock)
+}
+
+fn every_second(setup: &Setup) {
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\n\n[sweep]\nevery = \"1s\"\n",
+    )
+    .unwrap();
+}
+
+fn desk_text(setup: &Setup) -> String {
+    String::from_utf8(setup.priory(&["desk"]).stdout).unwrap()
+}
+
+/// Waits until `setup`'s fake systemctl got `calls` calls.
+fn capped(setup: &Setup, calls: usize) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while fake_log(setup, "systemctl.log").len() < calls {
+        assert!(Instant::now() < deadline, "the slice was not capped");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_daemon_takes_the_slice_once_the_daemon_of_its_owner_is_gone() {
+    let mut setup = Setup::new("slice-owner");
+    every_second(&setup);
+    let (owner, lock) = owned_by_another(&setup);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let why = format!("the daemon of {} set them", owner.display());
+    left_alone(&setup, &why);
+    std::thread::sleep(Duration::from_millis(2500));
+    assert!(fake_log(&setup, "systemctl.log").is_empty());
+    let said = format!("left the limits of priory-agents.slice alone: {why}");
+    assert_eq!(desk_text(&setup).matches(&said).count(), 1);
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    assert_eq!(log.matches(&said).count(), 1, "daemon log: {log}");
+
+    drop(lock);
+    capped(&setup, 2);
+
+    let home = fs::canonicalize(setup.dir.join("home")).unwrap();
+    let file = setup.tmux.path().join("priory/priory-agents.slice.owner");
+    assert_eq!(fs::read_to_string(&file).unwrap(), home.to_str().unwrap());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while desk_text(&setup).contains("the limits of") {
+        assert!(Instant::now() < deadline, "{}", desk_text(&setup));
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(!desk_text(&setup).contains("another process set"));
+}
+
+#[test]
+fn a_daemon_whose_bus_is_not_its_runtime_directorys_leaves_the_limits_alone() {
+    let mut setup = Setup::new("slice-foreign-bus");
+    setup.publish(&requested(42));
+
+    setup.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/bus")],
+    );
+
+    left_alone(&setup, "DBUS_SESSION_BUS_ADDRESS is not the bus of");
+}
+
+#[test]
+fn a_daemon_whose_socket_falls_back_to_tmp_still_claims_the_slice() {
+    let mut setup = Setup::new("slice-long-run");
+    let run = setup.dir.join("r".repeat(100));
+    fs::create_dir_all(&run).unwrap();
+
+    setup.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("XDG_RUNTIME_DIR", run.to_str().unwrap())],
+    );
+
+    capped(&setup, 2);
+    let home = fs::canonicalize(setup.dir.join("home")).unwrap();
+    let owner = fs::read_to_string(run.join("priory/priory-agents.slice.owner")).unwrap();
+    assert_eq!(owner, home.to_str().unwrap());
+    let socket = priory_runtime::runtime::socket_in(Some(&run), &home);
+    assert!(socket.starts_with("/tmp"));
+    setup.crash();
+    let _ = fs::remove_file(socket);
+}
+
+#[test]
+fn the_sweep_restores_the_quota_of_a_slice_with_no_memory_limit() {
+    let mut setup = Setup::new("slice-no-memory");
+    every_second(&setup);
+    let stat: String = (0..22).map(|cpu| format!("cpu{cpu} 1 2 3\n")).collect();
+    fs::write(setup.dir.join("proc/stat"), stat).unwrap();
+    slice_file(&setup, "cpu.max", "90000 100000\n");
+    fs::write(setup.dir.join("fake/capped"), "90000 100000\n").unwrap();
+    setup.start();
+    capped(&setup, 2);
+    fs::write(setup.dir.join("fake/capped"), "1980000 100000\n").unwrap();
+
+    capped(&setup, 4);
+
+    let said = "another process set priory-agents.slice to CPUQuota=90%; the sweep restored";
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !desk_text(&setup).contains(said) {
+        assert!(Instant::now() < deadline, "{}", desk_text(&setup));
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn the_sweep_restores_the_slices_limits_another_process_changed_and_says_so_once() {
+    let mut setup = Setup::new("slice-restored");
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\n\n[sweep]\nevery = \"1s\"\n",
+    )
+    .unwrap();
+    let stat: String = (0..22).map(|cpu| format!("cpu{cpu} 1 2 3\n")).collect();
+    fs::write(setup.dir.join("proc/stat"), stat).unwrap();
+    let high = |share: f64| format!("{}\n", ((64u64 << 30) as f64 * share) as u64);
+    slice_file(&setup, "cpu.max", "1980000 100000\n");
+    slice_file(&setup, "memory.high", &high(0.9));
+    setup.start();
+    listening(&setup);
+    std::thread::sleep(Duration::from_millis(2500));
+    assert_eq!(fake_log(&setup, "systemctl.log").len(), 2);
+
+    fs::write(setup.dir.join("fake/capped"), "1980000 100000\n").unwrap();
+    slice_file(&setup, "cpu.max", "90000 100000\n");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while fake_log(&setup, "systemctl.log").len() < 4 {
+        assert!(Instant::now() < deadline, "nothing restored the slice");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(2500));
+
+    let calls = fake_log(&setup, "systemctl.log");
+    assert_eq!(calls.len(), 4, "{calls:?}");
+    assert_eq!(
+        calls[3],
+        "--user set-property --runtime priory-agents.slice CPUQuota=1980% MemoryHigh=90%"
+    );
+    let said = "another process set priory-agents.slice to CPUQuota=90% MemoryHigh=90%; the sweep restored its limits";
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    assert_eq!(log.matches(said).count(), 1, "daemon log: {log}");
+    let desk = setup.priory(&["desk"]);
+    let desk = String::from_utf8(desk.stdout).unwrap();
+    assert_eq!(desk.matches(said).count(), 1, "{desk}");
+
+    // Another home takes the slice, so this daemon's next sweep leaves a change alone.
+    let _owner = owned_by_another(&setup);
+    slice_file(&setup, "cpu.max", "90000 100000\n");
+    std::thread::sleep(Duration::from_millis(2500));
+    assert_eq!(fake_log(&setup, "systemctl.log").len(), 4);
+}
+
+/// Claude Code 2.1.331 at its prompt, as a run whose hook came late showed it.
+const READY_PROMPT: &str = "Claude Code v2.1.331
+────────────────────────────────────────
+❯ Try \"how does main.rs work?\"
+────────────────────────────────────────
+  auto mode on (shift+tab to cycle)
+";
+
+/// The slice's counters before a run, then those after its quota held it back to 12 %, under
+/// `quota`.
+fn throttle(setup: &Setup, quota: &str) {
+    // `show` runs at the daemon's start, at its first sweep, then for the run's first counters.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while fake_log(setup, "shown.log").len() < 3 {
+        assert!(Instant::now() < deadline, "the counters were never read");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_secs(1));
+    slice_file(setup, "cpu.max", quota);
+    slice_file(
+        setup,
+        "cpu.stat",
+        "usage_usec 1012000\nnr_throttled 600\nthrottled_usec 9088000\n",
+    );
+}
+
+/// The reason a run that never reports `SessionStart` and shows `screen` blocks its task with, in a
+/// slice throttled under `quota`, if any.
+fn late(setup: &mut Setup, screen: &str, quota: Option<&str>) -> String {
+    setup.publish(&requested(42));
+    fs::write(setup.dir.join("fake/silent"), screen).unwrap();
+    slice_file(
+        setup,
+        "cpu.stat",
+        "usage_usec 1000000\nnr_throttled 500\nthrottled_usec 9000000\n",
+    );
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1);
+    if let Some(quota) = quota {
+        throttle(setup, quota);
+    }
+    let tasks = setup.within(75, "tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+    tasks[0][7].clone()
+}
+
+const THROTTLING: &str = "priory-agents.slice was throttled: its quota kept back 88% of the CPU its agents wanted since the run started, under CPUQuota=90%";
+
+#[test]
+fn a_late_run_at_a_ready_prompt_gets_no_trust_advice() {
+    let mut setup = Setup::new("late-ready");
+
+    // A quota of `max` throttles nothing, whatever the counters say.
+    let reason = late(&mut setup, READY_PROMPT, Some("max 100000\n"));
+
+    assert!(
+        reason.starts_with(
+            "claude showed no SessionStart within 60s; its prompt is ready and asks for no trust, so its SessionStart hook is late or never reached the daemon. Resume the task to try again. Its pane ended with: "
+        ),
+        "{reason}"
+    );
+    assert!(!reason.contains("trust the"), "{reason}");
+    assert!(!reason.contains("throttled"), "{reason}");
+}
+
+#[test]
+fn a_late_run_at_a_ready_prompt_in_a_throttled_slice_names_the_throttling() {
+    let mut setup = Setup::new("late-throttled");
+
+    let reason = late(&mut setup, READY_PROMPT, Some("90000 100000\n"));
+
+    let prefix = format!(
+        "claude showed no SessionStart within 60s; {THROTTLING}. Resume the task to try again. Its pane ended with: "
+    );
+    assert!(reason.starts_with(&prefix), "{reason}");
+    assert!(!reason.contains("trust the"), "{reason}");
+}
+
+#[test]
+fn a_late_run_in_a_slice_throttled_only_before_it_started_names_no_throttling() {
+    let mut setup = Setup::new("late-throttled-before");
+    slice_file(&setup, "cpu.max", "90000 100000\n");
+
+    let reason = late(&mut setup, READY_PROMPT, None);
+
+    assert!(!reason.contains("throttled"), "{reason}");
+}
+
+#[test]
+fn a_late_codex_run_in_a_throttled_slice_keeps_its_hooks_command() {
+    let mut setup = Setup::new("late-throttled-codex");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+
+    let reason = late(
+        &mut setup,
+        "  Hooks need review\n\n  3 hooks are new or changed\n",
+        Some("90000 100000\n"),
+    );
+
+    let tail = format!(
+        "type /hooks and trust Priory's hooks, then exit; {THROTTLING}. Resume the task to try again. Its pane ended with: Hooks need review | 3 hooks are new or changed"
+    );
+    assert!(reason.ends_with(&tail), "{reason}");
+}
+
 #[test]
 fn a_host_without_systemd_starts_its_runs_as_before_and_logs_why() {
     let mut setup = Setup::new("no-systemd");
@@ -3797,7 +4471,7 @@ fn a_run_with_no_session_start_within_60_seconds_ends_and_names_the_folders_to_t
     assert_eq!(
         tasks[0][7],
         format!(
-            "claude showed no SessionStart within 60s; trust the worktrees folder and the clone once: cd {} && claude, accept, exit, then cd {} && claude, accept, exit",
+            "claude showed no SessionStart within 60s; trust the worktrees folder and the clone once: cd {} && claude, accept, exit, then cd {} && claude, accept, exit. Resume the task to try again",
             setup.dir.join("home/worktrees").display(),
             clone.display()
         )
@@ -4424,6 +5098,219 @@ fn a_grant_claude_overwrote_restarts_the_run_once_then_fails_the_task() {
         "claude overwrote Priory's trust grant"
     );
     assert_eq!(repaired[0]["data"]["outcome"], "ready");
+}
+
+impl Setup {
+    /// Makes the live run look as if it started `seconds` ago.
+    fn started_ago(&self, seconds: u32) {
+        let db = rusqlite::Connection::open(self.dir.join("priory.db")).unwrap();
+        let changed = db
+            .execute(
+                &format!("UPDATE runs SET started = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-{seconds} seconds') WHERE ended IS NULL"),
+                [],
+            )
+            .unwrap();
+        assert_eq!(changed, 1);
+    }
+
+    /// Asserts that the daemon's next ticks leave task 1's live run alone.
+    fn stays_live(&self) {
+        std::thread::sleep(Duration::from_secs(3));
+        assert_eq!(self.rows("runs").last().unwrap()[7], "-");
+        assert_eq!(self.rows("tasks")[0][4], "running");
+    }
+
+    /// The reason task 1 blocks with.
+    fn blocked(&self) -> String {
+        let blocked = |rows: &[Vec<String>]| rows.first().is_some_and(|row| row[4] == "blocked");
+        self.until("tasks", blocked)[0][7].clone()
+    }
+}
+
+#[test]
+fn a_trusted_run_that_starts_slowly_gets_180_seconds_then_blocks_until_a_person_resumes_it() {
+    let mut setup = trusting("trust-slow");
+    setup.memory(12);
+    setup.publish(&requested(42));
+    setup.hold("silent");
+    start_trusting(&mut setup);
+    setup.written("fake/pid");
+    setup.publish(&requested(43));
+    setup.until("tasks", |rows| rows.len() == 2);
+    person(
+        &setup,
+        "hold",
+        &["2", "--reason", "needs it", "--after", "1"],
+    );
+
+    setup.started_ago(120);
+    setup.stays_live();
+    setup.started_ago(180);
+    let reason = setup.blocked();
+
+    assert_eq!(
+        reason,
+        "claude showed no SessionStart within 180s although Priory recorded its trust; it started too slowly. Resume the task to try again"
+    );
+    setup.gone("priory-1");
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(setup.rows("runs").len(), 1);
+    assert_eq!(held_as(&setup, "2")[0], "held");
+    assert!(traced(&setup, "factory.task.repaired").is_empty());
+
+    setup.release("silent");
+    assert!(setup.priory(&["resume", "1"]).status.success());
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+}
+
+#[test]
+fn a_resumed_run_that_starts_slowly_gets_the_same_180_seconds() {
+    let mut setup = trusting("trust-slow-resumed");
+    setup.hold("undecided");
+    setup.hold("hold-stop");
+    setup.calls(&[json!({ "name": "Bash", "arguments": { "command": "rm -rf /" } })]);
+    setup.publish(&requested(42));
+    start_trusting(&mut setup);
+    setup.blocked();
+    setup.gone("priory-1");
+    setup.hold("silent");
+    setup.release("pid");
+
+    assert!(setup.priory(&["resume", "1"]).status.success());
+    let runs = setup.until("runs", |rows| rows.len() == 2);
+    setup.written("fake/pid");
+    assert_eq!(runs[0][4], runs[1][4]);
+    assert!(has(&launched(&setup), ["--resume", &runs[0][4]]));
+    setup.started_ago(120);
+    setup.stays_live();
+    setup.started_ago(180);
+
+    let reason = setup.blocked();
+    assert!(
+        reason.starts_with("claude showed no SessionStart within 180s although Priory recorded its trust; it started too slowly"),
+        "{reason}"
+    );
+    assert_eq!(setup.rows("runs").len(), 2);
+}
+
+#[test]
+fn a_trusted_codex_run_whose_hooks_need_review_keeps_the_command_that_trusts_them() {
+    let mut setup = trusting("trust-codex-hooks");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    fs::create_dir_all(setup.dir.join("codex")).unwrap();
+    fs::write(setup.dir.join("fake/silent"), "  Hooks need review\n").unwrap();
+    setup.publish(&requested(42));
+    start_trusting(&mut setup);
+    setup.written("fake/codex-args.log");
+    assert_eq!(
+        until_traced(&setup, "factory.run.trusted")["data"]["outcome"],
+        "granted"
+    );
+
+    setup.started_ago(120);
+    setup.stays_live();
+    setup.started_ago(180);
+
+    let reason = setup.blocked();
+    assert!(
+        reason.starts_with(
+            "codex showed no SessionStart within 180s; trust the clone and Priory's hooks once: cd "
+        ),
+        "{reason}"
+    );
+    assert!(
+        reason.ends_with("type /hooks and trust Priory's hooks, then exit. Resume the task to try again. Its pane ended with: Hooks need review"),
+        "{reason}"
+    );
+}
+
+/// The reason a run with recorded trust that shows `screen` blocks its task with after 180 seconds,
+/// in a slice throttled under a 90% quota when `throttled`.
+fn late_trusted(setup: &mut Setup, screen: &str, throttled: bool) -> String {
+    setup.publish(&requested(42));
+    fs::write(setup.dir.join("fake/silent"), screen).unwrap();
+    slice_file(
+        setup,
+        "cpu.stat",
+        "usage_usec 1000000\nnr_throttled 500\nthrottled_usec 9000000\n",
+    );
+    start_trusting(setup);
+    setup.written("fake/pid");
+    if throttled {
+        throttle(setup, "90000 100000\n");
+    }
+    // The harness writes its pid before it draws the screen.
+    std::thread::sleep(Duration::from_secs(1));
+    setup.started_ago(180);
+    setup.blocked()
+}
+
+const TRUSTED_LATE: &str =
+    "claude showed no SessionStart within 180s although Priory recorded its trust; ";
+
+#[test]
+fn a_trusted_late_run_in_a_throttled_slice_names_the_throttling_not_a_slow_start() {
+    let mut setup = trusting("trust-late-throttled");
+
+    let reason = late_trusted(&mut setup, "", true);
+
+    assert_eq!(
+        reason,
+        format!("{TRUSTED_LATE}{THROTTLING}. Resume the task to try again")
+    );
+}
+
+#[test]
+fn a_trusted_late_run_at_a_ready_prompt_names_the_late_hook_not_a_slow_start() {
+    let mut setup = trusting("trust-late-ready");
+
+    let reason = late_trusted(&mut setup, READY_PROMPT, false);
+
+    let prefix = format!(
+        "{TRUSTED_LATE}its prompt is ready and asks for no trust, so its SessionStart hook is late or never reached the daemon. Resume the task to try again. Its pane ended with: "
+    );
+    assert!(reason.starts_with(&prefix), "{reason}");
+}
+
+#[test]
+fn a_trusted_late_codex_run_in_a_throttled_slice_keeps_its_hooks_command() {
+    let mut setup = trusting("trust-late-throttled-codex");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    fs::create_dir_all(setup.dir.join("codex")).unwrap();
+
+    let reason = late_trusted(&mut setup, "  Hooks need review\n", true);
+
+    assert!(
+        reason.starts_with(
+            "codex showed no SessionStart within 180s; trust the clone and Priory's hooks once: cd "
+        ),
+        "{reason}"
+    );
+    let tail = format!(
+        "type /hooks and trust Priory's hooks, then exit; {THROTTLING}. Resume the task to try again. Its pane ended with: Hooks need review"
+    );
+    assert!(reason.ends_with(&tail), "{reason}");
+}
+
+#[test]
+fn a_trusted_run_under_direnv_keeps_its_600_seconds() {
+    let mut setup = trusting("trust-slow-direnv");
+    envrc(&setup);
+    setup.publish(&requested(42));
+    setup.hold("silent");
+    start_direnv(&mut setup, true, "", &[]);
+    setup.written("fake/pid");
+
+    setup.started_ago(300);
+    setup.stays_live();
+    setup.started_ago(600);
+
+    let reason = setup.blocked();
+    assert!(
+        reason.starts_with("claude showed no SessionStart within 600s although Priory recorded its trust; it started too slowly"),
+        "{reason}"
+    );
 }
 
 fn codex_profile(setup: &Setup) -> PathBuf {
@@ -15757,6 +16644,244 @@ fn a_dirty_asleep_task_never_retires_and_says_why() {
         ["asleep", "cannot retire: untracked files", "-"]
     );
     assert!(setup.worktree(1).join("notes.txt").exists());
+}
+
+/// Names `target` and `link` the build output of `owner/repo`, and sweeps every second.
+const BUILD: &str = "build = [\"target\", \"link\"]\n\n[sweep]\nevery = \"1s\"";
+
+/// Writes 1 MiB of build output into task 1's worktree, in a folder the test may make read-only.
+fn build_output(setup: &Setup) -> PathBuf {
+    let locked = setup.worktree(1).join("target/debug/locked");
+    fs::create_dir_all(&locked).unwrap();
+    fs::write(locked.join("lib.rlib"), vec![1u8; 1 << 20]).unwrap();
+    setup.worktree(1).join("target")
+}
+
+/// Task 1 sleeps on pull request 7 with build output in its worktree, under a factory that names
+/// it.
+fn asleep_with_build_output(name: &str) -> (Setup, PathBuf) {
+    let mut setup = Setup::new(name);
+    setup.recipes(BUILD);
+    setup.calls(&[wait(on_pull_7("pull_request"))]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    let target = build_output(&setup);
+    (setup, target)
+}
+
+#[test]
+fn an_idle_task_build_output_goes_under_the_reclaim_threshold_even_read_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let (setup, target) = asleep_with_build_output("reclaim");
+    let outside = setup.dir.join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("keep"), "x\n").unwrap();
+    std::os::unix::fs::symlink(&outside, setup.worktree(1).join("link")).unwrap();
+    fs::set_permissions(
+        target.join("debug/locked"),
+        fs::Permissions::from_mode(0o555),
+    )
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(2100));
+    assert!(target.exists(), "100 GB free is over the 40 GB threshold");
+
+    setup.disk(30);
+    let records = until_record(&setup, "factory.worktree.reclaimed");
+
+    assert!(!target.exists());
+    assert!(
+        outside.join("keep").exists(),
+        "a symlinked build folder is not followed"
+    );
+    assert!(setup.worktree(1).join("link").exists());
+    assert!(setup.worktree(1).join(".git").exists());
+    assert!(setup.branches().contains("priory/1"));
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        [&records[0]["task"], &records[0]["path"]],
+        ["1", target.to_str().unwrap()]
+    );
+    assert!(records[0]["bytes"].as_u64().unwrap() >= 1 << 20);
+    let desk = String::from_utf8(setup.priory(&["desk"]).stdout).unwrap();
+    assert!(
+        desk.contains(
+            "reclaimed 0.0 GB of build output from 1 folder in the last 24 hours, last at "
+        ),
+        "{desk}"
+    );
+}
+
+#[test]
+fn a_symlink_inside_the_build_output_goes_without_what_it_points_to() {
+    use std::os::unix::fs::PermissionsExt;
+    let (setup, target) = asleep_with_build_output("reclaim-escape");
+    // Empty, so the test's cleanup can still remove it.
+    let sealed = setup.dir.join("outside/sealed");
+    fs::create_dir_all(&sealed).unwrap();
+    fs::set_permissions(&sealed, fs::Permissions::from_mode(0o555)).unwrap();
+    std::os::unix::fs::symlink(&sealed, target.join("debug/escape")).unwrap();
+
+    setup.disk(30);
+    until_record(&setup, "factory.worktree.reclaimed");
+
+    assert!(!target.exists());
+    let mode = fs::metadata(&sealed).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o555, "a chmod does not follow the symlink");
+}
+
+#[test]
+fn a_build_folder_holding_a_tracked_file_stays() {
+    let (setup, target) = asleep_with_build_output("reclaim-tracked");
+    setup.commit(1, "target/app.js");
+
+    setup.disk(30);
+    std::thread::sleep(Duration::from_millis(2100));
+
+    assert!(target.join("app.js").exists());
+    assert!(target.join("debug/locked/lib.rlib").exists());
+    assert!(trace_records(&setup, "factory.worktree.reclaimed").is_empty());
+}
+
+#[test]
+fn a_staged_deletion_inside_a_build_folder_keeps_it() {
+    let (setup, target) = asleep_with_build_output("reclaim-staged");
+    setup.commit(1, "target/app.js");
+    setup.git(&setup.worktree(1), &["rm", "-q", "target/app.js"]);
+
+    setup.disk(30);
+    std::thread::sleep(Duration::from_millis(2100));
+
+    assert!(target.join("debug/locked/lib.rlib").exists());
+    assert!(trace_records(&setup, "factory.worktree.reclaimed").is_empty());
+}
+
+#[test]
+fn the_sweep_deletes_one_build_folder_per_tick() {
+    let (setup, target) = asleep_with_build_output("reclaim-tick");
+    let link = setup.worktree(1).join("link");
+    fs::create_dir_all(&link).unwrap();
+    fs::write(link.join("out.o"), vec![1u8; 1 << 10]).unwrap();
+
+    setup.disk(30);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while trace_records(&setup, "factory.worktree.reclaimed").len() < 2 {
+        assert!(Instant::now() < deadline, "two reclaims");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    assert!(!target.exists() && !link.exists());
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    let gap: f64 = db
+        .query_row(
+            "SELECT (julianday(max(time)) - julianday(min(time))) * 86400 FROM trace
+             WHERE type = 'factory.worktree.reclaimed'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        gap >= 0.5,
+        "the second folder waits for the next tick: {gap}s"
+    );
+}
+
+#[test]
+fn a_retirement_waits_for_the_reclaim_to_take_the_build_output() {
+    let (setup, target) = asleep_with_build_output("reclaim-retire");
+    // Ignored, so it does not itself keep the worktree from retiring.
+    let exclude = setup.git(
+        &setup.worktree(1),
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "info/exclude",
+        ],
+    );
+    fs::write(exclude.trim(), "target\n").unwrap();
+
+    setup.disk(10);
+    setup.removed(1);
+
+    assert!(!target.exists());
+    assert_eq!(trace_records(&setup, "factory.worktree.reclaimed").len(), 1);
+}
+
+#[test]
+fn a_live_run_keeps_its_build_output_until_it_ends() {
+    let mut setup = Setup::new("reclaim-live");
+    setup.recipes(BUILD);
+    setup.hold("hold-stop");
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(42));
+    setup.disk(30);
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1);
+    let target = build_output(&setup);
+
+    std::thread::sleep(Duration::from_millis(2100));
+    assert!(target.exists());
+
+    setup.release("hold-stop");
+    until_record(&setup, "factory.worktree.reclaimed");
+    assert!(!target.exists());
+}
+
+#[test]
+fn a_held_memory_grant_keeps_its_task_build_output_after_the_run_sleeps() {
+    let mut setup = Setup::new("reclaim-grant");
+    setup.recipes(BUILD);
+    setup.hold("hold-stop");
+    setup.calls(&[wait(on_pull_7("pull_request"))]);
+    setup.publish(&requested(42));
+    setup.start();
+    let runs = setup.until("runs", |rows| rows.len() == 1);
+    setup.hold("hold-g");
+    let grant = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .env("PRIORY_SESSION", &runs[0][4])
+        .args([
+            "memory",
+            "acquire",
+            "--gb",
+            "1",
+            "--",
+            "sh",
+            "-c",
+            &held("g"),
+        ])
+        .current_dir(setup.dir.join("fake"))
+        .spawn()
+        .unwrap();
+    setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
+    setup.release("hold-stop");
+    setup.until("runs", |rows| rows[0][7] == "asleep");
+    let target = build_output(&setup);
+    setup.disk(30);
+
+    std::thread::sleep(Duration::from_millis(2100));
+    assert!(target.exists());
+
+    setup.release("hold-g");
+    assert!(grant.wait_with_output().unwrap().status.success());
+    until_record(&setup, "factory.worktree.reclaimed");
+    assert!(!target.exists());
+}
+
+#[test]
+fn an_uncommitted_change_keeps_the_build_output() {
+    let (setup, target) = asleep_with_build_output("reclaim-dirty");
+    setup.commit(1, "widget.txt");
+    fs::write(setup.worktree(1).join("widget.txt"), "edited\n").unwrap();
+
+    setup.disk(30);
+    std::thread::sleep(Duration::from_millis(2100));
+
+    assert!(target.exists());
+    assert!(trace_records(&setup, "factory.worktree.reclaimed").is_empty());
 }
 
 impl Setup {
@@ -33588,6 +34713,98 @@ fn a_parked_task_ends_on_a_close_that_arrived_before_its_adopt_request() {
         all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == state);
         assert!(setup.rows("runs").is_empty());
     }
+}
+
+/// A review on alice's pull request 7 that saw it `open` at its poll.
+fn polled_review(open: bool, id: u64) -> Message {
+    on_alice_pull(
+        "github.pull_request_review.submitted",
+        json!({
+            "actor": "bob", "state": "commented", "body": "Late note", "github_id": id,
+            "open": open,
+            "url": format!("https://github.com/owner/repo/pull/7#pullrequestreview-{id}")
+        }),
+    )
+}
+
+#[test]
+fn a_parked_task_waits_for_the_close_after_a_review_that_saw_its_pull_request_closed() {
+    let setup = adopting("adopt-review-before-close", &[7]);
+    adopt(&setup, &["my-prs", "7"]);
+    all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == "held");
+
+    setup.publish(&polled_review(false, 801));
+
+    setup.until("inbox", |rows| rows.len() == 2);
+    assert_eq!(setup.listed(&["tasks", "--all"])[0][4], "held");
+
+    setup.publish(&on_alice_pull(
+        "github.pull_request.closed",
+        json!({ "merged": true, "github_id": 400 }),
+    ));
+
+    all_tasks_until(&setup, |rows| rows[0][4] == "done");
+    assert!(setup.rows("runs").is_empty());
+}
+
+#[test]
+fn a_parked_task_stays_parked_when_its_pull_request_reopened_before_its_adopt_request() {
+    let setup = adopting("adopt-reopened", &[7]);
+    setup.publish(&on_alice_pull(
+        "github.pull_request.closed",
+        json!({ "merged": false, "open": false, "github_id": 400 }),
+    ));
+    setup.publish(&polled_review(true, 801));
+    setup.until("inbox", |rows| rows.len() == 2);
+
+    adopt(&setup, &["my-prs", "7"]);
+
+    all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == "held");
+
+    setup.publish(&polled_review(false, 802));
+
+    setup.until("inbox", |rows| rows.len() == 4);
+    assert_eq!(setup.listed(&["tasks", "--all"])[0][4], "held");
+}
+
+#[test]
+fn a_parked_task_is_done_when_a_late_open_review_follows_the_merge_before_its_adopt_request() {
+    let setup = adopting("adopt-merged-then-open", &[7]);
+    setup.publish(&on_alice_pull(
+        "github.pull_request.closed",
+        json!({ "merged": true, "open": false, "github_id": 400 }),
+    ));
+    setup.publish(&polled_review(true, 801));
+    setup.until("inbox", |rows| rows.len() == 2);
+
+    adopt(&setup, &["my-prs", "7"]);
+
+    all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == "done");
+    assert!(setup.rows("runs").is_empty());
+}
+
+#[test]
+fn adopt_skips_a_pull_request_whose_head_branch_an_active_task_owns() {
+    let mut setup = Setup::new("adopt-branch-owner");
+    fs::write(setup.dir.join("factory/triggers/my-prs.toml"), MY_PRS).unwrap();
+    fs::write(
+        setup.dir.join("fake/prs"),
+        r#"[{"number":7,"title":"Own","url":"https://github.com/owner/repo/pull/7",
+             "headRefName":"priory/1","isCrossRepository":false},
+            {"number":8,"title":"Fork","url":"https://github.com/owner/repo/pull/8",
+             "headRefName":"priory/1","isCrossRepository":true}]"#,
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    let adopted = adopt(&setup, &["my-prs"]);
+
+    assert_eq!(
+        adopted,
+        "github:owner/repo#7: task 1 owns it\nadopted github:owner/repo#8\n"
+    );
 }
 
 #[test]
