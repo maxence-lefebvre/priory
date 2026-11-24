@@ -1404,11 +1404,29 @@ fn tend(
             // Committed first, so a crash before the kill leaves an ended run, not a lost one.
             state::block(db, trace, run.task, ended_as, &reason)?;
             runtime::kill(&run.tmux);
-            if overwritten {
-                // The next start writes the grant again; a second loss fails the task.
-                let repair = (!tools::spent(db, run.id)?).then(|| Repair {
-                    cause: format!("{} overwrote Priory's trust grant", harness.program()),
-                    action: "restart",
+            let repair = if overwritten {
+                let cause = format!("{} overwrote Priory's trust grant", harness.program());
+                Some((cause, "restart"))
+            } else if ended_as == "unresumed" {
+                eprintln!("priory daemon: run {}: {reason}", run.id);
+                let cause = match state::transcript(db, &run.session)? {
+                    Some(transcript) => format!(
+                        "it did not start the resumed session; its transcript is {transcript}, \
+                         so read its end for where you were"
+                    ),
+                    None => "it did not start the resumed session, and Priory recorded no \
+                             transcript of it"
+                        .to_owned(),
+                };
+                Some((cause, "new session"))
+            } else {
+                None
+            };
+            // The next start writes the grant again or starts a new session; a second failure fails the task.
+            if let Some((cause, action)) = repair {
+                let repair = (!tools::spent(db, run.id)?).then_some(Repair {
+                    cause,
+                    action,
                     gone: true,
                 });
                 tools::fail(db, trace, run.task, run.id, &reason, repair.as_ref())?;
@@ -1592,6 +1610,22 @@ fn verdict(
             &trust[1..]
         );
         return Some(("exited", reason, false));
+    }
+    // Claude 2.1.330 resumed some large sessions without running their hooks; a new session starts.
+    if run.late
+        && run.resumes
+        && factory
+            .agents
+            .get(&run.agent)
+            .is_some_and(|agent| matches!(agent.value.harness, Harness::ClaudeCode))
+    {
+        let reason = format!(
+            "{} showed no SessionStart within {} when Priory resumed session {}",
+            harness.program(),
+            state::READY_WITHIN.replace(" seconds", "s"),
+            run.session
+        );
+        return Some(("unresumed", reason, false));
     }
     if run.late {
         let mut reason = format!(

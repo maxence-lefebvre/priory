@@ -407,7 +407,8 @@ visit, `since_you_looked` lists the latest 50 events. An event is a trace record
 each step that ended, repair, snooze or label, and each message and report the inbox took. A
 message routed to no task, `ignored`, is left out, so a busy repository does not fill the list
 (the Desk counts those as unrouted events, see [Unrouted events](#unrouted-events)). Each has
-its `time`, its `task` and the task's `key`, and `what`: the record's type, step and outcome, the
+its `time`, its `task` and the task's `key`, and `what`: the record's type, step and outcome, with
+a repair's action and cause after it (see [health.md](health.md#repair)), the
 message's type, subject and outcome, or a report's `<source>: <line>`. A task request that an
 outside session added ends with `, added by session <session>` (see
 [tools.md](tools.md#the-outside-server)). An ask the daemon answered

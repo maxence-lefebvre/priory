@@ -3818,7 +3818,9 @@ pub(crate) struct NewRun<'a> {
 pub(crate) fn shared(db: &Connection, agent: &str) -> rusqlite::Result<Option<String>> {
     db.query_row(
         "SELECT session FROM shared_sessions WHERE agent = ?1
-         AND EXISTS (SELECT 1 FROM runs WHERE runs.session = shared_sessions.session AND ready = 1)",
+         AND EXISTS (SELECT 1 FROM runs WHERE runs.session = shared_sessions.session AND ready = 1)
+         AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.session = shared_sessions.session
+           AND ended_as = 'unresumed')",
         [agent],
         |row| row.get(0),
     )
@@ -3838,8 +3840,20 @@ pub(crate) fn resumable(
         "SELECT session FROM runs WHERE task = ?1 AND agent = ?2 AND ready = 1 AND debate IS NULL
          AND session NOT IN (SELECT session FROM shared_sessions)
          AND session NOT IN (SELECT session FROM runs GROUP BY session HAVING count(DISTINCT task) > 1)
+         AND session NOT IN (SELECT session FROM runs WHERE ended_as = 'unresumed')
          ORDER BY id DESC LIMIT 1",
         params![task, agent],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
+/// The transcript an earlier run of `session` recorded, if any.
+pub(crate) fn transcript(db: &Connection, session: &str) -> rusqlite::Result<Option<String>> {
+    db.query_row(
+        "SELECT transcript FROM runs WHERE session = ?1 AND transcript IS NOT NULL
+         ORDER BY id DESC LIMIT 1",
+        [session],
         |row| row.get(0),
     )
     .optional()
@@ -4224,6 +4238,8 @@ pub(crate) struct LiveRun {
     pub ready: bool,
     /// No `SessionStart` arrived within `READY_WITHIN` of the start.
     pub late: bool,
+    /// It resumed a session rather than starting one.
+    pub resumes: bool,
     /// How long its current turn has run, in seconds.
     pub turn: Option<i64>,
     /// Claude's message for the permission prompt it shows, if any.
@@ -4236,7 +4252,8 @@ pub(crate) fn live(db: &Connection) -> rusqlite::Result<Vec<LiveRun>> {
     let mut statement = db.prepare(&format!(
         "SELECT runs.id, runs.task, runs.step, tasks.workflow, runs.tmux, runs.session, tasks.worktree,
          NOT runs.ready AND runs.started <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-{READY_WITHIN}'),
-         unixepoch('now') - unixepoch(runs.turn), runs.prompted, coalesce(runs.agent, ''), runs.ready
+         unixepoch('now') - unixepoch(runs.turn), runs.prompted, coalesce(runs.agent, ''), runs.ready,
+         coalesce(runs.resumes, 0)
          FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.ended IS NULL ORDER BY runs.id"
     ))?;
     statement
@@ -4254,6 +4271,7 @@ pub(crate) fn live(db: &Connection) -> rusqlite::Result<Vec<LiveRun>> {
                 prompted: row.get(9)?,
                 agent: row.get(10)?,
                 ready: row.get(11)?,
+                resumes: row.get(12)?,
             })
         })?
         .collect()
@@ -4764,5 +4782,40 @@ mod promises {
         // Run 1 uses all of its 4 GB, run 2 has no scope, run 3 is the grant's own, and the grant
         // counts all of its 10 GB.
         assert_eq!(promised.memory, 14 * GB);
+    }
+}
+
+#[cfg(test)]
+mod resumable_tests {
+    use super::*;
+
+    #[test]
+    fn a_session_whose_resume_never_started_is_not_resumed_again() {
+        let db = memory();
+        db.execute(
+            "INSERT INTO tasks
+               (key, workflow, step, state, band, lane, lane_derived, trigger, source, entered)
+             VALUES ('cli:1', 'build', 'implement', 'ready', 'now', 'cli', 0, 'cli', 'a',
+               strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+            [],
+        )
+        .unwrap();
+        let run = |ready: bool, ended_as: &str| {
+            db.execute(
+                "INSERT INTO runs (task, step, agent, tmux, session, ready, ended, ended_as)
+                 VALUES (1, 'implement', 'implementer', 'priory-1', 's1', ?1, 'now', ?2)",
+                params![ready, ended_as],
+            )
+            .unwrap();
+        };
+        run(true, "asleep");
+        assert_eq!(
+            resumable(&db, 1, "implementer").unwrap().as_deref(),
+            Some("s1")
+        );
+
+        run(false, "unresumed");
+
+        assert_eq!(resumable(&db, 1, "implementer").unwrap(), None);
     }
 }
