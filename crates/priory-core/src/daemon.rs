@@ -2606,6 +2606,10 @@ fn start(
             crate::connectors::Before::Blocked(reason) => return Ok(Err(reason)),
         }
     }
+    // Preparing the worktree takes time, in which a filter's window can open.
+    if state::filtered(db, factory, runner, admission.task)?.is_some() {
+        return Ok(Ok(()));
+    }
     let shared = matches!(agent.value.session, Session::Shared);
     let resumed = match &turn {
         Some(turn) => turn.resume.clone(),

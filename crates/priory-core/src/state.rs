@@ -2350,6 +2350,13 @@ pub(crate) fn renamed(
             params![from, to],
         )?;
     }
+    // A hold published under the old key and not read yet names no claim now, so it is said again.
+    tx.execute(
+        "UPDATE claims SET published = NULL, published_generation = NULL
+         WHERE key = ?1 OR substr(key, 1, length(?1) + 1) = ?1 || '.'",
+        [to],
+    )?;
+    crate::runners::unclaim(tx, &from, true)?;
     tx.execute(
         "UPDATE inbox SET subject = ?2 || substr(subject, length(?1) + 1),
            data = json_replace(data, '$.key', ?2 || substr(subject, length(?1) + 1))

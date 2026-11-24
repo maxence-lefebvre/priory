@@ -35550,6 +35550,97 @@ fn a_runner_that_was_off_reads_a_request_and_its_later_drop_and_claims_nothing()
 }
 
 #[test]
+fn a_runner_that_was_off_claims_no_request_the_owner_served_meanwhile() {
+    let mut desktop = placed("filter-late", "desktop", NO_OSS, OSS_OFF_BY_DAY, None);
+    let key = "github:owner/repo#1";
+    let first = requested(1);
+    desktop.publish(&first);
+    for (kind, data) in [
+        (
+            "priory.task.claimed",
+            json!({ "key": key, "runner": "server", "request": first.id.to_string() }),
+        ),
+        (
+            "priory.task.held",
+            json!({ "key": key, "runner": "server", "hold": "ended", "generation": 1 }),
+        ),
+    ] {
+        desktop.publish(&Message::new(kind, data).subject(key));
+    }
+    // The server reopened its task and served this request before it said so.
+    let served = requested(1);
+    desktop.publish(&served);
+    for hold in ["kept", "ended"] {
+        desktop.publish(
+            &Message::new(
+                "priory.task.held",
+                json!({ "key": key, "runner": "server", "hold": hold, "generation": 2 }),
+            )
+            .subject(key),
+        );
+    }
+    desktop.publish(&requested(2));
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    desktop.start_with(exe, &[("PRIORY_NOW", WORK_HOURS)]);
+    let tasks = desktop.until_own_tasks(|rows| with(rows, 4, "running") == 1);
+    assert_eq!(tasks.len(), 1, "{tasks:?}");
+    assert_eq!(tasks[0][1], "github:owner/repo#2");
+    let claims = on_log(&desktop, "priory.task.claimed");
+    assert!(
+        claims
+            .iter()
+            .all(|claim| claim.data["request"] != served.id.to_string()),
+        "{claims:?}"
+    );
+    desktop.crash();
+}
+
+#[test]
+fn a_move_read_with_its_request_leaves_no_claim_of_the_old_key() {
+    let mut desktop = placed("filter-move-claim", "desktop", NO_OSS, NO_OSS, None);
+    desktop.publish(&linear_requested("ENG-7", "first"));
+    desktop.publish(&team_moved("ENG-7", "OPS-3"));
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    desktop.start_with(exe, &[("PRIORY_NOW", WORK_HOURS)]);
+    let tasks = desktop.until_own_tasks(|rows| with(rows, 4, "running") == 1);
+    assert_eq!(tasks[0][1], "linear:OPS-3");
+    assert!(claimants(&desktop, "linear:ENG-7").is_empty());
+    desktop.crash();
+}
+
+#[test]
+fn a_move_ahead_of_a_given_back_hold_leaves_the_task_able_to_start() {
+    let mut desktop = placed("filter-move-hold", "desktop", OSS_OFF_BY_DAY, NO_OSS, None);
+    desktop.memory(0);
+    desktop.publish(&linear_requested("ENG-7", "first"));
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    desktop.start_with(exe, &[("PRIORY_NOW", EVENING)]);
+    until_outcome(&desktop, "priory.task.held", "linear:ENG-7", "noted");
+    desktop.crash();
+    // The daemon stopped after it published `waiting` again, behind the move.
+    rusqlite::Connection::open(desktop.dir.join("priory.db"))
+        .unwrap()
+        .execute(
+            "UPDATE claims SET hold = 'kept', published = 'waiting', published_generation = 1",
+            [],
+        )
+        .unwrap();
+    desktop.publish(&team_moved("ENG-7", "OPS-3"));
+    desktop.publish(
+        &Message::new(
+            "priory.task.held",
+            json!({ "key": "linear:ENG-7", "runner": "desktop", "hold": "waiting", "generation": 1 }),
+        )
+        .subject("linear:ENG-7"),
+    );
+    desktop.memory(60);
+    desktop.start_with(exe, &[("PRIORY_NOW", EVENING)]);
+    let tasks = desktop.until_own_tasks(|rows| with(rows, 4, "running") == 1);
+    assert_eq!(tasks[0][1], "linear:OPS-3");
+    desktop.crash();
+}
+
+#[test]
 fn an_owner_whose_filter_refused_a_request_routes_it_into_its_task_that_feedback_reopened() {
     let mut server = placed("filter-own", "server", OSS_OFF_BY_DAY, OSS_OFF_BY_DAY, None);
     let mut desktop = placed(

@@ -95,7 +95,9 @@ pub(crate) fn view(
             None
         } else {
             crate::state::renamed(&tx, message, crate::route::resources(message).first())?;
-            settle(&tx, viewer, trace, None)?;
+            if message.kind == "linear.issue.updated" {
+                settle(&tx, viewer, trace, None)?;
+            }
             Some("ignored")
         };
         if let Some(outcome) = outcome {
@@ -160,7 +162,10 @@ pub(crate) fn handle(
                 ],
             )?;
             renew(tx, text("runner"), message.time)?;
-            kill.extend(settle(tx, me, trace, counter)?);
+            if owner(tx, text("key"))?.is_some_and(|owner| owner.hold != Hold::Ended) {
+                unclaim(tx, text("key"), false)?;
+                kill.extend(settle(tx, me, trace, counter)?);
+            }
             "noted"
         }
         CLAIMED => return claimed(tx, message, me, trace, counter).map(Some),
@@ -799,47 +804,55 @@ impl<'a> Dropping<'a> {
     }
 }
 
-/// Drops the requests of a key that no runner holds, and returns how many: the unaccepted ones, and
-/// those whose claim by this runner is not on the log yet, which it then never publishes. It leaves
-/// a request whose claim is on the log: builds that know no drop accept that claim, so every build must.
-fn drop_requests(tx: &Transaction, drop: &Dropping) -> rusqlite::Result<usize> {
-    let dropped = tx
+/// Takes back this runner's claims of `key`, and with `extended` of the keys that extend it with a
+/// `.` suffix, that are not on the log yet: their requests are unaccepted again. A claim on the log
+/// stays, since builds that know no drop accept it, so every build must.
+pub(crate) fn unclaim(tx: &Transaction, key: &str, extended: bool) -> rusqlite::Result<()> {
+    let queued = tx
         .prepare(
-            "UPDATE inbox SET outcome = 'dropped', reason = NULL
-             WHERE (outcome = 'unaccepted' OR outcome = 'claiming' AND id IN
-                 (SELECT json_extract(message, '$.data.request') FROM sends
-                  WHERE json_extract(message, '$.type') = ?5
-                    AND json_extract(message, '$.data.from') IS NULL))
-               AND (subject = ?1 OR ?2 AND substr(subject, 1, length(?1) + 1) = ?1 || '.')
-               AND (?3 IS NULL OR julianday(time) <= julianday(?3))
-               AND (?4 IS NULL OR EXISTS (SELECT 1 FROM inbox AS source
-                 WHERE source.id = json_extract(inbox.data, '$.source')
-                   AND source.type = 'linear.issue.entered'
-                   AND json_extract(source.data, '$.view') = ?4))
-               AND NOT EXISTS (SELECT 1 FROM claims
-                 WHERE claims.key = inbox.subject AND claims.hold != 'ended')
-             RETURNING id",
+            "SELECT sends.id, inbox.id FROM sends
+             JOIN inbox ON inbox.id = json_extract(message, '$.data.request')
+             WHERE json_extract(message, '$.type') = ?3
+               AND json_extract(message, '$.data.from') IS NULL AND inbox.outcome = 'claiming'
+               AND (inbox.subject = ?1
+                 OR ?2 AND substr(inbox.subject, 1, length(?1) + 1) = ?1 || '.')",
         )?
-        .query_map(
-            params![
-                drop.key,
-                drop.extended,
-                drop.until.map(|until| until.to_string()),
-                drop.view,
-                CLAIMED
-            ],
-            |row| row.get(0),
-        )?
-        .collect::<rusqlite::Result<Vec<String>>>()?;
-    for id in &dropped {
+        .query_map(params![key, extended, CLAIMED], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (send, request) in queued {
+        tx.execute("DELETE FROM sends WHERE id = ?1", [send])?;
         tx.execute(
-            "DELETE FROM sends WHERE json_extract(message, '$.type') = ?1
-               AND json_extract(message, '$.data.request') = ?2
-               AND json_extract(message, '$.data.from') IS NULL",
-            params![CLAIMED, id],
+            "UPDATE inbox SET outcome = 'unaccepted' WHERE id = ?1",
+            [request],
         )?;
     }
-    Ok(dropped.len())
+    Ok(())
+}
+
+/// Drops the unaccepted requests of a key that no runner holds, and returns how many. It leaves a
+/// request whose claim is on the log.
+fn drop_requests(tx: &Transaction, drop: &Dropping) -> rusqlite::Result<usize> {
+    unclaim(tx, drop.key, drop.extended)?;
+    tx.execute(
+        "UPDATE inbox SET outcome = 'dropped', reason = NULL
+         WHERE outcome = 'unaccepted'
+           AND (subject = ?1 OR ?2 AND substr(subject, 1, length(?1) + 1) = ?1 || '.')
+           AND (?3 IS NULL OR julianday(time) <= julianday(?3))
+           AND (?4 IS NULL OR EXISTS (SELECT 1 FROM inbox AS source
+             WHERE source.id = json_extract(inbox.data, '$.source')
+               AND source.type = 'linear.issue.entered'
+               AND json_extract(source.data, '$.view') = ?4))
+           AND NOT EXISTS (SELECT 1 FROM claims
+             WHERE claims.key = inbox.subject AND claims.hold != 'ended')",
+        params![
+            drop.key,
+            drop.extended,
+            drop.until.map(|until| until.to_string()),
+            drop.view
+        ],
+    )
 }
 
 /// Drops the waiting requests of the issue or pull request that `message` closes, of the review it
