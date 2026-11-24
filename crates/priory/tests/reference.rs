@@ -37,7 +37,7 @@ fn example_factory(to: &Path) {
     let _ = fs::remove_dir_all(to);
     copy(&examples().join("factory"), to);
     fs::create_dir_all(to.join("bin")).unwrap();
-    for script in ["bin/deliver", "bin/attach"] {
+    for script in ["bin/deliver", "bin/type", "bin/attach"] {
         let script = to.join(script);
         fs::write(&script, "#!/bin/sh\n").unwrap();
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();

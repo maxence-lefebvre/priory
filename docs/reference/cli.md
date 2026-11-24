@@ -252,7 +252,7 @@ An agent's settings and its shell call these. A person rarely does.
 - `priory hook PreToolUse --outside`: the `PreToolUse` hook of a person's own session. It denies a
   shell call that runs a verb only a person runs, and asks no daemon. See
   [tools.md](../daemon/tools.md#the-outside-hook).
-- `priory hook EVENT --outside`, for `Stop`, `SessionStart` and `UserPromptSubmit`: tells the daemon
+- `priory hook (Stop | SessionStart | UserPromptSubmit) --outside`: tells the daemon
   when a person's own session goes idle, for its `compact` request. It prints nothing and exits 0,
   also with no daemon. See [tools.md](../daemon/tools.md#compact-from-the-session).
 - `priory gate`: runs the factory's `gate` in the run's worktree and records its exit code for the

@@ -5395,7 +5395,7 @@ fn use_factory(setup: &Setup, from: &Path) {
     }
     fs::write(file, text).unwrap();
     // The reference example names `deliver` and `attach` scripts that its pages do not show.
-    for script in ["bin/deliver", "bin/attach"] {
+    for script in ["bin/deliver", "bin/type", "bin/attach"] {
         let script = to.join(script);
         if !script.exists() {
             use std::os::unix::fs::PermissionsExt;
