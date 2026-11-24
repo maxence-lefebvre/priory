@@ -323,6 +323,7 @@ fn hold_now_with_an_unconfirmed_prompt_leaves_it_on_the_desk_and_the_task_resume
 
     assert_eq!(hold(&setup, &["--now"]), format!("task 1 {HELD}\n"));
 
+    assert_eq!(unconfirmed_on_desk(&setup).len(), 1);
     setup.gone("priory-1");
     fs::remove_file(setup.dir.join("fake/trailer")).unwrap();
     setup.release("hold-stop");
@@ -331,6 +332,82 @@ fn hold_now_with_an_unconfirmed_prompt_leaves_it_on_the_desk_and_the_task_resume
     assert_eq!(runs[0][4], runs[1][4], "{runs:?}");
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
     assert!(setup.typed()[1].starts_with("A person interrupted your last turn"));
+}
+
+/// Task 1's `prompt` rows on the desk: the text of each prompt typed but not confirmed.
+fn unconfirmed_on_desk(setup: &Setup) -> Vec<String> {
+    let desk = setup.rows("desk");
+    let prompts = desk.iter().filter(|row| row[1] == "prompt");
+    prompts.map(|row| row[5].clone()).collect()
+}
+
+#[test]
+fn hold_now_with_an_unconfirmed_entry_prompt_leaves_it_on_the_desk() {
+    let mut setup = Setup::new("hold-now-entry");
+    setup.workflow("two", SAME_AGENT);
+    setup.calls(&[result("passed")]);
+    mid_turn(&mut setup, on("two", requested(42)));
+    setup.hold("hold-submit");
+    setup.release("hold-stop");
+    setup.until("outbox", |rows| with(rows, 3, "attempted") == 1);
+
+    assert_eq!(hold(&setup, &["--now"]), format!("task 1 {HELD}\n"));
+
+    let prompts = unconfirmed_on_desk(&setup);
+    assert!(
+        matches!(&prompts[..], [prompt] if prompt.contains("Check the change.")),
+        "{prompts:?}"
+    );
+}
+
+#[test]
+fn hold_now_on_a_resumed_codex_run_leaves_its_launch_prompt_on_the_desk() {
+    let mut setup = Setup::new("hold-now-codex-resumed");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+    setup.go();
+    until_state(&setup, "asleep");
+    setup.hold("hold-submit");
+    person(&setup, "answer", &["1", "sqlite", "--revision", "1"]);
+    setup.until("runs", |_| {
+        setup.sql("SELECT count(*) FROM runs WHERE ready AND ended IS NULL") == Some("1".to_owned())
+    });
+
+    assert_eq!(hold(&setup, &["--now"]), format!("task 1 {HELD}\n"));
+
+    let prompts = unconfirmed_on_desk(&setup);
+    assert!(
+        matches!(&prompts[..], [prompt] if prompt.contains("sqlite")),
+        "{prompts:?}"
+    );
+    setup.gone("priory-1");
+    setup.hold("hold-stop");
+    setup.release("hold-submit");
+    person(&setup, "release", &["1"]);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    let typed = setup.typed();
+    assert!(!typed[1].contains("sqlite"), "{typed:?}");
+}
+
+#[test]
+fn hold_now_during_a_compaction_names_no_interrupted_turn() {
+    let mut setup = Setup::new("hold-now-compact");
+    setup.calls(&[compact("the plan")]);
+    mid_turn(&mut setup, requested(42));
+    setup.hold("hold-submit");
+    setup.release("hold-stop");
+    setup.until("outbox", |rows| with(rows, 3, "attempted") == 1);
+
+    assert_eq!(hold(&setup, &["--now"]), format!("task 1 {HELD}\n"));
+
+    let prompts = setup.prompts("1");
+    assert!(
+        prompts
+            .iter()
+            .any(|prompt| prompt.starts_with("A person held this task at the end of your turn")),
+        "{prompts:?}"
+    );
 }
 
 #[test]
@@ -459,7 +536,7 @@ fn a_hold_before_the_first_prompt_waits_for_that_prompts_turn() {
     db.execute_batch(
         "CREATE TRIGGER typing AFTER INSERT ON runs WHEN NEW.id = 1 BEGIN
            INSERT INTO keyboard_grants (run, hash, label, started, ends)
-           VALUES (NEW.id, 'typing', 'max', 'now', '9999-12-31T00:00:00Z'); END",
+           VALUES (NEW.id, 'typing', 'person', 'now', '9999-12-31T00:00:00Z'); END",
     )
     .unwrap();
     setup.publish(&requested(42));
