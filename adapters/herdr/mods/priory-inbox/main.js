@@ -236,11 +236,11 @@ export default class PrioryInbox extends View {
     const verbs = {
       revive: [`Revive task ${task.id}`, async (client) => { await client.revive(task.id); return `Revived task ${task.id}. Its next event reaches it.`; }],
       request: ["Request a task", async (client) => {
-        // A workflow the factory does not let a person request falls back to its [request] default.
-        const { workflows } = await client.queue().catch(() => ({ workflows: null }));
-        const workflow = requestedWorkflow(task.workflow, workflows);
-        const swapped = workflow ? "" : ` Workflow ${task.workflow} is not requestable, so it starts the factory's default.`;
-        return `Requested ${await client.add(group.request_text ?? "", { workflow })}. It owns this resource's next event.${swapped}`;
+        const { opted_out } = await client.queue().catch(() => ({ opted_out: null }));
+        const workflow = requestedWorkflow(task.workflow, opted_out);
+        const swapped = workflow ? "" : `. Workflow ${task.workflow} is not requestable, so this asked for the factory's default`;
+        const key = await client.add(group.request_text ?? "", { workflow }).catch((error) => { throw new Error(`${message(error)}${swapped}`); });
+        return `Requested ${key}. It owns this resource's next event${swapped}.`;
       }],
       subscribe: [`Subscribe task ${task.id}`, async (client) => `Subscribed: ${(await client.subscribe(task.id, group.resource, this.revision)).trim()}. Its next event goes to task ${task.id}.`],
     };

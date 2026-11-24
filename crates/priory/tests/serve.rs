@@ -2045,11 +2045,15 @@ fn the_queue_lists_the_factorys_requestable_workflows_so_a_view_can_offer_them()
     let queue = api(&address, "/api/queue");
 
     assert_eq!(queue["workflows"], json!(["implement", "review"]));
-    assert_eq!(json_of(&setup, "queue")["workflows"], queue["workflows"]);
+    assert_eq!(queue["opted_out"], json!(["sweep"]));
+    let cli = json_of(&setup, "queue");
+    assert_eq!(cli["workflows"], queue["workflows"]);
+    assert_eq!(cli["opted_out"], queue["opted_out"]);
     let output = setup.priory(&["queue", "--json"]);
     succeeded(&output);
     let without_factory: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(without_factory["workflows"], Value::Null);
+    assert_eq!(without_factory["opted_out"], Value::Null);
 }
 
 #[test]
@@ -4619,6 +4623,36 @@ fn the_request_default_stays_requestable_when_its_workflow_opts_out() {
 }
 
 #[test]
+fn editing_requestable_under_a_running_serve_changes_what_it_offers_and_refuses() {
+    let mut setup = Setup::new("reload-requestable", DEFAULTS);
+    let sweep = setup.dir.join("factory/workflows/sweep.toml");
+    fs::write(&sweep, WORKFLOW).unwrap();
+    let address = setup.start(&["serve", &setup.factory()]);
+    let request = r#"{"text": "Sweep now", "workflow": "sweep"}"#;
+    assert_eq!(
+        api(&address, "/api/request")["workflows"],
+        json!(["implement", "sweep"])
+    );
+
+    fs::write(&sweep, format!("requestable = false\n{WORKFLOW}")).unwrap();
+    eventually("the opt-out", || {
+        api(&address, "/api/request")["opted_out"] == json!(["sweep"])
+    });
+    assert_eq!(
+        api(&address, "/api/queue")["workflows"],
+        json!(["implement"])
+    );
+    assert_eq!(post(&address, "/api/request", "", request).0, 400);
+
+    fs::write(&sweep, WORKFLOW).unwrap();
+    eventually("the opt-in", || {
+        api(&address, "/api/request")["opted_out"] == json!([])
+    });
+    // No daemon runs, so a request that passes the check gets 503.
+    assert_eq!(post(&address, "/api/request", "", request).0, 503);
+}
+
+#[test]
 fn the_request_endpoint_reads_the_defaults_and_choices_the_add_control_offers() {
     let mut setup = Setup::new("web-request-defaults", DEFAULTS);
     let scheduled = format!("requestable = false\n{WORKFLOW}");
@@ -4633,6 +4667,7 @@ fn the_request_endpoint_reads_the_defaults_and_choices_the_add_control_offers() 
             "workflow": "implement",
             "band": "today",
             "workflows": ["implement"],
+            "opted_out": ["sweep"],
             "bands": ["blocker", "now", "today", "later"],
         })
     );

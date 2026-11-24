@@ -425,17 +425,12 @@ impl Served {
             gates: crate::risk::Gates::of(factory),
             schedules: listing::schedule_triggers(factory),
             workflows: factory.requestable(),
-            opted_out: {
-                let names = factory.workflows.keys();
-                names
-                    .filter(|name| factory.opted_out(name))
-                    .cloned()
-                    .collect()
-            },
+            opted_out: factory.not_requestable(),
             request: serde_json::json!({
                 "workflow": factory.request().map(|defaults| &defaults.workflow),
                 "band": factory.request().and_then(|defaults| defaults.band.as_ref()),
                 "workflows": factory.requestable(),
+                "opted_out": factory.not_requestable(),
                 "bands": factory.bands(),
             })
             .to_string(),
@@ -623,7 +618,8 @@ fn route(
         },
         "/api/queue" => match intake::now() {
             Ok(now) => listing::revised(db, "queue", |db| {
-                listing::queue(db, &served.schedules, Some(&served.workflows), now).map(Some)
+                let offered = Some((&served.workflows[..], &served.opted_out[..]));
+                listing::queue(db, &served.schedules, offered, now).map(Some)
             }),
             Err(error) => return Reply::error(500, &error),
         },

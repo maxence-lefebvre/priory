@@ -392,8 +392,9 @@ DESIGN.md's "Inbox" section holds its visual rules; this section says how it wor
   active owner. Revive task N runs `priory revive N` for a
   failed or dropped one. Request a task runs `priory add FACTORY --workflow W -- TEXT` with the
   group's `request_text` for a done one, so the new task owns the resource. `W` is the done
-  task's workflow when `priory queue --json` lists it as requestable; otherwise the panel leaves
-  `--workflow` out, the factory's `[request] workflow` applies, and the note says so. A note under the
+  task's workflow. When `priory queue --json` lists it in `opted_out`, the panel leaves
+  `--workflow` out, the factory's `[request] workflow` applies, and the note says so, also on a
+  refusal. A workflow the factory lacks stays, so priory refuses it by name. A note under the
   group says what the verb did, or why priory refused it. One verb runs at a time, and after one
   succeeds the buttons stay disabled until a read shows its result.
 - **Unheard.** Before the owned groups, under Unheard, each task that kept events no agent read

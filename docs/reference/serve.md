@@ -30,7 +30,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `/api/batches` | `priory batch show --json` | `batches`: every batch, newest first, without its entries and closes. See [batches.md](../daemon/batches.md#priory-batch-show) |
 | `/api/batches/{id}` | `priory batch show ID --json` | one batch with its entries, closes and splits. `ID` is the batch's id or its key |
 | `/api/views` | `priory views --json` | an object: [Views](#views) |
-| `/api/request` | | what the web view's Add prefills: `workflow` and `band`, the [`[request]`](factory.md#request) defaults, each `null` when unset; `workflows`, the names of its [requestable](workflows.md#top-level-keys) workflows, sorted; and `bands`, its bands in order |
+| `/api/request` | | what the web view's Add prefills: `workflow` and `band`, the [`[request]`](factory.md#request) defaults, each `null` when unset; `workflows`, the names of its [requestable](workflows.md#top-level-keys) workflows, sorted; `opted_out`, the names of its other workflows, sorted; and `bands`, its bands in order |
 | `/api/links` | `priory links --json` | an object: [Links](#links) |
 | `/api/flows` | `priory flows --json` | an object: [Flows](#flows) |
 | `/api/reports` | `priory report list --json` | `reports`: each task's report as `task`, `date`, `greeting` and `put`, newest first |
@@ -718,6 +718,7 @@ image or a video `Content-Disposition: inline`. See [evidence.md](../daemon/evid
 | ----- | ---------- |
 | `bands` | The name of one of the factory's bands, highest first, as the daemon last recorded them. A band that holds no task is listed too |
 | `workflows` | The name of one of the factory's [requestable](workflows.md#top-level-keys) workflows, sorted. `null` from `priory queue --json` without `DIR` |
+| `opted_out` | The name of one of the factory's other workflows, sorted. `null` as `workflows` is |
 | `up_next` | One of the next three runs, soonest first: `at`, `kind`, `task`, `key`, `title`, `trigger` and `why`. See [Up next](#up-next) |
 | `waiting` | A queued or ready task in start order, then each held task by when it was held: `position` and `band_position` (its place in the queue and in its band, null for a held task), `id`, `key`, `title`, `workflow`, `step`, `state`, `band`, `aged` (the band [`[queue] age`](../daemon/runs.md#aging) moved it up to in start order, null when it starts in its own band or is held), `lane`, `reason`, `since`, `conditions` (see [Conditions](#conditions)), null for a task that is not held, `stops`, the tasks whose runs stop at their next turn end to make room for it, and `protected`, each live run's task that it may not stop, as `{task, reason}` (see [room.md](../daemon/room.md#urgent-wakes)); both are `[]` for any other task |
 | `asleep` | An asleep task, longest asleep first: `id`, `key`, `title`, `workflow`, `step`, `band`, `lane`, `since` (when it fell asleep), `retired`, and `waits`, each open wait as `kind`, `on` (what it waits on, as `priory waits` shows it) and `since` (when it was stored). A task asleep only on an ask has no waits |

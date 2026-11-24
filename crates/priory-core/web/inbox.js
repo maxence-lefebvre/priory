@@ -73,13 +73,12 @@ export function routeAction(task) {
 }
 
 /**
- * The workflow "Request a task" prefills: the group's task's when the factory lets a person request
- * it, else none, so the factory's `[request]` default applies. With no list read, or an older
- * priory's empty one, the task's.
- * @param {string} workflow @param {string[] | null | undefined} requestable
+ * The workflow "Request a task" prefills: the group's task's, or none when the factory opts it out,
+ * so the `[request]` default applies. One the factory lacks stays, so priory refuses it by name.
+ * @param {string} workflow @param {string[] | null | undefined} optedOut none from an older priory
  */
-export function requestedWorkflow(workflow, requestable) {
-  return !requestable?.length || requestable.includes(workflow) ? workflow : undefined;
+export function requestedWorkflow(workflow, optedOut) {
+  return optedOut?.includes(workflow) ? undefined : workflow;
 }
 
 /** The line for the events no task ever owned, one count per source, or "" with none. */

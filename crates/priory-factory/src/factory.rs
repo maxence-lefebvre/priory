@@ -2735,8 +2735,14 @@ impl Factory {
         names.cloned().collect()
     }
 
+    /// The workflows the factory keeps from the Add controls, by name.
+    pub fn not_requestable(&self) -> Vec<String> {
+        let names = self.workflows.keys().filter(|name| self.opted_out(name));
+        names.cloned().collect()
+    }
+
     /// Whether the factory has workflow `name` and keeps it from the Add controls.
-    pub fn opted_out(&self, name: &str) -> bool {
+    fn opted_out(&self, name: &str) -> bool {
         let default = self.request().map(|request| request.workflow.as_str());
         let workflow = self.workflows.get(name);
         default != Some(name) && workflow.is_some_and(|workflow| !workflow.value.requestable)

@@ -28,11 +28,11 @@ test("an owned group's action follows its owner, as priory inbox --unrouted prin
   assert.equal(routeAction({ state: "asleep" }), "subscribe");
 });
 
-test("Request a task prefills the task's workflow only when the factory lets a person request it", () => {
-  assert.equal(requestedWorkflow("implement", ["implement", "review"]), "implement");
-  assert.equal(requestedWorkflow("bonjour", ["implement", "review"]), undefined);
+test("Request a task swaps only a workflow the factory opts out, and keeps one the factory lacks", () => {
+  assert.equal(requestedWorkflow("bonjour", ["bonjour"]), undefined);
+  assert.equal(requestedWorkflow("removed", ["bonjour"]), "removed");
   assert.equal(requestedWorkflow("bonjour", []), "bonjour");
-  assert.equal(requestedWorkflow("bonjour", null), "bonjour");
+  assert.equal(requestedWorkflow("bonjour", undefined), "bonjour");
 });
 
 test("the desk's unheard note is calm, and empty with none", () => {

@@ -2,7 +2,7 @@
 // Agent text is untrusted: every value goes through `html`, which escapes it.
 import { ARM_MS, ASK_VIEWS, answeredAsks, answeredBy, askBody, askGroups, askHeading, confidenceNote, openAsksOf, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, optionKey, press, runsCommand, submitted, takesText, writeNote } from "./asks.js";
 import { SPLITS, attentionView, costTiles, dayBars, money, scoreTable, splitTable } from "./costs.js";
-import { addBody, addOutcome, swapLine } from "./add.js";
+import { addBody, addOutcome, swapLine, withDefaults } from "./add.js";
 import { linked } from "./links.js";
 import { markdown } from "./markdown.js";
 import { around, dossier, nextPick, refusal } from "./reports.js";
@@ -812,13 +812,14 @@ async function subscribeTask(resource, task) {
 // The Add sheet with the server's text, whose URL keys the new task by the group's resource.
 async function requestTask(text, workflow) {
   await readAddDefaults();
+  // The person may have opened the sheet and typed while the read ran.
+  if (addSheet().open) return renderAdd();
   const { draft, defaults } = state.add;
   draft.text = text;
-  draft.band ??= defaults?.band || "";
-  // The Add control offers only requestable workflows: any other prefills the factory's default.
-  const offered = requestedWorkflow(workflow, defaults?.workflows);
-  draft.workflow = offered ?? (defaults?.workflow || "");
-  state.add.swapped = offered === undefined ? swapLine(workflow, defaults?.workflow) : null;
+  const offered = requestedWorkflow(workflow, defaults?.opted_out);
+  if (offered === undefined) delete draft.workflow;
+  else draft.workflow = offered;
+  state.add.swapped = offered === undefined ? workflow : null;
   keepDraft();
   openAdd();
 }
@@ -2397,9 +2398,8 @@ async function openAdd() {
   const before = state.add.defaults;
   const read = readAddDefaults();
   if (!before) await read;
-  const { draft, defaults } = state.add;
-  if (defaults && draft.workflow === undefined) Object.assign(draft, { workflow: defaults.workflow || "", band: defaults.band || "" });
-  if (addSheet().open) return;
+  const { defaults } = state.add;
+  if (addSheet().open) return renderAdd();
   renderAdd();
   addSheet().showModal();
   document.getElementById("add-text")?.focus();
@@ -2459,7 +2459,8 @@ const ADD_LINES = {
 function renderAdd() {
   const sheet = addSheet();
   if (!sheet) return;
-  const { draft, phase, error, defaults, swapped } = state.add;
+  const { phase, error, defaults, swapped } = state.add;
+  const draft = withDefaults(state.add.draft, defaults);
   const sending = phase === "sending";
   const back = !state.failed && ["offline", "unsure"].includes(phase);
   const status = phase === "refused"
@@ -2474,7 +2475,7 @@ function renderAdd() {
   const body = phase === "added" ? addedTask() : html`<form data-action="add" ${sending ? raw('aria-busy="true"') : ""}>
     <label class="sr" for="add-text">What should the factory do?</label>
     <input id="add-text" name="text" autocomplete="off" enterkeyhint="send" placeholder="What should the factory do?" value="${draft.text}" ${sending ? raw("readonly") : ""} ${status || swapped ? raw('aria-describedby="add-status add-swapped"') : ""}>
-    ${status}${swapped ? html`<p class="warnline" id="add-swapped">${icon("circle-alert", "s15")}<span>${swapped}</span></p>` : ""}
+    ${status}${swapped ? html`<p class="warnline" id="add-swapped">${icon("circle-alert", "s15")}<span>${swapLine(swapped, defaults?.workflow)}</span></p>` : ""}
     <div class="chips">${chip("workflow", "Workflow", draft.workflow, defaults?.workflows || [], defaults?.workflow ? `default (${defaults.workflow})` : "pick one")}
       ${chip("band", "Band", draft.band, defaults?.bands || state.data?.bands || [], "default")}
       ${chip("lane", "Lane", draft.lane, state.data ? knownLanes() : [], "routed")}</div>
@@ -2490,7 +2491,7 @@ function renderAdd() {
 
 async function submitAdd() {
   const { draft, phase } = state.add;
-  const body = addBody(draft);
+  const body = addBody(withDefaults(draft, state.add.defaults));
   if (!body || phase === "sending") return;
   // Offline, Enter only keeps the draft; it goes once the person confirms it after reconnecting.
   if (state.failed) {
@@ -2511,8 +2512,7 @@ async function submitAdd() {
     return signOut("The daemon refused this token. Paste the current one.");
   }
   if (outcome.state === "added") {
-    const { defaults } = state.add;
-    state.add.draft = { text: "", workflow: defaults?.workflow || "", band: defaults?.band || "", lane: "" };
+    state.add.draft = { text: "" };
     state.add.swapped = null;
     state.add.task = { key: outcome.key, id: outcome.id, body: null };
     localStorage.removeItem(DRAFT_KEY);
@@ -2526,8 +2526,7 @@ async function submitAdd() {
 }
 
 function discardAdd() {
-  const { defaults } = state.add;
-  Object.assign(state.add, { phase: "empty", error: null, swapped: null, draft: { text: "", workflow: defaults?.workflow || "", band: defaults?.band || "", lane: "" } });
+  Object.assign(state.add, { phase: "empty", error: null, swapped: null, draft: { text: "" } });
   localStorage.removeItem(DRAFT_KEY);
   renderAdd();
   document.getElementById("add-text")?.focus();
