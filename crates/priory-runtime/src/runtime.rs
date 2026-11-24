@@ -789,7 +789,7 @@ pub fn is_ancestor(worktree: &Path, below: &str, commit: &str) -> bool {
 }
 
 /// The open pull requests of `repo` that `author` opened, or every open one without an author,
-/// each with its `number`, `title` and `url`.
+/// each with its `number`, `title`, `url`, `headRefName` and `isCrossRepository`.
 pub fn open_pull_requests(
     repo: &str,
     author: Option<&str>,
@@ -805,7 +805,7 @@ pub fn open_pull_requests(
         "--limit",
         "1000",
         "--json",
-        "number,title,url",
+        "number,title,url,headRefName,isCrossRepository",
     ]);
     if let Some(author) = author {
         command.args(["--author", author]);
@@ -973,6 +973,10 @@ pub trait Harness {
     fn trust(&self, exe: &Path, clone: &str, worktrees: &str) -> String;
     /// Whether `screen` shows the harness's dialog asking to trust its folder.
     fn asks_trust(&self, _screen: &str) -> bool {
+        false
+    }
+    /// Whether a person must trust Priory's hooks too, which a folder grant does not cover.
+    fn reviews_hooks(&self) -> bool {
         false
     }
     /// Whether `screen` shows the harness at its own prompt, which it reaches only past its dialogs.
@@ -1293,6 +1297,10 @@ impl Harness for Codex {
 
     fn asks_trust(&self, screen: &str) -> bool {
         screen.contains("Trust this folder?") && screen.contains("Trust and continue")
+    }
+
+    fn reviews_hooks(&self) -> bool {
+        true
     }
 
     /// Codex runs only hooks a person trusted in its `/hooks` review, by their hash, so Priory's
