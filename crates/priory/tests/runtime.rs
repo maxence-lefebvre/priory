@@ -19275,7 +19275,7 @@ impl Setup {
         setup.publish(&requested(42));
         setup.start();
         setup.until("runs", |rows| rows.len() == 1);
-        let worktree = setup.worktree();
+        let worktree = setup.private_worktree();
         let deadline = Instant::now() + Duration::from_secs(30);
         while !worktree.join("README.md").exists() {
             assert!(Instant::now() < deadline, "no worktree");
@@ -19284,13 +19284,13 @@ impl Setup {
         setup
     }
 
-    fn worktree(&self) -> PathBuf {
+    fn private_worktree(&self) -> PathBuf {
         self.dir.join("home/worktrees/owner/repo/1")
     }
 
     /// Runs git in the task's worktree.
-    fn work(&self, args: &[&str]) {
-        let status = git(&self.worktree())
+    fn private_git(&self, args: &[&str]) {
+        let status = git(&self.private_worktree())
             .args(["-c", "user.name=t", "-c", "user.email=t@t"])
             .args(args)
             .status()
@@ -19299,18 +19299,18 @@ impl Setup {
     }
 
     /// Commits `text` as `file` on the task's branch, with `message`.
-    fn write(&self, file: &str, text: &str, message: &str) {
-        fs::write(self.worktree().join(file), text).unwrap();
-        self.work(&["add", "-A"]);
-        self.work(&["commit", "-qm", message]);
+    fn private_commit(&self, file: &str, text: &str, message: &str) {
+        fs::write(self.private_worktree().join(file), text).unwrap();
+        self.private_git(&["add", "-A"]);
+        self.private_git(&["commit", "-qm", message]);
     }
 
     /// The reason the run's hook denies `command`, if it does. No deny prints a term.
-    fn refused(&self, command: &str) -> Option<String> {
-        self.hooked("Bash", json!({ "command": command }))
+    fn private_denial(&self, command: &str) -> Option<String> {
+        self.private_hook("Bash", json!({ "command": command }))
     }
 
-    fn hooked(&self, tool: &str, input: serde_json::Value) -> Option<String> {
+    fn private_hook(&self, tool: &str, input: serde_json::Value) -> Option<String> {
         use std::io::Write;
         let mut hook = self
             .command(env!("CARGO_BIN_EXE_priory"))
@@ -19321,7 +19321,7 @@ impl Setup {
             .spawn()
             .unwrap();
         let input = json!({ "session_id": "6f1c0b9e-0d2a-4f43-9a51-3c2e8e1b7d10",
-            "tool_name": tool, "tool_input": input, "cwd": self.worktree() });
+            "tool_name": tool, "tool_input": input, "cwd": self.private_worktree() });
         let mut stdin = hook.stdin.take().unwrap();
         stdin.write_all(input.to_string().as_bytes()).unwrap();
         drop(stdin);
@@ -19337,8 +19337,8 @@ impl Setup {
         Some(guard_denied(&reply).unwrap().to_owned())
     }
 
-    fn head(&self) -> String {
-        let out = git(&self.worktree())
+    fn private_head(&self) -> String {
+        let out = git(&self.private_worktree())
             .args(["rev-parse", "--short", "HEAD"])
             .output()
             .unwrap();
@@ -19356,100 +19356,116 @@ fn says(reason: Option<String>, part: &str) {
 fn a_push_with_a_private_term_in_a_message_a_line_or_a_path_is_denied_and_a_clean_one_passes() {
     let setup = Setup::with_private_terms("private-push");
     let push = "git push -u origin HEAD";
-    assert_eq!(setup.refused(push), None);
+    assert_eq!(setup.private_denial(push), None);
 
-    setup.write("a.txt", "fine\n", "Add a\n\nFor ZED-12.");
+    setup.private_commit("a.txt", "fine\n", "Add a\n\nFor ZED-12.");
     says(
-        setup.refused(push),
-        &format!("rule ticket: commit {} message line 3", setup.head()),
+        setup.private_denial(push),
+        &format!(
+            "rule ticket: commit {} message line 3",
+            setup.private_head()
+        ),
     );
-    setup.work(&["commit", "-q", "--amend", "-m", "Add a"]);
-    assert_eq!(setup.refused(push), None);
+    setup.private_git(&["commit", "-q", "--amend", "-m", "Add a"]);
+    assert_eq!(setup.private_denial(push), None);
 
-    setup.write("a.txt", "fine\non VAULT9\n", "Edit a");
-    let line = format!("rule host: commit {} a.txt:2", setup.head());
-    says(setup.refused(push), &line);
-    says(setup.refused("cd / && git -C . push"), "Priory denied");
+    setup.private_commit("a.txt", "fine\non VAULT9\n", "Edit a");
+    let line = format!("rule host: commit {} a.txt:2", setup.private_head());
+    says(setup.private_denial(push), &line);
+    says(
+        setup.private_denial("cd / && git -C . push"),
+        "Priory denied",
+    );
     // A commit that undoes it leaves the line public in the one before.
-    setup.write("a.txt", "fine\n", "Edit a again");
-    says(setup.refused(push), &line);
-    setup.work(&["reset", "-q", "--hard", "HEAD~2"]);
+    setup.private_commit("a.txt", "fine\n", "Edit a again");
+    says(setup.private_denial(push), &line);
+    setup.private_git(&["reset", "-q", "--hard", "HEAD~2"]);
 
-    setup.write("vault9.txt", "fine\n", "Add b");
-    says(setup.refused(push), "a file path");
-    setup.work(&["reset", "-q", "--hard", "HEAD~1"]);
+    setup.private_commit("vault9.txt", "fine\n", "Add b");
+    says(setup.private_denial(push), "a file path");
+    setup.private_git(&["reset", "-q", "--hard", "HEAD~1"]);
 
     says(
-        setup.refused("git commit -qam x && git push"),
+        setup.private_denial("git commit -qam x && git push"),
         "in a call of its own",
     );
-    says(setup.refused("git push origin nosuch"), "does not resolve");
-    assert_eq!(setup.refused("git push --dry-run origin HEAD"), None);
+    says(
+        setup.private_denial("git push origin nosuch"),
+        "does not resolve",
+    );
+    assert_eq!(setup.private_denial("git push --dry-run origin HEAD"), None);
 
     // What the remote already holds is not published again: removing it is clean.
-    setup.write("c.txt", "vault9\n", "Add c");
-    setup.work(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
-    setup.write("c.txt", "fine\n", "Edit c");
-    assert_eq!(setup.refused(push), None);
+    setup.private_commit("c.txt", "vault9\n", "Add c");
+    setup.private_git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    setup.private_commit("c.txt", "fine\n", "Edit c");
+    assert_eq!(setup.private_denial(push), None);
 }
 
 #[test]
 fn a_merge_of_the_trunk_shows_only_what_it_resolved() {
     let setup = Setup::with_private_terms("private-merge");
-    setup.write("mine.txt", "fine\n", "Add mine");
-    setup.work(&["checkout", "-q", "-b", "side", "HEAD~1"]);
-    setup.write("theirs.txt", "vault9\n", "Add theirs");
-    setup.work(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
-    setup.work(&["checkout", "-q", "priory/1"]);
-    setup.work(&["merge", "-q", "--no-edit", "side"]);
-    assert_eq!(setup.refused("git push origin HEAD"), None);
+    setup.private_commit("mine.txt", "fine\n", "Add mine");
+    setup.private_git(&["checkout", "-q", "-b", "side", "HEAD~1"]);
+    setup.private_commit("theirs.txt", "vault9\n", "Add theirs");
+    setup.private_git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    setup.private_git(&["checkout", "-q", "priory/1"]);
+    setup.private_git(&["merge", "-q", "--no-edit", "side"]);
+    assert_eq!(setup.private_denial("git push origin HEAD"), None);
 }
 
 #[test]
 fn a_pull_request_with_a_private_term_in_its_text_or_commits_is_denied() {
     let setup = Setup::with_private_terms("private-pr");
     let clean = "gh pr create --title 'Add a' --body 'It adds a.'";
-    assert_eq!(setup.refused(clean), None);
+    assert_eq!(setup.private_denial(clean), None);
     says(
-        setup.refused("gh pr create --title 'Add ZED-3' --body x"),
+        setup.private_denial("gh pr create --title 'Add ZED-3' --body x"),
         "rule ticket: PR title line 1",
     );
     says(
-        setup.refused("gh pr edit 3 --body $'one\\non vault9'"),
+        setup.private_denial("gh pr edit 3 --body $'one\\non vault9'"),
         "rule host: PR body line 2",
     );
     says(
-        setup.refused("gh pr create -t x -b \"$(cat <<'EOF'\non vault9\nEOF\n)\""),
+        setup.private_denial("gh pr create -t x -b \"$(cat <<'EOF'\non vault9\nEOF\n)\""),
         "rule host: inline text line 1",
     );
-    fs::write(setup.worktree().join("body.md"), "fine\non vault9\n").unwrap();
+    fs::write(
+        setup.private_worktree().join("body.md"),
+        "fine\non vault9\n",
+    )
+    .unwrap();
     says(
-        setup.refused("gh pr edit 3 --body-file body.md"),
+        setup.private_denial("gh pr edit 3 --body-file body.md"),
         "rule host: body.md line 2",
     );
     says(
-        setup.refused("gh pr edit 3 -b \"$(cat body.md)\""),
+        setup.private_denial("gh pr edit 3 -b \"$(cat body.md)\""),
         "rule host: body.md line 2",
     );
-    says(setup.refused("gh pr edit 3 -F none.md"), "cannot be read");
-    says(setup.refused("gh pr edit 3 -F -"), "stdin");
+    says(
+        setup.private_denial("gh pr edit 3 -F none.md"),
+        "cannot be read",
+    );
+    says(setup.private_denial("gh pr edit 3 -F -"), "stdin");
     let call = |repo: &str| json!({ "owner": "owner", "repo": repo, "body": "on vault9" });
     says(
-        setup.hooked("mcp__github__update_pull_request", call("repo")),
+        setup.private_hook("mcp__github__update_pull_request", call("repo")),
         "rule host: argument line 1",
     );
     assert_eq!(
-        setup.hooked("mcp__github__update_pull_request", call("other")),
+        setup.private_hook("mcp__github__update_pull_request", call("other")),
         None
     );
     assert_eq!(
-        setup.refused("gh pr edit 3 -R owner/other --body vault9"),
+        setup.private_denial("gh pr edit 3 -R owner/other --body vault9"),
         None,
         "a repository the factory does not list"
     );
-    fs::remove_file(setup.worktree().join("body.md")).unwrap();
-    setup.write("a.txt", "vault9\n", "Add a");
-    says(setup.refused(clean), "a.txt:1");
+    fs::remove_file(setup.private_worktree().join("body.md")).unwrap();
+    setup.private_commit("a.txt", "vault9\n", "Add a");
+    says(setup.private_denial(clean), "a.txt:1");
 }
 
 #[test]
@@ -19474,8 +19490,11 @@ fn the_run_itself_is_denied_and_the_denial_is_on_the_trace_without_the_term() {
 fn a_publish_with_private_terms_and_no_daemon_to_ask_is_denied() {
     let mut setup = Setup::with_private_terms("private-no-daemon");
     setup.crash();
-    says(setup.refused("git push origin HEAD"), "private terms");
-    assert_eq!(setup.refused("git status"), None);
+    says(
+        setup.private_denial("git push origin HEAD"),
+        "private terms",
+    );
+    assert_eq!(setup.private_denial("git status"), None);
 }
 
 #[test]
