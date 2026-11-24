@@ -72,7 +72,7 @@ pub(crate) fn gate(
         }
         Gate::Poll { grant, waited } => {
             let reply = reply(db, *grant, factory, share, room())?;
-            return match (waited, give_up_after, &reply) {
+            match (waited, give_up_after, &reply) {
                 (Some(waited), Some(limit), Ok(state))
                     if *waited >= limit.as_secs() && !state.ends_with(" held") =>
                 {
@@ -82,7 +82,7 @@ pub(crate) fn gate(
                     )))
                 }
                 _ => Ok(reply),
-            };
+            }
         }
         Gate::Acquire {
             bytes,
