@@ -1,6 +1,6 @@
 // The Asks panel's view model: `priory asks --all --json` in, rows and states out. No drawing, no IO.
 
-import { age, ago, answeredBy, askBody, askHeading, autolink, checkState, plural, stateWords, prStack, routedMark, routedNote, runnerOf, seenAgo, sentNote, submitted } from "./priory.js";
+import { age, ago, answeredBy, askBody, askHeading, autolink, checkState, planName, plansFirst, plural, stateWords, prStack, routedMark, routedNote, runnerOf, seenAgo, sentNote, submitted } from "./priory.js";
 
 /** @typedef {{ pattern: string, url: string }[]} Links the rules `priory links` lists */
 
@@ -174,7 +174,7 @@ const minutes = (/** @type {string} */ from, /** @type {string} */ to) => Math.r
 /** The plan document in the task's worktree, else the plan step's latest result, else the progress the agent last published. @param {any} task */
 function plan(task) {
   const file = task.plan_file;
-  if (file) return { text: file.truncated ? `${file.text}\n\nShowing the first 64 KB. Read the rest at ${file.path}.` : file.text, from: file.path.slice(file.path.lastIndexOf("/.priory/") + 1) };
+  if (file) return { text: file.truncated ? `${file.text}\n\nShowing the first 64 KB. Read the rest at ${file.path}.` : file.text, from: planName(file.path) };
   if (task.plan) return { text: task.plan.summary, from: `${task.plan.step}, run ${task.plan.run}` };
   const progress = task.progress;
   if (!progress) return null;
@@ -233,7 +233,7 @@ export function askDetail(ask, { now, armed, task = null, links = [] }) {
   const brief = request || groomed ? { request, text: groomed?.summary ?? null, from: groomed ? `${groomed.step}, run ${groomed.run}` : null } : null;
   const planned = task ? plan(task) : null;
   // A step ask with a plan approves that plan: its Plan section comes first and opens by default.
-  const first = open && ask.kind === "step" && planned ? "plan" : "why";
+  const first = plansFirst(ask, task) ? "plan" : "why";
   const pr = pullRequest(task?.pull_request, task?.stack);
   const runs = trace(task?.runs ?? [], now);
   // A long untitled question heads the detail with a short title and reads whole in Why.
