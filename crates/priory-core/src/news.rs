@@ -7,21 +7,23 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
 use std::path::PathBuf;
 
-/// The hook's line: `{"news": {"session": ..., "read": [...]}}`.
+/// The hook's line: `{"news": {"session": ..., "shown": [...], "read": [...]}}`.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Line {
     pub news: Asked,
 }
 
-/// Without `read`, the hook asks for the unread news. With it, the hook says it refused a call
-/// with those news ids, which are then read.
+/// Without ids, the hook asks for the unread news. With them, it says it got the news a call shows,
+/// or refuses a call with, which the daemon marks only then: a late answer marks nothing.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Asked {
     pub session: String,
     #[serde(default)]
-    pub read: Option<Vec<i64>>,
+    pub shown: Vec<i64>,
+    #[serde(default)]
+    pub read: Vec<i64>,
 }
 
 /// What an event of `kind` tells a task when it may end its work: its issue canceled, marked a
@@ -98,15 +100,27 @@ pub(crate) fn keep(
     Ok(())
 }
 
-/// Marks the news `ids` of `session`'s live run read, all of its unread news when `ids` is none,
-/// and removes the marker once none is left unread.
-fn mark_read(tx: &Transaction, session: &str, ids: Option<&[i64]>) -> rusqlite::Result<()> {
-    let ids = ids.map(|ids| serde_json::to_string(ids).expect("ids serialize"));
+/// Marks the news `ids` of `session`'s live run shown.
+fn mark_shown(tx: &Transaction, session: &str, ids: &[i64]) -> rusqlite::Result<()> {
+    let ids = serde_json::to_string(ids).expect("ids serialize");
     tx.execute(
-        "UPDATE news SET read = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-           shown = coalesce(shown, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        "UPDATE news SET shown = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE shown IS NULL AND run IN (SELECT id FROM runs WHERE session = ?1 AND ended IS NULL)
+         AND id IN (SELECT value FROM json_each(?2))",
+        params![session, ids],
+    )
+    .map(drop)
+}
+
+/// Marks the news `ids` of `session`'s live run shown and read, and removes the marker once none
+/// is left unread.
+fn mark_read(tx: &Transaction, session: &str, ids: &[i64]) -> rusqlite::Result<()> {
+    mark_shown(tx, session, ids)?;
+    let ids = serde_json::to_string(ids).expect("ids serialize");
+    tx.execute(
+        "UPDATE news SET read = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE read IS NULL AND run IN (SELECT id FROM runs WHERE session = ?1 AND ended IS NULL)
-         AND (?2 IS NULL OR id IN (SELECT value FROM json_each(?2)))",
+         AND id IN (SELECT value FROM json_each(?2))",
         params![session, ids],
     )?;
     let left: bool = tx.query_row(
@@ -122,57 +136,41 @@ fn mark_read(tx: &Transaction, session: &str, ids: Option<&[i64]>) -> rusqlite::
 }
 
 /// The unread news of `session`'s live run, as `(id, new, text)`: `new` when no call showed it
-/// yet, which it now is. Showing it does not read it: only a held call does.
+/// yet. Showing it does not read it: only a held call does.
 fn unread(tx: &Transaction, session: &str) -> rusqlite::Result<Vec<(i64, bool, String)>> {
-    let mut statement = tx.prepare(
+    tx.prepare(
         "SELECT news.id, news.shown IS NULL, news.text FROM news JOIN runs ON runs.id = news.run
          WHERE runs.session = ?1 AND runs.ended IS NULL AND news.read IS NULL ORDER BY news.id",
-    )?;
-    let news: Vec<(i64, bool, String)> = statement
-        .query_map([session], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
-        .collect::<Result<_, _>>()?;
-    tx.execute(
-        "UPDATE news SET shown = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE shown IS NULL
-         AND run IN (SELECT id FROM runs WHERE session = ?1 AND ended IS NULL)",
-        [session],
-    )?;
-    Ok(news)
+    )?
+    .query_map([session], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+    .collect()
 }
 
-/// The hook's answer: the unread news of the session's live run, one `id<TAB>new<TAB>text` line
-/// each, with `new` 1 the first time a call sees it. With `read`, it marks those ids read and
-/// answers nothing.
+/// The hook's answer: the unread news of the session's live run, as a JSON list of `[id, new,
+/// text]`. With ids, it marks them first.
 pub(crate) fn asked(
     db: &mut Connection,
     asked: &Asked,
 ) -> rusqlite::Result<Result<String, String>> {
     let tx = db.transaction()?;
-    let answer = match &asked.read {
-        Some(ids) => {
-            mark_read(&tx, &asked.session, Some(ids))?;
-            String::new()
-        }
-        None => unread(&tx, &asked.session)?
-            .into_iter()
-            .map(|(id, new, text)| format!("{id}\t{}\t{text}", u8::from(new)))
-            .collect::<Vec<_>>()
-            .join("\n"),
-    };
+    mark_shown(&tx, &asked.session, &asked.shown)?;
+    mark_read(&tx, &asked.session, &asked.read)?;
+    let news = unread(&tx, &asked.session)?;
     tx.commit()?;
-    Ok(Ok(answer))
+    Ok(Ok(serde_json::to_string(&news).expect("news serializes")))
 }
 
 /// The unread news of `session`'s live run as a refusal of the call that would end or sleep the
 /// run, now read. None when it has none.
 pub(crate) fn refusal(tx: &Transaction, session: &str) -> rusqlite::Result<Option<String>> {
-    let lines: Vec<String> = unread(tx, session)?
+    let (ids, lines): (Vec<i64>, Vec<String>) = unread(tx, session)?
         .into_iter()
-        .map(|(_, _, text)| text)
-        .collect();
+        .map(|(id, _, text)| (id, text))
+        .unzip();
     if lines.is_empty() {
         return Ok(None);
     }
-    mark_read(tx, session, None)?;
+    mark_read(tx, session, &ids)?;
     Ok(Some(held(&lines.join("\n"))))
 }
 

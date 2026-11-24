@@ -4478,12 +4478,8 @@ fn outside_mcp() -> ExitCode {
 /// How long a call that news cannot hold waits for the daemon to show it.
 const NEWS_WAIT: Duration = Duration::from_secs(1);
 
-/// The unread news of a run: its ids, every line, and the lines no call showed yet.
-struct News {
-    ids: Vec<i64>,
-    all: Vec<String>,
-    new: Vec<String>,
-}
+/// One unread news item: its id, whether no call showed it yet, and its text.
+type News = (i64, bool, String);
 
 /// The run's session, as the pane or the hook's input names it.
 fn hook_session(input: &Value) -> Option<String> {
@@ -4495,41 +4491,31 @@ fn hook_session(input: &Value) -> Option<String> {
 
 /// The unread news of `session`, waiting `wait` for the daemon: none without the marker the daemon
 /// writes, or when the daemon does not answer, since news is no approval and must not stop a call.
-fn news(session: &str, wait: Duration) -> Option<News> {
+fn news(session: &str, wait: Duration) -> Vec<News> {
     let marker = priory_runtime::jail::spool_dir(&runtime::home(), session).join("news");
     if session.is_empty() || !marker.exists() {
-        return None;
+        return Vec::new();
     }
     let line = serde_json::json!({ "news": { "session": session } });
-    let reply = runtime::call(&runtime::home(), &line.to_string(), wait)
+    runtime::call(&runtime::home(), &line.to_string(), wait)
         .ok()
         .and_then(|reply| serde_json::from_str::<Result<String, String>>(&reply).ok())
-        .and_then(Result::ok)?;
-    let mut news = News {
-        ids: Vec::new(),
-        all: Vec::new(),
-        new: Vec::new(),
-    };
-    for line in reply.lines() {
-        let mut parts = line.splitn(3, '\t');
-        let (Some(id), Some(new), Some(text)) = (parts.next(), parts.next(), parts.next()) else {
-            continue;
-        };
-        let Ok(id) = id.parse() else { continue };
-        news.ids.push(id);
-        news.all.push(text.to_owned());
-        if new == "1" {
-            news.new.push(text.to_owned());
-        }
-    }
-    (!news.ids.is_empty()).then_some(news)
+        .and_then(Result::ok)
+        .and_then(|news| serde_json::from_str(&news).ok())
+        .unwrap_or_default()
 }
 
-/// Tells the daemon the hook refused a call with the news `ids`, which are then read. Best effort:
-/// news left unread holds the next such call too.
-fn read_news(session: &str, ids: &[i64]) {
-    let line = serde_json::json!({ "news": { "session": session, "read": ids } });
-    let _ = runtime::call(&runtime::home(), &line.to_string(), GUARD_WAIT);
+/// Tells the daemon that the hook has `news`, as `mark`: `shown`, or `read` when it refuses the call
+/// with it. Returns the texts. Best effort: news left unmarked comes with the next call too.
+fn got_news(session: &str, mark: &str, news: Vec<News>) -> Option<String> {
+    if news.is_empty() {
+        return None;
+    }
+    let ids: Vec<i64> = news.iter().map(|(id, ..)| *id).collect();
+    let line = serde_json::json!({ "news": { "session": session, mark: ids } });
+    let _ = runtime::call(&runtime::home(), &line.to_string(), NEWS_WAIT);
+    let texts: Vec<String> = news.into_iter().map(|(.., text)| text).collect();
+    Some(texts.join("\n"))
 }
 
 /// Whether the call opens a pull request, pushes, or ends or sleeps the run.
@@ -4687,16 +4673,14 @@ fn hook(event: &str) -> ExitCode {
                         let hold = guarded || holds_for_news(&input);
                         let session = hook_session(&input).unwrap_or_default();
                         let wait = if hold { GUARD_WAIT } else { NEWS_WAIT };
-                        match news(&session, wait) {
-                            Some(news) if hold => {
-                                read_news(&session, &news.ids);
-                                let lines = news.all.join("\n");
+                        let mut news = news(&session, wait);
+                        let mark = if hold { "read" } else { "shown" };
+                        news.retain(|(_, new, _)| hold || *new);
+                        match got_news(&session, mark, news) {
+                            Some(lines) if hold => {
                                 (Some(priory_core::news::held(&lines)), None, None)
                             }
-                            news => {
-                                let new = news.map(|news| news.new.join("\n"));
-                                (None, new.filter(|new| !new.is_empty()), Some(input))
-                            }
+                            lines => (None, lines, Some(input)),
                         }
                     }
                     (denied, _) => (denied, None, None),
