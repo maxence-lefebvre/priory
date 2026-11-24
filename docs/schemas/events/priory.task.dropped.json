@@ -23,7 +23,7 @@
     },
     "TaskDropped": {
       "additionalProperties": false,
-      "description": "A person drops the requests of a key that no runner claimed, with `priory cancel KEY`. Every\nmachine drops them as it reads this, unless a runner's claim won the key before it on the log.",
+      "description": "A person drops the requests of a key that no runner claimed, with `priory cancel KEY`. Every\nmachine drops the ones it holds as `unaccepted`. A claim on its way still wins.",
       "properties": {
         "by": {
           "description": "Where the drop came from: `cli`.",
@@ -41,7 +41,7 @@
       "type": "object"
     }
   },
-  "description": "A person drops the requests of a key that no runner claimed, with `priory cancel KEY`. Every\nmachine drops them as it reads this, unless a runner's claim won the key before it on the log.",
+  "description": "A person drops the requests of a key that no runner claimed, with `priory cancel KEY`. Every\nmachine drops the ones it holds as `unaccepted`. A claim on its way still wins.",
   "properties": {
     "data": {
       "$ref": "#/definitions/TaskDropped"

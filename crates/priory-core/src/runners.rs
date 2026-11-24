@@ -698,13 +698,12 @@ impl<'a> Dropping<'a> {
     }
 }
 
-/// Drops the requests of a key no runner holds, and returns how many. A request with a claim on its
-/// way goes too, whose claim then loses: who holds a key follows from the log, so every machine
-/// drops the same ones.
+/// Drops the unaccepted requests of a key that no runner holds, and returns how many. It leaves a
+/// request whose claim is on its way: builds that know no drop accept that claim, so every build must.
 fn drop_requests(tx: &Transaction, drop: &Dropping) -> rusqlite::Result<usize> {
     tx.execute(
         "UPDATE inbox SET outcome = 'dropped', reason = NULL
-         WHERE outcome IN ('unaccepted', 'claiming')
+         WHERE outcome = 'unaccepted'
            AND (subject = ?1 OR ?2 AND substr(subject, 1, length(?1) + 1) = ?1 || '.')
            AND (?3 IS NULL OR julianday(time) <= julianday(?3))
            AND (?4 IS NULL OR EXISTS (SELECT 1 FROM inbox AS source
@@ -809,18 +808,7 @@ fn claimed(
         hold: current.hold,
         alive,
     });
-    // A dropped request stays dropped, so a claim of it that was on its way loses.
-    let dropped = claim.from.is_none()
-        && tx
-            .query_row(
-                "SELECT outcome = 'dropped' FROM inbox WHERE id = ?1",
-                [request],
-                |row| row.get::<_, Option<bool>>(0),
-            )
-            .optional()?
-            .flatten()
-            .unwrap_or(false);
-    if dropped || !trace.factory.runners.contains_key(runner) || !wins(&claim, held.as_ref()) {
+    if !trace.factory.runners.contains_key(runner) || !wins(&claim, held.as_ref()) {
         crate::state::record(tx, message, None, "refused", None)?;
         // A copy here whose own claim lost can never run: the log gives its key to another runner.
         let Some(owner) = current.filter(|current| runner == me && current.runner != me) else {

@@ -1145,7 +1145,7 @@ pub struct TaskApplied {
 }
 
 /// A person drops the requests of a key that no runner claimed, with `priory cancel KEY`. Every
-/// machine drops them as it reads this, unless a runner's claim won the key before it on the log.
+/// machine drops the ones it holds as `unaccepted`. A claim on its way still wins.
 #[derive(JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TaskDropped {

@@ -87,4 +87,5 @@ A machine with no runner file serves every runner's asks and tasks with
 | `"<day>" is not a day: use mon, tue, wed, thu, fri, sat or sun` | An unknown entry of `days` |
 | `` `days` is empty, so it never fires `` | `days = []` |
 | `"<zone>" is not a time zone such as "Europe/Paris"` | An unknown `timezone` |
+| `` filter `<match>` has a window with no `timezone`, which a factory of <n> runners needs `` | A `when` without `timezone`, with two or more runner files |
 | `` `<hostname>` is also defined in runners/<hostname>.toml `` | `<hostname>.toml` and `<hostname>.yaml` both exist |

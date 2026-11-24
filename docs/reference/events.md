@@ -1794,8 +1794,8 @@ A runner applied or refused an action that another machine sent to one of its ta
 ### `priory.task.dropped`
 
 A person dropped the requests of a key that no runner claimed, with `priory cancel [DIR] KEY`. Every
-machine drops them as it reads this. It is refused once a runner's claim won the key earlier on the
-log. See [runners.md](../daemon/runners.md#placing-tasks-with-filters). Subject: the key.
+machine drops the ones it holds as `unaccepted`, and refuses the message when it holds none. A claim
+on its way still wins. See [runners.md](../daemon/runners.md#placing-tasks-with-filters). Subject: the key.
 Schema: [`priory.task.dropped.json`](../schemas/events/priory.task.dropped.json).
 
 | Field | Type | Meaning |

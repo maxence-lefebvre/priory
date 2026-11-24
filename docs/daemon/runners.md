@@ -118,13 +118,14 @@ task runs twice](#why-no-task-runs-twice) holds as it is. A task that started ne
 filter.
 
 When no runner's filters accept a request, no runner claims it. Each runner and view-only machine lists it in
-`priory tasks`, its JSON and the Desk's queue, with no runner and the reason
+`priory tasks`, its JSON, `priory desk` and `/api/desk`, with no runner and the reason
 `no runner accepts it until 18:00`: the first time a runner's filters lift, in that runner's
 filter timezone, which a window must name when the factory has two or more runner files. A request no window ever lifts says `no runner accepts it`. Each runner checks
 its unaccepted requests again when it reads its own alive message, once a minute, and claims the
 first request of each key its filters accept by then. When a runner wins a key, every unaccepted request of that key goes
 to its task, as a later request of the key does. A view-only machine reads the reason again at any
-runner's alive message, so it can be out of date while every runner is off.
+runner's alive message, so it can be out of date while every runner is off. The web Desk's queue
+does not show these requests.
 
 `priory cancel [DIR] KEY` drops such a request from any machine that lists it: it publishes
 `priory.task.dropped`, and every machine drops the key's requests as it reads that. These events
@@ -134,8 +135,13 @@ drop the requests of a key that no runner holds too:
 - the removal of the review request of a review key, when the reviewer did not review;
 - a Linear issue that leaves the view whose entry made the request.
 
-A drop includes a request whose claim is still on its way, and that claim is refused. Who holds a
-key follows from the log alone, so every machine drops the same requests.
+A drop takes only the `unaccepted` requests of each machine, and never decides who wins a claim. A
+claim on its way when the drop reaches the log still wins, and its task starts. `priory cancel
+RUNNER:KEY` then drops the task.
+
+Upgrade runners together. A runner on a build without filters or drops claims every request of a
+free key, including one that a person or a close dropped on the other machines. The task then runs
+on that runner alone, because every machine accepts its claim.
 
 A takeover asks the filters as well: a runner leaves a lapsed `waiting` task alone while its filters
 refuse it, and checks again with each alive message.

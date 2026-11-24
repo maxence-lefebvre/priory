@@ -1981,6 +1981,7 @@ PRAGMA user_version = 111;
 const SCHEMA_112: &str = "
 ALTER TABLE tasks ADD COLUMN labels TEXT;
 ALTER TABLE inbox ADD COLUMN reason TEXT;
+CREATE INDEX inbox_unaccepted ON inbox (subject, seq) WHERE outcome = 'unaccepted';
 PRAGMA user_version = 112;
 ";
 

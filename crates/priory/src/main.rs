@@ -3937,7 +3937,10 @@ fn act(act: &str, mut args: Vec<String>, hold: Option<factory::Hold>) -> ExitCod
 fn drop_waiting(factory: &factory::Factory, key: &str) -> Result<String, String> {
     let db = state::read_only()?;
     if !runners::waits(&db, key).map_err(|error| error.to_string())? {
-        return Err(format!("no request of {key} waits for a runner"));
+        let runner = key.split(':').next().unwrap_or_default();
+        return Err(format!(
+            "no runner is named {runner}, and no request of {key} waits for a runner"
+        ));
     }
     runners::drop_request(factory, &db, key)
 }
