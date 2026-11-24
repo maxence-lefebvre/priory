@@ -47,6 +47,27 @@ fn check_give_up<T>(
 
 pub fn check(factory: &Factory) -> Vec<Problem> {
     let mut problems = Vec::new();
+    // Each machine shows when the others' windows lift, so none may mean its own local zone.
+    for runner in factory
+        .runners
+        .values()
+        .filter(|_| factory.runners.len() > 1)
+    {
+        for filter in &runner.value.filters {
+            let Some(when) = &filter.when else { continue };
+            if when.timezone.is_none() {
+                problems.push(problem(
+                    runner,
+                    runner.lines.field("filters"),
+                    format!(
+                        "filter `{}` has a window with no `timezone`, which a factory of {} runners needs",
+                        filter.matches,
+                        factory.runners.len()
+                    ),
+                ));
+            }
+        }
+    }
     if let Some(settings) = &factory.settings {
         check_give_up(settings, settings.value.memory.give_up_after, &mut problems);
     }

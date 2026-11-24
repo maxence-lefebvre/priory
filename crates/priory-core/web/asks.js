@@ -112,8 +112,11 @@ export const answeredBy = (by) => (!by ? null : by.startsWith("agent:") ? by : b
  */
 export const optionKey = (event) => (!event.repeat && /^[1-9]$/.test(event.key) ? Number(event.key) - 1 : null);
 
-/** Whether an ask takes free text and a dismissal: a step's or a hold's ask takes only its options. */
-export const takesText = (ask) => ask?.free_text !== false;
+/** Whether a person may dismiss an ask: a step's or a hold's ask needs an answer. */
+export const dismissable = (ask) => ask?.dismissable !== false;
+
+/** How "Write an answer" shows on an ask: a lock hides an open form, and only a shown form sends. @param {boolean} writing @param {string | null} locked @param {boolean} pending */
+export const writeShown = (writing, locked, pending) => (writing && !locked ? "form" : locked || pending ? "disabled" : "button");
 
 // How long a first tap on an option stays armed for the second.
 export const ARM_MS = 4000;

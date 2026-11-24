@@ -705,3 +705,35 @@ fn a_record_command_that_mounts_a_folder_loses_nothing_of_it() {
     let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
     assert_eq!(log.matches("/mnt is a mount").count(), 3, "{log}");
 }
+
+#[test]
+fn an_approval_a_written_answer_voids_keeps_its_items_listed() {
+    let workflow = open_pr_recorded().replace("opened = \"done\"", "opened = \"confirm\"")
+        + r#"
+[[steps]]
+id = "confirm"
+decides = "human"
+effect = "none"
+options = ["fine", "undo"]
+next = { fine = "done", undo = "stop" }
+"#;
+    let script = "#!/bin/sh\ncd \"$PRIORY_EVIDENCE\"\n\
+        printf '\\211PNG\\r\\n\\032\\none' > login.png; echo 'The login page' > login.png.caption\n";
+    let mut setup = Setup::recording("evidence-voided", &workflow, script);
+    setup.calls(&[passed_with_evidence()]);
+    setup.publish(&requested(42));
+    setup.start_recording();
+    setup.until("asks", |rows| rows.len() == 1);
+    setup.until_evidence(1, 1);
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("asks", |rows| rows.iter().any(|row| row[0] == "2"));
+
+    let written = setup.priory(&["answer", "2", "fix the typo first", "--revision", "1"]);
+
+    assert!(written.status.success(), "{written:?}");
+    assert_eq!(setup.evidence(1)[0]["approved"], true);
+    let (_, _, desk) = get(&setup.address(), "/api/tasks/1", true);
+    let task: serde_json::Value = serde_json::from_slice(&desk).unwrap();
+    assert_eq!(task["results"][0]["attachments"][0]["approved"], true);
+}
