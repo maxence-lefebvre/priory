@@ -1,7 +1,7 @@
 use crate::intake::{self, OUTPUT, TASK_REQUESTED};
 use crate::log::{self, Log};
 use herdr_bus::{Message, Timestamp};
-use priory_factory::factory::{self, Confidence, Factory, Hold, Intervention};
+use priory_factory::factory::{self, Confidence, Factory, Hold, Intervention, Trigger};
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -137,6 +137,7 @@ pub fn parse(args: Vec<String>) -> Option<(PathBuf, Request)> {
             merge,
             if_closed,
             blockers,
+            parked: false,
         }),
         None if conditions || if_closed.is_some() => return None,
         None => None,
@@ -691,6 +692,44 @@ pub fn check(factory: &Factory, request: &Request) -> Result<(), String> {
         priory_runtime::runtime::check_repo(repo)?;
     }
     Ok(())
+}
+
+/// Publishes a parked task request for the open pull request `number` of `trigger`'s repository,
+/// titled `title` at `url`, on the trigger's workflow, band and lane, and returns its key. The task
+/// runs nothing until a request of a comment or review trigger releases it.
+pub fn adopt(
+    factory: &Factory,
+    name: &str,
+    trigger: &Trigger,
+    number: u64,
+    title: &str,
+    url: &str,
+) -> Result<String, String> {
+    let repo = trigger
+        .repo
+        .clone()
+        .ok_or_else(|| format!("trigger {name} names no repo"))?;
+    let request = Request {
+        workflow: trigger.workflow.clone(),
+        key: format!("github:{repo}#{number}"),
+        band: trigger.band.clone(),
+        lane: trigger.lane.clone(),
+        repo: Some(repo.clone()),
+        hold: Some(Hold {
+            reason: format!("adopted for trigger {name}"),
+            parked: true,
+            ..Hold::default()
+        }),
+        tldr: Some(title.to_owned()).filter(|title| !title.trim().is_empty()),
+        relates: Vec::new(),
+        intervention: None,
+        auto_answer: None,
+        text: format!("Adopted {repo}#{number}: {title} {url}"),
+        batch: None,
+        session: None,
+    };
+    run(factory, &request, None)?;
+    Ok(request.key)
 }
 
 /// Publishes `request`. A `nonce`, such as a report pick's id, makes its ids differ from those of

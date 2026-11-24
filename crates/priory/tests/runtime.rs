@@ -6112,6 +6112,30 @@ fn an_outside_ask_takes_an_answer_or_a_dismiss_only_at_its_current_revision() {
 }
 
 #[test]
+fn an_outside_ask_snoozes_by_the_id_asks_lists() {
+    let mut setup = Setup::new("outside-snooze");
+    setup.start();
+    listening(&setup);
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+
+    let snoozed = setup.priory(&["snooze", "ask", "cache.ship", "--for", "20h"]);
+
+    assert!(snoozed.status.success(), "{snoozed:?}");
+    let asks: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
+    assert_eq!(asks["asks"][0]["id"], "cache.ship");
+    assert!(asks["asks"][0]["snoozed_until"].is_string(), "{asks}");
+    let desk: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["desk", "--json"]).stdout).unwrap();
+    assert_eq!(desk["counts"]["snoozed"], 1, "{desk}");
+    let cleared = setup.priory(&["snooze", "ask", "cache.ship", "--clear"]);
+    assert!(cleared.status.success(), "{cleared:?}");
+    let asks: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
+    assert!(asks["asks"][0]["snoozed_until"].is_null(), "{asks}");
+}
+
+#[test]
 fn a_revised_ask_lists_each_revision_oldest_first() {
     let mut setup = Setup::new("ask-revisions");
     setup.start();
@@ -11652,7 +11676,7 @@ fn queued_without_room(name: &str) -> Setup {
 
 /// The state and reason of task `id`.
 fn held_as(setup: &Setup, id: &str) -> [String; 2] {
-    let tasks = setup.rows("tasks");
+    let tasks = setup.listed(&["tasks", "--all"]);
     let row = tasks.iter().find(|row| row[0] == id).unwrap();
     [row[4].clone(), row[7].clone()]
 }
@@ -14661,6 +14685,88 @@ fn a_gated_command_runs_and_its_exit_code_passes_through() {
         String::from_utf8_lossy(&done.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&done.stdout), "built\n");
+    assert!(setup.rows("memory").is_empty());
+}
+
+/// Starts `priory memory acquire --gb 1 -- <command>` in the test's `fake` directory, with `PATH`.
+fn acquire_on(setup: &Setup, path: &std::ffi::OsStr, command: &[&str]) -> Command {
+    let mut acquire = setup.command(env!("CARGO_BIN_EXE_priory"));
+    acquire
+        .args(["memory", "acquire", "--gb", "1", "--"])
+        .args(command)
+        .current_dir(setup.dir.join("fake"))
+        .env("PATH", path);
+    acquire
+}
+
+#[test]
+fn a_gated_command_finds_a_tool_only_on_acquires_path() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut setup = Setup::new("gate-path");
+    setup.start();
+    listening(&setup);
+    let tools = setup.dir.join("tools");
+    fs::create_dir_all(&tools).unwrap();
+    let tool = tools.join("only-here");
+    fs::write(&tool, "#!/bin/sh\necho ran-only-here\nexit 5\n").unwrap();
+    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(tools).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+
+    let done = acquire_on(&setup, &path, &["only-here"]).output().unwrap();
+
+    assert_eq!(
+        done.status.code(),
+        Some(5),
+        "stderr: {}",
+        String::from_utf8_lossy(&done.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&done.stdout), "ran-only-here\n");
+}
+
+#[test]
+fn a_gated_command_sees_a_variable_set_only_on_acquire() {
+    let mut setup = Setup::new("gate-env");
+    setup.start();
+    listening(&setup);
+
+    let done = acquire_on(
+        &setup,
+        &std::env::var_os("PATH").unwrap(),
+        &["sh", "-c", "echo \"$GATE_PROBE\""],
+    )
+    .env("GATE_PROBE", "from-the-run")
+    .output()
+    .unwrap();
+
+    assert!(
+        done.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&done.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&done.stdout), "from-the-run\n");
+}
+
+#[test]
+fn a_gated_tool_missing_from_path_exits_127_naming_the_path_and_takes_no_grant() {
+    let mut setup = Setup::new("gate-missing");
+    setup.start();
+    listening(&setup);
+    let path = format!("{}:/usr/bin:/bin", setup.dir.join("tools").display());
+
+    let done = acquire_on(&setup, path.as_ref(), &["no-such-tool", "run"])
+        .output()
+        .unwrap();
+
+    let said = String::from_utf8_lossy(&done.stderr);
+    assert_eq!(done.status.code(), Some(127), "stderr: {said}");
+    assert!(
+        said.contains(&format!("no-such-tool is not on PATH ({path})")),
+        "stderr: {said}"
+    );
+    assert!(!said.contains("grant"), "stderr: {said}");
     assert!(setup.rows("memory").is_empty());
 }
 
@@ -18422,6 +18528,156 @@ fn a_comment_on_a_row_stores_shows_as_a_thread_and_wakes_the_task_with_one_line(
         Some(
             "The person commented on row fnd-2409 in your report (reply with `priory report reply 1 TEXT`): Check the release branch first"
         )
+    );
+}
+
+#[test]
+fn a_comment_on_a_rows_key_lands_on_that_row() {
+    let setup = asleep_on_a_report("report-comment-key", &ask_rows(&["cache.ship"]));
+
+    let commented = setup.priory(&["report", "comment", "cache.ship", "--expected", "1", "Why?"]);
+
+    assert!(commented.status.success(), "{commented:?}");
+    let comments = &shown(&setup)["sections"][0]["rows"][0]["comments"];
+    assert_eq!(comments[0]["text"], "Why?", "{comments}");
+}
+
+#[test]
+fn a_comment_on_an_id_lands_on_that_row_before_a_newer_reports_key() {
+    let setup = asleep_on_a_report("report-comment-id-first", &ask_rows(&["cache.ship"]));
+    // Task 2's newer report has a row whose key is task 1's row id.
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "CREATE TEMP TABLE copy AS SELECT * FROM tasks WHERE id = 1;
+         UPDATE copy SET id = 2, key = 'cli:other';
+         INSERT INTO tasks SELECT * FROM copy;
+         INSERT INTO reports SELECT 2, 1, json_set(report,
+             '$.sections[0].rows[0].id', 'other', '$.sections[0].rows[0].key', 'ask-cache.ship'),
+           '9999-01-01T00:00:00Z' FROM reports WHERE task = 1;",
+    )
+    .unwrap();
+    drop(db);
+
+    let commented = setup.priory(&[
+        "report",
+        "comment",
+        "ask-cache.ship",
+        "--expected",
+        "1",
+        "Why?",
+    ]);
+
+    assert!(commented.status.success(), "{commented:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&commented.stdout),
+        "comment 1 on row ask-cache.ship at revision 2\n"
+    );
+}
+
+/// A report with one row per outside ask, whose `Dismiss ask` and `Not today` act on it.
+fn ask_rows(asks: &[&str]) -> serde_json::Value {
+    let rows: Vec<serde_json::Value> = asks
+        .iter()
+        .map(|ask| {
+            json!({
+                "id": format!("ask-{ask}"), "key": ask, "text": "Ship the cache today?",
+                "pick": { "id": format!("2026-11-23_t1_ask_{ask}"),
+                          "options": ["Not today", "Dismiss ask"],
+                          "asks": {
+                              "Not today": { "act": "snooze", "ask": ask, "until": "2099-11-24T06:00:00Z" },
+                              "Dismiss ask": { "act": "dismiss", "ask": ask },
+                          } },
+                "comments": []
+            })
+        })
+        .collect();
+    json!({
+        "date": "2026-11-23",
+        "since": "2026-11-22T18:00:00+01:00",
+        "greeting": "Bonjour, Max",
+        "sections": [{ "id": "agree", "title": "To agree", "rows": rows }]
+    })
+}
+
+#[test]
+fn a_pick_on_an_ask_row_dismisses_or_snoozes_the_ask_and_wakes_no_agent() {
+    let setup = asleep_on_a_report("report-ask-pick", &ask_rows(&["cache.ship", "cache.notes"]));
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+    setup.priory(&["ask", "cache.notes", &fleet_ask(&["ship", "wait"])]);
+    let prompts = setup.rows("outbox").len();
+
+    let dismissed = setup.priory(&[
+        "report",
+        "pick",
+        "2026-11-23_t1_ask_cache.ship",
+        "Dismiss ask",
+        "--expected",
+        "1",
+    ]);
+    let snoozed = setup.priory(&[
+        "report",
+        "pick",
+        "2026-11-23_t1_ask_cache.notes",
+        "Not today",
+        "--expected",
+        "2",
+    ]);
+
+    assert!(dismissed.status.success(), "{dismissed:?}");
+    assert!(snoozed.status.success(), "{snoozed:?}");
+    let asks: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
+    let asks = &asks["asks"];
+    assert_eq!(
+        [&asks[0]["id"], &asks[0]["withdrawn_reason"]],
+        ["cache.ship", "dismissed"]
+    );
+    assert_eq!([&asks[1]["id"], &asks[1]["state"]], ["cache.notes", "open"]);
+    assert_eq!(asks[1]["snoozed_until"], "2099-11-24T06:00:00Z");
+    let rows = &shown(&setup)["sections"][0]["rows"];
+    assert_eq!(rows[0]["pick"]["applied"], "dismissed");
+    assert_eq!(
+        rows[1]["pick"]["applied"],
+        "snoozed until 2099-11-24T06:00:00Z"
+    );
+    assert_eq!(
+        setup.rows("outbox").len(),
+        prompts,
+        "no prompt for the agent"
+    );
+}
+
+#[test]
+fn a_snooze_pick_made_after_its_time_snoozes_until_the_next_six_utc() {
+    let mut report = ask_rows(&["cache.notes"]);
+    report["sections"][0]["rows"][0]["pick"]["asks"]["Not today"]["until"] =
+        json!("2020-01-01T06:00:00Z");
+    let setup = asleep_on_a_report("report-ask-snooze-late", &report);
+    setup.priory(&["ask", "cache.notes", &fleet_ask(&["ship", "wait"])]);
+
+    let snoozed = setup.priory(&[
+        "report",
+        "pick",
+        "2026-11-23_t1_ask_cache.notes",
+        "Not today",
+        "--expected",
+        "1",
+    ]);
+
+    assert!(snoozed.status.success(), "{snoozed:?}");
+    let asks: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
+    let until = asks["asks"][0]["snoozed_until"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        until.ends_with("T06:00:00Z") && until.as_str() > "2026-11-23",
+        "{until}"
+    );
+    assert_eq!(
+        shown(&setup)["sections"][0]["rows"][0]["pick"]["applied"],
+        format!("snoozed until {until}")
     );
 }
 
@@ -32138,4 +32394,295 @@ fn uncalibrated_pre_review(name: &str, workflow: &str) -> (Setup, Vec<Vec<String
 
     let asks = setup.until("asks", |rows| rows.len() == 1);
     (setup, asks)
+}
+
+/// A comment trigger on alice's pull requests, which `priory adopt` names.
+const MY_PRS: &str = r#"
+source = "github"
+repo = "owner/repo"
+on = "pull_request.comment"
+filter = { author = "alice" }
+workflow = "implement"
+"#;
+
+/// A running daemon whose factory has the `my-prs` trigger, and a fake GitHub where alice has
+/// `open` pull requests open.
+fn adopting(name: &str, open: &[u64]) -> Setup {
+    let mut setup = Setup::new(name);
+    fs::write(setup.dir.join("factory/triggers/my-prs.toml"), MY_PRS).unwrap();
+    let prs: Vec<_> = open
+        .iter()
+        .map(|number| {
+            json!({
+                "number": number,
+                "title": format!("Rename flag {number}"),
+                "url": format!("https://github.com/owner/repo/pull/{number}")
+            })
+        })
+        .collect();
+    fs::write(setup.dir.join("fake/prs"), json!(prs).to_string()).unwrap();
+    setup.start();
+    setup
+}
+
+/// Waits until `done` holds for the rows of `priory tasks --all`, which lists parked tasks too.
+fn all_tasks_until(setup: &Setup, done: impl Fn(&[Vec<String>]) -> bool) -> Vec<Vec<String>> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let rows = setup.listed(&["tasks", "--all"]);
+        if done(&rows) {
+            return rows;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out on `priory tasks --all`: {rows:?}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// What `priory adopt` prints for `args`, which must succeed.
+fn adopt(setup: &Setup, args: &[&str]) -> String {
+    let factory = setup.dir.join("factory");
+    person(
+        setup,
+        "adopt",
+        &[&[factory.to_str().unwrap()], args].concat(),
+    )
+}
+
+/// An event `kind` on alice's pull request 7, from a branch no task made.
+fn on_alice_pull(kind: &str, extra: serde_json::Value) -> Message {
+    let mut message = on_pull(kind, extra);
+    message.data["head_branch"] = json!("feature");
+    message.data["author"] = json!("alice");
+    message
+}
+
+/// The task request the `my-prs` trigger publishes for `comment`.
+fn my_prs_requested(comment: &Message) -> Message {
+    Message::new(
+        "factory.task.requested",
+        json!({
+            "workflow": "implement",
+            "key": "github:owner/repo#7",
+            "band": null,
+            "lane": null,
+            "trigger": "my-prs",
+            "source": comment.id.to_string()
+        }),
+    )
+    .subject("github:owner/repo#7")
+}
+
+#[test]
+fn adopt_parks_a_task_on_each_open_pull_request_no_task_owns_and_leaves_the_desk_alone() {
+    let mut setup = Setup::new("adopt-parks");
+    setup.memory(0);
+    fs::write(setup.dir.join("factory/triggers/my-prs.toml"), MY_PRS).unwrap();
+    fs::write(
+        setup.dir.join("fake/prs"),
+        r#"[{"number":7,"title":"Rename the flag","url":"https://github.com/owner/repo/pull/7"},
+            {"number":8,"title":"Other","url":"https://github.com/owner/repo/pull/8"}]"#,
+    )
+    .unwrap();
+    setup.publish(&requested(8));
+    setup.start();
+    all_tasks_until(&setup, |rows| rows.len() == 1);
+
+    let first = adopt(&setup, &["my-prs"]);
+
+    assert_eq!(
+        first,
+        "adopted github:owner/repo#7\ngithub:owner/repo#8: task 1 owns it\n"
+    );
+    all_tasks_until(&setup, |rows| rows.len() == 2);
+    assert_eq!(
+        held_as(&setup, "2"),
+        [
+            "held".to_owned(),
+            "held: adopted for trigger my-prs, until a comment or review trigger fires on github:owner/repo#7"
+                .to_owned()
+        ]
+    );
+    assert_eq!(
+        adopt(&setup, &["my-prs"]),
+        "github:owner/repo#7: task 2 owns it\ngithub:owner/repo#8: task 1 owns it\n"
+    );
+    assert_eq!(setup.listed(&["tasks", "--all"]).len(), 2);
+    let desk = desk_json(&setup);
+    let parked: Vec<_> = desk["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["task"] == 2)
+        .collect();
+    assert!(parked.is_empty(), "{desk}");
+}
+
+#[test]
+fn adopt_refuses_a_trigger_that_is_not_a_comment_trigger_and_a_pull_request_that_is_not_open() {
+    let setup = adopting("adopt-refuses", &[7]);
+    let factory = setup.dir.join("factory");
+    let factory = factory.to_str().unwrap();
+
+    let label = setup.priory(&["adopt", factory, "agent-label"]);
+    let closed = setup.priory(&["adopt", factory, "my-prs", "owner/repo#9"]);
+
+    assert!(!label.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&label.stderr),
+        "priory adopt: trigger agent-label is not a pull request comment or review trigger\n"
+    );
+    assert!(!closed.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&closed.stderr),
+        "priory adopt: owner/repo#9 is not an open pull request by alice\n"
+    );
+    assert!(setup.listed(&["tasks", "--all"]).is_empty());
+}
+
+#[test]
+fn a_parked_task_keeps_checks_and_comments_and_wakes_on_its_trigger_s_request() {
+    let setup = adopting("adopt-wakes", &[7]);
+    adopt(&setup, &["my-prs", "https://github.com/owner/repo/pull/7"]);
+    all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == "held");
+    let check = on_alice_pull(
+        "github.check_run.completed",
+        json!({ "name": "test", "conclusion": "success", "github_id": 900 }),
+    );
+    let comment = on_alice_pull(
+        "github.pull_request.comment",
+        json!({
+            "actor": "alice", "body": "Why this name?", "github_id": 701, "open": true,
+            "url": "https://github.com/owner/repo/pull/7#issuecomment-701"
+        }),
+    );
+
+    setup.publish(&check);
+    setup.publish(&comment);
+
+    let inbox = setup.until("inbox", |rows| rows.len() == 4);
+    assert_eq!([&inbox[2][3], &inbox[2][4]], ["1", "kept"]);
+    assert_eq!([&inbox[3][3], &inbox[3][4]], ["1", "kept"]);
+    std::thread::sleep(Duration::from_millis(1100));
+    assert_eq!(setup.listed(&["tasks", "--all"])[0][4], "held");
+    assert!(setup.rows("runs").is_empty());
+    let task = person(&setup, "task", &["1"]);
+    assert!(task.contains("github.check_run.completed"), "{task}");
+    assert!(task.contains("github.pull_request.comment"), "{task}");
+
+    setup.publish(&my_prs_requested(&comment));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let inbox = setup.rows("inbox");
+    assert_eq!([&inbox[4][3], &inbox[4][4]], ["1", "released"]);
+    let first = &setup.typed()[0];
+    assert!(
+        first.contains("Adopted owner/repo#7: Rename flag 7"),
+        "{first}"
+    );
+    assert!(first.contains("Why this name?"), "{first}");
+}
+
+#[test]
+fn a_parked_task_is_done_when_its_pull_request_merges_and_dropped_when_it_closes() {
+    for (merged, state, reason) in [
+        (true, "done", "github:owner/repo#7 merged while parked"),
+        (false, "dropped", "github:owner/repo#7 closed while parked"),
+    ] {
+        let setup = adopting(&format!("adopt-ends-{state}"), &[7]);
+        adopt(&setup, &["my-prs", "7"]);
+        all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == "held");
+
+        setup.publish(&on_alice_pull(
+            "github.pull_request.closed",
+            json!({ "merged": merged, "github_id": 400 }),
+        ));
+
+        all_tasks_until(&setup, |rows| rows[0][4] == state);
+        assert_eq!(held_as(&setup, "1")[1], reason);
+        assert!(setup.rows("runs").is_empty());
+    }
+}
+
+#[test]
+fn adopt_skips_a_pull_request_a_done_task_owns_and_its_next_comment_reopens_that_task() {
+    let setup = gated("adopt-done-owner");
+    setup.publish(&check(1, 0));
+    all_tasks_until(&setup, |rows| rows[0][4] == "done");
+    fs::write(setup.dir.join("factory/triggers/my-prs.toml"), MY_PRS).unwrap();
+    fs::write(
+        setup.dir.join("fake/prs"),
+        r#"[{"number":7,"title":"Rename the flag","url":"https://github.com/owner/repo/pull/7"}]"#,
+    )
+    .unwrap();
+
+    let adopted = adopt(&setup, &["my-prs"]);
+
+    assert_eq!(adopted, "github:owner/repo#7: task 1 owns it\n");
+    assert_eq!(setup.listed(&["tasks", "--all"]).len(), 1);
+    std::thread::sleep(Duration::from_millis(1100));
+    setup.publish(&commented());
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    assert!(
+        setup.typed()[2].starts_with("Feedback reopened this done task as generation 2"),
+        "{:?}",
+        setup.typed()
+    );
+    assert_eq!(setup.listed(&["tasks", "--all"]).len(), 1);
+}
+
+#[test]
+fn adopt_skips_a_pull_request_whose_newest_task_was_dropped() {
+    let setup = adopting("adopt-dropped-owner", &[7]);
+    adopt(&setup, &["my-prs", "7"]);
+    all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == "held");
+    person(&setup, "cancel", &["1"]);
+    all_tasks_until(&setup, |rows| rows[0][4] == "dropped");
+
+    let again = adopt(&setup, &["my-prs"]);
+
+    assert_eq!(again, "github:owner/repo#7: task 1 owns it\n");
+    assert_eq!(setup.listed(&["tasks", "--all"]).len(), 1);
+}
+
+#[test]
+fn a_parked_task_ends_on_a_close_that_arrived_before_its_adopt_request() {
+    for (merged, state) in [(true, "done"), (false, "dropped")] {
+        let setup = adopting(&format!("adopt-closed-before-{state}"), &[7]);
+        setup.publish(&on_alice_pull(
+            "github.pull_request.closed",
+            json!({ "merged": merged, "open": false, "github_id": 400 }),
+        ));
+        setup.until("inbox", |rows| rows.len() == 1);
+
+        adopt(&setup, &["my-prs", "7"]);
+
+        all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == state);
+        assert!(setup.rows("runs").is_empty());
+    }
+}
+
+#[test]
+fn a_parked_task_is_left_out_of_the_queue_and_the_task_list() {
+    let setup = adopting("adopt-hidden", &[7]);
+    adopt(&setup, &["my-prs", "7"]);
+    all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == "held");
+    let factory = setup.dir.join("factory");
+
+    let queue = setup.priory(&["queue", factory.to_str().unwrap(), "--json"]);
+    let tasks = setup.priory(&["tasks", "--json"]);
+
+    assert!(queue.status.success(), "{queue:?}");
+    let queue: serde_json::Value = serde_json::from_slice(&queue.stdout).unwrap();
+    assert_eq!(queue["waiting"], json!([]), "{queue}");
+    assert!(tasks.status.success(), "{tasks:?}");
+    let tasks: serde_json::Value = serde_json::from_slice(&tasks.stdout).unwrap();
+    assert_eq!(tasks["tasks"], json!([]), "{tasks}");
+    assert_eq!(setup.listed(&["tasks", "--all"]).len(), 1);
+    let task = person(&setup, "task", &["1"]);
+    assert!(task.contains("step implement, held"), "{task}");
+    let found = person(&setup, "search", &["Adopted", "--state", "held"]);
+    assert!(found.contains("owner/repo#7"), "{found}");
 }

@@ -761,6 +761,32 @@ pub fn is_ancestor(worktree: &Path, below: &str, commit: &str) -> bool {
         .is_ok_and(|status| status.success())
 }
 
+/// The open pull requests of `repo` that `author` opened, or every open one without an author,
+/// each with its `number`, `title` and `url`.
+pub fn open_pull_requests(
+    repo: &str,
+    author: Option<&str>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let mut command = Command::new("gh");
+    command.args([
+        "pr",
+        "list",
+        "-R",
+        repo,
+        "--state",
+        "open",
+        "--limit",
+        "1000",
+        "--json",
+        "number,title,url",
+    ]);
+    if let Some(author) = author {
+        command.args(["--author", author]);
+    }
+    let open = run(&mut command)?;
+    serde_json::from_str(&open).map_err(|error| format!("gh pr list printed {open:?}: {error}"))
+}
+
 /// The state of pull request `number` on `repo`: OPEN, CLOSED or MERGED.
 pub fn pull_request_state(repo: &str, number: u64) -> Result<String, String> {
     let number = number.to_string();
@@ -3190,6 +3216,21 @@ mod tests {
             )),
             "{reason}"
         );
+    }
+
+    #[test]
+    fn a_detached_head_ahead_of_its_branch_with_a_cherry_pick_in_progress_blocks() {
+        let home = Home::new("picking");
+        let tree = home.tree();
+        sh(&tree, &["checkout", "--quiet", "--detach"]);
+        commit(&tree, "a.txt", "a\n");
+        let marker = tree.join(sh(&tree, &["rev-parse", "--git-path", "CHERRY_PICK_HEAD"]));
+        fs::write(&marker, sh(&tree, &["rev-parse", "HEAD"])).unwrap();
+
+        let reason = home.again().unwrap_err();
+
+        assert!(reason.contains("has a cherry-pick in progress"), "{reason}");
+        assert_eq!(sh(&tree, &["branch", "--show-current"]), "");
     }
 
     #[test]

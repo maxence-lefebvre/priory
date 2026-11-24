@@ -1290,9 +1290,7 @@ fn take(
             Ok((replied(reply), kill))
         }
         Ok(Input::Snooze(snooze)) => Ok((replied(snooze::snooze(db, &snooze, trace)?), None)),
-        Ok(Input::Choice(choice)) => {
-            Ok((replied(sections::pick(db, &choice, trace.factory)?), None))
-        }
+        Ok(Input::Choice(choice)) => Ok((replied(sections::pick(db, &choice, trace)?), None)),
         Ok(Input::Comment(comment)) => Ok((
             replied(sections::comment(db, &comment, trace.factory)?),
             None,
