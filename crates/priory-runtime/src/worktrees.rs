@@ -107,19 +107,10 @@ pub fn build_output(
     if let Some(reason) = unsettled(home, found, build)? {
         return Err(reason);
     }
-    let root = fs::canonicalize(&found.path).map_err(|error| error.to_string())?;
     Ok(build
         .iter()
         .map(|folder| found.path.join(folder))
-        // A symlink anywhere on the way would lead outside the worktree.
-        .filter(|path| {
-            fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir())
-                && fs::canonicalize(path).ok()
-                    == path
-                        .strip_prefix(&found.path)
-                        .ok()
-                        .map(|rest| root.join(rest))
-        })
+        .filter(|path| real_folder(&found.path, path))
         .map(|path| {
             let bytes = disk_use(&path);
             (path, bytes)
@@ -127,8 +118,24 @@ pub fn build_output(
         .collect())
 }
 
-/// Deletes the folder and all it holds, first making read-only folders inside it writable.
-pub fn reclaim(path: &Path) -> Result<(), String> {
+/// Whether `path` is a folder inside `worktree` with no symlink on the way, which would lead out.
+fn real_folder(worktree: &Path, path: &Path) -> bool {
+    let (Ok(root), Ok(rest)) = (fs::canonicalize(worktree), path.strip_prefix(worktree)) else {
+        return false;
+    };
+    fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir())
+        && fs::canonicalize(path).ok() == Some(root.join(rest))
+}
+
+/// Deletes the build folder `path` of `worktree` and all it holds, first making read-only folders
+/// inside it writable. Checks again that no symlink leads out, since the sizing ran a while ago.
+pub fn reclaim(worktree: &Path, path: &Path) -> Result<(), String> {
+    if !real_folder(worktree, path) {
+        return Err(format!(
+            "{} is no longer a folder inside the worktree",
+            path.display()
+        ));
+    }
     if fs::remove_dir_all(path).is_ok() {
         return Ok(());
     }
@@ -197,6 +204,8 @@ fn unsettled(home: &Path, found: &Found, build: &[String]) -> Result<Option<Stri
     let status = run(git(path).args([
         "status",
         "--porcelain",
+        // A rename out of a build folder would read as a path inside it.
+        "--no-renames",
         "--untracked-files=all",
         "--ignore-submodules=none",
     ]))?;

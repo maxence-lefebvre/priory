@@ -284,16 +284,20 @@ pub(crate) fn reclaim(
             None => continue,
         };
         if let Ok(folders) = worktrees::build_output(home, found, build) {
-            outputs.extend(folders.into_iter().map(|(path, bytes)| (task, path, bytes)));
+            outputs.extend(
+                folders
+                    .into_iter()
+                    .map(|(path, bytes)| (task, found.path.clone(), path, bytes)),
+            );
         }
     }
     // Stable, so equal sizes keep the longest idle first.
-    outputs.sort_by_key(|(_, _, bytes)| std::cmp::Reverse(*bytes));
-    for (task, path, bytes) in outputs {
+    outputs.sort_by_key(|(_, _, _, bytes)| std::cmp::Reverse(*bytes));
+    for (task, worktree, path, bytes) in outputs {
         if !short() {
             break;
         }
-        if let Err(error) = worktrees::reclaim(&path) {
+        if let Err(error) = worktrees::reclaim(&worktree, &path) {
             eprintln!("priory daemon: task {task}: {error}");
             continue;
         }
