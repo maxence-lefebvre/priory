@@ -2,7 +2,7 @@
 
 use crate::trace::{self, Trace};
 use priory_factory::factory::Effect;
-use priory_factory::guard::{NEED_APPROVAL, SIGN_IN, UNREADABLE};
+use priory_factory::guard::{NEED_APPROVAL, PRIVATE, SIGN_IN, UNREADABLE};
 use priory_runtime::runtime;
 use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
@@ -77,6 +77,13 @@ pub(crate) fn decide(
     // Fail closed: what the guard cannot read, nothing grants.
     if call.guard == UNREADABLE {
         let reason = denied("is too deeply nested for the guard to read");
+        let tx = db.transaction()?;
+        trace::tool_denied(&tx, trace, run.task, run.id, call, &reason)?;
+        tx.commit()?;
+        return Ok(Err(reason));
+    }
+    if call.guard == PRIVATE {
+        let reason = denied("would publish a private term");
         let tx = db.transaction()?;
         trace::tool_denied(&tx, trace, run.task, run.id, call, &reason)?;
         tx.commit()?;
