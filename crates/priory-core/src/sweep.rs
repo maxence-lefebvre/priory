@@ -478,6 +478,10 @@ impl Reclaim {
         if !idle(db)?.iter().any(|(task, _)| *task == output.task) {
             return Ok(());
         }
+        // A reload may have changed the list since the walk.
+        if build_of(factory, &output.found).as_ref() != Some(&output.build) {
+            return Ok(());
+        }
         // Only this thread starts runs, so none starts between these checks and the move.
         let name = format!("{}-{}", output.task, jiff::Timestamp::now().as_nanosecond());
         let aside = home.join(RECLAIM).join(name);
@@ -551,14 +555,23 @@ fn idle_build(
             continue;
         };
         let found = found.swap_remove(at);
-        let build = match factory.build(&found.repo) {
-            Some(build) => build.to_vec(),
-            None if found.path.join("Cargo.toml").is_file() => vec![String::from("target")],
-            None => continue,
-        };
-        worktrees.push((task, found, build));
+        if let Some(build) = build_of(factory, &found) {
+            worktrees.push((task, found, build));
+        }
     }
     Ok(worktrees)
+}
+
+/// The build folders of the worktree, `target` by default when it has a `Cargo.toml`.
+fn build_of(factory: &Factory, found: &Found) -> Option<Vec<String>> {
+    match factory.build(&found.repo) {
+        Some(build) => Some(build.to_vec()),
+        None => found
+            .path
+            .join("Cargo.toml")
+            .is_file()
+            .then(|| vec![String::from("target")]),
+    }
 }
 
 /// Lists and sizes the build folders of `worktrees` on a thread, largest first.
@@ -762,6 +775,13 @@ mod tests {
             tree
         }
 
+        /// Reloads the factory with `build = []`.
+        fn opt_out(&mut self) {
+            let text = "name = \"demo\"\n[repos.\"o/r\"]\nbuild = []\n";
+            std::fs::write(self.dir.join("factory.toml"), text).unwrap();
+            self.factory = priory_factory::factory::load(&self.dir).0;
+        }
+
         fn tick(&mut self, due: bool, under: bool) {
             let trace = Trace {
                 factory: &self.factory,
@@ -936,13 +956,17 @@ mod tests {
         std::fs::write(tree.join(".gitignore"), "target\n").unwrap();
         git(&tree, &["add", "Cargo.toml", ".gitignore"]);
         git(&tree, &["commit", "-q", "-m", "cargo"]);
-        std::fs::write(
-            home.dir.join("factory.toml"),
-            "name = \"demo\"\n[repos.\"o/r\"]\nbuild = []\n",
-        )
-        .unwrap();
-        home.factory = priory_factory::factory::load(&home.dir).0;
+        home.opt_out();
         home.walk();
+        home.keeps(&tree);
+    }
+
+    #[test]
+    fn reclaim_stops_when_the_repository_opts_out_after_the_walk() {
+        let mut home = Home::new("reload");
+        let tree = home.task(1, "asleep");
+        home.walk();
+        home.opt_out();
         home.keeps(&tree);
     }
 
