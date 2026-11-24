@@ -1635,7 +1635,7 @@ mod tests {
         assert_eq!(
             groups_of("process,nope").unwrap_err(),
             "PRIORY_METRICS names `nope`, which is not a metrics group: the groups are process, \
-             log, runs, intake, work, or none"
+             log, runs, intake, work, room, or none"
         );
     }
 
