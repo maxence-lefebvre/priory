@@ -16704,7 +16704,7 @@ fn attach_read_only_adds_tmuxs_read_only_flag() {
     assert_eq!(
         String::from_utf8(printed.stdout).unwrap(),
         format!(
-            "tmux -S {} attach-session -r -t '=priory-1'\n",
+            "tmux -S {} attach-session -f read-only,ignore-size -t '=priory-1'\n",
             socket(&setup)
         )
     );
@@ -32758,7 +32758,7 @@ fn attaching(name: &str, flagged: bool, exit: u8) -> Setup {
     fs::write(
         &script,
         format!(
-            "#!/bin/sh\necho \"$1 $2 $PRIORY_TASK $PRIORY_RUN $PRIORY_TMUX\" >> attached\n\
+            "#!/bin/sh\necho \"$1 $2 $PRIORY_TASK $PRIORY_RUN $PRIORY_TMUX $PRIORY_EXE\" >> attached\n\
              echo 'hc: no such space' >&2\nexit {exit}\n"
         ),
     )
@@ -32787,7 +32787,10 @@ fn attach_runs_the_command_once_with_the_task_and_run_when_a_flagged_steps_run_s
     }
     std::thread::sleep(Duration::from_secs(1));
 
-    assert_eq!(attached(&setup).unwrap(), "1 1 1 1 priory-1\n");
+    assert_eq!(
+        attached(&setup).unwrap(),
+        format!("1 1 1 1 priory-1 {}\n", env!("CARGO_BIN_EXE_priory"))
+    );
     assert!(traced(&setup, "factory.run.attach_failed").is_empty());
 }
 
