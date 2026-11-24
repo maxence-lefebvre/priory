@@ -538,7 +538,8 @@ mod tests {
             if let Ok((focus, then)) = texts(&arguments, &[]) {
                 for (text, limit) in [(&focus, FOCUS_LIMIT), (&then, THEN_LIMIT)] {
                     prop_assert!(text.chars().count() <= limit);
-                    prop_assert!(!text.contains('\u{1b}') && !screen::holds_secret(text));
+                    let escapes = text.chars().any(|char| char == '\x1b');
+                    prop_assert!(!escapes && !screen::holds_secret(text));
                 }
                 prop_assert!(!focus.contains('\n') && !then.is_empty());
             }
