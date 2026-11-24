@@ -149,9 +149,9 @@ wait 3 fired: Ana commented on linear:ENG-7: Also handle the empty case. https:/
 ```
 
 A comment fires a wait only when its `time` is at or after the wait was stored, to the second. So
-the agent's own comment, posted in the turn that stored the wait, fires nothing. Reviews fire at any
-time, since GitHub keeps an author from approving or rejecting their own pull request. The intake
-publishes no bot's comment (see [pull-requests.md](../intake/pull-requests.md)).
+the agent's own comment, posted in the turn that stored the wait, fires nothing. An agent's review,
+`agent: true`, obeys the same rule: GitHub wraps each reply in a thread in one. Any other review
+fires at any time. The intake publishes no bot's comment (see [pull-requests.md](../intake/pull-requests.md)).
 
 ### An ask beside a wait
 

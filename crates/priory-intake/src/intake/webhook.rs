@@ -84,12 +84,15 @@ impl Github {
             .iter()
             .map(|(name, trigger)| (name.as_str(), trigger))
             .collect();
-        let thread = match observed.wraps(super::gh::viewer) {
-            true => observed.thread(),
+        let viewer = super::viewer(std::iter::once(observed.kind));
+        let thread = match observed.wraps(viewer) {
+            true => observed
+                .read_thread()
+                .and_then(|thread| thread.ok_or("the review has no comments yet".to_owned())),
             false => Ok(Vec::new()),
         };
         let published = thread.and_then(|thread| {
-            let mut message = observed.message(&triggers, super::gh::viewer, &thread)?;
+            let mut message = observed.message(&triggers, viewer, &thread)?;
             // GitHub redelivers for 3 days; an older body is a replay the change match may miss.
             if message.time.as_second() < now()?.as_second() - LOOKBACK_SECONDS {
                 return Ok(false);
@@ -100,7 +103,14 @@ impl Github {
                 super::counted("github", "webhook", "duplicate");
                 return Ok(false);
             }
-            if observed.repeats(bus, &message, &thread)? {
+            let said: BTreeSet<_> = match thread.is_empty() {
+                true => BTreeSet::new(),
+                false => super::lately(bus, |other| other.kind == THREAD_COMMENTED)?
+                    .into_iter()
+                    .map(|comment| comment.id)
+                    .collect(),
+            };
+            if observed.repeats(&message, &thread, |comment| said.contains(comment)) {
                 super::counted("github", "webhook", "duplicate");
                 return Ok(false);
             }
@@ -446,7 +456,7 @@ mod tests {
         let mine = feedback_trigger("pull_request.comment", &json!({ "author": "max" }));
         let threads = feedback_trigger("pull_request_review_comment", &json!({ "author": "max" }));
         let triggers = [("mine", &mine), ("threads", &threads)];
-        let matched = |observed: &Observed, viewer: crate::intake::Viewer| {
+        let matched = |observed: &Observed, viewer: Option<&str>| {
             observed.message(&triggers, viewer, &[]).unwrap().data["triggers"].clone()
         };
         let marked = |login: &str| {
@@ -459,12 +469,12 @@ mod tests {
         let mut closed = on_pull("pull_request_review_comment", &comment_by("ana", "User"));
         closed.data["open"] = json!(false);
 
-        assert_eq!(matched(&ana, || Some("max")), json!(["mine"]));
+        assert_eq!(matched(&ana, Some("max")), json!(["mine"]));
         // The person shares the agents' login: only the marker makes a comment an agent's.
-        assert_eq!(matched(&max, || Some("max")), json!(["mine"]));
-        assert_eq!(matched(&marked("max"), || Some("max")), json!([]));
-        assert_eq!(matched(&marked("ana"), || Some("max")), json!(["mine"]));
-        assert_eq!(matched(&closed, || None), json!([]));
+        assert_eq!(matched(&max, Some("max")), json!(["mine"]));
+        assert_eq!(matched(&marked("max"), Some("max")), json!([]));
+        assert_eq!(matched(&marked("ana"), Some("max")), json!(["mine"]));
+        assert_eq!(matched(&closed, None), json!([]));
     }
 
     proptest! {
@@ -491,7 +501,7 @@ mod tests {
             });
             let body = payload.to_string();
             if let Ok(Some(observed)) = github().observe(event, &payload, body.as_bytes()) {
-                let _ = observed.message(&[], || None, &[]);
+                let _ = observed.message(&[], None, &[]);
             }
         }
 
@@ -521,7 +531,7 @@ mod tests {
             });
             let body = payload.to_string();
             if let Ok(Some(observed)) = github().observe(event, &payload, body.as_bytes()) {
-                let _ = observed.message(&[], || None, &[]);
+                let _ = observed.message(&[], None, &[]);
             }
         }
 

@@ -76,8 +76,8 @@ opening or a comment, and `submitted_at` for a review. A bot's comment publishes
 
 A review payload holds no thread comments. For a `COMMENTED` review with an empty body by `gh`'s
 login, the server reads them with one `gh api` call to tell
-[an agent's reply from the person's](pull-requests.md#events). If that call fails, the reply is `500`
-and the next poll publishes the review.
+[an agent's reply from the person's](pull-requests.md#events). If that call fails, or lists no
+comment for a review under a minute old, the reply is `500` and a later poll publishes the review.
 
 ### Duplicates
 

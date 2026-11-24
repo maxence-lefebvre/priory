@@ -16,6 +16,7 @@ pub mod schedule;
 mod sentry;
 mod shortcut;
 mod slack;
+mod threads;
 mod webhook;
 
 pub use cloudwatch::CloudwatchWebhook;
@@ -28,7 +29,7 @@ pub use sentry::SentryWebhook;
 pub use webhook::Github;
 
 use serde_json::json;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::Duration;
 
 pub const OUTPUT: &str = "factory.intake";
@@ -201,6 +202,9 @@ type Stream = (String, &'static str);
 /// issue number for opened issues. A stream without one is still in its baseline.
 type Cursors = BTreeMap<Stream, u64>;
 
+/// What a start reads back from the output: see `newest`.
+type ReadBack = (BTreeMap<Stream, Message>, Cursors, HashMap<Uuid, Message>);
+
 /// The `factory.intake` declaration, shared with `priory request`, which publishes on it too.
 pub fn output() -> Output {
     Output::new(OUTPUT)
@@ -370,7 +374,8 @@ pub fn run(
         .copied()
         .chain(waiting.iter().filter_map(pull_request_repo))
         .collect();
-    let (newest, mut cursors) = newest(bus, &resumed).map_err(|error| error.to_string())?;
+    let (newest, mut cursors, stored) = newest(bus, &resumed).map_err(|error| error.to_string())?;
+    let mut threads = threads::Threads::new(stored);
     for (stream, source) in newest {
         // A crash may have stopped between this source and its task requests.
         if source.data["baseline"] != true {
@@ -431,7 +436,15 @@ pub fn run(
         let (found, errors) = fetch(&polled, &cursors, &merges, &mut unchecked);
         // A publish error ends the intake: its restart recovers the source it left behind.
         let hooked = factory.github_webhook().is_some().then_some(&repos);
-        let unread = publish_all(bus, &triggers, found, &mut cursors, &mut published, hooked)?;
+        let unread = publish_all(
+            bus,
+            &triggers,
+            found,
+            &mut cursors,
+            &mut published,
+            &mut threads,
+            hooked,
+        )?;
         let github = failed.entry("github").or_default();
         github.extend(errors);
         github.extend(unread);
@@ -512,13 +525,11 @@ pub fn now() -> Result<Timestamp, String> {
     }
 }
 
-/// The newest source event per stream, and the baseline position of each stream that finished
-/// its baseline, read back newest first.
-fn newest(
-    bus: &dyn Log,
-    repos: &BTreeSet<&str>,
-) -> log::Result<(BTreeMap<Stream, Message>, Cursors)> {
+/// The newest source event per stream, the baseline position of each stream that finished its
+/// baseline, and the reviews that stand for their threads by id, read back newest first.
+fn newest(bus: &dyn Log, repos: &BTreeSet<&str>) -> log::Result<ReadBack> {
     let wanted = repos.len() * STREAMS.len();
+    let mut reviews = HashMap::new();
     let mut newest = BTreeMap::new();
     let mut baselines = Cursors::new();
     let mut before = None;
@@ -532,6 +543,9 @@ fn newest(
         before = Some(oldest.seq);
         for stored in &page {
             let data = &stored.message.data;
+            if threads::wraps(&stored.message.kind, data) {
+                reviews.insert(stored.message.id, stored.message.clone());
+            }
             // Polling owns its streams' positions; a delivery can arrive out of order.
             if data.get("delivery").is_some() {
                 continue;
@@ -559,7 +573,7 @@ fn newest(
             }
         }
     }
-    Ok((newest, baselines))
+    Ok((newest, baselines, reviews))
 }
 
 /// The stream a message type belongs to: issue events, the issues list, reviews or checks.
@@ -617,9 +631,12 @@ fn publish_all(
     polled: Vec<Polled>,
     cursors: &mut Cursors,
     published: &mut HashSet<Uuid>,
+    threads: &mut threads::Threads,
     hooked: Option<&BTreeSet<&str>>,
 ) -> Result<Vec<String>, String> {
-    let (threads, failed) = threads(&polled, published);
+    let events = || polled.iter().flat_map(|polled| &polled.events);
+    let viewer = viewer(events().map(|event| event.kind));
+    let failed = threads.read(bus, events(), published, viewer)?;
     // Taken at the first event a webhook may also report, and held so none publishes meanwhile.
     let mut delivered: Option<(std::fs::File, Vec<Message>)> = None;
     for Polled {
@@ -628,19 +645,31 @@ fn publish_all(
         top,
     } in polled
     {
+        let mut unread = false;
         for event in events {
-            let thread = match threads.get(&id(&event.name)) {
-                Some(Some(thread)) => thread.as_slice(),
-                // Its lookup failed: the next poll tries again.
-                Some(None) => continue,
-                None => &[],
-            };
-            let source = event.message(triggers, gh::viewer, thread)?;
+            let id = id(&event.name);
+            if threads.unread(&id) {
+                unread = true;
+                continue;
+            }
+            if let Some(stored) = threads.stored(&id) {
+                if published.insert(id) {
+                    if stored.data.get("delivery").is_some() {
+                        counted("github", "poll", "duplicate");
+                    }
+                    // A crash may have stopped between the review and its task requests.
+                    dispatch(bus, triggers, stored)?;
+                }
+                continue;
+            }
+            let thread = threads.thread(&id);
+            let source = event.message(triggers, viewer, thread)?;
             // Reviews and checks are read again on every poll; herdr-bus would drop them too.
             if !published.insert(source.id) {
                 continue;
             }
-            if event.repeats(bus, &source, thread)? {
+            let said = |comment: &Uuid| published.contains(comment) || threads.said(comment);
+            if event.repeats(&source, thread, said) {
                 continue;
             }
             if CHANGES.contains(&source.kind.as_str()) {
@@ -664,30 +693,15 @@ fn publish_all(
         let cursor = cursors.get(&stream).copied();
         let top = top.max(cursor).unwrap_or_default();
         if cursor.is_none() {
+            // Its next poll is still a baseline, so the unread event starts no task then.
+            if unread {
+                continue;
+            }
             publish(bus, &baseline(&stream, top))?;
         }
         cursors.insert(stream, top);
     }
     Ok(failed)
-}
-
-/// The thread comments of each review in `polled` that stands for its thread, by message id: none
-/// for one whose lookup failed, whose error follows. Reviews in `published` are not looked up.
-fn threads(
-    polled: &[Polled],
-    published: &HashSet<Uuid>,
-) -> (BTreeMap<Uuid, Option<Vec<serde_json::Value>>>, Vec<String>) {
-    let mut threads = BTreeMap::new();
-    let mut failed = Vec::new();
-    for event in polled.iter().flat_map(|polled| &polled.events) {
-        let id = id(&event.name);
-        if published.contains(&id) || !event.wraps(gh::viewer) {
-            continue;
-        }
-        let thread = event.thread().map_err(|error| failed.push(error)).ok();
-        threads.insert(id, thread);
-    }
-    (threads, failed)
 }
 
 /// The types whose webhook id cannot be the poll's, since the payload lacks GitHub's issue event
@@ -862,12 +876,11 @@ pub fn request_for(name: &str, trigger: &Trigger, source: &Message) -> Message {
 /// it, and `agent` when it is also marked `AGENT_COMMENT`: the person shares that login, so their
 /// unmarked comment is theirs. A review that stands for its `thread` is marked when every comment
 /// there is. Unmarked while `gh` cannot say who it is.
-fn mark_own(message: &mut Message, viewer: Viewer, thread: &[serde_json::Value]) {
-    let feedback = [COMMENTED, THREAD_COMMENTED, REVIEWED, ISSUE_COMMENTED];
-    if !feedback.contains(&message.kind.as_str()) {
+fn mark_own(message: &mut Message, viewer: Option<&str>, thread: &[serde_json::Value]) {
+    if !FEEDBACK.contains(&message.kind.as_str()) {
         return;
     }
-    if let Some(viewer) = viewer() {
+    if let Some(viewer) = viewer {
         let own = message.data["actor"] == viewer;
         let marked = |said: &serde_json::Value| {
             said["body"]
@@ -880,8 +893,14 @@ fn mark_own(message: &mut Message, viewer: Viewer, thread: &[serde_json::Value])
     }
 }
 
-/// Who `gh` runs as: `gh::viewer`, or none where a test must not run `gh`.
-type Viewer = fn() -> Option<&'static str>;
+/// The types `mark_own` marks.
+const FEEDBACK: [&str; 4] = [COMMENTED, THREAD_COMMENTED, REVIEWED, ISSUE_COMMENTED];
+
+/// The login `gh` runs as, asked only when one of `kinds` is feedback.
+fn viewer(mut kinds: impl Iterator<Item = &'static str>) -> Option<&'static str> {
+    let feedback = kinds.any(|kind| FEEDBACK.contains(&kind));
+    feedback.then(gh::viewer).flatten()
+}
 
 fn publish(bus: &dyn Log, message: &Message) -> Result<(), String> {
     bus.publish(OUTPUT, message)
@@ -904,56 +923,11 @@ struct Observed {
 }
 
 impl Observed {
-    /// Whether this is a review by `viewer` that only stands for its thread comments: GitHub wraps
-    /// each reply in a thread in a COMMENTED review with an empty body.
-    fn wraps(&self, viewer: Viewer) -> bool {
-        self.kind == REVIEWED
-            && self.data["state"] == "commented"
-            && self.data["body"]
-                .as_str()
-                .is_some_and(|body| body.trim().is_empty())
-            && viewer().is_some_and(|viewer| self.data["actor"] == viewer)
-    }
-
-    /// The thread comments this review wraps, its first 100.
-    fn thread(&self) -> Result<Vec<serde_json::Value>, String> {
-        gh::gh(
-            &format!(
-                "repos/{}/pulls/{}/reviews/{}/comments?per_page=100",
-                self.repo, self.number, self.data["github_id"]
-            ),
-            &[],
-        )
-    }
-
-    /// Whether `message` is an agent's review whose `thread` comments are all on the output.
-    fn repeats(
-        &self,
-        bus: &dyn Log,
-        message: &Message,
-        thread: &[serde_json::Value],
-    ) -> Result<bool, String> {
-        if thread.is_empty() || message.data["agent"] != true {
-            return Ok(false);
-        }
-        let ids: BTreeSet<Uuid> = thread
-            .iter()
-            .map(|comment| {
-                id(&format!(
-                    "github:{}:pulls/comments:{}",
-                    self.repo, comment["id"]
-                ))
-            })
-            .collect();
-        let found = lately(bus, |other| ids.contains(&other.id))?;
-        Ok(found.len() == ids.len())
-    }
-
-    /// `thread` holds the comments a review stands for, as `Observed::thread` reads them.
+    /// `thread` holds the comments a review stands for, as `Observed::read_thread` reads them.
     fn message(
         &self,
         triggers: &[(&str, &Trigger)],
-        viewer: Viewer,
+        viewer: Option<&str>,
         thread: &[serde_json::Value],
     ) -> Result<Message, String> {
         let raw = self.data["time"].as_str().unwrap_or_default();
