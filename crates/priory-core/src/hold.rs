@@ -154,16 +154,29 @@ pub(crate) fn prompt(tx: &Transaction, run: &crate::tools::Run) -> rusqlite::Res
     })
 }
 
-/// Marks `run` not ready when its session never took a prompt: Claude keeps no such session, so the
-/// next run starts a new one with the prompts of this one. An idle run with an unconfirmed prompt
-/// ended a turn, so its session took one.
+/// Gives back the launch prompt of `run` when no turn of it started, and marks the run not ready
+/// when its session never took a prompt: Claude keeps no such session, so the next run starts a new
+/// one. A prompt typed into a run that is idle again had its turn.
 pub(crate) fn forget_unprompted(tx: &Transaction, run: i64) -> rusqlite::Result<()> {
+    const LAUNCHED: &str = "outbox.run = runs.id AND outbox.state IN ('attempted', 'uncertain')
+      AND julianday(outbox.attempted) <= julianday(runs.session_started)";
     tx.execute(
-        "UPDATE runs SET ready = 0 WHERE id = ?1 AND resumes IS NOT 1 AND turn IS NULL AND read = 0
-         AND NOT EXISTS (SELECT 1 FROM outbox JOIN runs AS own ON own.id = outbox.run
-           WHERE own.session = runs.session AND outbox.state = 'confirmed')
-         AND NOT (idle = 1 AND EXISTS (SELECT 1 FROM outbox WHERE outbox.run = runs.id
-           AND outbox.state IN ('attempted', 'uncertain')))",
+        &format!(
+            "UPDATE runs SET ready = 0 WHERE id = ?1 AND resumes IS NOT 1 AND turn IS NULL
+             AND NOT EXISTS (SELECT 1 FROM outbox JOIN runs AS own ON own.id = outbox.run
+               WHERE own.session = runs.session AND outbox.state = 'confirmed')
+             AND (EXISTS (SELECT 1 FROM outbox WHERE {LAUNCHED})
+               OR read = 0 AND NOT (idle = 1 AND EXISTS (SELECT 1 FROM outbox
+                 WHERE outbox.run = runs.id AND outbox.state IN ('attempted', 'uncertain'))))"
+        ),
+        [run],
+    )?;
+    tx.execute(
+        &format!(
+            "UPDATE outbox SET state = 'queued', run = NULL, attempted = NULL
+             WHERE id IN (SELECT outbox.id FROM outbox JOIN runs ON {LAUNCHED}
+               WHERE runs.id = ?1 AND runs.turn IS NULL)"
+        ),
         [run],
     )
     .map(drop)

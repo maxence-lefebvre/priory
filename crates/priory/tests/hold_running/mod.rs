@@ -412,6 +412,25 @@ fn hold_now_before_a_codex_session_starts_keeps_the_step_prompt() {
 }
 
 #[test]
+fn hold_now_between_a_codex_session_start_and_its_prompt_keeps_the_step_prompt() {
+    let mut setup = Setup::new("hold-now-codex-started");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    setup.hold("hold-submit");
+    setup.publish(&requested(42));
+    setup.go();
+    setup.until("runs", |_| {
+        setup.sql("SELECT count(*) FROM runs WHERE ready") == Some("1".to_owned())
+    });
+
+    assert_eq!(hold(&setup, &["--now"]), format!("task 1 {HELD}\n"));
+
+    setup.gone("priory-1");
+    setup.hold("hold-stop");
+    setup.release("hold-submit");
+    starts_afresh(&setup);
+}
+
+#[test]
 fn hold_now_before_the_first_prompt_is_submitted_does_not_resume_the_session() {
     let mut setup = Setup::new("hold-now-unprompted");
     setup.hold("hold-submit");
