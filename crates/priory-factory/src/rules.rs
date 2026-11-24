@@ -65,6 +65,18 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 format!("the sweeper agent `{agent}` does not exist"),
             ));
         }
+        for script in &settings.value.sweep.scripts {
+            if script.when.is_none() && script.every.is_none() {
+                problems.push(problem(
+                    settings,
+                    settings.lines.field("sweep"),
+                    format!(
+                        "the sweep script `{}` needs `when`, `every` or both",
+                        script.run
+                    ),
+                ));
+            }
+        }
         if let Some(kit) = &settings.value.kit {
             let at = settings.lines.field("kit");
             for message in kit_problems(kit) {

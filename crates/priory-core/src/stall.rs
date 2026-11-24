@@ -56,13 +56,34 @@ pub(crate) fn unswept(db: &Connection) -> rusqlite::Result<Option<(i64, String)>
     .optional()
 }
 
-/// Records a script of `stall` as started.
-pub(crate) fn started(db: &Connection, stall: i64, script: &str) -> rusqlite::Result<i64> {
+/// Records a script as started, for `stall` or, without one, on its schedule.
+pub(crate) fn started(db: &Connection, stall: Option<i64>, script: &str) -> rusqlite::Result<i64> {
     db.execute(
         "INSERT INTO sweeps (stall, script) VALUES (?1, ?2)",
         params![stall, script],
     )?;
     Ok(db.last_insert_rowid())
+}
+
+/// Gives `stall` the run of `script` that still runs, if any, so the script never runs twice at
+/// once and the stall waits for that run.
+pub(crate) fn adopt(db: &Connection, stall: i64, script: &str) -> rusqlite::Result<bool> {
+    Ok(db.execute(
+        "UPDATE sweeps SET stall = ?1 WHERE script = ?2 AND ended IS NULL",
+        params![stall, script],
+    )? > 0)
+}
+
+/// Whether `script` is due on its schedule: no run of it runs, and its last run, a stall's
+/// included, started `every` ago or none is on record.
+pub(crate) fn due(db: &Connection, script: &str, every: Duration) -> rusqlite::Result<bool> {
+    db.query_row(
+        "SELECT NOT EXISTS (SELECT 1 FROM sweeps WHERE script = ?1 AND ended IS NULL)
+           AND coalesce((SELECT max(started) FROM sweeps WHERE script = ?1)
+             <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?2), 1)",
+        params![script, format!("-{} seconds", every.as_secs())],
+        |row| row.get(0),
+    )
 }
 
 /// Records the process group of a running script and its start time, so a restarted daemon kills it

@@ -2987,6 +2987,118 @@ fn a_disk_stall_runs_the_disk_scripts_once_with_a_timeout_and_the_desk_shows_the
     setup.until("desk", |rows| !rows.iter().any(|row| row[1] == "sweep"));
 }
 
+/// Polls the lines of `fake/<name>` until `done` holds for them, and returns them.
+fn until_fake_lines(setup: &Setup, name: &str, done: impl Fn(&[String]) -> bool) -> Vec<String> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let text = fs::read_to_string(setup.dir.join("fake").join(name)).unwrap_or_default();
+        let lines: Vec<String> = text.lines().map(str::to_owned).collect();
+        if done(&lines) {
+            return lines;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out on fake/{name}: {lines:?}\ndaemon: {}",
+            fs::read_to_string(setup.dir.join("daemon.log")).unwrap_or_default()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn a_scheduled_script_runs_on_its_every_and_never_overlaps_itself() {
+    let mut setup = Setup::new("scheduled-cadence");
+    let factory = r#"name = "demo"
+
+[sweep]
+scripts = [
+  { run = "echo start >> \"$FAKE_DIR/log\"; sleep 2; echo end >> \"$FAKE_DIR/log\"", every = "1s" },
+]
+"#;
+    fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
+
+    setup.start();
+
+    let log = until_fake_lines(&setup, "log", |lines| lines.len() >= 6);
+    assert_eq!(log[..6], ["start", "end", "start", "end", "start", "end"]);
+}
+
+#[test]
+fn a_restarted_daemon_keeps_each_scheduled_scripts_last_run_and_the_desk_shows_only_a_failed_one() {
+    let mut setup = Setup::new("scheduled-restart");
+    let factory = r#"name = "demo"
+
+[sweep]
+scripts = [
+  { run = "echo ran >> \"$FAKE_DIR/ran\"", every = "1h" },
+  { run = "echo nope; exit 3", every = "1h" },
+]
+"#;
+    fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
+    setup.start();
+    until_fake_lines(&setup, "ran", |lines| lines.len() == 1);
+    let desk = setup.until("desk", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "sweep" && !row[5].ends_with(": running"))
+    });
+    let sweeps: Vec<_> = desk
+        .iter()
+        .filter(|row| row[1] == "sweep")
+        .map(|row| row[5].as_str())
+        .collect();
+    assert_eq!(sweeps, ["echo nope; exit 3: exit 3: nope"]);
+
+    setup.crash();
+    setup.start();
+    setup.until("desk", |rows| rows.iter().any(|row| row[1] == "sweep"));
+    std::thread::sleep(Duration::from_secs(3));
+
+    assert_eq!(
+        fs::read_to_string(setup.dir.join("fake/ran")).unwrap(),
+        "ran\n"
+    );
+    let sweeps: Vec<_> = setup
+        .rows("desk")
+        .into_iter()
+        .filter(|row| row[1] == "sweep")
+        .map(|row| row[5].clone())
+        .collect();
+    assert_eq!(sweeps, ["echo nope; exit 3: exit 3: nope"]);
+}
+
+#[test]
+fn a_disk_stall_adopts_the_running_scheduled_run_of_its_script_instead_of_starting_another() {
+    let mut setup = Setup::new("scheduled-stall");
+    let factory = r#"name = "demo"
+
+[sweep]
+scripts = [
+  { run = "echo start >> \"$FAKE_DIR/log\"; sleep 3; echo end >> \"$FAKE_DIR/log\"", when = "disk", every = "1h" },
+]
+"#;
+    fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
+    setup.start();
+    until_fake_lines(&setup, "log", |lines| lines == ["start"]);
+
+    setup.disk(10);
+    setup.publish(&requested(42));
+
+    let desk = setup.until("desk", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "sweep" && row[5].ends_with(": exit 0"))
+    });
+    let sweeps: Vec<_> = desk
+        .iter()
+        .filter(|row| row[1] == "sweep")
+        .map(|row| row[3].as_str())
+        .collect();
+    assert_eq!(sweeps, ["1"]);
+    assert_eq!(
+        fs::read_to_string(setup.dir.join("fake/log")).unwrap(),
+        "start\nend\n"
+    );
+}
+
 #[test]
 fn a_head_that_waits_only_for_live_runs_to_end_opens_no_stall() {
     let mut setup = Setup::new("backpressure");

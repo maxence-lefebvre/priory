@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 109;
+const VERSION: i64 = 110;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1957,6 +1957,30 @@ CREATE INDEX open_holds ON holds (task) WHERE released IS NULL;
 "
 );
 
+// A scheduled sweep script runs outside any stall.
+const SCHEMA_110: &str = concat!(
+    "CREATE TABLE sweeps_110 (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  stall   INTEGER REFERENCES stalls (id),
+  script  TEXT NOT NULL,
+  started TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  ended   TEXT,
+  status  TEXT,
+  output  TEXT,
+  pid     INTEGER,
+  pid_started INTEGER
+);
+INSERT INTO sweeps_110 SELECT id, stall, script, started, ended, status, output, pid, pid_started
+  FROM sweeps;
+DROP TABLE sweeps;
+ALTER TABLE sweeps_110 RENAME TO sweeps;
+CREATE INDEX sweeps_by_script ON sweeps (script, started);
+",
+    bumps!("sweeps"),
+    "PRAGMA user_version = 110;
+"
+);
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1972,7 +1996,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
-    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109,
+    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.

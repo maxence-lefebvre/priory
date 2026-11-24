@@ -167,7 +167,7 @@
         "deadline": {
           "default": null,
           "description": "How long from the `consult` call to its report, the wait for room included; 15m when unset.",
-          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
           "type": "string"
         },
         "per_task": {
@@ -231,7 +231,7 @@
         "timeout": {
           "default": null,
           "description": "How long one call may run; 5s when unset, 30s at most.",
-          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
           "type": "string"
         }
       },
@@ -270,7 +270,7 @@
         "timeout": {
           "default": null,
           "description": "How long one Postgres call may wait on the database before the log counts as unreachable;\n10 seconds when unset.",
-          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
           "type": "string"
         },
         "url_env": {
@@ -356,7 +356,7 @@
         "alarm_after": {
           "default": null,
           "description": "How long a source's polls fail before the intake posts its report, which the desk ranks as\nan alarm; 15 minutes when unset. Until then the desk shows only its banner.",
-          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
           "type": "string"
         }
       },
@@ -388,7 +388,7 @@
         "every": {
           "default": null,
           "description": "How often a runner fetches the ref again; every 5 minutes when unset.",
-          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
           "type": "string"
         },
         "instructions": {
@@ -500,7 +500,7 @@
         "every": {
           "default": null,
           "description": "How often a runner fetches the ref again; every 5 minutes when unset.",
-          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
           "type": "string"
         },
         "path": {
@@ -547,7 +547,7 @@
         "age": {
           "default": null,
           "description": "How long a task waits in the queue for each band it moves up in start order, up to the\nhighest band not in `preempt`; no task moves when unset.",
-          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
           "type": "string"
         },
         "fair": {
@@ -613,7 +613,7 @@
         "timeout": {
           "default": null,
           "description": "How long it may run before Priory kills it with its process group; `command_timeout` when\nunset.",
-          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
           "type": "string"
         }
       },
@@ -739,6 +739,12 @@
     "Script": {
       "additionalProperties": false,
       "properties": {
+        "every": {
+          "default": null,
+          "description": "How often the script runs, counted from its last run, a stall's run included; only when\n`when` stalls the queue when unset.",
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
+          "type": "string"
+        },
         "run": {
           "description": "A shell command, run by `sh -c` in `PRIORY_HOME`.",
           "type": "string"
@@ -746,21 +752,23 @@
         "timeout": {
           "default": null,
           "description": "How long it may run before Priory kills it; 5 minutes when unset.",
-          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
           "type": "string"
         },
         "when": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/Resource"
+            },
+            {
+              "type": "null"
             }
           ],
-          "description": "The resource whose shortage runs the script."
+          "description": "The resource whose shortage runs the script; it runs only on its `every` when unset."
         }
       },
       "required": [
-        "run",
-        "when"
+        "run"
       ],
       "type": "object"
     },
@@ -913,7 +921,7 @@
         "after": {
           "default": null,
           "description": "How long the queue stays stalled after its scripts ran before the sweeper starts; 30 minutes\nwhen unset.",
-          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
           "type": "string"
         },
         "agent": {
@@ -926,7 +934,7 @@
         "every": {
           "default": null,
           "description": "How often the built-in worktree sweep runs; every 10 minutes when unset.",
-          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
           "type": "string"
         },
         "repo": {
@@ -983,7 +991,7 @@
         "metrics_every": {
           "default": null,
           "description": "How often a process samples its groups and sends one request, at least 10s; 60s when unset.",
-          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
           "type": "string"
         },
         "otlp": {
@@ -1133,7 +1141,7 @@
     "command_timeout": {
       "default": null,
       "description": "How long one git, gh or tmux command may run before Priory kills it.",
-      "pattern": "^0*[1-9][0-9]*[smh]$",
+      "pattern": "^0*[1-9][0-9]*[smhd]$",
       "type": "string"
     },
     "consult": {
@@ -1303,7 +1311,7 @@
     "stalled": {
       "default": null,
       "description": "How long a run goes without a hook event or a change on its pane before it counts as stalled.",
-      "pattern": "^0*[1-9][0-9]*[smh]$",
+      "pattern": "^0*[1-9][0-9]*[smhd]$",
       "type": "string"
     },
     "sweep": {

@@ -103,6 +103,7 @@ sweep forgets its record.
 every = "10m"                 # the built-in worktree sweep's cadence
 scripts = [
   { run = "docker builder prune -f", when = "disk", timeout = "5m" },
+  { run = "nh clean all --keep 3", every = "4h" },
 ]
 after = "30m"                 # how long the queue stays stalled after its scripts
 agent = "sweeper"             # no agent, no sweeper
@@ -118,6 +119,16 @@ killed when it ends. A script that fails or cannot start never stops the daemon.
 kills its predecessor's running scripts, after checking each process group's start time in `/proc`
 so a reused pid is left alone. It records them as `interrupted by a daemon restart`, with the tail
 of their output.
+
+A script with `every` also runs on a schedule: once that long has passed since it last started,
+for a stall or on its schedule. A script needs `when`, `every` or both. A scheduled run uses the
+same shell, process group, timeout, output tail and restart handling as a stall's run. The last
+start is kept in the state database, so a restarted daemon neither reruns a script early nor
+postpones it. A script with no run on record, such as a new one, runs at the daemon's next tick.
+A script never runs twice at once: its schedule waits while it runs, and a stall that opens during
+a scheduled run of a matching script takes that run as its own instead of starting another. The
+desk lists a scheduled script as a `sweep` row with no task while it runs, and after its last run
+failed until a later run succeeds. A clean scheduled run leaves no row.
 
 After the stall's scripts end, or at its start when none matches, the stall waits `after`, 30
 minutes by default. If it still holds and `agent` names an agent, the daemon creates a task with the
@@ -142,8 +153,9 @@ Unless the factory defines its own `sweep` workflow, the sweeper runs this built
    approval, since it posts an agent's text to a repository other people read. A sweeper runs
    rarely, so the ask costs little.
 
-`priory check` refuses a `[sweep]` field it does not know, a malformed duration or resource, and an
-`agent` the factory lacks, and a `repo` that is not `owner/name`, with its line.
+`priory check` refuses a `[sweep]` field it does not know, a malformed duration or resource, a
+script with neither `when` nor `every`, an `agent` the factory lacks, and a `repo` that is not
+`owner/name`, with its line.
 
 Known limits:
 
@@ -154,3 +166,6 @@ Known limits:
 - A restarted daemon cannot kill background children of a lost script whose shell already exited.
   It cannot tell that group from a process that reused the shell's pid.
 - A stall that alternates between two resources starts a new stall, and new scripts, at each change.
+- A script's history is keyed by its `run` text: editing the command runs it at the next tick, and
+  two entries with the same `run` share one schedule.
+- The failed run of a scheduled script you then remove from `factory.toml` stays on the desk.
