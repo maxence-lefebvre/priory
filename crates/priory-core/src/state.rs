@@ -3456,7 +3456,7 @@ pub(crate) fn admissible<'r>(
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let promised = promised(db, factory, None)?;
+    let promised = promised(db, factory)?;
     let paused = paused(db)?;
     let book = crate::spend::Book::new(factory);
     // The first task that waits for room: no task behind it starts, so it is never starved.
@@ -3726,26 +3726,21 @@ fn serving(db: &Connection, agent: &str) -> rusqlite::Result<Option<i64>> {
     .optional()
 }
 
-/// The memory and disk the agents of live runs declared and do not use yet, except those of task
-/// `except`, plus every held memory grant in full. A run's use is its scope's memory, which measured
-/// free memory already leaves out. A run with no scope keeps its whole declaration until it ends.
-pub(crate) fn promised(
-    db: &Connection,
-    factory: &Factory,
-    except: Option<i64>,
-) -> rusqlite::Result<room::Need> {
+/// The memory and disk the agents of live runs declared and do not use yet, plus every held memory
+/// grant in full. A run's use is its scope's memory, which measured free memory already leaves out.
+/// A run with no scope keeps its whole declaration until it ends.
+pub(crate) fn promised(db: &Connection, factory: &Factory) -> rusqlite::Result<room::Need> {
     let mut live = Vec::new();
-    let promised = promised_with(db, factory, except, |run, tmux, session| {
+    let promised = promised_with(db, factory, None, |run, tmux, session| {
         live.push((run, session.to_owned()));
         crate::usage::memory(run, tmux, session)
     })?;
-    if except.is_none() {
-        crate::usage::keep(&live);
-    }
+    crate::usage::keep(&live);
     Ok(promised)
 }
 
-/// `promised`, with `used` measuring what a live run, its tmux session and harness session, uses.
+/// `promised` without the runs of task `except`, with `used` measuring what a live run, its tmux
+/// session and harness session, uses.
 pub(crate) fn promised_with(
     db: &Connection,
     factory: &Factory,

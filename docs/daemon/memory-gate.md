@@ -97,6 +97,14 @@ Known limits:
   grants can still overtake a large one. It can also hold them back for a head that does not fit
   once the grants end, because processes that share pages count them once each, and live runs or
   other programs can take the room.
+- The prediction takes the command's use off its run scope's use. Pages that a build's processes
+  share copy-on-write can make the command's use sum to more than the scope's. The scope's use then
+  counts as 0, so the daemon expects the run to promise its whole declaration again.
+- The prediction finds descendants in `/proc/<pid>/task/<tid>/children`, which the kernel has only
+  with `CONFIG_PROC_CHILDREN`. Without it, only the command's own process counts.
+- A jailed run's `acquire` sends its pid inside the jail. The daemon looks that number up among the
+  host's processes, so it can watch and measure another process instead of the holder.
+- Grants ignore bands. A request from a `now` task waits behind an older one from a `later` task.
 - After the grants behind a head went first, their own 30 minutes can hold the queue back for it
   again.
 - Two requests of the same task with the same command, GB and pid share a grant. Two jailed runs

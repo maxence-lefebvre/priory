@@ -73,8 +73,9 @@ pub(crate) fn gate(
                 )
                 .optional()?;
             // An `acquire` that lost the reply asks again, and keeps its grant even once its run
-            // ended, which is why `session` finds an ended run here and not for a new grant. A pid alone does not
-            // name it: a nested `acquire` takes its parent's pid, and a jail numbers its own.
+            // ended, which is why `session` finds an ended run here and not for a new grant. A pid
+            // alone does not name it: a nested `acquire` takes its parent's pid, and a jail numbers
+            // its own.
             let asked: Option<i64> = db
                 .query_row(
                     "SELECT id FROM grants WHERE pid = ?1 AND started = ?2 AND bytes = ?3
@@ -230,6 +231,30 @@ const MEASURED: Uses = Uses {
     run: &crate::usage::memory,
 };
 
+/// What one `admit` pass measured, each holder and each run once and only when it is needed.
+struct Measured<'a> {
+    uses: &'a Uses<'a>,
+    seen: BTreeSet<u32>,
+    trees: BTreeMap<i64, u64>,
+    runs: BTreeMap<i64, Option<u64>>,
+}
+
+impl Measured<'_> {
+    fn tree(&mut self, grant: i64, pid: u32) -> u64 {
+        *self
+            .trees
+            .entry(grant)
+            .or_insert_with(|| (self.uses.tree)(pid, &mut self.seen))
+    }
+
+    fn run(&mut self, run: i64, tmux: &str, session: &str) -> Option<u64> {
+        *self
+            .runs
+            .entry(run)
+            .or_insert_with(|| (self.uses.run)(run, tmux, session))
+    }
+}
+
 /// Grants waiting grants in request order while each fits beside the live runs and held grants, at
 /// the time `now`. A grant does not count its own run's promise, which would make it wait for that
 /// run to end. The first that does not fit holds back the rest, so a large build is never starved.
@@ -260,12 +285,21 @@ fn admit(
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut measured = Measured {
+        uses,
+        seen: BTreeSet::new(),
+        trees: BTreeMap::new(),
+        runs: BTreeMap::new(),
+    };
     for (id, bytes, task, overdue, starving) in waiting {
-        let promised = state::promised(db, factory, task)?.memory;
+        let promised = state::promised_with(db, factory, task, |run, tmux, session| {
+            measured.run(run, tmux, session)
+        })?
+        .memory;
         if !room::fits(room, share, promised, bytes) {
             if !overdue
                 || (starving && {
-                    let (room, promised) = released(db, factory, room, now, task, uses)?;
+                    let (room, promised) = released(db, factory, room, now, task, &mut measured)?;
                     room::fits(&room, share, promised, bytes)
                 })
             {
@@ -289,20 +323,20 @@ fn released(
     room: &Room,
     now: &str,
     task: Option<i64>,
-    uses: &Uses,
+    measured: &mut Measured,
 ) -> rusqlite::Result<(Room, u64)> {
     // A nested grant is the newer one, so its processes count for it and not for its parent's.
     let mut statement = db.prepare(
-        "SELECT bytes, pid, task FROM grants
+        "SELECT bytes, pid, task, id FROM grants
          WHERE state = 'held' AND granted > strftime('%Y-%m-%dT%H:%M:%SZ', ?1, ?2)
          ORDER BY id DESC",
     )?;
     let mut held = statement.query(params![now, RELEASE])?;
-    let (mut seen, mut of_tasks) = (BTreeSet::new(), BTreeMap::<i64, u64>::new());
+    let mut of_tasks = BTreeMap::<i64, u64>::new();
     let (mut returned, mut releasable) = (0u64, 0u64);
     while let Some(row) = held.next()? {
         let bytes = row.get::<_, i64>(0)? as u64;
-        let used = (uses.tree)(row.get(1)?, &mut seen);
+        let used = measured.tree(row.get(3)?, row.get(1)?);
         releasable += bytes;
         // Copied-on-write pages count once per process, so a tree can sum to more than it holds.
         returned += used.min(bytes);
@@ -316,7 +350,7 @@ fn released(
         .collect::<rusqlite::Result<BTreeMap<i64, i64>>>()?;
     // A build runs inside its run's scope, so its end gives the run its unused promise back.
     let promised = state::promised_with(db, factory, task, |run, tmux, session| {
-        let used = (uses.run)(run, tmux, session)?;
+        let used = measured.run(run, tmux, session)?;
         let build = tasks.get(&run).and_then(|task| of_tasks.get(task));
         Some(used.saturating_sub(*build.unwrap_or(&0)))
     })?
@@ -332,6 +366,7 @@ fn released(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
 
     const GB: u64 = 1 << 30;
 
@@ -659,6 +694,58 @@ mod tests {
             // 18 GB less the 3 GB kept and the run's unused 3 of 4 GB leaves 12 GB, not 15.
             assert_eq!(states(&db), [held(4), wait(head), small]);
         }
+    }
+
+    #[test]
+    fn a_pass_measures_each_holder_and_run_once_for_all_its_heads() {
+        let db = one_run();
+        hold(&db, 2);
+        hold(&db, 2);
+        for _ in 0..4 {
+            waiting(&db, 26, 50 * 60);
+        }
+        let (trees, runs) = (Cell::new(0), Cell::new(0));
+        let uses = Uses {
+            tree: &|_, _| {
+                trees.set(trees.get() + 1);
+                2 * GB
+            },
+            run: &|_, _, _| {
+                runs.set(runs.get() + 1);
+                Some(0)
+            },
+        };
+
+        admit(&db, &Factory::default(), &share(), &room(), NOW, &uses).unwrap();
+
+        assert_eq!((trees.get(), runs.get()), (2, 1));
+        assert_eq!(
+            states(&db),
+            [held(2), held(2), wait(26), wait(26), wait(26), wait(26)]
+        );
+
+        db.execute("DELETE FROM grants WHERE state = 'waiting'", [])
+            .unwrap();
+        waiting(&db, 1, 10);
+        trees.set(0);
+
+        admit(&db, &Factory::default(), &share(), &room(), NOW, &uses).unwrap();
+
+        assert_eq!(trees.get(), 0);
+    }
+
+    #[test]
+    fn a_holder_granted_between_two_heads_counts_for_the_second() {
+        let db = state::memory();
+        waiting(&db, 26, 50 * 60);
+        waiting(&db, 2, 49 * 60);
+        waiting(&db, 15, 48 * 60);
+        waiting(&db, 1, 10);
+
+        admit_using(&db, 0);
+
+        // 19 GB less the 3 kept and the new 2 GB leaves 14, and 16 once that holder ends.
+        assert_eq!(states(&db), [wait(26), held(2), wait(15), wait(1)]);
     }
 
     /// Sends `message` to the gate with the test machine's room.
