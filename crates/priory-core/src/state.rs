@@ -3712,7 +3712,7 @@ pub(crate) fn promised(
 }
 
 /// `promised`, with `used` measuring what a live run, its tmux session and harness session, uses.
-fn promised_with(
+pub(crate) fn promised_with(
     db: &Connection,
     factory: &Factory,
     except: Option<i64>,
