@@ -445,7 +445,7 @@ fn a_hold_before_the_first_prompt_waits_for_that_prompts_turn() {
     .unwrap();
     setup.publish(&requested(42));
     setup.until("runs", |_| {
-        setup.sql("SELECT idle AND ready FROM runs WHERE id = 1") == Some("1".to_owned())
+        setup.sql("SELECT count(*) FROM runs WHERE idle AND ready") == Some("1".to_owned())
     });
     hold(&setup, &[]);
     let_keyboards_go(&setup);
@@ -498,7 +498,7 @@ fn hold_now_while_a_gate_grades_says_the_process_goes_on() {
     );
     let (setup, _) = gated_step("hold-now-gate", &script, 1);
     setup.until("runs", |_| {
-        setup.sql("SELECT stopped FROM gates") == Some("1".to_owned())
+        setup.sql("SELECT count(*) FROM gates WHERE stopped") == Some("1".to_owned())
     });
 
     assert_eq!(
