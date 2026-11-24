@@ -896,7 +896,7 @@ pub struct Telemetry {
     pub headers_env: Option<String>,
     /// The metric groups each process sends to the endpoint's `/v1/metrics`; none sends no metric.
     #[serde(default)]
-    #[schemars(extend("items" = { "enum": ["process", "log", "runs", "intake", "work"] }))]
+    #[schemars(extend("items" = { "enum": ["process", "log", "runs", "intake", "work", "room"] }))]
     pub metrics: Vec<String>,
     /// How often a process samples its groups and sends one request, at least 10s; 60s when unset.
     #[serde(default, deserialize_with = "duration")]
@@ -908,7 +908,7 @@ pub struct Telemetry {
 }
 
 /// The metric groups a process can send, by name.
-pub const METRIC_GROUPS: &[&str] = &["process", "log", "runs", "intake", "work"];
+pub const METRIC_GROUPS: &[&str] = &["process", "log", "runs", "intake", "work", "room"];
 
 /// The least `metrics_every`.
 pub const METRICS_EVERY_LEAST: Duration = Duration::from_secs(10);

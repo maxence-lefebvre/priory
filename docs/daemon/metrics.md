@@ -4,7 +4,7 @@ Priory can send its own health as OpenTelemetry metrics, beside the spans of
 [the trace export](trace.md#opentelemetry-export). Spans say what a task did after its step ends.
 Metrics say how each Priory process is doing every interval: how long its loop takes, how much
 memory and CPU it uses, whether the daemon reaches its log, how long its runs take to start, whether the intake
-keeps up, and what the factory's work looks like: asks waiting, tasks, tokens, cost and spend. [The metrics reference](../reference/metrics.md) lists every metric. To send them to a collector or a backend and set alerts, follow [How to send metrics to an OpenTelemetry backend](../sending-metrics.md). The design and the groups still to come
+keeps up, and what the factory's work looks like: asks waiting, tasks, tokens, cost and spend. It also says why tasks wait for room. [The metrics reference](../reference/metrics.md) lists every metric. To send them to a collector or a backend and set alerts, follow [How to send metrics to an OpenTelemetry backend](../sending-metrics.md). The design and the groups still to come
 are in [the metrics design note](../design/metrics.md).
 
 ## Switching it on
@@ -15,13 +15,13 @@ off unless `factory.toml` names the groups to send:
 ```toml
 [telemetry]
 otlp = "http://127.0.0.1:4318"
-metrics = ["process", "log", "runs", "intake", "work"]   # the groups, by name
+metrics = ["process", "log", "runs", "intake", "work", "room"]   # the groups, by name
 metrics_every = "60s"                                    # how often each process sends
 metrics_cap = 1000                                       # data points per minute, per process
 ```
 
 [`[telemetry]`](../reference/factory.md#telemetry) lists the keys. The groups are `process`, `log`,
-`runs`, `intake` and `work`. `priory check` refuses an unknown group, a `metrics_every` under 10 seconds and a
+`runs`, `intake`, `work` and `room`. `priory check` refuses an unknown group, a `metrics_every` under 10 seconds and a
 `metrics_cap` of 0.
 
 `PRIORY_METRICS` replaces `metrics` for one process, as a comma-separated list such as `process,log`,
@@ -30,7 +30,7 @@ for one, without editing the factory every runner shares. A process refuses to s
 variable names an unknown group:
 
 ```text
-priory daemon: PRIORY_METRICS names `nope`, which is not a metrics group: the groups are process, log, runs, intake, work, or none
+priory daemon: PRIORY_METRICS names `nope`, which is not a metrics group: the groups are process, log, runs, intake, work, room, or none
 ```
 
 ## Which process sends what
@@ -41,7 +41,7 @@ metrics. `priory daemon --view-only` sends as `daemon`. A daemon with `[serve]` 
 inside itself, so its server requests count in the daemon's tick.
 
 Each process sends only the groups it owns. All three send `process`, about themselves. Only the
-daemon sends `log`, `runs` and `work`: the intake and `priory serve` skip them when `metrics` names
+daemon sends `log`, `runs`, `work` and `room`: the intake and `priory serve` skip them when `metrics` names
 them.
 Each process sends its own part of `intake`: the intake its polls, and the process whose server
 takes webhooks, the daemon or `priory serve`, its deliveries.
@@ -169,6 +169,23 @@ state file each interval, with the queries its desk and reports already use.
 - **The spend headroom.** `priory.spend.headroom` gives each [spend cap](spend.md) its limit less
   what it spent, as the caps table of `priory costs` reads it. A `task` cap uses the most an active
   task under it spent. It goes below 0 past the cap.
+
+## The room group
+
+The room group says why tasks wait: the machine's load, memory and disk against the ceilings of
+[the room check](room.md), the memory gate's grants, and the tasks waiting for room by cause.
+
+- **The measurement.** The daemon sends what its room check measured, and never measures twice for
+  it. A tick in which no task reached the room check measures once per request, so on an idle
+  runner the values are up to one `metrics_every` old. The first request may hold no room point. A
+  daemon whose tick hangs sends none, rather than old ones.
+- **The tasks waiting.** `priory.room.tasks.waiting` counts the tasks that only room holds back. The
+  tasks behind the queue's head count under what the head lacks, though some would fit alone. A task
+  that waits for disk to add back its worktree counts as `disk`. A task that a pause, a lane, a spend
+  cap or a shared agent holds counts nowhere.
+- **The promises.** `priory.room.memory.promised` leaves out the held grants, which
+  `priory.room.grants.memory` counts, so the two add up to what the room check subtracts. Disk that
+  runs promised is not sent: a task can wait for disk while the free disk is above the floor.
 
 ## The cap
 

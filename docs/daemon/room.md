@@ -176,6 +176,8 @@ wait that long.
 
 ## Measurements
 
+The daemon can send these measurements as [the room group](metrics.md#the-room-group) of its metrics.
+
 `PRIORY_PROC` names a directory to read in place of `/proc`, and `PRIORY_CGROUP` one to read in
 place of `/sys/fs/cgroup`. The tests use them, with a fake `df` on `PATH`, to steer measurements.
 
