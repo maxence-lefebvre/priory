@@ -654,11 +654,10 @@ fn publish_all(
         top,
     } in polled
     {
-        let mut unread = false;
+        let unread = events.iter().any(|event| threads.unread(&id(&event.name)));
         for event in events {
             let id = id(&event.name);
             if threads.unread(&id) {
-                unread = true;
                 continue;
             }
             if let Some(stored) = threads.stored(&id) {
@@ -679,7 +678,7 @@ fn publish_all(
             }
             let said = |comment: &Uuid| published.contains(comment) || threads.said(comment);
             // `--once` forgets a drop, so an unfinished baseline publishes repeats to make progress.
-            let kept = event.baseline && threads.any_unread();
+            let kept = event.baseline && unread;
             if !kept && event.repeats(&source, thread, said) {
                 continue;
             }

@@ -32,8 +32,6 @@ pub(super) struct Threads {
     threads: HashMap<Uuid, Option<Vec<Value>>>,
     /// How many lookups of each review failed.
     tries: HashMap<Uuid, u32>,
-    /// Whether this poll has more reviews to look up than `LOOKUPS`.
-    backlog: bool,
 }
 
 impl Threads {
@@ -43,7 +41,6 @@ impl Threads {
             said: HashSet::new(),
             threads: HashMap::new(),
             tries: HashMap::new(),
-            backlog: false,
         }
     }
 
@@ -52,15 +49,10 @@ impl Threads {
         matches!(self.threads.get(review), Some(None))
     }
 
-    /// Whether any review waits for a later poll to read its comments.
-    pub(super) fn any_unread(&self) -> bool {
-        self.threads.values().any(Option::is_none)
-    }
-
     /// What intake health says while one poll cannot look up every review.
     pub(super) fn backlog(&self) -> Option<String> {
         // No count: the alarm posts again whenever its text changes.
-        self.backlog
+        (self.threads.len() > LOOKUPS)
             .then(|| format!("over {LOOKUPS} reviews wait for a lookup of their comments"))
     }
 
@@ -91,7 +83,6 @@ impl Threads {
     ) -> Result<Vec<String>, String> {
         self.threads.clear();
         self.said.clear();
-        self.backlog = false;
         let mut unjudged: Vec<(Uuid, &Observed)> = events
             .filter(|event| event.wraps(viewer))
             .map(|event| (id(&event.name), event))
@@ -116,7 +107,6 @@ impl Threads {
             let newest = Reverse((data["time"].as_str(), data["github_id"].as_u64()));
             (self.tries.get(id).copied(), newest)
         });
-        self.backlog = unjudged.len() > LOOKUPS;
         self.threads
             .extend(unjudged.iter().map(|(id, _)| (*id, None)));
         let mut failed = Vec::new();
