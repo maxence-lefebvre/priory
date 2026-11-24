@@ -4914,6 +4914,28 @@ fn a_cloud_step_with_a_proof_a_guard_a_plan_field_or_another_outcome_fails_the_c
 }
 
 #[test]
+fn a_cloud_step_that_may_change_nothing_fails_the_check() {
+    for effect in ["none", "read"] {
+        let workflow = WORKFLOW
+            .replace("passed = \"approve-pr\"", "pushed = \"approve-pr\"")
+            .replace("effect = \"reversible\"", &format!("effect = \"{effect}\""));
+        let mut files = with("agents/implementer/agent.md", CLOUD_AGENT);
+        files.retain(|(file, _)| *file != "workflows/implement.toml");
+        files.push(("workflows/implement.toml", &workflow));
+
+        let outcome = check(&factory(&format!("cloud-effect-{effect}"), &files));
+
+        assert_eq!(outcome.code, 1, "{effect}");
+        assert_eq!(
+            outcome.stderr,
+            format!(
+                "workflows/implement.toml:4: step `implement`: agent `implementer` runs in the cloud, so the step's `effect` cannot be `{effect}`: Priory pushes the task's branch before the session starts\n"
+            )
+        );
+    }
+}
+
+#[test]
 fn a_cloud_setup_script_outside_its_repository_fails_the_check() {
     let settings = "name = \"demo\"\n\n[repos.\"owner/repo\"]\ncloud_setup = \"../setup.sh\"\n";
 

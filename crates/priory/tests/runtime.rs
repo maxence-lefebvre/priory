@@ -33693,6 +33693,332 @@ fn a_daemon_restart_keeps_a_live_cloud_run_and_claims_its_later_push() {
     assert_eq!(task_json(&setup, "1")["results"][0]["outcome"], "pushed");
 }
 
+impl Setup {
+    /// Whether the bare origin has `branch`.
+    fn on_origin(&self, branch: &str) -> bool {
+        git(&self.dir.join("origin/owner/repo.git"))
+            .args(["show-ref", "--verify", "--quiet"])
+            .arg(format!("refs/heads/{branch}"))
+            .status()
+            .unwrap()
+            .success()
+    }
+
+    /// Writes an executable hook of the bare origin.
+    fn origin_hook(&self, name: &str, script: &str) {
+        let hook = self.dir.join("origin/owner/repo.git/hooks").join(name);
+        fs::write(&hook, format!("#!/bin/sh\n{script}")).unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+#[test]
+fn a_cloud_push_never_replaces_an_ignored_local_file() {
+    let mut setup = cloud("cloud-ignored", CLOUD);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.cloud_started();
+    setup.crash();
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+    let exclude = setup.dir.join("home/repos/owner/repo/.git/info/exclude");
+    fs::create_dir_all(exclude.parent().unwrap()).unwrap();
+    fs::write(exclude, "cloud.txt\n").unwrap();
+    let file = worktree.join("cloud.txt");
+    fs::write(&file, "mine\n").unwrap();
+    setup.cloud_push(0);
+
+    setup.start();
+
+    setup.logged("would be overwritten by merge");
+    setup.crash();
+    assert_eq!(fs::read_to_string(&file).unwrap(), "mine\n");
+    fs::remove_file(&file).unwrap();
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+    assert_eq!(fs::read_to_string(&file).unwrap(), "cloud\n");
+}
+
+#[test]
+fn a_cloud_push_of_the_start_commit_is_no_work_yet() {
+    let mut setup = cloud("cloud-start-commit", CLOUD);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.cloud_started();
+    setup.crash();
+    let branch = pushed_branch(&setup.cloud_prompts()[0]);
+    let bare = setup.dir.join("origin/owner/repo.git");
+    let start = setup.pushed("priory/1");
+    assert!(
+        git(&bare)
+            .args(["update-ref", &format!("refs/heads/{branch}"), &start])
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    setup.start();
+
+    // The first poll comes at once after a restart.
+    std::thread::sleep(Duration::from_secs(4));
+    let runs = setup.rows("runs");
+    assert_eq!(runs[0][7], "-", "{runs:?}");
+    setup.crash();
+    setup.cloud_push(0);
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+    assert_eq!(task_json(&setup, "1")["results"][0]["outcome"], "pushed");
+}
+
+#[test]
+fn a_staged_task_starts_no_cloud_session_and_pushes_nothing() {
+    let mut setup = cloud("cloud-staged", CLOUD);
+    setup.staged();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    assert_eq!(
+        setup.blocked(),
+        "staged: step implement pushes the task's branch to GitHub, so its cloud run did not start"
+    );
+    assert_eq!(setup.cloud_prompts().len(), 0);
+    assert!(!setup.on_origin("priory/1"));
+}
+
+#[test]
+fn a_retry_after_a_failed_cloud_session_reads_the_feedback_again() {
+    let workflow = cloud_then_fix();
+    let (first, fix) = workflow.rsplit_once("failed = \"stop\"").unwrap();
+    let mut setup = cloud(
+        "cloud-feedback-retry",
+        &format!("{first}failed = \"fix\"{fix}"),
+    );
+    setup.request_with_issue();
+    setup.start();
+    setup.cloud_started();
+    setup.publish(&issue_commented(801));
+    setup.until("inbox", |rows| {
+        rows.iter().filter(|row| row[4] == "kept").count() == 1
+    });
+    setup.crash();
+    setup.cloud_push(0);
+    setup.cloud_pushes("Fix the widget\n");
+    setup.hold("cloud-orphan");
+
+    setup.start();
+
+    setup.until("asks", |rows| rows.len() == 1);
+    let prompts = setup.cloud_prompts();
+    assert_eq!(prompts.len(), 3, "{prompts:?}");
+    for prompt in &prompts[1..] {
+        for part in [
+            "Fix the review.",
+            "Also the empty case.",
+            "github.issues.labeled owner/repo#42",
+        ] {
+            assert_eq!(prompt.matches(part).count(), 1, "{part}: {prompt}");
+        }
+        assert!(!prompt.contains("result tool"), "{prompt}");
+    }
+}
+
+#[test]
+fn a_stacked_task_never_pushes_its_parents_unpushed_commits() {
+    let workflow = CLOUD.replace("\"implementer\"", "\"cloud\"");
+    let mut setup = batched_with("cloud-stacked", &workflow);
+    let agent = setup.dir.join("factory/agents/cloud");
+    fs::create_dir_all(&agent).unwrap();
+    fs::write(agent.join("agent.md"), CLOUD_AGENT).unwrap();
+    let mut entries = [entry("e1", "ENG-40", &[]), entry("e2", "ENG-41", &["e1"])];
+    entries[1]["after"][0]["moment"] = json!("waiting");
+    setup.calls(&[planned(json!({ "title": "t", "entries": entries }))]);
+    setup.cloud_pushes("Add the widget\n");
+    let parent = setup.dir.join("home/worktrees/owner/repo/2");
+    let hooked = setup.dir.join("hooked");
+    // A commit the parent makes right after `open-pr` pushed its branch.
+    setup.origin_hook(
+        "post-receive",
+        &format!(
+            "git cat-file -e priory/2:cloud.txt 2> /dev/null || exit 0\n\
+             [ -e '{hooked}' ] && exit 0\ntouch '{hooked}'\n\
+             unset $(git rev-parse --local-env-vars)\ncd '{parent}'\n\
+             {COMMITS} unpushed --allow-empty\n",
+            hooked = hooked.display(),
+            parent = parent.display(),
+        ),
+    );
+    batch_add(&setup, &["ENG-40", "ENG-41"]);
+    setup.start();
+    let go = setup.until("asks", |rows| rows.len() == 1);
+    person(&setup, "answer", &[&go[0][0], "go", "--revision", "1"]);
+    let asks = setup.until("asks", |rows| rows.iter().any(|row| row[1] == "2"));
+
+    person(&setup, "answer", &[&asks[0][0], "open", "--revision", "1"]);
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "3" && row[4] == "blocked")
+    });
+    let child = tasks.iter().find(|row| row[0] == "3").unwrap();
+    assert!(
+        child[7].contains("holds commits of priory/2 that are not on origin"),
+        "{child:?}"
+    );
+    assert_eq!(setup.cloud_prompts().len(), 1);
+    assert!(!setup.on_origin("priory/3"));
+    assert!(
+        setup
+            .command("git")
+            .current_dir(&parent)
+            .args(["push", "-q", "origin", "priory/2"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    person(&setup, "resume", &["3"]);
+    setup.until("asks", |rows| rows.iter().any(|row| row[1] == "3"));
+    assert_eq!(setup.cloud_prompts().len(), 2);
+}
+
+#[test]
+fn a_cancel_during_a_cloud_start_names_the_session_it_may_leave() {
+    let mut setup = cloud("cloud-cancel-hang", CLOUD);
+    setup.hold("cloud-hang");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/cloud-seen.log");
+
+    let said = person(&setup, "cancel", &["1"]);
+
+    assert!(
+        said.contains("its cloud session may still start: look for it at https://claude.ai/code"),
+        "{said}"
+    );
+    setup.logged("may have started a cloud session");
+    let [state, reason] = held_as(&setup, "1");
+    assert_eq!(state, "dropped");
+    assert!(
+        reason.contains("may have started a cloud session"),
+        "{reason}"
+    );
+}
+
+#[test]
+fn a_session_that_starts_after_its_cancel_is_on_the_dropped_task() {
+    let mut setup = cloud("cloud-cancel-push", CLOUD);
+    let pushing = setup.dir.join("pushing");
+    let go = setup.dir.join("go");
+    setup.origin_hook(
+        "pre-receive",
+        &format!(
+            "echo x > '{}'\nuntil [ -e '{}' ]; do sleep 0.1; done\n",
+            pushing.display(),
+            go.display()
+        ),
+    );
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("pushing");
+
+    person(&setup, "cancel", &["1"]);
+    fs::write(&go, "").unwrap();
+
+    let link = "its cloud session still runs: https://claude.ai/code/session_01Fake1";
+    setup.logged(link);
+    let [state, reason] = held_as(&setup, "1");
+    assert_eq!(state, "dropped");
+    assert!(reason.contains(link), "{reason}");
+}
+
+#[test]
+fn a_push_waits_while_the_task_branch_has_a_commit_the_session_lacks() {
+    let mut setup = cloud("cloud-moved", CLOUD);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.cloud_started();
+    setup.crash();
+    let mine = setup.commit(1, "mine.txt");
+    setup.cloud_push(0);
+
+    setup.start();
+
+    setup.logged(&format!("priory/1 moved to {mine}"));
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+    let head = git(&worktree).args(["rev-parse", "HEAD"]).output().unwrap();
+    assert_eq!(String::from_utf8(head.stdout).unwrap().trim(), mine);
+    assert!(!worktree.join("cloud.txt").exists());
+    assert_eq!(setup.rows("runs")[0][7], "-");
+}
+
+#[test]
+fn a_missed_deadline_names_the_upload_its_session_started_from() {
+    let mut setup = cloud(
+        "cloud-upload",
+        &CLOUD.replace(
+            "effect = \"reversible\"",
+            "effect = \"reversible\"\ntimeout = \"2s\"",
+        ),
+    );
+    fs::write(
+        setup.dir.join("fake/cloud-note"),
+        "Uploaded this repository\n",
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.logged("started from an uploaded copy of the task's branch: Uploaded this repository");
+    setup.until("runs", |rows| rows.first().is_some_and(|row| row[7] != "-"));
+    let task = task_json(&setup, "1");
+    let summary = task["results"][0]["summary"].as_str().unwrap();
+    assert!(
+        summary.contains("It started from an upload, so the Claude GitHub App may not be on the repository: Uploaded this repository."),
+        "{summary}"
+    );
+}
+
+#[test]
+fn a_cloud_run_that_serves_a_jailed_task_is_refused_at_its_start() {
+    let mut setup = cloud("cloud-jailed-start", CLOUD);
+    setup.settings("[sandboxes.jail]\nkind = \"bwrap\"\nenv = [\"FAKE_DIR\"]\n");
+    let jailed = WORKFLOW.replace("\"implementer\"", "\"reviewer\"");
+    fs::write(
+        setup.dir.join("factory/workflows/jailed.toml"),
+        format!("sandbox = \"jail\"\n{jailed}"),
+    )
+    .unwrap();
+    setup.calls(&[result("passed")]);
+    let mut first = requested(43);
+    first.data["workflow"] = json!("jailed");
+    setup.publish(&first);
+    setup.publish(&requested(42));
+    let factory = setup.dir.join("factory");
+    let routed = setup.priory(&["daemon", factory.to_str().unwrap(), "--once"]);
+    assert!(routed.status.success(), "{routed:?}");
+    // `priory check` refuses every factory in which a cloud agent could serve a jailed task.
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+         INSERT INTO consults (task, run, generation, step, agent, investigator, question, asked,
+           deadline, cap, investigation, outcome)
+         VALUES (1, 1, 1, 's', 'a', 'i', 'q', '', '', 0, 2, 'withdrawn');",
+    )
+    .unwrap();
+    drop(db);
+
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "2" && row[4] == "blocked")
+    });
+    let served = tasks.iter().find(|row| row[0] == "2").unwrap();
+    assert!(
+        served[7].contains("workflow jailed needs sandbox jail, and a cloud run cannot be jailed"),
+        "{served:?}"
+    );
+    assert_eq!(setup.cloud_prompts().len(), 0);
+}
+
 /// A factory whose `[runs] attach` command writes its arguments and ids to `attached`, then exits
 /// with `exit`. The review step, after implement, sets `attach = true`; with `flagged`, implement
 /// does too.
