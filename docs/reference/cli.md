@@ -67,6 +67,10 @@ a group. `PRIORY_METRICS` replaces that list for one process, such as `process,l
 - `priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... [--hold <reason> [CONDITION]...] <text>`:
   asks for a task with a key of your own, and every field as a flag. See
   [cli.md](../intake/cli.md).
+- `priory adopt [DIR] TRIGGER [PR...]`: parks a task on each open pull request of a comment or
+  review trigger's `author` that no task owns in any state, or on the ones named as `42`,
+  `owner/name#42` or a URL. Prints `adopted <key>` or `<key>: task N owns it` per pull request.
+  See [adopting-pull-requests.md](../adopting-pull-requests.md).
 - `priory batch add [DIR] ISSUE... [--repo <owner/name>] [--entries <workflow>] [--band <band>] [--lane <lane>]`:
   hands several issues to a planning task that orders them under one ask. See
   [batches.md](../daemon/batches.md).
@@ -101,7 +105,8 @@ a group. `PRIORY_METRICS` replaces that list for one process, such as `process,l
 - `priory ask ID JSON`: stores an ask from a session Priory did not start. See
   [tools.md](tools.md#asks-from-outside-priory).
 - `priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)`:
-  hides a desk item until then, or brings it back. See [desk.md](../daemon/desk.md#snooze).
+  hides a desk item until then, or brings it back. An ask's `ID` is the id `priory asks` lists, a
+  number or an outside ask's name. See [desk.md](../daemon/desk.md#snooze).
 - `priory todo add TEXT [--band B] [--due TIME]`, `priory todo done ID`, `priory todo list [--json]`:
   adds a to-do of your own to the desk, marks it done, or lists them. See
   [desk.md](../daemon/desk.md#to-dos).
@@ -113,7 +118,8 @@ a group. `PRIORY_METRICS` replaces that list for one process, such as `process,l
 
 ## Tasks
 
-- `priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]`: lists tasks in start order.
+- `priory tasks [--all] [--lane <lane>] [--grade red|yellow|green] [--json]`: lists tasks in start
+  order. A task parked by `priory adopt` shows only with `--all`.
 - `priory tasks --graph [TASK] [--mermaid]`: draws how tasks relate, as a tree or a Mermaid
   flowchart. See [relations.md](../daemon/relations.md).
 - `priory task TASK [--json]`: prints one task with the events routed to it. `--json` adds its

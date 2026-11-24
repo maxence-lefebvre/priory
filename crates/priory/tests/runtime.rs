@@ -55,7 +55,7 @@ key = "issue.number"
 
 const OUTPUT: &str = "factory.intake";
 
-/// Undoes migrations 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
+/// Undoes migrations 110, a run under direnv, 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
 /// `auto_answer` level, 97, the task's `added_by`, and 93: the `pre` script's task columns and the
 /// pending requests.
 macro_rules! undo_pre {
@@ -72,7 +72,7 @@ macro_rules! undo_pre {
   ALTER TABLE tasks DROP COLUMN pre_context; ALTER TABLE tasks DROP COLUMN pre_script; DROP TABLE pending_requests;
   ALTER TABLE memory_candidates DROP COLUMN step; ALTER TABLE gates DROP COLUMN lessons; ALTER TABLE gates DROP COLUMN ask; ALTER TABLE gates DROP COLUMN judges;
   ALTER TABLE runs DROP COLUMN session_started; ALTER TABLE runs DROP COLUMN harness;
-  ALTER TABLE runs DROP COLUMN resumes; ALTER TABLE runs DROP COLUMN sandbox;
+  ALTER TABLE runs DROP COLUMN resumes; ALTER TABLE runs DROP COLUMN sandbox; ALTER TABLE runs DROP COLUMN direnv;
   "
     };
 }
@@ -3948,6 +3948,328 @@ fn trust_worktrees_off_writes_no_claude_config() {
     assert!(!codex_profile(&setup).exists());
 }
 
+/// A fake `direnv` that logs its arguments and `DIRENV_CONFIG`, then runs the rest as `exec` does.
+/// As direnv 2.38.2 does, it refuses a folder its `direnv.toml` does not spell in `[whitelist]
+/// exact`, and FAKE_DIR/direnv.fail fails it as an `.envrc` that exits 1 does.
+const DIRENV: &str = "#!/bin/sh\n\
+printf '%s\\n' \"$*\" \"DIRENV_CONFIG=$DIRENV_CONFIG\" >> \"$FAKE_DIR/direnv.log\"\n\
+grep -qF \"\\\"$2\\\"\" \"$DIRENV_CONFIG/direnv.toml\" || { echo \"direnv: error $2/.envrc is blocked\" >&2; exit 1; }\n\
+[ -e \"$FAKE_DIR/direnv.fail\" ] && { echo 'direnv: error exit status 1' >&2; exit 1; }\n\
+shift 2\n\
+exec \"$@\"\n";
+
+/// Commits an `.envrc` to the origin's `main`, as a repository that uses direnv has.
+fn envrc(setup: &Setup) {
+    let work = setup.dir.join("work");
+    fs::write(work.join(".envrc"), "use flake\n").unwrap();
+    let bare = setup.dir.join("origin/owner/repo.git");
+    for args in [
+        &["add", ".envrc"][..],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "direnv",
+        ],
+        &["push", "-q", bare.to_str().unwrap(), "main"],
+    ] {
+        assert!(git(&work).args(args).status().unwrap().success());
+    }
+}
+
+/// Starts the daemon with a HOME of its own whose direnv config is `config`, and a fake `direnv`
+/// on PATH when `installed`, and `env` on top. Any real `direnv` is off PATH.
+fn start_direnv(setup: &mut Setup, installed: bool, config: &str, env: &[(&str, &str)]) {
+    let home = setup.dir.join("user");
+    // Its `lib` links into a store, as home-manager links it into /nix/store.
+    fs::create_dir_all(home.join("store/lib")).unwrap();
+    fs::create_dir_all(home.join(".config/direnv")).unwrap();
+    let lib = home.join(".config/direnv/lib");
+    if fs::symlink_metadata(&lib).is_err() {
+        std::os::unix::fs::symlink(home.join("store/lib"), &lib).unwrap();
+    }
+    fs::write(home.join(".config/direnv/direnv.toml"), config).unwrap();
+    let bin = setup.dir.join("direnv-bin");
+    fs::create_dir_all(&bin).unwrap();
+    let fake = bin.join("direnv");
+    fs::write(&fake, DIRENV).unwrap();
+    fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    // A folder of PATH that holds a real `direnv` gets a copy of its other programs instead.
+    let others = setup.dir.join("path-bin");
+    fs::create_dir_all(&others).unwrap();
+    let mut dirs = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fake")];
+    dirs.extend(installed.then_some(bin));
+    for dir in std::env::split_paths(&std::env::var_os("PATH").unwrap()) {
+        if !dir.join("direnv").exists() {
+            dirs.push(dir);
+            continue;
+        }
+        for entry in fs::read_dir(&dir).unwrap().flatten() {
+            let link = others.join(entry.file_name());
+            if entry.file_name() != "direnv" && !link.exists() {
+                std::os::unix::fs::symlink(entry.path(), link).unwrap();
+            }
+        }
+        if !dirs.contains(&others) {
+            dirs.push(others.clone());
+        }
+    }
+    let path = std::env::join_paths(dirs).unwrap();
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    let xdg = home.join(".config");
+    let mut vars = vec![
+        ("HOME", home.to_str().unwrap()),
+        ("PATH", path.to_str().unwrap()),
+        ("XDG_CONFIG_HOME", xdg.to_str().unwrap()),
+        ("DIRENV_CONFIG", ""),
+    ];
+    vars.extend_from_slice(env);
+    setup.start_with(exe, &vars);
+}
+
+fn direnv_records(setup: &Setup) -> Vec<serde_json::Value> {
+    traced(setup, "factory.run.trusted")
+        .into_iter()
+        .filter(|record| record["data"]["harness"] == "direnv")
+        .collect()
+}
+
+#[test]
+fn trust_worktrees_makes_direnv_trust_the_worktree_and_starts_the_run_in_its_envrc() {
+    let mut setup = trusting("trust-direnv");
+    envrc(&setup);
+    setup.publish(&requested(42));
+    start_direnv(&mut setup, true, "[global]\nwarn_timeout = \"1m\"\n", &[]);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    let worktree = fs::canonicalize(setup.dir.join("home/worktrees/owner/repo/1")).unwrap();
+    let clone = fs::canonicalize(setup.dir.join("home/repos/owner/repo")).unwrap();
+    let session = &setup.rows("runs")[0][4];
+    let folder = setup.dir.join("home/direnv").join(session);
+    let log = fs::read_to_string(setup.dir.join("fake/direnv.log")).unwrap();
+    let lines: Vec<&str> = log.lines().collect();
+    assert!(
+        lines[0].starts_with(&format!(
+            "exec {} sh -c ",
+            setup.dir.join("home/worktrees/owner/repo/1").display()
+        )),
+        "{log}"
+    );
+    assert_eq!(lines[1], format!("DIRENV_CONFIG={}", folder.display()));
+    let config: toml::Table = fs::read_to_string(folder.join("direnv.toml"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(config["global"]["warn_timeout"].as_str(), Some("1m"));
+    assert_eq!(
+        config["whitelist"]["exact"],
+        toml::Value::from(vec![
+            worktree.display().to_string(),
+            clone.display().to_string()
+        ])
+    );
+    assert_eq!(
+        fs::read_link(folder.join("lib")).unwrap(),
+        fs::canonicalize(setup.dir.join("user/store/lib")).unwrap()
+    );
+    let mode = fs::metadata(folder.join("direnv.toml"))
+        .unwrap()
+        .permissions();
+    assert_eq!(
+        std::os::unix::fs::PermissionsExt::mode(&mode) & 0o777,
+        0o600
+    );
+    let records = direnv_records(&setup);
+    let outcomes: Vec<(&str, &str)> = records
+        .iter()
+        .map(|record| {
+            (
+                record["data"]["path"].as_str().unwrap(),
+                record["data"]["outcome"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        outcomes,
+        [
+            (worktree.to_str().unwrap(), "granted"),
+            (clone.to_str().unwrap(), "granted")
+        ]
+    );
+    assert_eq!(
+        records[0]["data"]["file"],
+        folder.join("direnv.toml").display().to_string()
+    );
+}
+
+#[test]
+fn direnv_trusts_a_worktree_whose_priory_home_goes_through_a_symlink() {
+    let mut setup = trusting("trust-direnv-symlink");
+    envrc(&setup);
+    setup.publish(&requested(42));
+    let linked = setup.dir.join("linked-home");
+    let _ = fs::remove_file(&linked);
+    fs::create_dir_all(setup.dir.join("home")).unwrap();
+    std::os::unix::fs::symlink(setup.dir.join("home"), &linked).unwrap();
+    start_direnv(
+        &mut setup,
+        true,
+        "",
+        &[("PRIORY_HOME", linked.to_str().unwrap())],
+    );
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    assert!(
+        direnv_records(&setup)
+            .iter()
+            .all(|record| record["data"]["outcome"] == "granted"),
+        "{:?}",
+        direnv_records(&setup)
+    );
+    let log = fs::read_to_string(setup.dir.join("fake/direnv.log")).unwrap();
+    let spelled = linked.join("worktrees/owner/repo/1");
+    assert!(
+        log.starts_with(&format!("exec {} sh -c ", spelled.display())),
+        "{log}"
+    );
+    let session = &setup.rows("runs")[0][4];
+    let config: toml::Table = fs::read_to_string(
+        setup
+            .dir
+            .join("home/direnv")
+            .join(session)
+            .join("direnv.toml"),
+    )
+    .unwrap()
+    .parse()
+    .unwrap();
+    let canonical = fs::canonicalize(&spelled).unwrap();
+    let exact = config["whitelist"]["exact"].as_array().unwrap();
+    for path in [&spelled, &canonical] {
+        assert!(
+            exact.contains(&toml::Value::from(path.display().to_string())),
+            "{exact:?}"
+        );
+    }
+}
+
+#[test]
+fn a_failing_direnv_starts_the_harness_without_the_envrc_and_says_why() {
+    let mut setup = trusting("trust-direnv-failed");
+    envrc(&setup);
+    fs::write(setup.dir.join("fake/direnv.fail"), "").unwrap();
+    setup.publish(&requested(42));
+    start_direnv(&mut setup, true, "", &[]);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    setup.until("tasks", |rows| {
+        rows.first()
+            .is_some_and(|row| row.iter().any(|cell| cell.contains("without its .envrc")))
+    });
+
+    let failed: Vec<_> = direnv_records(&setup)
+        .into_iter()
+        .filter(|record| record["data"]["outcome"] == "failed")
+        .collect();
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert_eq!(
+        failed[0]["data"]["why"].as_str(),
+        Some("direnv: error exit status 1")
+    );
+}
+
+#[test]
+fn a_harness_that_exits_1_under_direnv_is_not_started_again_without_it() {
+    let mut setup = trusting("trust-direnv-harness-exit");
+    envrc(&setup);
+    fs::write(
+        setup.dir.join("fake/probe"),
+        "echo started >> \"$FAKE_DIR/launches\"\n",
+    )
+    .unwrap();
+    setup.hold("die");
+    setup.publish(&requested(42));
+    start_direnv(&mut setup, true, "", &[]);
+
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+
+    let launches = fs::read_to_string(setup.dir.join("fake/launches")).unwrap();
+    assert_eq!(launches.lines().count(), 1, "{launches}");
+    assert!(
+        direnv_records(&setup)
+            .iter()
+            .all(|record| record["data"]["outcome"] != "failed")
+    );
+}
+
+#[test]
+fn without_trust_worktrees_a_run_does_not_start_under_direnv() {
+    let mut setup = Setup::new("trust-direnv-off");
+    envrc(&setup);
+    setup.publish(&requested(42));
+    start_direnv(&mut setup, true, "", &[]);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    assert!(!setup.dir.join("fake/direnv.log").exists());
+    assert!(!setup.dir.join("home/direnv").exists());
+    assert!(direnv_records(&setup).is_empty());
+}
+
+#[test]
+fn trust_worktrees_changes_nothing_for_direnv_without_direnv_or_an_envrc() {
+    for (name, installed, with_envrc) in [
+        ("trust-direnv-missing", false, true),
+        ("trust-direnv-no-envrc", true, false),
+    ] {
+        let mut setup = trusting(name);
+        if with_envrc {
+            envrc(&setup);
+        }
+        setup.publish(&requested(42));
+        start_direnv(&mut setup, installed, "", &[]);
+
+        setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+        assert!(!setup.dir.join("fake/direnv.log").exists(), "{name}");
+        assert!(!setup.dir.join("home/direnv").exists(), "{name}");
+        assert!(direnv_records(&setup).is_empty(), "{name}");
+        assert_eq!(traced(&setup, "factory.run.trusted").len(), 2, "{name}");
+    }
+}
+
+#[test]
+fn an_unparsable_direnv_toml_refuses_the_grant_and_the_run_starts_without_direnv() {
+    let mut setup = trusting("trust-direnv-refused");
+    envrc(&setup);
+    setup.publish(&requested(42));
+    start_direnv(
+        &mut setup,
+        true,
+        "[whitelist\ntoken = \"sk-secret-9\"\n",
+        &[],
+    );
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    assert!(!setup.dir.join("fake/direnv.log").exists());
+    let records = direnv_records(&setup);
+    assert_eq!(records.len(), 2);
+    for record in &records {
+        assert_eq!(record["data"]["outcome"], "refused");
+        let why = record["data"]["why"].as_str().unwrap();
+        assert!(why.ends_with("direnv.toml: not TOML, at line 1"), "{why}");
+        assert!(!why.contains("sk-secret"));
+    }
+}
+
 #[test]
 fn a_trust_dialog_despite_trust_worktrees_blocks_with_its_own_reason_and_is_traced() {
     let mut setup = trusting("trust-missed");
@@ -5787,6 +6109,30 @@ fn an_outside_ask_takes_an_answer_or_a_dismiss_only_at_its_current_revision() {
     assert_eq!(notes(&setup), "dismissed");
     setup.priory(&["ask", "cache.notes", &fleet_ask(&["later"])]);
     assert_eq!(notes(&setup), serde_json::Value::Null);
+}
+
+#[test]
+fn an_outside_ask_snoozes_by_the_id_asks_lists() {
+    let mut setup = Setup::new("outside-snooze");
+    setup.start();
+    listening(&setup);
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+
+    let snoozed = setup.priory(&["snooze", "ask", "cache.ship", "--for", "20h"]);
+
+    assert!(snoozed.status.success(), "{snoozed:?}");
+    let asks: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
+    assert_eq!(asks["asks"][0]["id"], "cache.ship");
+    assert!(asks["asks"][0]["snoozed_until"].is_string(), "{asks}");
+    let desk: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["desk", "--json"]).stdout).unwrap();
+    assert_eq!(desk["counts"]["snoozed"], 1, "{desk}");
+    let cleared = setup.priory(&["snooze", "ask", "cache.ship", "--clear"]);
+    assert!(cleared.status.success(), "{cleared:?}");
+    let asks: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
+    assert!(asks["asks"][0]["snoozed_until"].is_null(), "{asks}");
 }
 
 #[test]
@@ -11434,7 +11780,7 @@ fn queued_without_room(name: &str) -> Setup {
 
 /// The state and reason of task `id`.
 fn held_as(setup: &Setup, id: &str) -> [String; 2] {
-    let tasks = setup.rows("tasks");
+    let tasks = setup.listed(&["tasks", "--all"]);
     let row = tasks.iter().find(|row| row[0] == id).unwrap();
     [row[4].clone(), row[7].clone()]
 }
@@ -14443,6 +14789,88 @@ fn a_gated_command_runs_and_its_exit_code_passes_through() {
         String::from_utf8_lossy(&done.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&done.stdout), "built\n");
+    assert!(setup.rows("memory").is_empty());
+}
+
+/// Starts `priory memory acquire --gb 1 -- <command>` in the test's `fake` directory, with `PATH`.
+fn acquire_on(setup: &Setup, path: &std::ffi::OsStr, command: &[&str]) -> Command {
+    let mut acquire = setup.command(env!("CARGO_BIN_EXE_priory"));
+    acquire
+        .args(["memory", "acquire", "--gb", "1", "--"])
+        .args(command)
+        .current_dir(setup.dir.join("fake"))
+        .env("PATH", path);
+    acquire
+}
+
+#[test]
+fn a_gated_command_finds_a_tool_only_on_acquires_path() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut setup = Setup::new("gate-path");
+    setup.start();
+    listening(&setup);
+    let tools = setup.dir.join("tools");
+    fs::create_dir_all(&tools).unwrap();
+    let tool = tools.join("only-here");
+    fs::write(&tool, "#!/bin/sh\necho ran-only-here\nexit 5\n").unwrap();
+    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(tools).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+
+    let done = acquire_on(&setup, &path, &["only-here"]).output().unwrap();
+
+    assert_eq!(
+        done.status.code(),
+        Some(5),
+        "stderr: {}",
+        String::from_utf8_lossy(&done.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&done.stdout), "ran-only-here\n");
+}
+
+#[test]
+fn a_gated_command_sees_a_variable_set_only_on_acquire() {
+    let mut setup = Setup::new("gate-env");
+    setup.start();
+    listening(&setup);
+
+    let done = acquire_on(
+        &setup,
+        &std::env::var_os("PATH").unwrap(),
+        &["sh", "-c", "echo \"$GATE_PROBE\""],
+    )
+    .env("GATE_PROBE", "from-the-run")
+    .output()
+    .unwrap();
+
+    assert!(
+        done.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&done.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&done.stdout), "from-the-run\n");
+}
+
+#[test]
+fn a_gated_tool_missing_from_path_exits_127_naming_the_path_and_takes_no_grant() {
+    let mut setup = Setup::new("gate-missing");
+    setup.start();
+    listening(&setup);
+    let path = format!("{}:/usr/bin:/bin", setup.dir.join("tools").display());
+
+    let done = acquire_on(&setup, path.as_ref(), &["no-such-tool", "run"])
+        .output()
+        .unwrap();
+
+    let said = String::from_utf8_lossy(&done.stderr);
+    assert_eq!(done.status.code(), Some(127), "stderr: {said}");
+    assert!(
+        said.contains(&format!("no-such-tool is not on PATH ({path})")),
+        "stderr: {said}"
+    );
+    assert!(!said.contains("grant"), "stderr: {said}");
     assert!(setup.rows("memory").is_empty());
 }
 
@@ -18253,6 +18681,156 @@ fn a_comment_on_a_row_stores_shows_as_a_thread_and_wakes_the_task_with_one_line(
 }
 
 #[test]
+fn a_comment_on_a_rows_key_lands_on_that_row() {
+    let setup = asleep_on_a_report("report-comment-key", &ask_rows(&["cache.ship"]));
+
+    let commented = setup.priory(&["report", "comment", "cache.ship", "--expected", "1", "Why?"]);
+
+    assert!(commented.status.success(), "{commented:?}");
+    let comments = &shown(&setup)["sections"][0]["rows"][0]["comments"];
+    assert_eq!(comments[0]["text"], "Why?", "{comments}");
+}
+
+#[test]
+fn a_comment_on_an_id_lands_on_that_row_before_a_newer_reports_key() {
+    let setup = asleep_on_a_report("report-comment-id-first", &ask_rows(&["cache.ship"]));
+    // Task 2's newer report has a row whose key is task 1's row id.
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "CREATE TEMP TABLE copy AS SELECT * FROM tasks WHERE id = 1;
+         UPDATE copy SET id = 2, key = 'cli:other';
+         INSERT INTO tasks SELECT * FROM copy;
+         INSERT INTO reports SELECT 2, 1, json_set(report,
+             '$.sections[0].rows[0].id', 'other', '$.sections[0].rows[0].key', 'ask-cache.ship'),
+           '9999-01-01T00:00:00Z' FROM reports WHERE task = 1;",
+    )
+    .unwrap();
+    drop(db);
+
+    let commented = setup.priory(&[
+        "report",
+        "comment",
+        "ask-cache.ship",
+        "--expected",
+        "1",
+        "Why?",
+    ]);
+
+    assert!(commented.status.success(), "{commented:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&commented.stdout),
+        "comment 1 on row ask-cache.ship at revision 2\n"
+    );
+}
+
+/// A report with one row per outside ask, whose `Dismiss ask` and `Not today` act on it.
+fn ask_rows(asks: &[&str]) -> serde_json::Value {
+    let rows: Vec<serde_json::Value> = asks
+        .iter()
+        .map(|ask| {
+            json!({
+                "id": format!("ask-{ask}"), "key": ask, "text": "Ship the cache today?",
+                "pick": { "id": format!("2026-11-23_t1_ask_{ask}"),
+                          "options": ["Not today", "Dismiss ask"],
+                          "asks": {
+                              "Not today": { "act": "snooze", "ask": ask, "until": "2099-11-24T06:00:00Z" },
+                              "Dismiss ask": { "act": "dismiss", "ask": ask },
+                          } },
+                "comments": []
+            })
+        })
+        .collect();
+    json!({
+        "date": "2026-11-23",
+        "since": "2026-11-22T18:00:00+01:00",
+        "greeting": "Bonjour, Max",
+        "sections": [{ "id": "agree", "title": "To agree", "rows": rows }]
+    })
+}
+
+#[test]
+fn a_pick_on_an_ask_row_dismisses_or_snoozes_the_ask_and_wakes_no_agent() {
+    let setup = asleep_on_a_report("report-ask-pick", &ask_rows(&["cache.ship", "cache.notes"]));
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+    setup.priory(&["ask", "cache.notes", &fleet_ask(&["ship", "wait"])]);
+    let prompts = setup.rows("outbox").len();
+
+    let dismissed = setup.priory(&[
+        "report",
+        "pick",
+        "2026-11-23_t1_ask_cache.ship",
+        "Dismiss ask",
+        "--expected",
+        "1",
+    ]);
+    let snoozed = setup.priory(&[
+        "report",
+        "pick",
+        "2026-11-23_t1_ask_cache.notes",
+        "Not today",
+        "--expected",
+        "2",
+    ]);
+
+    assert!(dismissed.status.success(), "{dismissed:?}");
+    assert!(snoozed.status.success(), "{snoozed:?}");
+    let asks: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
+    let asks = &asks["asks"];
+    assert_eq!(
+        [&asks[0]["id"], &asks[0]["withdrawn_reason"]],
+        ["cache.ship", "dismissed"]
+    );
+    assert_eq!([&asks[1]["id"], &asks[1]["state"]], ["cache.notes", "open"]);
+    assert_eq!(asks[1]["snoozed_until"], "2099-11-24T06:00:00Z");
+    let rows = &shown(&setup)["sections"][0]["rows"];
+    assert_eq!(rows[0]["pick"]["applied"], "dismissed");
+    assert_eq!(
+        rows[1]["pick"]["applied"],
+        "snoozed until 2099-11-24T06:00:00Z"
+    );
+    assert_eq!(
+        setup.rows("outbox").len(),
+        prompts,
+        "no prompt for the agent"
+    );
+}
+
+#[test]
+fn a_snooze_pick_made_after_its_time_snoozes_until_the_next_six_utc() {
+    let mut report = ask_rows(&["cache.notes"]);
+    report["sections"][0]["rows"][0]["pick"]["asks"]["Not today"]["until"] =
+        json!("2020-01-01T06:00:00Z");
+    let setup = asleep_on_a_report("report-ask-snooze-late", &report);
+    setup.priory(&["ask", "cache.notes", &fleet_ask(&["ship", "wait"])]);
+
+    let snoozed = setup.priory(&[
+        "report",
+        "pick",
+        "2026-11-23_t1_ask_cache.notes",
+        "Not today",
+        "--expected",
+        "1",
+    ]);
+
+    assert!(snoozed.status.success(), "{snoozed:?}");
+    let asks: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
+    let until = asks["asks"][0]["snoozed_until"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        until.ends_with("T06:00:00Z") && until.as_str() > "2026-11-23",
+        "{until}"
+    );
+    assert_eq!(
+        shown(&setup)["sections"][0]["rows"][0]["pick"]["applied"],
+        format!("snoozed until {until}")
+    );
+}
+
+#[test]
 fn a_reply_by_the_tasks_own_agent_is_stored_and_does_not_wake_the_task() {
     let setup = asleep_on_a_report("report-agent-reply", &bonjour(serde_json::Value::Null));
     setup.hold("hold-stop");
@@ -20551,6 +21129,54 @@ fn a_task_overlapping_one_with_an_open_pull_request_is_held_until_it_merges() {
             || reason.contains("until github:owner/repo#7 merges"),
         "{reason}"
     );
+}
+
+/// Task 1 opened a pull request, and task 2, requested next, works on it. `rows` records
+/// that pull request.
+fn own_pull_request(name: &str, rows: &'static str) -> Setup {
+    overlapping_after(name, "shared.txt", "name = \"demo\"", move |setup| {
+        let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+        db.execute_batch(&format!(
+            "PRAGMA foreign_keys = OFF;
+             INSERT INTO pull_requests (task, resource, branch, base) VALUES {rows};"
+        ))
+        .unwrap();
+    })
+}
+
+fn assert_runs_its_check(setup: &Setup) {
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| {
+            row[0] == "2" && (row[4] == "held" || row[3] == "check" && row[4] == "running")
+        })
+    });
+    assert_eq!(
+        state_of(setup, "2").0,
+        "running",
+        "{:?}",
+        state_of(setup, "2")
+    );
+}
+
+#[test]
+fn a_task_working_on_the_open_pull_request_it_overlaps_is_not_held_on_it() {
+    let setup = own_pull_request(
+        "overlap-own-pr",
+        "(1, 'github:owner/repo#7', 'priory/1', 'main'), (2, 'github:owner/repo#7', 'priory/1', 'main')",
+    );
+
+    assert_runs_its_check(&setup);
+}
+
+#[test]
+fn a_task_keyed_on_the_open_pull_request_it_overlaps_is_not_held_on_it() {
+    // Task 2's key is `github:owner/repo#43`, as for a task requested on pull request 43.
+    let setup = own_pull_request(
+        "overlap-own-key",
+        "(1, 'github:owner/repo#43', 'priory/1', 'main')",
+    );
+
+    assert_runs_its_check(&setup);
 }
 
 const FIX: &str = r#"
@@ -31965,4 +32591,295 @@ fn uncalibrated_pre_review(name: &str, workflow: &str) -> (Setup, Vec<Vec<String
 
     let asks = setup.until("asks", |rows| rows.len() == 1);
     (setup, asks)
+}
+
+/// A comment trigger on alice's pull requests, which `priory adopt` names.
+const MY_PRS: &str = r#"
+source = "github"
+repo = "owner/repo"
+on = "pull_request.comment"
+filter = { author = "alice" }
+workflow = "implement"
+"#;
+
+/// A running daemon whose factory has the `my-prs` trigger, and a fake GitHub where alice has
+/// `open` pull requests open.
+fn adopting(name: &str, open: &[u64]) -> Setup {
+    let mut setup = Setup::new(name);
+    fs::write(setup.dir.join("factory/triggers/my-prs.toml"), MY_PRS).unwrap();
+    let prs: Vec<_> = open
+        .iter()
+        .map(|number| {
+            json!({
+                "number": number,
+                "title": format!("Rename flag {number}"),
+                "url": format!("https://github.com/owner/repo/pull/{number}")
+            })
+        })
+        .collect();
+    fs::write(setup.dir.join("fake/prs"), json!(prs).to_string()).unwrap();
+    setup.start();
+    setup
+}
+
+/// Waits until `done` holds for the rows of `priory tasks --all`, which lists parked tasks too.
+fn all_tasks_until(setup: &Setup, done: impl Fn(&[Vec<String>]) -> bool) -> Vec<Vec<String>> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let rows = setup.listed(&["tasks", "--all"]);
+        if done(&rows) {
+            return rows;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out on `priory tasks --all`: {rows:?}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// What `priory adopt` prints for `args`, which must succeed.
+fn adopt(setup: &Setup, args: &[&str]) -> String {
+    let factory = setup.dir.join("factory");
+    person(
+        setup,
+        "adopt",
+        &[&[factory.to_str().unwrap()], args].concat(),
+    )
+}
+
+/// An event `kind` on alice's pull request 7, from a branch no task made.
+fn on_alice_pull(kind: &str, extra: serde_json::Value) -> Message {
+    let mut message = on_pull(kind, extra);
+    message.data["head_branch"] = json!("feature");
+    message.data["author"] = json!("alice");
+    message
+}
+
+/// The task request the `my-prs` trigger publishes for `comment`.
+fn my_prs_requested(comment: &Message) -> Message {
+    Message::new(
+        "factory.task.requested",
+        json!({
+            "workflow": "implement",
+            "key": "github:owner/repo#7",
+            "band": null,
+            "lane": null,
+            "trigger": "my-prs",
+            "source": comment.id.to_string()
+        }),
+    )
+    .subject("github:owner/repo#7")
+}
+
+#[test]
+fn adopt_parks_a_task_on_each_open_pull_request_no_task_owns_and_leaves_the_desk_alone() {
+    let mut setup = Setup::new("adopt-parks");
+    setup.memory(0);
+    fs::write(setup.dir.join("factory/triggers/my-prs.toml"), MY_PRS).unwrap();
+    fs::write(
+        setup.dir.join("fake/prs"),
+        r#"[{"number":7,"title":"Rename the flag","url":"https://github.com/owner/repo/pull/7"},
+            {"number":8,"title":"Other","url":"https://github.com/owner/repo/pull/8"}]"#,
+    )
+    .unwrap();
+    setup.publish(&requested(8));
+    setup.start();
+    all_tasks_until(&setup, |rows| rows.len() == 1);
+
+    let first = adopt(&setup, &["my-prs"]);
+
+    assert_eq!(
+        first,
+        "adopted github:owner/repo#7\ngithub:owner/repo#8: task 1 owns it\n"
+    );
+    all_tasks_until(&setup, |rows| rows.len() == 2);
+    assert_eq!(
+        held_as(&setup, "2"),
+        [
+            "held".to_owned(),
+            "held: adopted for trigger my-prs, until a comment or review trigger fires on github:owner/repo#7"
+                .to_owned()
+        ]
+    );
+    assert_eq!(
+        adopt(&setup, &["my-prs"]),
+        "github:owner/repo#7: task 2 owns it\ngithub:owner/repo#8: task 1 owns it\n"
+    );
+    assert_eq!(setup.listed(&["tasks", "--all"]).len(), 2);
+    let desk = desk_json(&setup);
+    let parked: Vec<_> = desk["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["task"] == 2)
+        .collect();
+    assert!(parked.is_empty(), "{desk}");
+}
+
+#[test]
+fn adopt_refuses_a_trigger_that_is_not_a_comment_trigger_and_a_pull_request_that_is_not_open() {
+    let setup = adopting("adopt-refuses", &[7]);
+    let factory = setup.dir.join("factory");
+    let factory = factory.to_str().unwrap();
+
+    let label = setup.priory(&["adopt", factory, "agent-label"]);
+    let closed = setup.priory(&["adopt", factory, "my-prs", "owner/repo#9"]);
+
+    assert!(!label.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&label.stderr),
+        "priory adopt: trigger agent-label is not a pull request comment or review trigger\n"
+    );
+    assert!(!closed.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&closed.stderr),
+        "priory adopt: owner/repo#9 is not an open pull request by alice\n"
+    );
+    assert!(setup.listed(&["tasks", "--all"]).is_empty());
+}
+
+#[test]
+fn a_parked_task_keeps_checks_and_comments_and_wakes_on_its_trigger_s_request() {
+    let setup = adopting("adopt-wakes", &[7]);
+    adopt(&setup, &["my-prs", "https://github.com/owner/repo/pull/7"]);
+    all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == "held");
+    let check = on_alice_pull(
+        "github.check_run.completed",
+        json!({ "name": "test", "conclusion": "success", "github_id": 900 }),
+    );
+    let comment = on_alice_pull(
+        "github.pull_request.comment",
+        json!({
+            "actor": "alice", "body": "Why this name?", "github_id": 701, "open": true,
+            "url": "https://github.com/owner/repo/pull/7#issuecomment-701"
+        }),
+    );
+
+    setup.publish(&check);
+    setup.publish(&comment);
+
+    let inbox = setup.until("inbox", |rows| rows.len() == 4);
+    assert_eq!([&inbox[2][3], &inbox[2][4]], ["1", "kept"]);
+    assert_eq!([&inbox[3][3], &inbox[3][4]], ["1", "kept"]);
+    std::thread::sleep(Duration::from_millis(1100));
+    assert_eq!(setup.listed(&["tasks", "--all"])[0][4], "held");
+    assert!(setup.rows("runs").is_empty());
+    let task = person(&setup, "task", &["1"]);
+    assert!(task.contains("github.check_run.completed"), "{task}");
+    assert!(task.contains("github.pull_request.comment"), "{task}");
+
+    setup.publish(&my_prs_requested(&comment));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let inbox = setup.rows("inbox");
+    assert_eq!([&inbox[4][3], &inbox[4][4]], ["1", "released"]);
+    let first = &setup.typed()[0];
+    assert!(
+        first.contains("Adopted owner/repo#7: Rename flag 7"),
+        "{first}"
+    );
+    assert!(first.contains("Why this name?"), "{first}");
+}
+
+#[test]
+fn a_parked_task_is_done_when_its_pull_request_merges_and_dropped_when_it_closes() {
+    for (merged, state, reason) in [
+        (true, "done", "github:owner/repo#7 merged while parked"),
+        (false, "dropped", "github:owner/repo#7 closed while parked"),
+    ] {
+        let setup = adopting(&format!("adopt-ends-{state}"), &[7]);
+        adopt(&setup, &["my-prs", "7"]);
+        all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == "held");
+
+        setup.publish(&on_alice_pull(
+            "github.pull_request.closed",
+            json!({ "merged": merged, "github_id": 400 }),
+        ));
+
+        all_tasks_until(&setup, |rows| rows[0][4] == state);
+        assert_eq!(held_as(&setup, "1")[1], reason);
+        assert!(setup.rows("runs").is_empty());
+    }
+}
+
+#[test]
+fn adopt_skips_a_pull_request_a_done_task_owns_and_its_next_comment_reopens_that_task() {
+    let setup = gated("adopt-done-owner");
+    setup.publish(&check(1, 0));
+    all_tasks_until(&setup, |rows| rows[0][4] == "done");
+    fs::write(setup.dir.join("factory/triggers/my-prs.toml"), MY_PRS).unwrap();
+    fs::write(
+        setup.dir.join("fake/prs"),
+        r#"[{"number":7,"title":"Rename the flag","url":"https://github.com/owner/repo/pull/7"}]"#,
+    )
+    .unwrap();
+
+    let adopted = adopt(&setup, &["my-prs"]);
+
+    assert_eq!(adopted, "github:owner/repo#7: task 1 owns it\n");
+    assert_eq!(setup.listed(&["tasks", "--all"]).len(), 1);
+    std::thread::sleep(Duration::from_millis(1100));
+    setup.publish(&commented());
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    assert!(
+        setup.typed()[2].starts_with("Feedback reopened this done task as generation 2"),
+        "{:?}",
+        setup.typed()
+    );
+    assert_eq!(setup.listed(&["tasks", "--all"]).len(), 1);
+}
+
+#[test]
+fn adopt_skips_a_pull_request_whose_newest_task_was_dropped() {
+    let setup = adopting("adopt-dropped-owner", &[7]);
+    adopt(&setup, &["my-prs", "7"]);
+    all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == "held");
+    person(&setup, "cancel", &["1"]);
+    all_tasks_until(&setup, |rows| rows[0][4] == "dropped");
+
+    let again = adopt(&setup, &["my-prs"]);
+
+    assert_eq!(again, "github:owner/repo#7: task 1 owns it\n");
+    assert_eq!(setup.listed(&["tasks", "--all"]).len(), 1);
+}
+
+#[test]
+fn a_parked_task_ends_on_a_close_that_arrived_before_its_adopt_request() {
+    for (merged, state) in [(true, "done"), (false, "dropped")] {
+        let setup = adopting(&format!("adopt-closed-before-{state}"), &[7]);
+        setup.publish(&on_alice_pull(
+            "github.pull_request.closed",
+            json!({ "merged": merged, "open": false, "github_id": 400 }),
+        ));
+        setup.until("inbox", |rows| rows.len() == 1);
+
+        adopt(&setup, &["my-prs", "7"]);
+
+        all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == state);
+        assert!(setup.rows("runs").is_empty());
+    }
+}
+
+#[test]
+fn a_parked_task_is_left_out_of_the_queue_and_the_task_list() {
+    let setup = adopting("adopt-hidden", &[7]);
+    adopt(&setup, &["my-prs", "7"]);
+    all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == "held");
+    let factory = setup.dir.join("factory");
+
+    let queue = setup.priory(&["queue", factory.to_str().unwrap(), "--json"]);
+    let tasks = setup.priory(&["tasks", "--json"]);
+
+    assert!(queue.status.success(), "{queue:?}");
+    let queue: serde_json::Value = serde_json::from_slice(&queue.stdout).unwrap();
+    assert_eq!(queue["waiting"], json!([]), "{queue}");
+    assert!(tasks.status.success(), "{tasks:?}");
+    let tasks: serde_json::Value = serde_json::from_slice(&tasks.stdout).unwrap();
+    assert_eq!(tasks["tasks"], json!([]), "{tasks}");
+    assert_eq!(setup.listed(&["tasks", "--all"]).len(), 1);
+    let task = person(&setup, "task", &["1"]);
+    assert!(task.contains("step implement, held"), "{task}");
+    let found = person(&setup, "search", &["Adopted", "--state", "held"]);
+    assert!(found.contains("owner/repo#7"), "{found}");
 }

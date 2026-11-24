@@ -550,7 +550,8 @@ impl<'a> Live<'a> {
     }
 
     /// Loads an edit of the factory's files once it passes every rule, and with `guard`, once it
-    /// strands no task. An edit the guard refused stays held and applies once its tasks leave.
+    /// strands no task. An edit the guard refused stays held and applies once its tasks leave,
+    /// unless a newer edit is settling.
     /// Returns whether a new factory is live; a refused edit keeps the last good one. Each
     /// refusal is reported once, to stderr and to the trace, and so is each reload.
     fn poll(&mut self, db: &mut Connection, base: &Trace, guard: bool) -> Result<bool, Error> {
@@ -559,6 +560,8 @@ impl<'a> Live<'a> {
             self.revision = runtime::revision(&self.factory().dir);
         }
         let (new, files, fresh) = match polled {
+            // A newer edit is settling: it replaces or drops the held one once it holds.
+            Polled::Same if self.watch.settling() => return Ok(false),
             Polled::Same => match self.held.take() {
                 Some((new, files)) => (new, files, false),
                 None => return Ok(false),
@@ -573,7 +576,11 @@ impl<'a> Live<'a> {
                 reload::record(db, &self.trace(base), Err(&problems))?;
                 return Ok(false);
             }
-            Polled::Loaded(new, files) => (new, files, true),
+            // The newer edit replaces the held one, and holds itself if it strands a task.
+            Polled::Loaded(new, files) => {
+                self.held = None;
+                (new, files, true)
+            }
         };
         let stranded = match guard {
             true => reload::stranded(db, &new)?,
@@ -1284,9 +1291,7 @@ fn take(
             Ok((replied(reply), kill))
         }
         Ok(Input::Snooze(snooze)) => Ok((replied(snooze::snooze(db, &snooze, trace)?), None)),
-        Ok(Input::Choice(choice)) => {
-            Ok((replied(sections::pick(db, &choice, trace.factory)?), None))
-        }
+        Ok(Input::Choice(choice)) => Ok((replied(sections::pick(db, &choice, trace)?), None)),
         Ok(Input::Comment(comment)) => Ok((
             replied(sections::comment(db, &comment, trace.factory)?),
             None,
@@ -1335,7 +1340,13 @@ fn tend(
     entering: &mut Entering,
 ) -> Result<(), Error> {
     let factory = trace.factory;
-    for run in state::live(db)? {
+    for mut run in state::live(db)? {
+        if run.direnv == 1
+            && let Some(error) = runtime::direnv_failed(home, &run.session)
+        {
+            direnv_failed(db, trace, &run, &error)?;
+            run.direnv = 2;
+        }
         if runtime::pane(&run.tmux, &run.session).is_none() {
             // A dead pane that remain-on-exit keeps holds the session open.
             runtime::kill(&run.tmux);
@@ -1548,6 +1559,40 @@ fn diagnose(
     }
 }
 
+/// Records that direnv failed with `error` before run `run`'s harness started, which then started
+/// without the `.envrc`: in the trace and as its task's reason.
+fn direnv_failed(
+    db: &mut Connection,
+    trace: &Trace,
+    run: &state::LiveRun,
+    error: &str,
+) -> Result<(), Error> {
+    let error = crate::screen::plain(error);
+    let secrets = crate::screen::secrets(&trace.factory.secret_envs());
+    let error = crate::screen::redact(&error, &secrets, None)
+        .map_or_else(|| "[redacted]".to_owned(), |(shown, _)| shown);
+    let why = if error.is_empty() {
+        "direnv exited before the harness started".to_owned()
+    } else {
+        error
+    };
+    let grant = priory_runtime::trust::Grant {
+        path: run.worktree.as_deref().unwrap_or_default().into(),
+        file: std::path::PathBuf::new(),
+        outcome: priory_runtime::trust::Outcome::Failed,
+        why: Some(why.clone()),
+    };
+    let tx = db.transaction()?;
+    crate::trace::trusted(&tx, trace, run.id, "direnv", &grant, None)?;
+    state::direnv(&tx, run.id, 2)?;
+    tx.execute(
+        "UPDATE tasks SET reason = ?2 WHERE id = ?1",
+        rusqlite::params![run.task, format!("started without its .envrc: {why}")],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// Why a live run must end: its harness's trust dialog, no `SessionStart`, a permission prompt, or
 /// a turn past its step's timeout. The flag says the dialog asked for trust that `granted`, the
 /// run's own grant, had recorded.
@@ -1595,12 +1640,26 @@ fn verdict(
         return Some(("exited", reason, false));
     }
     if run.late {
-        let mut reason = format!(
-            "{} showed no SessionStart within {}; {}",
-            harness.program(),
-            state::READY_WITHIN.replace(" seconds", "s"),
-            trust()
-        );
+        let mut reason = if run.direnv == 1 && runtime::direnv_loading(home, &run.session) {
+            format!(
+                "direnv did not finish loading {}/.envrc within {}, so {} never started; warm it \
+                 with `direnv exec <worktree> true`, or fix the .envrc",
+                run.worktree.as_deref().unwrap_or("its folder"),
+                state::DIRENV_READY_WITHIN.replace(" seconds", "s"),
+                harness.program(),
+            )
+        } else {
+            let within = match run.direnv {
+                0 => state::READY_WITHIN,
+                _ => state::DIRENV_READY_WITHIN,
+            };
+            format!(
+                "{} showed no SessionStart within {}; {}",
+                harness.program(),
+                within.replace(" seconds", "s"),
+                trust()
+            )
+        };
         let rows = rows.unwrap_or_default();
         let secrets = crate::screen::secrets(&factory.secret_envs());
         // When a secret still shows after redaction, no row of the pane is kept.
@@ -2510,6 +2569,7 @@ fn start(
         .chain(servers_env(&agent.value, &servers))
         .collect();
     let mut trust = false;
+    let mut direnv = None;
     if factory.trust_worktrees() {
         let grants = if factory.names_repo(repo) {
             priory_runtime::trust::grant(harness(&agent.value.harness), home, repo, &worktree)
@@ -2530,6 +2590,22 @@ fn start(
             use priory_runtime::trust::Outcome;
             matches!(grant.outcome, Outcome::Granted | Outcome::Present)
         });
+        if factory.names_repo(repo) {
+            let folder = priory_runtime::trust::direnv_folder(home, &session);
+            let grants = priory_runtime::trust::direnv(home, repo, &worktree, &folder);
+            let tx = db.transaction()?;
+            for grant in &grants {
+                crate::trace::trusted(&tx, trace, run, "direnv", grant, None)?;
+            }
+            tx.commit()?;
+            if grants
+                .iter()
+                .any(|grant| grant.outcome == priory_runtime::trust::Outcome::Granted)
+            {
+                state::direnv(db, run, 1)?;
+                direnv = Some(folder);
+            }
+        }
     }
     let started = Started {
         name,
@@ -2542,6 +2618,7 @@ fn start(
         servers: &servers,
         jail: jail.as_ref(),
         trust,
+        direnv: direnv.as_deref(),
     };
     Ok(launch(
         factory,
@@ -2625,6 +2702,8 @@ struct Started<'a> {
     jail: Option<&'a priory_runtime::jail::Jail>,
     /// Priory recorded the harness's trust in the run's folders, so a Codex run takes its profile.
     trust: bool,
+    /// The direnv config folder that trusts the run's folders, so the harness starts in `.envrc`.
+    direnv: Option<&'a Path>,
 }
 
 /// The MCP servers `agent` names, found in the person's own config of its harness when its run
@@ -2724,6 +2803,7 @@ fn launch(
             tools,
             jail: started.jail,
             trust: started.trust,
+            direnv: started.direnv,
         },
     )
     .map_err(|failed| {
@@ -2822,6 +2902,7 @@ fn compact_idle(
             servers: &servers,
             jail: None,
             trust: false,
+            direnv: None,
         };
         let env: Vec<String> = guard_env(trace.factory).into_iter().collect();
         if let Err(error) = launch(
@@ -2937,5 +3018,175 @@ fn metered(bus: &dyn Log, tried: Result<&(), &Error>) {
     match tried {
         Ok(()) => metrics::sample_backlog(bus),
         Err(_) => metrics::unreached(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    /// A workflow of human steps, each one going to the next.
+    fn workflow(steps: &[&str]) -> String {
+        let mut text = format!("start = \"{}\"\n", steps[0]);
+        for (at, step) in steps.iter().enumerate() {
+            let next = steps.get(at + 1).unwrap_or(&"done");
+            text.push_str(&format!(
+                "\n[[steps]]\nid = \"{step}\"\ndecides = \"human\"\neffect = \"none\"\n\
+                 options = [\"go\"]\nnext = {{ go = \"{next}\" }}\n"
+            ));
+        }
+        text
+    }
+
+    #[test]
+    fn a_late_run_whose_envrc_still_loads_names_direnv_rather_than_folder_trust() {
+        let home = std::env::temp_dir().join(format!("priory-late-direnv-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        let spool = runtime::direnv_spool(&home, "s");
+        fs::create_dir_all(&spool).unwrap();
+        fs::write(spool.join("direnv.error"), "direnv: loading .envrc\n").unwrap();
+        let run = state::LiveRun {
+            id: 1,
+            task: 1,
+            step: "implement".into(),
+            agent: "implementer".into(),
+            workflow: "w".into(),
+            tmux: format!("priory-late-direnv-{}", std::process::id()),
+            session: "s".into(),
+            worktree: Some("/w/1".into()),
+            ready: false,
+            late: true,
+            direnv: 1,
+            turn: None,
+            prompted: None,
+        };
+
+        let (ended_as, reason, _) = verdict(&run, &Factory::default(), &home, &|| false).unwrap();
+
+        assert_eq!(ended_as, "exited");
+        assert!(
+            reason.starts_with(
+                "direnv did not finish loading /w/1/.envrc within 600s, so claude never started"
+            ),
+            "{reason}"
+        );
+        assert!(!reason.contains("trust the"), "{reason}");
+    }
+
+    /// Writes the factory's file once `reload::EVERY` passed, then polls.
+    fn edit_then_poll(
+        live: &mut Live,
+        db: &mut Connection,
+        base: &Trace,
+        edit: impl FnOnce(),
+    ) -> bool {
+        edit();
+        std::thread::sleep(reload::EVERY);
+        live.poll(db, base, true).unwrap()
+    }
+
+    fn steps(live: &Live) -> Vec<String> {
+        let workflow = &live.factory().workflows["w"].value;
+        workflow.steps.iter().map(|step| step.id.clone()).collect()
+    }
+
+    #[test]
+    fn a_held_edit_waits_while_a_newer_edit_settles() {
+        let dir = std::env::temp_dir().join(format!("priory-held-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("workflows")).unwrap();
+        fs::write(dir.join("factory.toml"), "name = \"t\"\n").unwrap();
+        fs::write(dir.join("workflows/w.toml"), workflow(&["a", "b"])).unwrap();
+        let start = priory_factory::rules::validated(&dir).unwrap();
+        let base = Trace {
+            factory: &start,
+            revision: None,
+            machine: None,
+            runner: None,
+            usage: |_, _| None,
+        };
+        let mut db = state::memory();
+        db.execute(
+            "INSERT INTO tasks (key, workflow, step, state, trigger, source)
+             VALUES ('cli:a', 'w', 'b', 'running', 'cli', 'a')",
+            [],
+        )
+        .unwrap();
+        let mut live = Live::new(&start, reload::Watch::new(&start), None, None);
+
+        // The held edit removes step b, where the task is, and names a `writing` guide.
+        let held = || {
+            fs::write(dir.join("W.md"), "Write plainly.\n").unwrap();
+            fs::write(
+                dir.join("factory.toml"),
+                "name = \"t\"\nwriting = \"W.md\"\n",
+            )
+            .unwrap();
+            fs::write(dir.join("workflows/w.toml"), workflow(&["a"])).unwrap();
+        };
+        assert!(!edit_then_poll(&mut live, &mut db, &base, held));
+        assert!(!edit_then_poll(&mut live, &mut db, &base, || {}));
+        assert_eq!(steps(&live), ["a", "b"]);
+
+        db.execute("UPDATE tasks SET state = 'done'", []).unwrap();
+        let newer = || fs::write(dir.join("workflows/w.toml"), workflow(&["a", "c"])).unwrap();
+        assert!(!edit_then_poll(&mut live, &mut db, &base, newer));
+        assert!(edit_then_poll(&mut live, &mut db, &base, || {}));
+        assert_eq!(steps(&live), ["a", "c"]);
+        // The held edit was dropped, so it never reverts the newer one.
+        assert!(!edit_then_poll(&mut live, &mut db, &base, || {}));
+        assert_eq!(steps(&live), ["a", "c"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_held_edit_applied_mid_edit_keeps_the_newer_edit() {
+        let dir = std::env::temp_dir().join(format!("priory-mid-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("workflows")).unwrap();
+        fs::write(dir.join("factory.toml"), "name = \"t\"\n").unwrap();
+        fs::write(dir.join("workflows/w.toml"), workflow(&["a", "b"])).unwrap();
+        let start = priory_factory::rules::validated(&dir).unwrap();
+        let base = Trace {
+            factory: &start,
+            revision: None,
+            machine: None,
+            runner: None,
+            usage: |_, _| None,
+        };
+        let mut db = state::memory();
+        db.execute(
+            "INSERT INTO tasks (key, workflow, step, state, trigger, source)
+             VALUES ('cli:a', 'w', 'b', 'running', 'cli', 'a')",
+            [],
+        )
+        .unwrap();
+        let mut live = Live::new(&start, reload::Watch::new(&start), None, None);
+
+        // The held edit removes step b and names a `writing` guide, which changes what is watched.
+        let held = || {
+            fs::write(dir.join("W.md"), "Write plainly.\n").unwrap();
+            fs::write(
+                dir.join("factory.toml"),
+                "name = \"t\"\nwriting = \"W.md\"\n",
+            )
+            .unwrap();
+            fs::write(dir.join("workflows/w.toml"), workflow(&["a"])).unwrap();
+        };
+        assert!(!edit_then_poll(&mut live, &mut db, &base, held));
+        assert!(!edit_then_poll(&mut live, &mut db, &base, || {}));
+
+        // The task leaves and a newer edit lands before the watch is due: the held edit applies.
+        db.execute("UPDATE tasks SET state = 'done'", []).unwrap();
+        fs::write(dir.join("workflows/w.toml"), workflow(&["a", "c"])).unwrap();
+        assert!(live.poll(&mut db, &base, true).unwrap());
+        assert_eq!(steps(&live), ["a"]);
+
+        // The newer edit still settles and loads.
+        assert!(!edit_then_poll(&mut live, &mut db, &base, || {}));
+        assert!(edit_then_poll(&mut live, &mut db, &base, || {}));
+        assert_eq!(steps(&live), ["a", "c"]);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -114,6 +114,9 @@ fn conditions(
     if hold.if_closed.is_some() && hold.merge.is_empty() {
         return Ok(Err("if_closed goes with merge only".to_owned()));
     }
+    if hold.parked {
+        return parked_condition(tx, task, hold);
+    }
     let mut conditions = vec![];
     if let Some(until) = &hold.until {
         match crate::tools::instant(tx, until)? {
@@ -166,6 +169,60 @@ fn conditions(
         });
     }
     Ok(Ok(conditions))
+}
+
+/// The one condition of a parked hold: the pull request that keys `task`, which a trigger's
+/// request releases and whose merge or close ends the task.
+fn parked_condition(
+    tx: &Transaction,
+    task: i64,
+    hold: &Hold,
+) -> rusqlite::Result<Result<Vec<Condition>, String>> {
+    let others = Hold {
+        reason: hold.reason.clone(),
+        parked: true,
+        ..Hold::default()
+    };
+    if *hold != others {
+        return Ok(Err("parked takes no other condition".to_owned()));
+    }
+    let key: String = tx.query_row("SELECT key FROM tasks WHERE id = ?1", [task], |row| {
+        row.get(0)
+    })?;
+    let pull_request = key
+        .strip_prefix("github:")
+        .and_then(|rest| rest.split_once('#'))
+        .is_some_and(|(repo, number)| repo.contains('/') && number.parse::<u64>().is_ok());
+    if !pull_request {
+        return Ok(Err(format!(
+            "parked needs a task keyed by a pull request, not {key}"
+        )));
+    }
+    Ok(Ok(vec![Condition {
+        kind: "parked",
+        text: format!("until a comment or review trigger fires on {key}"),
+        resource: Some(key),
+        ..Condition::default()
+    }]))
+}
+
+/// Releases `task` when it is parked, as the trigger request `trigger` for its pull request
+/// arrived, and returns whether it was.
+pub(crate) fn unpark(tx: &Transaction, task: i64, trigger: &str) -> rusqlite::Result<bool> {
+    let parked: Option<i64> = tx
+        .query_row(
+            "SELECT holds.id FROM holds JOIN tasks ON tasks.id = holds.task
+             WHERE holds.task = ?1 AND holds.kind = 'parked' AND holds.released IS NULL
+             AND holds.met IS NULL AND tasks.state = 'held'",
+            [task],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(id) = parked else {
+        return Ok(false);
+    };
+    meet(tx, id, &format!("trigger {trigger} fired"))?;
+    Ok(true)
 }
 
 /// The condition `after` names: another task that ends, or a Linear issue that closes.
@@ -775,6 +832,9 @@ fn judge(tx: &Transaction, id: i64) -> rusqlite::Result<()> {
         let state = issue_state(tx, &resource)?;
         return closed(tx, id, &resource, state.as_deref());
     }
+    if kind == "parked" {
+        return parked_closed(tx, task, &resource);
+    }
     let merged = tx
         .query_row(
             "SELECT json_extract(data, '$.merged') FROM inbox
@@ -802,6 +862,44 @@ fn judge(tx: &Transaction, id: i64) -> rusqlite::Result<()> {
             ask_person(tx, id, task, &question)
         }
         _ => Ok(()),
+    }
+}
+
+/// Ends the parked `task` once its pull request `resource` is closed, as the newest event that
+/// says whether it is open reads: `done` when it merged, else `dropped`.
+fn parked_closed(tx: &Transaction, task: i64, resource: &str) -> rusqlite::Result<()> {
+    let merged = tx
+        .query_row(
+            "WITH pull AS (SELECT seq, type, data FROM inbox
+               WHERE 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1)
+             SELECT (SELECT json_extract(data, '$.merged') FROM pull
+               WHERE type = 'github.pull_request.closed' ORDER BY seq DESC LIMIT 1)
+             FROM (SELECT type, data FROM pull
+               WHERE type = 'github.pull_request.closed' OR json_type(data, '$.open') IS NOT NULL
+               ORDER BY seq DESC LIMIT 1)
+             WHERE type = 'github.pull_request.closed' OR json_extract(data, '$.open') = 0",
+            [resource],
+            |row| row.get::<_, Option<bool>>(0),
+        )
+        .optional()?;
+    match merged {
+        None => Ok(()),
+        Some(Some(true)) => {
+            let why = format!("{resource} merged while parked");
+            tx.execute(
+                &format!(
+                    "UPDATE holds SET released = {NOW}, released_as = 'merged'
+                     WHERE task = ?1 AND released IS NULL"
+                ),
+                [task],
+            )?;
+            tx.execute(
+                "UPDATE tasks SET state = 'done', reason = ?2 WHERE id = ?1",
+                params![task, why],
+            )
+            .map(drop)
+        }
+        Some(_) => drop_task(tx, task, &format!("{resource} closed while parked")),
     }
 }
 

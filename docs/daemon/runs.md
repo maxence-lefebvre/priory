@@ -373,6 +373,7 @@ A hold takes conditions, which release it without a person once all of them are 
 | `--after <issue>` | the Linear issue, such as `ENG-7`, is Done or Canceled |
 | `--merge <pr>` | the pull request merges: `owner/name#42`, or `42` in the task's repository |
 | `--blockers` | the task's Linear issue has no open blocker left |
+| `parked`, set by `priory adopt` | a comment or review trigger requests a task for the task's pull request (see [Parked pull requests](routing.md#parked-pull-requests)) |
 
 For example, `priory hold 12 --reason "needs both" --after 9 --after ENG-7 --merge 42` releases task
 12 once task 9 ends, ENG-7 is Done or Canceled, and pull request 42 merges, in any order. A condition

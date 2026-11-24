@@ -23,6 +23,8 @@ pub enum Outcome {
     Refused,
     /// The harness asked for trust that Priory had recorded.
     Missed,
+    /// direnv failed before the harness started, which then started without the `.envrc`.
+    Failed,
 }
 
 impl Outcome {
@@ -32,6 +34,7 @@ impl Outcome {
             Self::Present => "present",
             Self::Refused => "refused",
             Self::Missed => "missed",
+            Self::Failed => "failed",
         }
     }
 }
@@ -70,6 +73,93 @@ pub fn holds(harness: &dyn Harness, worktree: &Path) -> Result<bool, String> {
     let clone =
         clone_of(&worktree).ok_or_else(|| format!("{} has no clone", worktree.display()))?;
     harness.holds_trust(&worktree, &real(&clone)?)
+}
+
+/// direnv's config folder of the run `session` under Priory `home`, which its `DIRENV_CONFIG` names.
+pub fn direnv_folder(home: &Path, session: &str) -> PathBuf {
+    home.join("direnv").join(session)
+}
+
+/// Makes direnv trust `worktree` of `repo` and its clone through `folder`, a config folder of
+/// Priory's own: the person's `direnv.toml` with both paths in `[whitelist] exact`, and links to
+/// their `direnvrc` and `lib`. No grant when `direnv` is not on PATH or the worktree has no `.envrc`.
+pub fn direnv(home: &Path, repo: &str, worktree: &Path, folder: &Path) -> Vec<Grant> {
+    if !crate::jail::on_path("direnv") || !worktree.join(".envrc").is_file() {
+        return Vec::new();
+    }
+    // direnv matches `exact` against the path as `direnv exec` gets it, so a symlinked home needs both.
+    let spelled = [worktree.to_path_buf(), home.join("repos").join(repo)];
+    let (worktree, clone) = match own(home, repo, worktree) {
+        Ok(paths) => paths,
+        Err(why) => return grants(folder, &[worktree], Err(why)),
+    };
+    let file = folder.join("direnv.toml");
+    let person = direnv_config();
+    let result = person
+        .as_deref()
+        .ok_or_else(|| "no DIRENV_CONFIG, XDG_CONFIG_HOME or HOME".to_owned())
+        .and_then(|person| {
+            let own = ["direnv.toml", "config.toml"]
+                .map(|name| person.join(name))
+                .into_iter()
+                .find(|file| file.is_file());
+            let text = match &own {
+                Some(own) => fs::read_to_string(own)
+                    .map_err(|error| format!("{}: {error}", own.display()))?,
+                None => String::new(),
+            };
+            let paths = [&spelled[0], &worktree, &spelled[1], &clone].map(PathBuf::as_path);
+            let text = whitelisted(&text, &paths).map_err(|why| match &own {
+                Some(own) => format!("{}: {why}", own.display()),
+                None => why,
+            })?;
+            let failed = |error: std::io::Error| format!("{}: {error}", folder.display());
+            let _ = fs::remove_dir_all(folder);
+            fs::create_dir_all(folder).map_err(failed)?;
+            crate::runtime::write_private(&file, &text).map_err(failed)?;
+            // A link into the person's home that leads on, say into /nix/store, dangles in a jail.
+            for name in ["direnvrc", "lib"] {
+                if let Ok(target) = fs::canonicalize(person.join(name)) {
+                    std::os::unix::fs::symlink(&target, folder.join(name)).map_err(failed)?;
+                }
+            }
+            Ok(Outcome::Granted)
+        });
+    grants(&file, &[&worktree, &clone], result)
+}
+
+/// The person's own direnv config folder, as direnv finds it.
+fn direnv_config() -> Option<PathBuf> {
+    let set = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
+    set("DIRENV_CONFIG").map(PathBuf::from).or_else(|| {
+        set("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| set("HOME").map(|home| PathBuf::from(home).join(".config")))
+            .map(|config| config.join("direnv"))
+    })
+}
+
+/// `text`, a `direnv.toml`, with each of `paths` in `[whitelist] exact`.
+fn whitelisted(text: &str, paths: &[&Path]) -> Result<String, String> {
+    let mut table: toml::Table = text
+        .parse()
+        .map_err(|error| format!("not TOML, at line {}", line(text, &error)))?;
+    let exact = table
+        .entry("whitelist")
+        .or_insert_with(|| toml::Table::new().into())
+        .as_table_mut()
+        .ok_or("its whitelist is not a table")?
+        .entry("exact")
+        .or_insert_with(|| toml::value::Array::new().into())
+        .as_array_mut()
+        .ok_or("its whitelist.exact is not an array")?;
+    for path in paths {
+        let path: toml::Value = path.display().to_string().into();
+        if !exact.contains(&path) {
+            exact.push(path);
+        }
+    }
+    toml::to_string(&table).map_err(|error| error.to_string())
 }
 
 /// The worktree and its clone, each resolved through symlinks and `..`, when both are Priory's own:
@@ -626,7 +716,37 @@ mod tests {
         assert!(!why.contains("sk-secret"));
     }
 
+    #[test]
+    fn a_direnv_whitelist_keeps_the_persons_keys_and_adds_each_path_once() {
+        let text =
+            "[global]\nwarn_timeout = \"1m\"\n[whitelist]\nprefix = [\"/w\"]\nexact = [\"/a\"]\n";
+        let merged = whitelisted(text, &[Path::new("/a"), Path::new("/b")]).unwrap();
+        let table: toml::Table = merged.parse().unwrap();
+        assert_eq!(table["global"]["warn_timeout"].as_str(), Some("1m"));
+        assert_eq!(table["whitelist"]["prefix"], toml::Value::from(vec!["/w"]));
+        assert_eq!(
+            table["whitelist"]["exact"],
+            toml::Value::from(vec!["/a", "/b"])
+        );
+        assert_eq!(
+            whitelisted("whitelist = 1\n", &[Path::new("/a")]),
+            Err("its whitelist is not a table".into())
+        );
+    }
+
     proptest::proptest! {
+        #[test]
+        fn a_direnv_whitelist_merge_returns_or_refuses_without_panicking(
+            text in "(?s).{0,200}|\\[whitelist\\]\nexact = \\[(\"[a-z/]{0,8}\",? ?){0,3}\\]\n",
+            path in "/[a-z/]{0,12}",
+        ) {
+            if let Ok(merged) = whitelisted(&text, &[Path::new(&path)]) {
+                let table: toml::Table = merged.parse().unwrap();
+                let exact = table["whitelist"]["exact"].as_array().unwrap();
+                proptest::prop_assert!(exact.contains(&toml::Value::from(path.as_str())));
+            }
+        }
+
         #[test]
         fn a_toml_error_line_lies_within_the_text(text in "(?s).{0,200}") {
             if let Err(error) = text.parse::<toml::Table>() {

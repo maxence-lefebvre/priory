@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 107;
+const VERSION: i64 = 110;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1901,6 +1901,69 @@ ALTER TABLE runs ADD COLUMN sandbox TEXT;
 PRAGMA user_version = 107;
 ";
 
+// An outside ask has no task, and a person snoozes it too.
+const SCHEMA_108: &str = concat!(
+    "
+CREATE TABLE snoozes_108 (
+  kind        TEXT NOT NULL CHECK (kind IN ('ask', 'task', 'prompt')),
+  item        INTEGER NOT NULL,
+  task        INTEGER REFERENCES tasks (id),
+  snoozed     TEXT NOT NULL,
+  until       TEXT NOT NULL,
+  back        TEXT,
+  back_reason TEXT,
+  ended       TEXT,
+  PRIMARY KEY (kind, item)
+);
+INSERT INTO snoozes_108 SELECT kind, item, task, snoozed, until, back, back_reason, ended FROM snoozes;
+DROP TABLE snoozes;
+PRAGMA legacy_alter_table = ON;
+ALTER TABLE snoozes_108 RENAME TO snoozes;
+PRAGMA legacy_alter_table = OFF;
+",
+    bumps!("snoozes"),
+    "PRAGMA user_version = 108;
+"
+);
+
+// A parked hold: a task adopted onto a pull request, which a trigger's request releases.
+const SCHEMA_109: &str = concat!(
+    "CREATE TABLE holds_109 (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  task        INTEGER NOT NULL REFERENCES tasks (id),
+  reason      TEXT NOT NULL,
+  kind        TEXT NOT NULL CHECK (kind IN
+                ('person', 'time', 'task', 'merge', 'blockers', 'issue', 'merged', 'waiting', 'parked')),
+  until       TEXT,
+  target      INTEGER REFERENCES tasks (id),
+  resource    TEXT,
+  if_closed   TEXT CHECK (if_closed IN ('release', 'drop', 'ask')),
+  resume      TEXT NOT NULL CHECK (resume IN ('queued', 'ready')),
+  ask         INTEGER REFERENCES asks (id),
+  created     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  met         TEXT,
+  met_as      TEXT,
+  released    TEXT,
+  released_as TEXT
+);
+INSERT INTO holds_109 SELECT id, task, reason, kind, until, target, resource, if_closed, resume, ask,
+  created, met, met_as, released, released_as FROM holds;
+DROP TABLE holds;
+ALTER TABLE holds_109 RENAME TO holds;
+CREATE INDEX open_holds ON holds (task) WHERE released IS NULL;
+",
+    bumps!("holds"),
+    "PRAGMA user_version = 109;
+"
+);
+
+// Whether a run started under `direnv exec`: 1, then 2 once the daemon saw direnv fail and the
+// harness start without the `.envrc`.
+const SCHEMA_110: &str = "
+ALTER TABLE runs ADD COLUMN direnv INTEGER;
+PRAGMA user_version = 110;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1916,7 +1979,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
-    SCHEMA_106, SCHEMA_107,
+    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -2378,7 +2441,14 @@ pub(crate) fn route_in(
             }
             (Some(id), "created")
         }
-        Decision::Keep(id) if feedback => (Some(id), "coalesced"),
+        // A parked task's release starts its first run, which reads the events it kept.
+        Decision::Keep(id) if feedback => (
+            Some(id),
+            match crate::hold::unpark(tx, id, message.data["trigger"].as_str().unwrap_or("?"))? {
+                true => "released",
+                false => "coalesced",
+            },
+        ),
         Decision::Keep(id) if route::tick(message, factory) => (
             Some(id),
             if wakes(tx, id, factory)? {
@@ -2975,7 +3045,8 @@ pub fn merges(db: &Connection, since: &str) -> rusqlite::Result<Vec<priory_intak
            AND json_extract(data, '$.failing') <= (SELECT count(*) FROM inbox AS red
              WHERE red.type = ?3 AND json_extract(red.data, '$.repo') = json_extract(closed.data, '$.repo')
              AND json_extract(red.data, '$.head_sha') = json_extract(closed.data, '$.merge_commit')
-             AND json_extract(red.data, '$.conclusion') NOT IN ('success', 'neutral', 'skipped')))
+             AND json_extract(red.data, '$.conclusion') NOT IN ('success', 'neutral', 'skipped')
+             AND json_extract(red.data, '$.superseded_by') IS NULL))
          ORDER BY time",
     )?
     .query_map(params![CLOSED, since, CHECKED], |row| {
@@ -3114,6 +3185,15 @@ fn owners(tx: &Transaction, resources: &[String]) -> rusqlite::Result<Vec<Task>>
     )?
     .query_map([resources], |row| Ok(Task { id: row.get(0)? }))?
     .collect()
+}
+
+/// The newest task in any state that owns `resource`, by key, claim, wait or subscription.
+pub fn any_owner(db: &Connection, resource: &str) -> rusqlite::Result<Option<i64>> {
+    db.query_row(
+        "SELECT max(task) FROM owned WHERE resource = ?1",
+        [resource],
+        |row| row.get(0),
+    )
 }
 
 /// What `priory attach` names: a task, which stands for its live run, or one run.
@@ -4195,9 +4275,12 @@ pub(crate) fn block(
         &format!("UPDATE runs SET ended = {NOW}, ended_as = ?2 WHERE task = ?1 AND ended IS NULL"),
         params![task, ended_as],
     )?;
+    // A run that started without its `.envrc` keeps saying so, since that may be why it stopped.
     tx.execute(
-        "UPDATE tasks SET state = 'blocked', reason = ?2 WHERE id = ?1",
-        params![task, reason],
+        "UPDATE tasks SET state = 'blocked', reason = ?2 || coalesce('; ' || CASE
+           WHEN (SELECT direnv FROM runs WHERE id = ?3) = 2 THEN reason END, '')
+         WHERE id = ?1",
+        params![task, reason, live],
     )?;
     tx.commit()
 }
@@ -4222,8 +4305,11 @@ pub(crate) struct LiveRun {
     pub worktree: Option<String>,
     /// Its `SessionStart` arrived.
     pub ready: bool,
-    /// No `SessionStart` arrived within `READY_WITHIN` of the start.
+    /// No `SessionStart` arrived within `READY_WITHIN` of the start, or `DIRENV_READY_WITHIN` under
+    /// direnv.
     pub late: bool,
+    /// 1 when it started under `direnv exec`, 2 once direnv failed and it started without, else 0.
+    pub direnv: i64,
     /// How long its current turn has run, in seconds.
     pub turn: Option<i64>,
     /// Claude's message for the permission prompt it shows, if any.
@@ -4232,11 +4318,26 @@ pub(crate) struct LiveRun {
 
 pub(crate) const READY_WITHIN: &str = "60 seconds";
 
+/// `READY_WITHIN` for a run under direnv, whose `.envrc` may build a cold nix shell first.
+pub(crate) const DIRENV_READY_WITHIN: &str = "600 seconds";
+
+/// Marks run `run` as started under direnv (1), or as started without its `.envrc` after direnv
+/// failed (2).
+pub(crate) fn direnv(db: &Connection, run: i64, state: i64) -> rusqlite::Result<()> {
+    db.execute(
+        "UPDATE runs SET direnv = ?2 WHERE id = ?1",
+        params![run, state],
+    )?;
+    Ok(())
+}
+
 pub(crate) fn live(db: &Connection) -> rusqlite::Result<Vec<LiveRun>> {
     let mut statement = db.prepare(&format!(
         "SELECT runs.id, runs.task, runs.step, tasks.workflow, runs.tmux, runs.session, tasks.worktree,
-         NOT runs.ready AND runs.started <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-{READY_WITHIN}'),
-         unixepoch('now') - unixepoch(runs.turn), runs.prompted, coalesce(runs.agent, ''), runs.ready
+         NOT runs.ready AND runs.started <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now',
+           CASE WHEN runs.direnv THEN '-{DIRENV_READY_WITHIN}' ELSE '-{READY_WITHIN}' END),
+         unixepoch('now') - unixepoch(runs.turn), runs.prompted, coalesce(runs.agent, ''), runs.ready,
+         coalesce(runs.direnv, 0)
          FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.ended IS NULL ORDER BY runs.id"
     ))?;
     statement
@@ -4254,6 +4355,7 @@ pub(crate) fn live(db: &Connection) -> rusqlite::Result<Vec<LiveRun>> {
                 prompted: row.get(9)?,
                 agent: row.get(10)?,
                 ready: row.get(11)?,
+                direnv: row.get(12)?,
             })
         })?
         .collect()
@@ -4764,5 +4866,40 @@ mod promises {
         // Run 1 uses all of its 4 GB, run 2 has no scope, run 3 is the grant's own, and the grant
         // counts all of its 10 GB.
         assert_eq!(promised.memory, 14 * GB);
+    }
+}
+
+#[cfg(test)]
+mod ready_within {
+    use super::*;
+
+    #[test]
+    fn a_run_under_direnv_is_late_only_after_its_longer_window() {
+        let db = memory();
+        for (task, ago, direnv) in [(1, 120, None), (2, 120, Some(1)), (3, 700, Some(1))] {
+            db.execute(
+                "INSERT INTO tasks
+                   (key, workflow, step, state, band, lane, lane_derived, trigger, source, entered)
+                 VALUES ('cli:' || ?1, 'build', 'implement', 'running', 'now', 'cli', 0, 'cli', 'a',
+                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+                [task],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO runs (task, step, agent, tmux, session, started, direnv)
+                 VALUES (?1, 'implement', 'implementer', 'priory-' || ?1, 's' || ?1,
+                   strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-' || ?2 || ' seconds'), ?3)",
+                params![task, ago, direnv],
+            )
+            .unwrap();
+        }
+
+        let late: Vec<(i64, bool, i64)> = live(&db)
+            .unwrap()
+            .into_iter()
+            .map(|run| (run.task, run.late, run.direnv))
+            .collect();
+
+        assert_eq!(late, [(1, true, 0), (2, false, 1), (3, true, 1)]);
     }
 }

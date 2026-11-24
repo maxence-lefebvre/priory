@@ -781,6 +781,32 @@ pub fn is_ancestor(worktree: &Path, below: &str, commit: &str) -> bool {
         .is_ok_and(|status| status.success())
 }
 
+/// The open pull requests of `repo` that `author` opened, or every open one without an author,
+/// each with its `number`, `title` and `url`.
+pub fn open_pull_requests(
+    repo: &str,
+    author: Option<&str>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let mut command = Command::new("gh");
+    command.args([
+        "pr",
+        "list",
+        "-R",
+        repo,
+        "--state",
+        "open",
+        "--limit",
+        "1000",
+        "--json",
+        "number,title,url",
+    ]);
+    if let Some(author) = author {
+        command.args(["--author", author]);
+    }
+    let open = run(&mut command)?;
+    serde_json::from_str(&open).map_err(|error| format!("gh pr list printed {open:?}: {error}"))
+}
+
 /// The state of pull request `number` on `repo`: OPEN, CLOSED or MERGED.
 pub fn pull_request_state(repo: &str, number: u64) -> Result<String, String> {
     let number = number.to_string();
@@ -925,6 +951,8 @@ pub struct Launch<'a> {
     pub jail: Option<&'a crate::jail::Jail>,
     /// The factory turns on `trust_worktrees`, so the harness reads the trust Priory records.
     pub trust: bool,
+    /// The direnv config folder that trusts the worktree, so the harness starts in its `.envrc`.
+    pub direnv: Option<&'a Path>,
 }
 
 /// A coding agent CLI that Priory runs in tmux, with hooks and tools that report to the daemon.
@@ -1366,6 +1394,39 @@ pub(crate) fn one_line(stderr: &str) -> String {
     lines.join("; ")
 }
 
+/// Runs the rest under `direnv exec "$1"`, with direnv's stderr in `$0/direnv.error`. When direnv
+/// failed before the harness started, which no `$0/direnv.started` tells, it marks
+/// `$0/direnv.failed` and runs the rest without the `.envrc`.
+const DIRENV_EXEC: &str = r#"s=$0 d=$1; shift; rm -f "$s/direnv.started" "$s/direnv.failed"
+direnv exec "$d" sh -c ': > "$0"; exec 2>&3 3>&-; exec "$@"' "$s/direnv.started" "$@" 3>&2 2>"$s/direnv.error"
+c=$?; [ -e "$s/direnv.started" ] && exit $c; : > "$s/direnv.failed"; exec "$@""#;
+
+/// The folder where a run under direnv leaves `direnv.started` and `direnv.error`: its spool, which
+/// a jail binds writable.
+pub fn direnv_spool(home: &Path, session: &str) -> PathBuf {
+    let home = fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+    crate::jail::spool_dir(&home, session)
+}
+
+/// What direnv wrote to stderr when it kept the run `session` from starting in its `.envrc`, as
+/// one line with its escape codes kept, if it did.
+pub fn direnv_failed(home: &Path, session: &str) -> Option<String> {
+    let spool = direnv_spool(home, session);
+    if !spool.join("direnv.failed").exists() {
+        return None;
+    }
+    let error = fs::read_to_string(spool.join("direnv.error")).unwrap_or_default();
+    Some(one_line(&error))
+}
+
+/// Whether the run `session` started under direnv is still loading its `.envrc`.
+pub fn direnv_loading(home: &Path, session: &str) -> bool {
+    let spool = direnv_spool(home, session);
+    spool.join("direnv.error").exists()
+        && !spool.join("direnv.started").exists()
+        && !spool.join("direnv.failed").exists()
+}
+
 /// Starts the harness in a detached tmux session, with hooks that report to this daemon. The same
 /// tmux command tags the new pane with the run's session id, so a crash cannot leave it untagged.
 pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), NotStarted> {
@@ -1403,9 +1464,13 @@ pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), NotStarted> 
             .arg("-e")
             .arg(format!("XDG_RUNTIME_DIR={}", run.to_string_lossy()));
     }
-    command
-        .args(launch.env.iter().flat_map(|variable| ["-e", variable]))
-        .arg("--");
+    command.args(launch.env.iter().flat_map(|variable| ["-e", variable]));
+    if let Some(folder) = launch.direnv {
+        command
+            .arg("-e")
+            .arg(format!("DIRENV_CONFIG={}", folder.display()));
+    }
+    command.arg("--");
     if let Some(prompt) = launch.prompt {
         // tmux refuses a command over about 16 KiB, so the prompt reaches the harness through a file.
         let file = launch.home.join("prompts").join(launch.session);
@@ -1433,9 +1498,18 @@ pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), NotStarted> 
         None => Vec::new(),
     };
     // A scope execs the agent in place, so the pane's process is still the agent's, or the jail's.
+    command.args(launch.scope).args(&jail);
+    if launch.direnv.is_some() {
+        let spool = direnv_spool(launch.home, launch.session);
+        fs::create_dir_all(&spool).map_err(|error| format!("{}: {error}", spool.display()))?;
+        // direnv's own failure exits 1 before the harness starts, as the harness's exit 1 might:
+        // the marker tells them apart, and the harness then starts without the `.envrc`.
+        command
+            .args(["sh", "-c", DIRENV_EXEC])
+            .arg(&spool)
+            .arg(launch.dir);
+    }
     command
-        .args(launch.scope)
-        .args(&jail)
         .arg("env")
         .args(NESTED.iter().flat_map(|name| ["-u", name]))
         .arg(harness.program())
@@ -1882,7 +1956,7 @@ fn mcp_config(exe: &Path, launch: &Launch) -> String {
 }
 
 /// Writes `text` to `file`, readable by its owner alone, even when an older file was not.
-fn write_private(file: &Path, text: &str) -> std::io::Result<()> {
+pub(crate) fn write_private(file: &Path, text: &str) -> std::io::Result<()> {
     fs::create_dir_all(file.parent().expect("the file has a parent"))?;
     let mut written = OpenOptions::new()
         .write(true)
@@ -2617,6 +2691,72 @@ mod tests {
         path
     }
 
+    /// Runs `DIRENV_EXEC` for session `s` under a stub `direnv` whose body is `direnv`, around a
+    /// harness that logs its start and exits 1. Returns the exit code, the starts and Priory home.
+    fn direnv_exec(name: &str, direnv: &str) -> (Option<i32>, usize, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("priory-direnv-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("bin")).unwrap();
+        let stub = dir.join("bin/direnv");
+        fs::write(&stub, format!("#!/bin/sh\n{direnv}\n")).unwrap();
+        fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+        let spool = direnv_spool(&dir, "s");
+        fs::create_dir_all(&spool).unwrap();
+        let path = std::env::join_paths(
+            std::iter::once(dir.join("bin"))
+                .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        )
+        .unwrap();
+        let log = dir.join("starts");
+        let status = Command::new("sh")
+            .args(["-c", DIRENV_EXEC])
+            .arg(&spool)
+            .arg(&dir)
+            .args(["sh", "-c", r#"echo started >> "$0"; exit 1"#])
+            .arg(&log)
+            .env("PATH", path)
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        let starts = fs::read_to_string(&log).unwrap_or_default().lines().count();
+        (status.code(), starts, dir)
+    }
+
+    #[test]
+    fn a_failing_direnv_starts_the_harness_once_without_it_and_keeps_its_error() {
+        let (code, starts, home) =
+            direnv_exec("failed", "echo 'direnv: error exit status 1' >&2; exit 1");
+
+        assert_eq!((code, starts), (Some(1), 1));
+        assert_eq!(
+            direnv_failed(&home, "s").as_deref(),
+            Some("direnv: error exit status 1")
+        );
+        assert!(!direnv_loading(&home, "s"));
+    }
+
+    #[test]
+    fn a_harness_that_exits_1_under_direnv_starts_once() {
+        let (code, starts, home) = direnv_exec("exits", r#"shift 2; exec "$@""#);
+
+        assert_eq!((code, starts), (Some(1), 1));
+        assert_eq!(direnv_failed(&home, "s"), None);
+        assert!(!direnv_loading(&home, "s"));
+    }
+
+    #[test]
+    fn a_run_whose_direnv_has_not_started_the_harness_is_loading() {
+        let home =
+            std::env::temp_dir().join(format!("priory-direnv-loading-{}", std::process::id()));
+        let spool = direnv_spool(&home, "s");
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&spool).unwrap();
+        fs::write(spool.join("direnv.error"), "direnv: loading .envrc\n").unwrap();
+
+        assert!(direnv_loading(&home, "s"));
+        assert_eq!(direnv_failed(&home, "s"), None);
+    }
+
     #[test]
     fn a_call_through_a_restart_has_its_whole_wait_after_a_late_connect() {
         let path = refusing("late");
@@ -2704,6 +2844,7 @@ mod tests {
             tools,
             jail: None,
             trust: false,
+            direnv: None,
         }
     }
 
@@ -3100,6 +3241,21 @@ mod tests {
             )),
             "{reason}"
         );
+    }
+
+    #[test]
+    fn a_detached_head_ahead_of_its_branch_with_a_cherry_pick_in_progress_blocks() {
+        let home = Home::new("picking");
+        let tree = home.tree();
+        sh(&tree, &["checkout", "--quiet", "--detach"]);
+        commit(&tree, "a.txt", "a\n");
+        let marker = tree.join(sh(&tree, &["rev-parse", "--git-path", "CHERRY_PICK_HEAD"]));
+        fs::write(&marker, sh(&tree, &["rev-parse", "HEAD"])).unwrap();
+
+        let reason = home.again().unwrap_err();
+
+        assert!(reason.contains("has a cherry-pick in progress"), "{reason}");
+        assert_eq!(sh(&tree, &["branch", "--show-current"]), "");
     }
 
     #[test]

@@ -1782,6 +1782,10 @@ pub struct Hold {
     /// Until the task's Linear issue has no open blocker.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub blockers: bool,
+    /// Parks a task keyed by a pull request: a comment or review trigger's request for that pull
+    /// request releases it, and the pull request's merge or close ends it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub parked: bool,
 }
 
 /// What a hold's `after` waits for: another task to end, or a Linear issue to close.
