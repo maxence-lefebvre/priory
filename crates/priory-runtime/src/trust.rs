@@ -1,7 +1,7 @@
 //! The folder trust Priory records for its own worktrees and clones, when the factory turns on
 //! `trust_worktrees`, so no run stops on its harness's trust dialog (docs/daemon/sessions.md).
 
-use crate::runtime::{Harness, clone_of};
+use crate::runtime::{Harness, clone_of, fed_raw, git, run};
 use std::fs;
 use std::io::{ErrorKind, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -83,7 +83,14 @@ pub fn direnv_folder(home: &Path, session: &str) -> PathBuf {
 /// Makes direnv trust `worktree` of `repo` and its clone through `folder`, a config folder of
 /// Priory's own: the person's `direnv.toml` with both paths in `[whitelist] exact`, and links to
 /// their `direnvrc` and `lib`. No grant when `direnv` is not on PATH or the worktree has no `.envrc`.
-pub fn direnv(home: &Path, repo: &str, worktree: &Path, folder: &Path) -> Vec<Grant> {
+/// Refused unless the `.envrc` is the one of commit `base`, or of `repo`'s default branch.
+pub fn direnv(
+    home: &Path,
+    repo: &str,
+    worktree: &Path,
+    base: Option<&str>,
+    folder: &Path,
+) -> Vec<Grant> {
     if !crate::jail::on_path("direnv") || !worktree.join(".envrc").is_file() {
         return Vec::new();
     }
@@ -94,6 +101,9 @@ pub fn direnv(home: &Path, repo: &str, worktree: &Path, folder: &Path) -> Vec<Gr
         Err(why) => return grants(folder, &[worktree], Err(why)),
     };
     let file = folder.join("direnv.toml");
+    if let Err(why) = vouched(&clone, repo, &worktree, base, folder) {
+        return grants(&file, &[&worktree, &clone], Err(why));
+    }
     let person = direnv_config();
     let result = person
         .as_deref()
@@ -126,6 +136,69 @@ pub fn direnv(home: &Path, repo: &str, worktree: &Path, folder: &Path) -> Vec<Gr
             Ok(Outcome::Granted)
         });
     grants(&file, &[&worktree, &clone], result)
+}
+
+/// Refuses `worktree`'s `.envrc` unless it is a file with the content of the one at `base`, or on
+/// `repo`'s default branch, which a bare clone at `scratch` reads.
+fn vouched(
+    clone: &Path,
+    repo: &str,
+    worktree: &Path,
+    base: Option<&str>,
+    scratch: &Path,
+) -> Result<(), String> {
+    let path = worktree.join(".envrc");
+    let failed = |error: std::io::Error| format!("{}: {error}", path.display());
+    if !fs::symlink_metadata(&path).map_err(failed)?.is_file() {
+        return Err(format!("{} is not a regular file", path.display()));
+    }
+    let content = fs::read(&path).map_err(failed)?;
+    let blob = |dir: &Path, commit: &str| {
+        fed_raw(
+            git(dir)
+                .args(["--no-replace-objects", "cat-file", "blob"])
+                .arg(format!("{commit}:.envrc")),
+            None,
+        )
+    };
+    if base.is_some_and(|base| blob(clone, base).is_ok_and(|blob| blob == content)) {
+        return Ok(());
+    }
+    // An agent can write the clone's refs and config, so the default branch comes from GitHub.
+    let _ = fs::remove_dir_all(scratch);
+    let cloned = run(git(Path::new("/"))
+        .args(["clone", "--quiet", "--bare", "--depth=1"])
+        .args(["--filter=blob:none", "--template="])
+        .arg(format!("https://github.com/{repo}.git"))
+        .arg(scratch));
+    let trunk = cloned.as_ref().map(|_| blob(scratch, "HEAD"));
+    let _ = fs::remove_dir_all(scratch);
+    match trunk {
+        Ok(Ok(blob)) if blob == content => Ok(()),
+        Err(why) => Err(format!(
+            ".envrc differs from the commit the task started from, and the default branch could \
+             not be read: {why}"
+        )),
+        Ok(_) => Err(
+            ".envrc differs from the commit the task started from and from the default branch"
+                .to_owned(),
+        ),
+    }
+}
+
+/// Removes the direnv config folder under Priory `home` of each session that is not `live`.
+pub fn forget_direnv(home: &Path, live: &dyn Fn(&str) -> bool) {
+    for entry in fs::read_dir(home.join("direnv"))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        if !entry.file_name().to_str().is_some_and(live)
+            && let Err(error) = fs::remove_dir_all(entry.path())
+        {
+            eprintln!("priory daemon: {}: {error}", entry.path().display());
+        }
+    }
 }
 
 /// The person's own direnv config folder, as direnv finds it.
@@ -506,7 +579,7 @@ mod tests {
         Temp(dir)
     }
 
-    fn git(dir: &Path, args: &[&str]) {
+    fn sh_git(dir: &Path, args: &[&str]) {
         let status = std::process::Command::new("git")
             .env("HOME", dir)
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -525,8 +598,8 @@ mod tests {
         let home = dir.path().join("home");
         let clone = home.join("repos/o/r");
         fs::create_dir_all(&clone).unwrap();
-        git(&clone, &["init", "-q"]);
-        git(
+        sh_git(&clone, &["init", "-q"]);
+        sh_git(
             &clone,
             &[
                 "-c",
@@ -542,7 +615,7 @@ mod tests {
         );
         fs::create_dir_all(home.join("worktrees/o/r")).unwrap();
         let worktree = home.join("worktrees/o/r/1");
-        git(
+        sh_git(
             &clone,
             &[
                 "worktree",
@@ -554,7 +627,7 @@ mod tests {
             ],
         );
         let outside = dir.path().join("elsewhere");
-        git(
+        sh_git(
             &clone,
             &[
                 "worktree",
@@ -586,7 +659,7 @@ mod tests {
         fs::create_dir_all(&away).unwrap();
         let elsewhere = away.join("r/1");
         fs::create_dir_all(away.join("r")).unwrap();
-        git(
+        sh_git(
             &clone,
             &[
                 "worktree",

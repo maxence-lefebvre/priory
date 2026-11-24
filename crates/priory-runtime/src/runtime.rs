@@ -176,7 +176,7 @@ fn fed(command: &mut Command, input: Option<Vec<u8>>) -> Result<String, String> 
 }
 
 /// As `fed`, returning the command's stdout as it wrote it.
-fn fed_raw(command: &mut Command, input: Option<Vec<u8>>) -> Result<Vec<u8>, String> {
+pub(crate) fn fed_raw(command: &mut Command, input: Option<Vec<u8>>) -> Result<Vec<u8>, String> {
     let output = fed_within(command, input, command_timeout())
         .map_err(|error| format!("{command:?}: {error}"))?
         .ok_or_else(|| {
@@ -1392,7 +1392,7 @@ fn tmux_socket_fits(socket: &Path) -> Result<(), String> {
 }
 
 /// `stderr` as one line.
-pub(crate) fn one_line(stderr: &str) -> String {
+pub fn one_line(stderr: &str) -> String {
     let lines: Vec<_> = stderr
         .lines()
         .map(str::trim)
@@ -1404,7 +1404,7 @@ pub(crate) fn one_line(stderr: &str) -> String {
 /// Runs the rest under `direnv exec "$1"`, with direnv's stderr in `$0/direnv.error`. When direnv
 /// failed before the harness started, which no `$0/direnv.started` tells, it marks
 /// `$0/direnv.failed` and runs the rest without the `.envrc`.
-const DIRENV_EXEC: &str = r#"s=$0 d=$1; shift; rm -f "$s/direnv.started" "$s/direnv.failed"
+const DIRENV_EXEC: &str = r#"s=$0 d=$1; shift
 direnv exec "$d" sh -c ': > "$0"; exec 2>&3 3>&-; exec "$@"' "$s/direnv.started" "$@" 3>&2 2>"$s/direnv.error"
 c=$?; [ -e "$s/direnv.started" ] && exit $c; : > "$s/direnv.failed"; exec "$@""#;
 
@@ -1415,15 +1415,25 @@ pub fn direnv_spool(home: &Path, session: &str) -> PathBuf {
     crate::jail::spool_dir(&home, session)
 }
 
-/// What direnv wrote to stderr when it kept the run `session` from starting in its `.envrc`, as
-/// one line with its escape codes kept, if it did.
+/// What direnv wrote to stderr when it kept the run `session` from starting in its `.envrc`, if it
+/// did.
 pub fn direnv_failed(home: &Path, session: &str) -> Option<String> {
     let spool = direnv_spool(home, session);
     if !spool.join("direnv.failed").exists() {
         return None;
     }
-    let error = fs::read_to_string(spool.join("direnv.error")).unwrap_or_default();
-    Some(one_line(&error))
+    let error = fs::read(spool.join("direnv.error")).unwrap_or_default();
+    Some(String::from_utf8_lossy(&error).into_owned())
+}
+
+/// How long ago direnv handed the run `session` over to its harness, with or without the `.envrc`,
+/// if it did.
+pub fn direnv_handed(home: &Path, session: &str) -> Option<Duration> {
+    let spool = direnv_spool(home, session);
+    ["direnv.started", "direnv.failed"]
+        .iter()
+        .find_map(|name| fs::metadata(spool.join(name)).ok()?.modified().ok())
+        .map(|at| at.elapsed().unwrap_or_default())
 }
 
 /// Whether the run `session` started under direnv is still loading its `.envrc`.
@@ -1509,6 +1519,10 @@ pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), NotStarted> 
     if launch.direnv.is_some() {
         let spool = direnv_spool(launch.home, launch.session);
         fs::create_dir_all(&spool).map_err(|error| format!("{}: {error}", spool.display()))?;
+        // A resumed session keeps its spool, and the daemon must not read its last run's markers.
+        for name in ["direnv.started", "direnv.failed", "direnv.error"] {
+            let _ = fs::remove_file(spool.join(name));
+        }
         // direnv's own failure exits 1 before the harness starts, as the harness's exit 1 might:
         // the marker tells them apart, and the harness then starts without the `.envrc`.
         command
@@ -2761,7 +2775,7 @@ mod tests {
         assert_eq!((code, starts), (Some(1), 1));
         assert_eq!(
             direnv_failed(&home, "s").as_deref(),
-            Some("direnv: error exit status 1")
+            Some("direnv: error exit status 1\n")
         );
         assert!(!direnv_loading(&home, "s"));
     }

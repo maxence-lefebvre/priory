@@ -4047,6 +4047,7 @@ fn direnv_records(setup: &Setup) -> Vec<serde_json::Value> {
 fn trust_worktrees_makes_direnv_trust_the_worktree_and_starts_the_run_in_its_envrc() {
     let mut setup = trusting("trust-direnv");
     envrc(&setup);
+    setup.hold("hold-stop");
     setup.publish(&requested(42));
     start_direnv(&mut setup, true, "[global]\nwarn_timeout = \"1m\"\n", &[]);
 
@@ -4116,6 +4117,7 @@ fn trust_worktrees_makes_direnv_trust_the_worktree_and_starts_the_run_in_its_env
 fn direnv_trusts_a_worktree_whose_priory_home_goes_through_a_symlink() {
     let mut setup = trusting("trust-direnv-symlink");
     envrc(&setup);
+    setup.hold("hold-stop");
     setup.publish(&requested(42));
     let linked = setup.dir.join("linked-home");
     let _ = fs::remove_file(&linked);
@@ -4273,6 +4275,212 @@ fn an_unparsable_direnv_toml_refuses_the_grant_and_the_run_starts_without_direnv
         let why = record["data"]["why"].as_str().unwrap();
         assert!(why.ends_with("direnv.toml: not TOML, at line 1"), "{why}");
         assert!(!why.contains("sk-secret"));
+    }
+}
+
+/// A task whose first run started under direnv and blocked, so its worktree is kept.
+fn blocked_under_direnv(name: &str) -> Setup {
+    let mut setup = trusting(name);
+    envrc(&setup);
+    setup.hold("undecided");
+    setup.hold("hold-stop");
+    setup.calls(&[json!({ "name": "Bash", "arguments": { "command": "rm -rf /" } })]);
+    setup.publish(&requested(42));
+    start_direnv(&mut setup, true, "", &[]);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+    assert_eq!(outcomes_of(&setup, "1"), ["granted", "granted"]);
+    setup
+}
+
+/// What direnv's grants of run `run` came to.
+fn outcomes_of(setup: &Setup, run: &str) -> Vec<String> {
+    direnv_records(setup)
+        .iter()
+        .filter(|record| record["data"]["run"] == run)
+        .map(|record| record["data"]["outcome"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// How often a harness started under direnv.
+fn under_direnv(setup: &Setup) -> usize {
+    fs::read_to_string(setup.dir.join("fake/direnv.log"))
+        .unwrap()
+        .lines()
+        .filter(|line| line.starts_with("exec "))
+        .count()
+}
+
+/// Commits `file` of the repository `dir`.
+fn committed(dir: &Path, file: &str) {
+    for args in [
+        &["add", file][..],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "envrc",
+        ],
+    ] {
+        assert!(git(dir).args(args).status().unwrap().success());
+    }
+}
+
+#[test]
+fn an_envrc_changed_on_a_kept_worktree_starts_the_next_run_without_direnv_and_says_why() {
+    let agent = "touch /tmp/agent\n";
+    let edited: fn(&Path, &str) = |worktree, text| {
+        fs::write(worktree.join(".envrc"), text).unwrap();
+    };
+    let commit: fn(&Path, &str) = |worktree, text| {
+        fs::write(worktree.join(".envrc"), text).unwrap();
+        committed(worktree, ".envrc");
+    };
+    let forged: fn(&Path, &str) = |worktree, text| {
+        fs::write(worktree.join(".envrc"), text).unwrap();
+        committed(worktree, ".envrc");
+        assert!(
+            git(worktree)
+                .args(["update-ref", "refs/remotes/origin/main", "HEAD"])
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    let symlinked: fn(&Path, &str) = |worktree, _| {
+        fs::rename(worktree.join(".envrc"), worktree.join("other")).unwrap();
+        std::os::unix::fs::symlink("other", worktree.join(".envrc")).unwrap();
+    };
+    for (name, change, why) in [
+        ("envrc-edited", edited, "differs from the commit"),
+        ("envrc-committed", commit, "differs from the commit"),
+        ("envrc-forged", forged, "differs from the commit"),
+        ("envrc-symlinked", symlinked, "is not a regular file"),
+    ] {
+        let setup = blocked_under_direnv(name);
+        change(&setup.dir.join("home/worktrees/owner/repo/1"), agent);
+
+        let resumed = setup.priory(&["resume", "1"]);
+
+        assert!(resumed.status.success(), "{name}: {resumed:?}");
+        setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+        let tasks = setup.rows("tasks");
+        assert!(
+            tasks[0][7].starts_with("started without its .envrc: ") && tasks[0][7].contains(why),
+            "{name}: {tasks:?}"
+        );
+        assert_eq!(outcomes_of(&setup, "2"), ["refused", "refused"], "{name}");
+        assert_eq!(under_direnv(&setup), 1, "{name}");
+    }
+}
+
+#[test]
+fn an_unchanged_envrc_or_the_default_branchs_new_one_starts_a_kept_worktree_under_direnv() {
+    for (name, merged) in [("envrc-unchanged", false), ("envrc-merged", true)] {
+        let setup = blocked_under_direnv(name);
+        let session = setup.rows("runs")[0][4].clone();
+        let folder = setup.dir.join("home/direnv").join(session);
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while folder.exists() {
+            assert!(Instant::now() < deadline, "{name}: {folder:?} was kept");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        if merged {
+            let work = setup.dir.join("work");
+            fs::write(work.join(".envrc"), "use flake .#new\n").unwrap();
+            committed(&work, ".envrc");
+            assert!(
+                git(&work)
+                    .args(["push", "-q"])
+                    .arg(setup.dir.join("origin/owner/repo.git"))
+                    .arg("main")
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            fs::write(
+                setup.dir.join("home/worktrees/owner/repo/1/.envrc"),
+                "use flake .#new\n",
+            )
+            .unwrap();
+        }
+
+        let resumed = setup.priory(&["resume", "1"]);
+
+        assert!(resumed.status.success(), "{name}: {resumed:?}");
+        setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+        assert_eq!(outcomes_of(&setup, "2"), ["granted", "granted"], "{name}");
+        assert_eq!(under_direnv(&setup), 2, "{name}");
+        assert!(folder.join("direnv.toml").exists(), "{name}");
+    }
+}
+
+#[test]
+fn a_task_stacked_on_a_branch_whose_agent_changed_the_envrc_starts_without_direnv() {
+    let setup = blocked_under_direnv("envrc-stacked");
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+    fs::write(worktree.join(".envrc"), "touch /tmp/agent\n").unwrap();
+    committed(&worktree, ".envrc");
+    setup.memory(0);
+    setup.publish(&requested(43));
+    setup.until("tasks", |rows| {
+        rows.len() == 2 && rows[1][7].starts_with("waits for room")
+    });
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.busy_timeout(Duration::from_secs(10)).unwrap();
+    db.execute_batch(
+        "UPDATE tasks SET base_task = 1 WHERE id = 2;
+         INSERT INTO pull_requests (task, resource, branch, base)
+         VALUES (1, 'github:owner/repo#7', 'priory/1', 'main');",
+    )
+    .unwrap();
+
+    setup.memory(60);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert_eq!(outcomes_of(&setup, "2"), ["refused", "refused"]);
+    assert_eq!(under_direnv(&setup), 1);
+    let stacked = setup.dir.join("home/worktrees/owner/repo/2/.envrc");
+    assert_eq!(fs::read_to_string(stacked).unwrap(), "touch /tmp/agent\n");
+}
+
+#[test]
+fn a_block_keeps_direnvs_reason_and_drops_another() {
+    for (name, unrelated) in [("envrc-reason", false), ("envrc-other-reason", true)] {
+        let mut setup = trusting(name);
+        envrc(&setup);
+        fs::write(setup.dir.join("fake/direnv.fail"), "").unwrap();
+        setup.hold("undecided");
+        setup.hold("hold-call");
+        setup.calls(&[json!({ "name": "Bash", "arguments": { "command": "rm -rf /" } })]);
+        setup.publish(&requested(42));
+        start_direnv(&mut setup, true, "", &[]);
+        setup.until("tasks", |rows| {
+            rows.first()
+                .is_some_and(|row| row[7].starts_with("started without its .envrc: "))
+        });
+        setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+        if unrelated {
+            let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+            db.busy_timeout(Duration::from_secs(10)).unwrap();
+            db.execute_batch("UPDATE tasks SET reason = 'an unrelated reason'")
+                .unwrap();
+        }
+
+        setup.release("hold-call");
+
+        let tasks = setup.until("tasks", |rows| rows[0][4] == "blocked");
+        assert_eq!(
+            tasks[0][7].contains("; started without its .envrc: direnv: error exit status 1"),
+            !unrelated,
+            "{tasks:?}"
+        );
+        assert!(!tasks[0][7].contains("unrelated"), "{tasks:?}");
     }
 }
 

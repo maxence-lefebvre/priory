@@ -1344,7 +1344,11 @@ fn tend(
     attaching: &mut Vec<crate::attach::Attaching>,
 ) -> Result<(), Error> {
     let factory = trace.factory;
-    for mut run in state::live(db)? {
+    let live = state::live(db)?;
+    priory_runtime::trust::forget_direnv(home, &|session| {
+        live.iter().any(|run| run.session == session)
+    });
+    for mut run in live {
         if run.direnv == 1
             && let Some(error) = runtime::direnv_failed(home, &run.session)
         {
@@ -1572,6 +1576,19 @@ fn diagnose(
     }
 }
 
+/// direnv's stderr `error` as one line with `secrets` hidden. They are hidden before the lines join,
+/// since a joined value would no longer match one that spans lines.
+fn envrc_error(error: &str, secrets: &[String]) -> String {
+    let error = crate::screen::plain(error);
+    crate::screen::redact(&error, secrets, None)
+        .map(|(shown, _)| shown)
+        .filter(|shown| !crate::screen::holds_any_secret(shown, secrets))
+        .map_or_else(
+            || "[redacted]".to_owned(),
+            |shown| runtime::one_line(&shown),
+        )
+}
+
 /// Records that direnv failed with `error` before run `run`'s harness started, which then started
 /// without the `.envrc`: in the trace and as its task's reason.
 fn direnv_failed(
@@ -1580,10 +1597,8 @@ fn direnv_failed(
     run: &state::LiveRun,
     error: &str,
 ) -> Result<(), Error> {
-    let error = crate::screen::plain(error);
     let secrets = crate::screen::secrets(&trace.factory.secret_envs());
-    let error = crate::screen::redact(&error, &secrets, None)
-        .map_or_else(|| "[redacted]".to_owned(), |(shown, _)| shown);
+    let error = envrc_error(error, &secrets);
     let why = if error.is_empty() {
         "direnv exited before the harness started".to_owned()
     } else {
@@ -1598,10 +1613,7 @@ fn direnv_failed(
     let tx = db.transaction()?;
     crate::trace::trusted(&tx, trace, run.id, "direnv", &grant, None)?;
     state::direnv(&tx, run.id, 2)?;
-    tx.execute(
-        "UPDATE tasks SET reason = ?2 WHERE id = ?1",
-        rusqlite::params![run.task, format!("started without its .envrc: {why}")],
-    )?;
+    state::without_envrc(&tx, run.task, &why)?;
     tx.commit()?;
     Ok(())
 }
@@ -1652,24 +1664,22 @@ fn verdict(
         );
         return Some(("exited", reason, false));
     }
-    if run.late {
+    let handed = || runtime::direnv_handed(home, &run.session).map(|ago| ago.as_secs() as i64);
+    let late = run
+        .waited
+        .and_then(|waited| state::late(waited, run.direnv != 0, handed()));
+    if let Some(within) = late {
         let mut reason = if run.direnv == 1 && runtime::direnv_loading(home, &run.session) {
             format!(
-                "direnv did not finish loading {}/.envrc within {}, so {} never started; warm it \
+                "direnv did not finish loading {}/.envrc within {within}s, so {} never started; warm it \
                  with `direnv exec <worktree> true`, or fix the .envrc",
                 run.worktree.as_deref().unwrap_or("its folder"),
-                state::DIRENV_READY_WITHIN.replace(" seconds", "s"),
                 harness.program(),
             )
         } else {
-            let within = match run.direnv {
-                0 => state::READY_WITHIN,
-                _ => state::DIRENV_READY_WITHIN,
-            };
             format!(
-                "{} showed no SessionStart within {}; {}",
+                "{} showed no SessionStart within {within}s; {}",
                 harness.program(),
-                within.replace(" seconds", "s"),
                 trust()
             )
         };
@@ -2611,10 +2621,15 @@ fn start(
         });
         if factory.names_repo(repo) {
             let folder = priory_runtime::trust::direnv_folder(home, &session);
-            let grants = priory_runtime::trust::direnv(home, repo, &worktree, &folder);
+            let base = state::root_base(db, admission.task)?;
+            let grants =
+                priory_runtime::trust::direnv(home, repo, &worktree, base.as_deref(), &folder);
             let tx = db.transaction()?;
             for grant in &grants {
                 crate::trace::trusted(&tx, trace, run, "direnv", grant, None)?;
+            }
+            if let Some(why) = grants.iter().find_map(|grant| grant.why.as_deref()) {
+                state::without_envrc(&tx, admission.task, why)?;
             }
             tx.commit()?;
             if grants
@@ -3071,7 +3086,7 @@ mod tests {
             session: "s".into(),
             worktree: Some("/w/1".into()),
             ready: false,
-            late: true,
+            waited: Some(600),
             direnv: 1,
             turn: None,
             prompted: None,
@@ -3087,6 +3102,19 @@ mod tests {
             "{reason}"
         );
         assert!(!reason.contains("trust the"), "{reason}");
+    }
+
+    #[test]
+    fn a_secret_that_spans_lines_of_direnvs_error_is_hidden() {
+        let secrets = ["first-half\n  second-half".to_owned()];
+
+        let shown = envrc_error("direnv: first-half\n  second-half\nexit 1\n", &secrets);
+
+        assert!(shown.contains("[redacted]"), "{shown}");
+        assert!(!shown.contains("half"), "{shown}");
+        assert!(shown.ends_with("exit 1"), "{shown}");
+        let split = "first-\u{200b}half\n  second-half";
+        assert_eq!(envrc_error(split, &secrets), "[redacted]");
     }
 
     /// Writes the factory's file once `reload::EVERY` passed, then polls.

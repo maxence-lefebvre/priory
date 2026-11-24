@@ -276,17 +276,36 @@ a worktree or clone that a symlink leads elsewhere.
   naming that folder, so every command the agent runs gets the `.envrc` environment, such as a
   nix flake's toolchain. The daemon never edits the person's `direnv.toml` or direnv's allow
   folder. It refuses the grant, and starts the run without direnv, when the person's
-  `direnv.toml` cannot be read or parsed. Without `direnv` or without an `.envrc`, nothing
+  `direnv.toml` cannot be read or parsed, or when the `.envrc` fails the check below. The task's
+  reason then says `started without its .envrc:` and why. The daemon deletes the folder once the
+  run ended. Without `direnv` or without an `.envrc`, nothing
   changes. An agent that edits `.envrc` reloads it with `direnv exec . <command>`.
 
-  Whitelisting a path in `exact` skips direnv's content check: an `.envrc` that changes, by a
-  commit or by the agent, loads without a new `direnv allow`. The variables an `.envrc` exports
+  Whitelisting a path in `exact` skips direnv's content check, and a worktree outlives its run. So
+  without a check, an `.envrc` that one run's agent wrote would run at the start of the next,
+  outside the tool guard and the harness's permissions. The daemon grants direnv only when the worktree's
+  `.envrc` is a regular file with the same content as the one on the commit the task started from.
+  A stacked task is checked against the commit its bottom task started from, since its own base
+  is another agent's branch. Failing that, the `.envrc` must match the one on the repository's default
+  branch, which the daemon reads from GitHub rather than from the clone, whose refs an agent can
+  write. A task that changes `.envrc` therefore starts its later runs without it until the change
+  is on the default branch.
+
+  The check has limits:
+
+  - It covers `.envrc` alone. A file that the `.envrc` loads, such as `flake.nix`, `.env` or a
+    sourced script, runs as the worktree has it, so an agent's edit of one runs at the next start.
+  - A process that an agent left running can rewrite `.envrc` between the check and its load.
+  - It trusts the objects of the clone, and the git config that the clone had when the task started.
+
+  The variables an `.envrc` exports
   reach the harness's environment as they are, outside the daemon's secret redaction, so keep
   secrets out of a repository's `.envrc`.
 
   The harness starts only after the `.envrc` loads: a `use flake` took 12s on a fresh worktree
-  and under 1s after. A run under direnv gets 600s, rather than 60s, to reach `SessionStart`,
-  and one whose `.envrc` is still loading then blocks with a reason that names direnv. When
+  and under 1s after. direnv gets 600s to load it, and a run whose `.envrc` is still loading then
+  blocks with a reason that names direnv. Once direnv hands over, the harness gets the usual 60s to
+  reach `SessionStart`. When
   direnv itself fails before the harness starts, for example because the `.envrc` exits non-zero
   or `nix` is not on PATH in a jail, the harness starts without the `.envrc`. The daemon records
   direnv's error as a `failed` `factory.run.trusted` record and in the task's reason, which a
@@ -297,7 +316,10 @@ or `refused` (see [trace-schema.md](../trace-schema.md#factoryruntrusted)).
 
 A trusted folder lets the repository's own settings run, as a person's trust does: Claude's
 `.claude/settings.json` hooks, `env` and `permissions.allow` rules, `CLAUDE.md` and skills, and
-Codex's `.codex/config.toml`. Those settings run beside Priory's guard, and a hostile one may
+Codex's `.codex/config.toml`. The daemon does not compare those files with the commit the task
+started from, as it does an `.envrc`: hooks that an agent wrote into `.claude/settings.json` run in
+the next run on the same worktree, or on a branch stacked on it, outside the tool guard.
+Those settings run beside Priory's guard, and a hostile one may
 weaken it, for example with Claude's `disableAllHooks`. So turning the key on vouches for every
 repository the factory names. A run without claude.ai connectors still gets `--strict-mcp-config`,
 which keeps `.mcp.json` servers out. A run with connectors goes without that flag, and its guard
