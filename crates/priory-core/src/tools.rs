@@ -4554,37 +4554,48 @@ fn say_reopens(
 }
 
 /// The lowest open pull request of `task`, or why it has none: it owns none, or they merged or
-/// closed. No close counts once a later event read that pull request open, except a merge.
+/// closed.
 fn open_pull_request(tx: &Transaction, task: i64) -> rusqlite::Result<Result<String, String>> {
     let stack = crate::stack::of(tx, task)?;
-    if let Some(open) = stack.iter().find(|pull| pull.state == "open") {
-        return Ok(Ok(open.resource.clone()));
-    }
-    if let Some(top) = stack.last() {
-        return Ok(Err(format!(
-            "its pull request {} is {}",
-            top.resource, top.state
-        )));
-    }
-    let Some(resource) = pull_request(tx, task)? else {
-        return Ok(Err("owns no pull request".to_owned()));
+    let pulls = match stack.is_empty() {
+        true => pull_request(tx, task)?
+            .map(|resource| (resource, "open".to_owned()))
+            .into_iter()
+            .collect(),
+        false => stack
+            .into_iter()
+            .map(|pull| (pull.resource, pull.state))
+            .collect::<Vec<_>>(),
     };
-    let closed: Option<bool> = tx
-        .query_row(
-            "SELECT iif(type = ?2, coalesce(json_extract(data, '$.merged'), 0), NULL) FROM inbox
-             WHERE 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1
-             AND (type = ?2 OR json_extract(data, '$.open') = 1)
-             ORDER BY type = ?2 AND coalesce(json_extract(data, '$.merged'), 0) DESC, seq DESC LIMIT 1",
-            params![resource, CLOSED],
-            |row| row.get(0),
-        )
-        .optional()?
-        .flatten();
-    Ok(match closed {
-        Some(true) => Err(format!("its pull request {resource} is merged")),
-        Some(false) => Err(format!("its pull request {resource} is closed")),
-        None => Ok(resource),
-    })
+    let mut why = "owns no pull request".to_owned();
+    for (resource, mut state) in pulls {
+        if state == "open" {
+            state = last_read(tx, &resource)?;
+        }
+        if state == "open" {
+            return Ok(Ok(resource));
+        }
+        why = format!("its pull request {resource} is {state}");
+    }
+    Ok(Err(why))
+}
+
+/// Whether the newest event that says so read the pull request `resource` `open`, `closed` or
+/// `merged`. A merge stands whatever came after it; `open` when none says.
+fn last_read(tx: &Transaction, resource: &str) -> rusqlite::Result<String> {
+    tx.query_row(
+        "SELECT state FROM (
+           SELECT seq, CASE WHEN type = ?2 AND json_extract(data, '$.merged') = 1 THEN 'merged'
+             WHEN type != ?2 AND json_extract(data, '$.open') = 1 THEN 'open' ELSE 'closed' END AS state
+           FROM inbox
+           WHERE 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1
+           AND (type = ?2 OR json_extract(data, '$.open') IS NOT NULL))
+         ORDER BY state = 'merged' DESC, seq DESC LIMIT 1",
+        params![resource, CLOSED],
+        |row| row.get(0),
+    )
+    .optional()
+    .map(|state| state.unwrap_or_else(|| "open".to_owned()))
 }
 
 /// Queues `text` as the next prompt of the agent at the task's model step, as an answer

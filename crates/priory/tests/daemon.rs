@@ -750,6 +750,10 @@ fn a_comment_that_reopens_a_done_task_coalesces_its_request_into_it() {
     assert_eq!(setup.rows("tasks").len(), 1);
     assert_eq!(
         routes(&setup)[2..],
-        [route("1", "reopened"), route("1", "coalesced")]
+        [
+            route("1", "reopened"),
+            route("-", "report"),
+            route("1", "coalesced")
+        ]
     );
 }

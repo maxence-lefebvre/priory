@@ -7199,7 +7199,7 @@ fn say_to_a_done_task_is_refused() {
     assert!(!said.status.success());
     assert_eq!(
         String::from_utf8_lossy(&said.stderr),
-        "priory say: task 1 is done\n"
+        "priory say: task 1 is done and owns no pull request\n"
     );
 }
 
@@ -9120,13 +9120,26 @@ fn done_with_open_pull_request(name: &str) -> Setup {
 
 /// Asserts `say` on task 1 is refused with `why`, starting no run.
 fn say_refused(setup: &Setup, why: &str) {
-    let runs = setup.rows("runs").len();
+    let (runs, before) = (setup.rows("runs").len(), generation(setup));
     let said = setup.priory(&["say", "1", "Fix the empty case."]);
     assert!(!said.status.success(), "{said:?}");
     let error = String::from_utf8_lossy(&said.stderr);
     assert!(error.contains(why), "{error}");
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(setup.rows("runs").len(), runs);
+    assert_eq!(generation(setup), before);
+}
+
+/// The branch and worktree of task 1.
+fn branch(setup: &Setup) -> (String, String) {
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .query_row(
+            "SELECT branch, worktree FROM tasks WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
 }
 
 /// The generation of task 1.
@@ -9142,6 +9155,7 @@ fn generation(setup: &Setup) -> i64 {
 #[test]
 fn a_say_on_a_done_task_whose_pull_request_is_open_reopens_it_and_resumes_its_session() {
     let setup = done_with_open_pull_request("say-reopen");
+    let before = branch(&setup);
 
     let said = setup.priory(&["say", "1", "/fix the empty case."]);
 
@@ -9160,6 +9174,8 @@ fn a_say_on_a_done_task_whose_pull_request_is_open_reopens_it_and_resumes_its_se
     );
     let runs = setup.rows("runs");
     assert_eq!(runs[2][4], runs[0][4], "the run resumes the session");
+    assert_eq!(generation(&setup), 2);
+    assert_eq!(branch(&setup), before, "the run keeps the branch");
     assert_eq!(
         setup
             .trace()
@@ -9189,7 +9205,6 @@ fn a_say_on_a_done_task_whose_pull_request_merged_is_refused() {
         &setup,
         "task 1 is done and its pull request github:owner/repo#7 is merged",
     );
-    assert_eq!(generation(&setup), 1);
 }
 
 #[test]
@@ -9214,17 +9229,17 @@ fn a_say_on_a_done_task_is_refused_once_its_pull_request_closed_until_it_reads_o
 }
 
 #[test]
-fn a_say_on_a_done_task_with_no_pull_request_is_refused() {
-    let mut setup = Setup::with_workflow("say-no-pull", GATED_STEP);
-    command_scorer(&setup, "check", "1m", "exit 0");
-    setup.calls(&[result("passed")]);
-    setup.publish(&requested(42));
-    setup.start();
-    setup.until("tasks", |rows| {
-        rows.first().is_some_and(|row| row[4] == "done")
-    });
+fn a_say_on_a_done_task_is_refused_once_feedback_reads_its_pull_request_closed() {
+    let setup = done_with_open_pull_request("say-read-closed");
+    let mut late = review_in("approved", 350);
+    late.data["open"] = json!(false);
+    setup.publish(&late);
+    setup.until("inbox", |rows| rows.len() == 4);
 
-    say_refused(&setup, "task 1 is done and owns no pull request");
+    say_refused(
+        &setup,
+        "task 1 is done and its pull request github:owner/repo#7 is closed",
+    );
 }
 
 #[test]
@@ -9342,9 +9357,32 @@ fn an_outsiders_review_requesting_changes_on_a_merged_pull_request_reopens_nothi
 }
 
 #[test]
+fn an_outsiders_review_that_reads_a_closed_pull_request_open_again_reopens_its_subscriber() {
+    let setup = opted_in("changes-after-close", None);
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute_batch(
+            "DELETE FROM owns WHERE resource = 'github:owner/repo#7';
+             INSERT OR IGNORE INTO subscriptions (task, resource) VALUES (1, 'github:owner/repo#7');",
+        )
+        .unwrap();
+    let mut close = closed().time(herdr_bus::Timestamp::now());
+    close.data["merged"] = json!(false);
+    setup.publish(&close);
+    setup.until("inbox", |rows| rows.len() == 4);
+    let mut review = outsiders_review("changes_requested", 360);
+    review.data["open"] = json!(true);
+
+    setup.publish(&review);
+
+    setup.until("runs", |rows| rows.len() == 3);
+}
+
+#[test]
 fn an_agents_marked_review_requesting_changes_reopens_a_done_task() {
     let setup = done_with_open_pull_request("changes-agent");
     let mut review = review_in("changes_requested", 340);
+    review.data["association"] = json!("MEMBER");
     review.data["own"] = json!(true);
     review.data["agent"] = json!(true);
 

@@ -2329,23 +2329,7 @@ pub(crate) fn route_in(
     let resources = route::resources(message);
     renamed(tx, message, resources.first())?;
     claim_pull_request(tx, message)?;
-    // The intake publishes no reopen, so a later event of an open pull request or issue tells it,
-    // and gives back the subscriptions its close ended.
-    if ![CLOSED, ISSUE_CLOSED].contains(&message.kind.as_str()) && message.data["open"] == true {
-        tx.execute(
-            "UPDATE pull_requests SET state = 'open' WHERE resource = ?1 AND state = 'closed'",
-            [resources.first()],
-        )?;
-        tx.execute(
-            "INSERT OR IGNORE INTO subscriptions (task, resource, created, chosen)
-             SELECT task, resource, created, chosen FROM closed_subscriptions WHERE resource = ?1",
-            [resources.first()],
-        )?;
-        tx.execute(
-            "DELETE FROM closed_subscriptions WHERE resource = ?1",
-            [resources.first()],
-        )?;
-    }
+    read_open(tx, message, resources.first())?;
     if message.kind == CLOSED {
         let state = if message.data["merged"] == true {
             "merged"
@@ -2725,6 +2709,32 @@ fn claim_pull_request(tx: &Transaction, message: &Message) -> rusqlite::Result<(
     crate::stack::record(tx, task, &resource, head, base)
 }
 
+/// Takes back what a close ended once `message` reads the pull request or issue `resource` open.
+fn read_open(
+    tx: &Transaction,
+    message: &Message,
+    resource: Option<&String>,
+) -> rusqlite::Result<()> {
+    // The intake publishes no reopen, so a later event of an open pull request or issue tells it,
+    // and gives back the subscriptions its close ended.
+    if ![CLOSED, ISSUE_CLOSED].contains(&message.kind.as_str()) && message.data["open"] == true {
+        tx.execute(
+            "UPDATE pull_requests SET state = 'open' WHERE resource = ?1 AND state = 'closed'",
+            [resource],
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO subscriptions (task, resource, created, chosen)
+             SELECT task, resource, created, chosen FROM closed_subscriptions WHERE resource = ?1",
+            [resource],
+        )?;
+        tx.execute(
+            "DELETE FROM closed_subscriptions WHERE resource = ?1",
+            [resource],
+        )?;
+    }
+    Ok(())
+}
+
 /// The done task that an outsider's review requesting changes reopens, when that task's workflow
 /// opts in and no active task owns the pull request.
 fn reopened_by_outsider(
@@ -2735,7 +2745,9 @@ fn reopened_by_outsider(
     if message.kind != REVIEWED || message.data["state"] != "changes_requested" {
         return Ok(None);
     }
-    if !owners(tx, &route::resources(message))?.is_empty() {
+    let resources = route::resources(message);
+    read_open(tx, message, resources.first())?;
+    if !owners(tx, &resources)?.is_empty() {
         return Ok(None);
     }
     let Some(task) = crate::tools::reopenable(tx, message)? else {
