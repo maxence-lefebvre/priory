@@ -2057,6 +2057,25 @@ fn the_queue_lists_the_factorys_requestable_workflows_so_a_view_can_offer_them()
 }
 
 #[test]
+fn the_queue_names_the_request_tables_workflow_so_a_view_can_show_the_default() {
+    let mut setup = Setup::new("queue-default-workflow", DEFAULTS);
+    let address = setup.start(&["serve", &setup.factory()]);
+    let mut bare = Setup::new("queue-no-default-workflow", SERVE);
+    let bare_address = bare.start(&["serve", &bare.factory()]);
+
+    let queue = api(&address, "/api/queue");
+    assert_eq!(queue["default_workflow"], "implement");
+    assert_eq!(json_of(&setup, "queue")["default_workflow"], "implement");
+    let output = setup.priory(&["queue", "--json"]);
+    succeeded(&output);
+    let without_factory: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let bare_queue = api(&bare_address, "/api/queue");
+    for queue in [without_factory, bare_queue, json_of(&bare, "queue")] {
+        assert_eq!(queue.get("default_workflow"), Some(&Value::Null));
+    }
+}
+
+#[test]
 fn the_views_endpoint_returns_the_default_view_priory_ships() {
     let mut setup = Setup::new("views", SERVE);
     let address = setup.start(&["serve", &setup.factory()]);

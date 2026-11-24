@@ -93,7 +93,10 @@ export function context() {
       },
     },
     sleep: () => new Promise(() => {}),
-    focus_handle: () => ({ focus() {} }),
+    focus_handle: () => {
+      const handle = { focus() { herdr.focused = handle; }, is_focused: () => herdr.focused === handle };
+      return handle;
+    },
     write_to_clipboard(/** @type {string} */ text) { herdr.clipboard = text; },
     theme: () => ({ appearance: "light" }),
   };
@@ -133,6 +136,20 @@ export function press(root, id) {
   for (const node of reached) if (!node.calls.disabled?.[0]) node.on.on_click?.({}, context());
 }
 
+/**
+ * Presses a key with the focus on the element with `id`: it bubbles to the root until a handler stops it.
+ * @param {any} root @param {string} id @param {string} key
+ */
+export function keydown(root, id, key) {
+  const path = pathTo(root, id);
+  if (!path) throw new Error(`no element ${id}`);
+  const cx = context();
+  for (const node of path.reverse()) {
+    node.on.on_key_down?.({ key, keystroke: key, modifiers: {} }, cx);
+    if (cx.stopped) return;
+  }
+}
+
 // gpui-kit
 export class View {}
 export const div = () => element("div");
@@ -148,10 +165,22 @@ export const TextView = { html: (/** @type {string} */ id, /** @type {string} */
 export const Input = { new: () => element("input") };
 export const Textarea = { new: () => element("textarea") };
 export const Popover = { new: (/** @type {string} */ id) => element("popover", id) };
-export const ScrollHandle = { new: () => ({ scroll_to_item() {} }) };
+export const ScrollHandle = {
+  new: () => {
+    const handle = { shown: /** @type {number | null} */ (null), scroll_to_item(/** @type {number} */ index) { handle.shown = index; } };
+    return handle;
+  },
+};
 const fieldState = () => {
   let value = "";
-  return { value: () => value, set_value: (/** @type {string} */ next) => { value = next; }, on() {}, focus() {} };
+  const handlers = /** @type {Record<string, Function>} */ ({});
+  return {
+    value: () => value,
+    set_value: (/** @type {string} */ next) => { value = next; },
+    on(/** @type {string} */ event, /** @type {Function} */ handler) { handlers[event] = handler; },
+    emit(/** @type {string} */ event) { handlers[event]?.({}, context()); },
+    focus() {},
+  };
 };
 export const InputState = { new: fieldState };
 export const TextareaState = { new: fieldState };
@@ -196,7 +225,10 @@ export const herdr = {
     this.waiting = [];
     for (const end of waiting) end();
   },
+  /** @type {unknown} the handle that took the focus last */
+  focused: null,
   reset() {
+    this.focused = null;
     this.replies = {};
     this.shared.clear();
     this.runs = [];
