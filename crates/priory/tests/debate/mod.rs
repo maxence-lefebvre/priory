@@ -57,7 +57,7 @@ fn conceding(verdict: &str, argument: &str, concedes: &str) -> serde_json::Value
 }
 
 /// Waits until task 1 is in `state`, and returns its row.
-fn until_state(setup: &Setup, state: &str) -> Vec<String> {
+pub(super) fn until_state(setup: &Setup, state: &str) -> Vec<String> {
     setup.until("tasks", |rows| {
         rows.first().is_some_and(|row| row[4] == state)
     })[0]
@@ -225,6 +225,12 @@ fn agents_that_never_agree_leave_the_task_asleep_on_an_ask_the_persons_answer_de
         "{text}"
     );
     assert!(text.contains("the rounds ran out"), "{text}");
+
+    let written = setup.priory(&["answer", "1", "keep both of them", "--revision", "1"]);
+    assert_eq!(
+        String::from_utf8_lossy(&written.stderr),
+        "priory answer: ask 1 takes one of: daemon, process, undecided\n"
+    );
 
     let answered = setup.priory(&["answer", "1", "daemon", "--revision", "1"]);
 

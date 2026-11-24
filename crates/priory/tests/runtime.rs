@@ -7216,8 +7216,8 @@ fn an_answer_to_a_stale_revision_or_a_second_answer_is_refused() {
     let asks = setup.priory(&["asks", "--json"]);
     let asks: serde_json::Value = serde_json::from_slice(&asks.stdout).unwrap();
     assert_eq!(
-        asks["asks"][0]["free_text"], true,
-        "an agent's ask takes text"
+        asks["asks"][0]["dismissable"], true,
+        "an agent's ask can be dismissed"
     );
     let stale = setup.priory(&["answer", "1", "sqlite", "--revision", "2"]);
     let first = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
@@ -7242,8 +7242,8 @@ fn an_answer_to_a_stale_revision_or_a_second_answer_is_refused() {
 }
 
 #[test]
-fn a_step_ask_takes_only_its_options() {
-    let mut setup = Setup::with_workflow("options", STEPS);
+fn a_written_answer_on_a_human_step_sends_the_task_back_to_the_model_step_before_it() {
+    let mut setup = Setup::with_workflow("written", STEPS);
     setup.calls(&[result("unsure")]);
     setup.publish(&requested(42));
     setup.start();
@@ -7251,14 +7251,234 @@ fn a_step_ask_takes_only_its_options() {
         rows.first().is_some_and(|row| row[4] == "asleep")
     });
 
+    let answered = setup.priory(&["answer", "1", "split the migration out", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&answered.stdout),
+        "ask 1 answered: back to step plan\n"
+    );
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    assert!(
+        typed[1].contains("A person answered step approve in writing: split the migration out\n"),
+        "{typed:?}"
+    );
+    let task = setup.priory(&["task", "1", "--json"]);
+    let task: serde_json::Value = serde_json::from_slice(&task.stdout).unwrap();
+    assert_eq!(task["step"], "plan");
+    let asks = setup.priory(&["asks", "--all", "--json"]);
+    let asks: serde_json::Value = serde_json::from_slice(&asks.stdout).unwrap();
+    assert_eq!(asks["asks"][0]["answer"], "split the migration out");
+    assert_eq!(asks["asks"][0]["dismissable"], false);
+}
+
+#[test]
+fn an_option_typed_on_a_human_step_still_follows_its_next_edge() {
+    let mut setup = Setup::with_workflow("written-option", STEPS);
+    setup.calls(&[result("unsure")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+
+    let answered = setup.priory(&["answer", "1", "approved", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    let task = setup.priory(&["task", "1", "--json"]);
+    let task: serde_json::Value = serde_json::from_slice(&task.stdout).unwrap();
+    assert_eq!(task["step"], "implement");
+}
+
+#[test]
+fn a_written_answer_on_a_human_step_with_no_model_step_before_it_is_refused() {
+    let workflow = STEPS
+        .replace("start = \"plan\"", "start = \"approve\"")
+        .replace("approved = \"implement\"", "approved = \"plan\"");
+    let mut setup = Setup::with_workflow("written-first", &workflow);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+
     let answered = setup.priory(&["answer", "1", "sure", "--revision", "1"]);
 
     assert!(!answered.status.success());
     assert_eq!(
         String::from_utf8_lossy(&answered.stderr),
+        "priory answer: ask 1 takes one of: approved, rejected; no earlier model step reads a written answer\n"
+    );
+    assert_eq!(setup.rows("asks").len(), 1, "the ask stays open");
+}
+
+/// The stderr of a refused `priory answer` to ask 1.
+fn refused_answer(setup: &Setup, text: &str) -> String {
+    let answered = setup.priory(&["answer", "1", text, "--revision", "1"]);
+    assert!(!answered.status.success(), "{text:?}: {answered:?}");
+    String::from_utf8(answered.stderr).unwrap()
+}
+
+#[test]
+fn a_blank_or_mistyped_answer_on_a_human_step_is_refused_and_the_ask_stays_open() {
+    let mut setup = Setup::with_workflow("written-mistyped", STEPS);
+    setup.calls(&[result("unsure")]);
+    setup.publish(&requested(42));
+    setup.start();
+    debate::until_state(&setup, "asleep");
+
+    for blank in ["", " \n\t"] {
+        assert_eq!(
+            refused_answer(&setup, blank),
+            "priory answer: ask 1 takes no blank answer\n"
+        );
+    }
+    for mistyped in [
+        "Approved",
+        " approved ",
+        "aproved",
+        "approved:",
+        "Approved: go",
+    ] {
+        assert_eq!(
+            refused_answer(&setup, mistyped),
+            "priory answer: ask 1 takes one of: approved, rejected; did you mean approved?\n"
+        );
+    }
+    assert_eq!(
+        refused_answer(&setup, &"a ".repeat(10_000)),
+        "priory answer: ask 1 takes an answer of at most 16384 bytes, not 20000\n"
+    );
+    let tasks = setup.rows("tasks");
+    assert_eq!([&tasks[0][3], &tasks[0][4]], ["approve", "asleep"]);
+    assert_eq!(asks_json(&setup)["asks"][0]["state"], "open");
+}
+
+#[test]
+fn a_blank_answer_on_an_agents_ask_is_refused() {
+    let mut setup = Setup::with_workflow("blank-agent", STEPS);
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+    setup.start();
+    debate::until_state(&setup, "asleep");
+
+    assert_eq!(
+        refused_answer(&setup, "  "),
+        "priory answer: ask 1 takes no blank answer\n"
+    );
+    assert_eq!(asks_json(&setup)["asks"][0]["state"], "open");
+}
+
+#[test]
+fn a_written_answer_on_a_plan_approval_is_refused_and_its_option_still_moves_the_task() {
+    let mut setup = intervened("written-plan", GRADED, "plan", "");
+    setup.calls(&[result("green")]);
+    setup.publish(&requested(42));
+    setup.start();
+    debate::until_state(&setup, "asleep");
+    let ended = traced(&setup, "factory.step.ended").len();
+
+    assert_eq!(
+        refused_answer(&setup, "split the migration out"),
         "priory answer: ask 1 takes one of: approved, rejected\n"
     );
-    assert_eq!(setup.rows("asks").len(), 1);
+    assert_eq!(traced(&setup, "factory.step.ended").len(), ended);
+    let answered = setup.priory(&["answer", "1", "approved", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("tasks", |rows| rows[0][3] == "regrade");
+}
+
+/// `workflow` with a human step `confirm` after its `ship` step.
+fn then_confirm(workflow: &str) -> String {
+    workflow.replace(
+        "effect = \"irreversible\"\nnext = { passed = \"done\" }",
+        "effect = \"irreversible\"\nnext = { passed = \"confirm\" }",
+    ) + r#"
+[[steps]]
+id = "confirm"
+decides = "human"
+effect = "none"
+options = ["fine", "undo"]
+next = { fine = "done", undo = "stop" }
+"#
+}
+
+/// Runs `workflow` through its approved `ship` step to the open ask of `confirm`, ask 2.
+fn shipped(name: &str, workflow: &str, later: &[serde_json::Value]) -> Setup {
+    let setup = asked_to_open(name, &then_confirm(workflow));
+    setup.calls(later);
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("asks", |rows| rows.iter().any(|row| row[0] == "2"));
+    debate::until_state(&setup, "asleep");
+    setup
+}
+
+/// How many runs of `setup` were at step `ship`.
+fn ships(setup: &Setup) -> usize {
+    let runs = setup.rows("runs");
+    runs.iter().filter(|run| run[2] == "ship").count()
+}
+
+#[test]
+fn a_written_answer_after_an_irreversible_step_goes_back_before_its_approval() {
+    let polish = APPROVE_THEN_SHIP
+        .find("[[steps]]\nid = \"polish\"")
+        .unwrap();
+    let ship = APPROVE_THEN_SHIP.find("[[steps]]\nid = \"ship\"").unwrap();
+    let direct = format!(
+        "{}{}",
+        &APPROVE_THEN_SHIP[..polish],
+        &APPROVE_THEN_SHIP[ship..]
+    )
+    .replace("open = \"polish\"", "open = \"ship\"");
+    let setup = shipped("written-announced", &direct, &[passed_with_evidence()]);
+    setup.calls(&[passed_with_evidence()]);
+
+    let answered = setup.priory(&["answer", "2", "fix the typo first", "--revision", "1"]);
+
+    assert_eq!(
+        String::from_utf8_lossy(&answered.stdout),
+        "ask 2 answered: back to step implement\n",
+        "{answered:?}"
+    );
+    setup.until("tasks", |rows| rows[0][3] == "approve-pr");
+    assert_eq!(ships(&setup), 1);
+}
+
+#[test]
+fn a_written_answer_that_would_run_an_approved_step_again_is_refused() {
+    let setup = shipped(
+        "written-shipped",
+        APPROVE_THEN_SHIP,
+        &[passed_with_evidence(), passed_with_evidence()],
+    );
+
+    let answered = setup.priory(&["answer", "2", "fix the typo first", "--revision", "1"]);
+
+    assert_eq!(
+        String::from_utf8_lossy(&answered.stderr),
+        "priory answer: ask 2 takes one of: fine, undo; a written answer goes back to step polish, from which irreversible step ship runs again on its earlier approval\n"
+    );
+    assert_eq!(setup.rows("tasks")[0][3], "confirm");
+    assert_eq!(ships(&setup), 1);
+}
+
+#[test]
+fn a_written_answer_never_goes_back_to_a_step_of_an_earlier_generation() {
+    let mut setup = Setup::with_workflow("written-revived", STEPS);
+    setup.calls(&[result("hopeless")]);
+    setup.publish(&requested(42));
+    setup.start();
+    debate::until_state(&setup, "dropped");
+    setup.gone("priory-1");
+    let revived = setup.priory(&["revive", "1", "--step", "approve"]);
+    assert!(revived.status.success(), "{revived:?}");
+    setup.until("asks", |rows| rows.len() == 1);
+
+    assert_eq!(
+        refused_answer(&setup, "split the migration out"),
+        "priory answer: ask 1 takes one of: approved, rejected; no earlier model step reads a written answer\n"
+    );
 }
 
 #[test]
@@ -7314,7 +7534,7 @@ fn a_note_after_a_step_ask_s_option_that_stops_the_task_is_its_reason() {
     let asks = setup.priory(&["asks", "--all", "--json"]);
     let asks: serde_json::Value = serde_json::from_slice(&asks.stdout).unwrap();
     assert_eq!(asks["asks"][0]["answer"], "rejected: too big");
-    assert_eq!(asks["asks"][0]["free_text"], false);
+    assert_eq!(asks["asks"][0]["dismissable"], false);
 }
 
 #[test]
@@ -12212,6 +12432,51 @@ fn a_pull_request_closed_unmerged_drops_or_asks_as_its_hold_says() {
 
     // The next tick gives the released task its reason to wait for room.
     assert_eq!(held_as(&setup, "2")[0], "queued");
+}
+
+#[test]
+fn a_written_answer_on_a_hold_s_ask_keeps_the_hold_and_waits_for_the_task_s_next_run() {
+    let setup = queued_without_room("hold-written");
+    person(
+        &setup,
+        "hold",
+        &[
+            "1",
+            "--reason",
+            "b",
+            "--merge",
+            "owner/repo#7",
+            "--if-closed",
+            "ask",
+        ],
+    );
+    setup.publish(&closed_7(false, 400));
+    let asks = setup.until("asks", |rows| rows.len() == 1);
+
+    let reply = person(
+        &setup,
+        "answer",
+        &[&asks[0][0], "use the new schema", "--revision", "1"],
+    );
+
+    assert_eq!(
+        reply,
+        "ask 1: the text waits for the task's next run; its hold still takes one of: release, drop\n"
+    );
+    assert_eq!(held_as(&setup, "1")[0], "held");
+    let outbox = setup.rows("outbox");
+    assert!(
+        outbox.iter().any(
+            |row| row[4] == "A person wrote on ask 1: use the new schema" && row[3] == "queued"
+        ),
+        "{outbox:?}"
+    );
+    person(
+        &setup,
+        "answer",
+        &[&asks[0][0], "release", "--revision", "1"],
+    );
+    assert_eq!(held_as(&setup, "1")[0], "queued");
 }
 
 /// A Linear event about ENG-7 whose open blockers are `blockers`.

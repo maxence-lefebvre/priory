@@ -344,7 +344,7 @@ export default class PrioryAsks extends View {
     if (event.key === "enter" && ask && this.width < PANE.split) { this.reading = this.reading ? null : "why"; return cx.notify(); }
     if (!ask || !detail) return;
     if (digit >= 1 && digit <= detail.options.length) return this.choose(ask, digit - 1, cx);
-    if (event.key === "w" && ask.state === "open" && ask.free_text !== false) { this.writing.add(ask.id); this.draft(ask.id).focus(); return cx.notify(); }
+    if (event.key === "w" && ask.state === "open") { this.writing.add(ask.id); this.draft(ask.id).focus(); return cx.notify(); }
     if (event.key === "s" && detail.canSnooze && !ask.snoozed_until) return this.snooze(ask, { for: "1h" }, cx);
     if (event.key === "[" || event.key === "]") {
       const chips = detail.chips.map(([id]) => id);
@@ -651,7 +651,7 @@ export default class PrioryAsks extends View {
         cx.notify();
       }, "terminal"]);
     }
-    if (detail.takesText) {
+    if (detail.dismissable) {
       items.push(["Dismiss", "", (cx) => {
         this.popover = null;
         if (!this.busy()) this.act(ask, (client) => client.dismiss(ask.id, ask.revision), cx);

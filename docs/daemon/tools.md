@@ -410,7 +410,8 @@ The lead answers with `result`:
 
 The summary, trimmed, is the answer. When the ask lists options, it must be one of them, or the
 result is refused with `ask <id> takes one of: <options>`. A person can still answer an agent's ask
-in free text. In the same
+in free text, and a human step's ask in writing (see [waits.md](waits.md#asks-and-answers)). A gate's
+ask takes only its options. In the same
 transaction the daemon applies it to the ask, as a person's answer would, and records it as
 answered by `agent:<lead>`. The asking task then wakes as after any answer. When the answer is
 refused, for example because the ask is no longer open, the result is refused with the reason, and
