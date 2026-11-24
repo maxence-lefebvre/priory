@@ -53,7 +53,7 @@ such as a revert, arrives as a second record that points at the first. Each reco
 | `step`             | yes      | The step's id in the workflow                                         |
 | `decider`          | yes      | `code`, `model` or `human`                                            |
 | `effect`           | yes      | `none`, `read`, `reversible` or `irreversible`                        |
-| `outcome`          | yes      | The label that chose the next step, such as `approved` or `failed`. `written` for a person's written answer to a human step, which sends the task back to its last model step |
+| `outcome`          | yes      | The label that chose the next step, such as `approved` or `failed`. `written` for a person's written answer to a human step, which sends the task back to the reversible model step it ran last |
 | `grade`            | no       | For a `model` step whose outcome is `red`, `yellow` or `green`: that outcome |
 | `harness`, `model` | no       | For `model` steps                                                     |
 | `kit_hash`         | no       | For `model` steps: a hash of the factory's skills, instructions and memories the run got; absent when it got none of them. See [skills.md](daemon/skills.md) |

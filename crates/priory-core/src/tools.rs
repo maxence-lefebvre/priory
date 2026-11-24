@@ -4171,7 +4171,7 @@ fn answer_in(
 }
 
 /// The option that `text`, or its part before a colon, misspells: it differs from the option only
-/// by case and whitespace, or is a lone word a letter or two away from it.
+/// by case and whitespace, or is a lone word a letter or two away from one of 5 letters or more.
 fn meant<'a>(text: &str, options: &'a [String]) -> Option<&'a String> {
     let squeeze = |text: &str| -> Vec<char> {
         text.chars()
@@ -4179,19 +4179,15 @@ fn meant<'a>(text: &str, options: &'a [String]) -> Option<&'a String> {
             .flat_map(char::to_lowercase)
             .collect()
     };
-    let head = text.split(':').next().unwrap_or_default().trim();
-    let lone = !head.contains(char::is_whitespace);
-    let typed = squeeze(head);
+    let head = text.split(':').next().unwrap_or_default();
     options
         .iter()
-        .map(|option| {
+        .flat_map(|option| [text, head].map(|typed| (typed.trim(), option)))
+        .map(|(typed, option)| {
             let known = squeeze(option);
-            let most = match (lone, known.len()) {
-                (false, _) => 0,
-                (true, ..5) => 1,
-                (true, _) => 2,
-            };
-            (distance(&typed, &known), most, option)
+            let lone = !typed.contains(char::is_whitespace);
+            let most = if lone && known.len() >= 5 { 2 } else { 0 };
+            (distance(&squeeze(typed), &known), most, option)
         })
         .filter(|(far, most, _)| far <= most)
         .min_by_key(|(far, ..)| *far)
@@ -4214,7 +4210,7 @@ fn distance(left: &[char], right: &[char]) -> usize {
 }
 
 /// The irreversible step that `task`, sent back to step `back`, would run on an approval of its
-/// current generation before a person decides again.
+/// current generation before a person approves it again.
 fn approved_after<'a>(
     tx: &Transaction,
     workflows: &'a Workflows,
@@ -4225,22 +4221,16 @@ fn approved_after<'a>(
     let Some(flow) = workflows.get(workflow) else {
         return Ok(None);
     };
-    let steps = priory_factory::explain::irreversible_unattended(&flow.value, [back].into());
-    for again in steps {
+    for again in priory_factory::explain::irreversible_before_approval(&flow.value, back) {
         let given: bool = tx.query_row(
             "SELECT EXISTS (SELECT 1 FROM approvals JOIN tasks ON tasks.id = approvals.task
                WHERE approvals.task = ?1 AND approvals.step = ?2
                  AND approvals.generation IS tasks.generation)",
-            params![task, again],
+            params![task, again.id],
             |row| row.get(0),
         )?;
-        if given
-            && flow
-                .value
-                .step(again)
-                .is_some_and(|step| step.autonomous.is_none())
-        {
-            return Ok(Some(again));
+        if given && again.autonomous.is_none() {
+            return Ok(Some(again.id.as_str()));
         }
     }
     Ok(None)

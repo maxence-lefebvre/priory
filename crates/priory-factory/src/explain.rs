@@ -1,5 +1,6 @@
 use crate::factory::{By, Confidence, Decider, Effect, Factory, Harness, Proof, Step, Workflow};
-use std::collections::BTreeSet;
+use crate::rules::reachable;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// A guarded call an agent can make with no human decision, in a workflow, and why.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -279,15 +280,7 @@ pub fn answer_lets_irreversible_run(workflow: &Workflow, ask: &str) -> bool {
 /// let run before a person decides again.
 pub fn irreversible_step_after<'a>(workflow: &'a Workflow, ask: &str) -> Option<&'a str> {
     let step = workflow.step(ask)?;
-    irreversible_unattended(workflow, step.next.values().map(String::as_str).collect()).next()
-}
-
-/// The irreversible steps, in workflow order, that a task at one of `starts` can run before a
-/// person decides.
-pub fn irreversible_unattended<'a>(
-    workflow: &'a Workflow,
-    mut reached: BTreeSet<&'a str>,
-) -> impl Iterator<Item = &'a str> {
+    let mut reached: BTreeSet<&str> = step.next.values().map(String::as_str).collect();
     let mut pending: Vec<&str> = reached.iter().copied().collect();
     while let Some(id) = pending.pop() {
         let Some(step) = workflow.step(id) else {
@@ -302,10 +295,28 @@ pub fn irreversible_unattended<'a>(
     workflow
         .steps
         .iter()
-        .filter(move |step| {
-            step.effect == Effect::Irreversible && reached.contains(step.id.as_str())
-        })
+        .find(|step| step.effect == Effect::Irreversible && reached.contains(step.id.as_str()))
         .map(|step| step.id.as_str())
+}
+
+/// The irreversible steps, in workflow order, that a task at step `start` can reach before a human
+/// step that approves them, whoever decides the edges on the way.
+pub fn irreversible_before_approval<'a>(
+    workflow: &'a Workflow,
+    start: &'a str,
+) -> impl Iterator<Item = &'a Step> {
+    let steps: BTreeMap<&str, &Step> = workflow
+        .steps
+        .iter()
+        .map(|step| (step.id.as_str(), step))
+        .collect();
+    workflow.steps.iter().filter(move |step| {
+        step.effect == Effect::Irreversible
+            && reachable(&steps, start, |other| {
+                other.decides == Decider::Human && other.approves.contains(&step.id)
+            })
+            .contains(step.id.as_str())
+    })
 }
 
 /// How a step reads in a drawing: `ask` and `answer` for a human step, which `answer`s when it
@@ -372,6 +383,22 @@ next = { opened = "done", failed = "stop" }
         let workflow: Workflow = toml::from_str(IMPLEMENT).unwrap();
 
         assert!(answer_lets_irreversible_run(&workflow, "approve-pr"));
+    }
+
+    #[test]
+    fn only_a_human_step_that_approves_an_irreversible_step_stops_the_way_to_it() {
+        let workflow: Workflow = toml::from_str(IMPLEMENT).unwrap();
+        let other: Workflow =
+            toml::from_str(&IMPLEMENT.replace("approves = [\"open-pr\"]", "approves = []"))
+                .unwrap();
+        let reached = |workflow: &Workflow| {
+            irreversible_before_approval(workflow, "plan")
+                .map(|step| step.id.clone())
+                .collect::<Vec<_>>()
+        };
+
+        assert!(reached(&workflow).is_empty());
+        assert_eq!(reached(&other), ["open-pr"]);
     }
 
     #[test]

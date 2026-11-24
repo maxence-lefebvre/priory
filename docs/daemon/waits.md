@@ -17,8 +17,7 @@ The drawing follows one ask, from the agent's `ask` call to the prompt that carr
 `priory answer <ask> <option-or-text> --revision <n>` sends the answer to the daemon. `--expected`
 is the same flag, and `--` ends the flags, as in `priory answer --expected 2 -- cache.ship ship`.
 The first answer to the ask's revision stands. Refused: an answer to another revision, a second
-answer, or, for a human step's ask, a written answer when the task ran no model step before it
-(see below). In a factory of several
+answer, or a text the ask does not take (see below). In a factory of several
 runners, `priory answer <runner>:<ask>` answers another runner's ask through the log (see
 [runners.md](runners.md#answering-another-runners-ask)).
 
@@ -26,7 +25,7 @@ runners, `priory answer <runner>:<ask>` answers another runner's ask through the
 changed question refuses it, as it refuses an answer. A dismissed ask is withdrawn: an answer to
 it is refused with `ask <id> was dismissed`. An agent's ask wakes its task with one prompt:
 `A person dismissed ask <id> without an answer. Continue your task.` A step's ask and a hold's
-ask are refused, since only one of their options moves the task on.
+ask are refused, since they need an answer.
 `priory dismiss --revision <n> [DIR] <runner>:<ask>` dismisses another runner's ask through the log
 (see [runners.md](runners.md#answering-another-runners-ask)).
 
@@ -48,11 +47,13 @@ ask are refused, since only one of their options moves the task on.
   Its next run resumes that agent's session. The step's trace record has the outcome `written`.
   When the task ran no such step, the answer is refused:
   `ask 12 takes one of: approved, rejected; no earlier model step reads a written answer`. So is one
-  that would let an irreversible step run again on an approval a person already gave, before a person
-  decides again. An `autonomous` step does not refuse it.
+  from which the task can reach an irreversible step that a person already approved without passing
+  a human step whose `approves` names it. Another person's decision on the way does not allow it. An
+  `autonomous` step does not refuse it.
 - Every ask refuses a blank answer and one over 16 KiB. A human step's ask and a hold's
   ask also refuse text that looks like a mistyped option: the text, or its part before a colon,
-  differs from an option only by case or whitespace, or is one word a letter or two away from it.
+  differs from an option only by case or whitespace, or is one word a letter or two away from an
+  option of 5 letters or more.
   The error says which: `ask 12 takes one of: approved, rejected; did you mean approved?`. A plan's
   approval and a debate's pick take only their options.
 - A hold's ask takes a written answer too. The hold and its ask stay open, and the text waits as
