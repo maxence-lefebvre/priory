@@ -25306,12 +25306,13 @@ impl Setup {
     /// writes: no daemon types into it and a `sleep` replaced the agent.
     fn running(name: &str) -> Setup {
         let mut setup = Setup::new(name);
-        // A `Stop` after the crash is spooled, and the next daemon would nudge the pane for it.
         setup.hold("hold-stop");
         setup.publish(&requested(42));
         setup.start();
         setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
         setup.crash();
+        setup.release("hold-stop");
+        std::thread::sleep(Duration::from_secs(2));
         setup.tmux_out(&["respawn-pane", "-k", "-t", "=priory-1:", "sleep 600"]);
         setup
     }
