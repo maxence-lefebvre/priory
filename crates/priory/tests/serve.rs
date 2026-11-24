@@ -2809,6 +2809,122 @@ fn a_failed_gh_api_user_is_asked_again_on_the_next_delivery() {
     assert_eq!(owns, [Value::Null, json!(false)]);
 }
 
+/// A `pull_request_review` delivery by `max`, the login `gh` runs as.
+fn own_review(id: u64, body: &str) -> String {
+    json!({
+        "action": "submitted",
+        "review": {
+            "id": id,
+            "state": "commented",
+            "body": body,
+            "html_url": format!("https://github.com/owner/repo/pull/43#pullrequestreview-{id}"),
+            "user": { "login": "max", "type": "User" },
+            "author_association": "OWNER",
+            "commit_id": "fff000",
+            "submitted_at": "2026-11-17T10:30:00Z"
+        },
+        "pull_request": { "number": 43, "state": "open", "user": { "login": "max" } },
+        "repository": { "full_name": "owner/repo" },
+        "sender": { "login": "max" }
+    })
+    .to_string()
+}
+
+#[test]
+fn a_delivered_empty_review_counts_as_its_thread_comments() {
+    let mut setup = Setup::hooks("hook-wrapper");
+    fs::write(
+        setup.dir.join("factory/triggers/my-reviews.toml"),
+        "source = \"github\"\nrepo = \"owner/repo\"\non = \"pull_request_review.submitted\"\nfilter = { author = \"max\", commenter = \"max\" }\nworkflow = \"implement\"\nkey = \"pull_request.number\"\n",
+    )
+    .unwrap();
+    fs::write(setup.dir.join("fake/gh-user"), "max").unwrap();
+    let address = setup.start(&["serve", &setup.factory()]);
+    let send = |event: &str, body: &str| {
+        let signature = sign(&setup.secret, body.as_bytes());
+        deliver(&address, event, "d-7", Some(&signature), body)
+    };
+    let reply = |id: u64, marked: bool| {
+        let marker = if marked {
+            "\n\n<!-- agent-comment -->"
+        } else {
+            ""
+        };
+        json!({
+            "id": id,
+            "body": format!("Fixed.{marker}"),
+            "html_url": format!("https://github.com/owner/repo/pull/43#discussion_r{id}"),
+            "created_at": "2026-11-17T10:30:00Z",
+            "path": "src/lib.rs",
+            "line": 12,
+            "in_reply_to_id": 801,
+            "user": { "login": "max", "type": "User" }
+        })
+    };
+    let answers = |comments: &Value| {
+        let path = setup.dir.join("fake/review-comments");
+        fs::write(path, comments.to_string()).unwrap();
+    };
+    let published = (202, r#"{"outcome":"published"}"#.to_owned());
+    let dropped = (202, r#"{"outcome":"dropped"}"#.to_owned());
+
+    answers(&json!([reply(811, true)]));
+    let marked = send("pull_request_review", &own_review(501, ""));
+    let redelivered = send("pull_request_review", &own_review(501, ""));
+    answers(&json!([reply(821, false)]));
+    let unmarked = send("pull_request_review", &own_review(502, ""));
+    answers(&json!([reply(831, true), reply(832, false)]));
+    let mixed = send("pull_request_review", &own_review(503, ""));
+    answers(&json!([reply(841, true)]));
+    let with_body = send("pull_request_review", &own_review(504, "One thing."));
+    let comment = json!({
+        "action": "created",
+        "comment": reply(851, true),
+        "pull_request": { "number": 43, "state": "open", "user": { "login": "max" } },
+        "repository": { "full_name": "owner/repo" }
+    });
+    send("pull_request_review_comment", &comment.to_string());
+    answers(&json!([reply(851, true)]));
+    let delivered = send("pull_request_review", &own_review(505, ""));
+    fs::write(setup.dir.join("fake/review-comments-fail"), "").unwrap();
+    let unread = send("pull_request_review", &own_review(506, ""));
+
+    assert_eq!(
+        [&marked, &redelivered, &unmarked, &mixed, &with_body],
+        [&published; 5]
+    );
+    assert_eq!(delivered, dropped);
+    assert_eq!(unread.0, 500);
+    let reviews: Vec<_> = setup
+        .published()
+        .into_iter()
+        .filter(|message| message.kind == "github.pull_request_review.submitted")
+        .map(|message| {
+            let data = message.data;
+            (
+                data["github_id"].as_u64().unwrap(),
+                data["agent"] == true,
+                data["triggers"].clone(),
+            )
+        })
+        .collect();
+    let mine = || json!(["my-reviews"]);
+    assert_eq!(
+        reviews,
+        [
+            (501, true, json!([])),
+            (502, false, mine()),
+            (503, false, mine()),
+            (504, false, mine()),
+        ]
+    );
+    let requests = setup.kinds();
+    let requests = requests
+        .iter()
+        .filter(|kind| *kind == "factory.task.requested");
+    assert_eq!(requests.count(), 3);
+}
+
 #[test]
 fn a_poll_requests_the_task_a_crash_left_out_of_a_webhook() {
     let setup = Setup::hooks("hook-crash");

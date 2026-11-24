@@ -1633,6 +1633,159 @@ fn a_bot_review_starts_a_task_only_when_the_commenter_filter_names_the_bot() {
     assert_eq!(bot.message.data["triggers"], json!(["bot-reviews"]));
 }
 
+/// A COMMENTED review by `max`, the login `gh` runs as, written when `review_comment` is.
+fn own_review(id: u64, body: &str) -> serde_json::Value {
+    json!({
+        "databaseId": id,
+        "state": "COMMENTED",
+        "body": body,
+        "submittedAt": "2026-11-17T12:10:00Z",
+        "url": format!("https://github.com/owner/repo/pull/43#pullrequestreview-{id}"),
+        "commit": { "oid": "abc123" },
+        "author": { "login": "max", "__typename": "User" },
+        "authorAssociation": "OWNER"
+    })
+}
+
+/// A thread reply by `max`, with the agent comment marker when `marked`.
+fn own_reply(id: u64, marked: bool) -> serde_json::Value {
+    let mut reply = review_comment(id, Some(801), "max", "User");
+    if marked {
+        reply["body"] = json!("Fixed in abc123.\n\n<!-- agent-comment -->");
+    }
+    reply
+}
+
+/// Pull request 43 by `max` with `reviews`, the newest thread comments `delivered`, and what GitHub
+/// answers for the comments of each review in `threads`.
+fn answer_reviews(
+    setup: &Setup,
+    reviews: serde_json::Value,
+    delivered: serde_json::Value,
+    threads: &[(u64, serde_json::Value)],
+) {
+    let mut mine = pull(43, false, reviews, json!([]));
+    mine["author"] = json!({ "login": "max" });
+    let paths: Vec<String> = threads
+        .iter()
+        .map(|(id, _)| format!("repos/owner/repo/pulls/43/reviews/{id}/comments?per_page=100"))
+        .collect();
+    let mut answers = vec![
+        ("user", json!({ "login": "max" })),
+        (OPEN_PULLS, open_pulls(&[mine])),
+        (REVIEW_COMMENTS, delivered),
+    ];
+    let threads = threads.iter().map(|(_, thread)| thread.clone());
+    answers.extend(paths.iter().map(String::as_str).zip(threads));
+    setup.answer(&answers);
+}
+
+/// A trigger on the reviews `max` submits.
+fn own_review_setup(name: &str) -> Setup {
+    let setup = Setup::baseline(name);
+    pr_trigger(
+        &setup,
+        "my-reviews",
+        "on = \"pull_request_review.submitted\"\nfilter = { author = \"max\", commenter = \"max\" }\n",
+    );
+    setup
+}
+
+/// Each published review's id, and whether it is an agent's, oldest first.
+fn review_agents(setup: &Setup) -> Vec<(u64, serde_json::Value)> {
+    setup
+        .published()
+        .iter()
+        .map(|stored| &stored.message)
+        .filter(|message| message.kind == "github.pull_request_review.submitted")
+        .map(|message| {
+            let id = message.data["github_id"].as_u64().unwrap();
+            (id, message.data["agent"].clone())
+        })
+        .collect()
+}
+
+#[test]
+fn an_empty_review_counts_as_its_thread_comments_and_an_agents_starts_no_task() {
+    let setup = own_review_setup("pr-wrapper-review");
+    answer_reviews(
+        &setup,
+        json!([
+            own_review(501, ""),
+            own_review(502, ""),
+            own_review(503, ""),
+            own_review(504, "One thing."),
+            own_review(505, ""),
+        ]),
+        json!([]),
+        &[
+            (501, json!([own_reply(811, true), own_reply(812, true)])),
+            (502, json!([own_reply(821, false)])),
+            (503, json!([own_reply(831, true), own_reply(832, false)])),
+            // A body makes the review the person's, whatever its comments hold.
+            (504, json!([own_reply(841, true)])),
+        ],
+    );
+
+    succeeded(&setup.intake());
+    succeeded(&setup.intake());
+
+    assert_eq!(
+        review_agents(&setup),
+        [
+            (501, json!(true)),
+            (502, json!(false)),
+            (503, json!(false)),
+            (504, json!(false)),
+            (505, json!(false)),
+        ]
+    );
+    let request = || ("my-reviews".to_owned(), "github:owner/repo#43".to_owned());
+    assert_eq!(
+        requests(&setup),
+        [request(), request(), request(), request()]
+    );
+}
+
+#[test]
+fn an_agents_empty_review_is_dropped_once_its_comments_are_delivered_and_a_persons_is_kept() {
+    let setup = own_review_setup("pr-wrapper-delivered");
+    let marked = own_reply(811, true);
+    let unmarked = own_reply(821, false);
+    answer_reviews(
+        &setup,
+        json!([own_review(5001, ""), own_review(5002, "")]),
+        json!([unmarked, marked]),
+        &[(5001, json!([marked])), (5002, json!([unmarked]))],
+    );
+
+    succeeded(&setup.intake());
+    succeeded(&setup.intake());
+
+    assert_eq!(review_agents(&setup), [(5002, json!(false))]);
+    assert_eq!(requests(&setup).len(), 1);
+}
+
+#[test]
+fn an_empty_review_whose_comments_cannot_be_read_waits_for_the_next_poll() {
+    let setup = own_review_setup("pr-wrapper-unread");
+    let reviews = json!([own_review(501, "")]);
+    answer_reviews(&setup, reviews.clone(), json!([]), &[(501, json!({}))]);
+    assert!(!setup.intake().status.success());
+    assert_eq!(review_agents(&setup), []);
+    answer_reviews(
+        &setup,
+        reviews,
+        json!([]),
+        &[(501, json!([own_reply(811, true)]))],
+    );
+
+    succeeded(&setup.intake());
+
+    assert_eq!(review_agents(&setup), [(501, json!(true))]);
+    assert!(requests(&setup).is_empty());
+}
+
 /// An RFC 3339 time `seconds` ago.
 fn ago(seconds: i64) -> serde_json::Value {
     let now = herdr_bus::Timestamp::now().as_second();
