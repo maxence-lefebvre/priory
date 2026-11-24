@@ -1432,6 +1432,12 @@ fn cloud_step_problems(factory: &Factory, step: &Step, sandboxed: bool) -> Vec<S
             "agent `{agent}` runs in the cloud, so the step cannot have {field}: Priory never sees the session's work"
         ));
     }
+    if matches!(step.effect, Effect::None | Effect::Read) {
+        problems.push(format!(
+            "agent `{agent}` runs in the cloud, so the step's `effect` cannot be `{}`: Priory pushes the task's branch before the session starts",
+            step.effect.name()
+        ));
+    }
     if sandboxed {
         problems.push(format!(
             "agent `{agent}` runs in the cloud, so the workflow cannot have `sandbox`: Priory cannot jail a cloud session"

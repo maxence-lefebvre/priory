@@ -75,6 +75,18 @@ pub fn clean_head(worktree: &Path, branch: &str) -> Result<String, String> {
     head(worktree, branch).ok_or_else(|| format!("branch {branch} is gone"))
 }
 
+/// Whether `head` holds a commit of the local branch `parent` that no branch of `origin` has, as
+/// Priory's clone last saw `origin`.
+pub fn holds_unpushed(worktree: &Path, head: &str, parent: &str) -> Result<bool, String> {
+    let parent = format!("refs/heads/{parent}");
+    let shared = run(git(worktree).args(["merge-base", head, &parent]))?;
+    let listed = ["rev-list", "--max-count=1", shared.trim()];
+    let unpushed = run(git(worktree)
+        .args(listed)
+        .args(["--not", "--remotes=origin"]))?;
+    Ok(!unpushed.trim().is_empty())
+}
+
 /// Pushes the task's branch, then runs `claude --cloud` in an isolated clone of that branch alone.
 /// The CLI uploads the whole clone it runs in when the Claude GitHub App is not on the repository,
 /// and a Priory worktree shares its clone with every other task.
@@ -326,9 +338,17 @@ pub enum NotTaken {
 }
 
 /// Moves the worktree's own `branch` from `base`, where the session started, forward to the
-/// fetched `commit`.
-pub fn adopt(worktree: &Path, branch: &str, base: &str, commit: &str) -> Result<Pushed, NotTaken> {
-    if commit == base || !is_ancestor(worktree, base, commit) {
+/// fetched `commit`. A push of `base` itself is no work yet.
+pub fn adopt(
+    worktree: &Path,
+    branch: &str,
+    base: &str,
+    commit: &str,
+) -> Result<Option<Pushed>, NotTaken> {
+    if commit == base {
+        return Ok(None);
+    }
+    if !is_ancestor(worktree, base, commit) {
         return Err(NotTaken::Never(format!(
             "{commit} does not descend from {base}, where the session started"
         )));
@@ -341,19 +361,20 @@ pub fn adopt(worktree: &Path, branch: &str, base: &str, commit: &str) -> Result<
                 "{branch} moved to {at} since the session started at {base}"
             )));
         }
-        run(git(worktree).args(["merge", "--quiet", "--ff-only", commit]))
-            .map_err(NotTaken::Later)?;
+        // Without `--no-overwrite-ignore`, git replaces an ignored local file that the push tracks.
+        let merge = ["merge", "--quiet", "--ff-only", "--no-overwrite-ignore"];
+        run(git(worktree).args(merge).arg(commit)).map_err(NotTaken::Later)?;
     }
     let field = |format: &str| {
         run(git(worktree).args(["log", "-1", &format!("--format={format}"), commit]))
             .map(|text| text.trim().to_owned())
             .map_err(NotTaken::Later)
     };
-    Ok(Pushed {
+    Ok(Some(Pushed {
         commit: commit.to_owned(),
         subject: field("%s")?,
         body: field("%b")?,
-    })
+    }))
 }
 
 #[cfg(test)]

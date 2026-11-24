@@ -4452,11 +4452,9 @@ pub(crate) fn act_in_tx(
             Ok((Err(format!("task {} is already {state}", act.task)), None))
         }
         "cancel" => {
-            let page = crate::cloud::page(tx, act.task)?;
+            let still = crate::cloud::left(tx, act.task)?;
             let tmux = cancel(tx, act.task, "cancelled from the desk")?;
-            let still = page.map_or_else(String::new, |page| {
-                format!("; its cloud session still runs: {page}")
-            });
+            let still = still.map_or_else(String::new, |still| format!("; {still}"));
             Ok((Ok(format!("task {} dropped{still}", act.task)), tmux))
         }
         "revive" => Ok((revive(tx, act, factory)?, None)),

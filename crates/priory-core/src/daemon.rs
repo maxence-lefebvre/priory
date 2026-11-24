@@ -2490,6 +2490,12 @@ fn start(
         )));
     }
     if crate::cloud::is_cloud(&agent.value) {
+        if factory.staged(&admission.trigger) {
+            return Ok(Err(format!(
+                "staged: step {} pushes the task's branch to GitHub, so its cloud run did not start",
+                step.id
+            )));
+        }
         if let Some((sandbox, _)) = sandbox {
             return Ok(Err(format!(
                 "workflow {jailed_by} needs sandbox {sandbox}, and a cloud run cannot be jailed"
@@ -2499,6 +2505,17 @@ fn start(
             Ok(head) => head,
             Err(reason) => return Ok(Err(reason)),
         };
+        if let Some(parent) = &base {
+            match priory_runtime::cloud::holds_unpushed(&worktree, &head, parent) {
+                Ok(false) => {}
+                Ok(true) => {
+                    return Ok(Err(format!(
+                        "{branch} holds commits of {parent} that are not on origin, and a cloud run would push them. Push {parent}, then resume the task"
+                    )));
+                }
+                Err(reason) => return Ok(Err(reason)),
+            }
+        }
         let session = uuid::Uuid::new_v4().to_string();
         let definition = definition(factory, &agent.value, &sources).to_string();
         let run = state::start(

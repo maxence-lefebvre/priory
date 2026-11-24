@@ -28,6 +28,9 @@ When a task reaches a step whose agent runs in the cloud, the daemon:
 1. creates the task's worktree as for any run, on the task's own branch, `priory/<task>`;
 2. checks that the worktree is on that branch with no staged, unstaged or untracked file, since the
    session would not see it. Otherwise the task blocks with the files;
+   A trigger with `staged = true` starts no cloud run: the task blocks, since a start pushes. A task
+   stacked on another blocks while its branch holds commits of its parent's branch that are not on
+   `origin`, since the push would carry them. Push the parent's branch, then resume the task;
 3. records the run, with a harness session id of its own and the commit the branch is at;
 4. records Claude's trust of the folder below, when the factory sets `trust_worktrees`, since
    `claude --cloud` shows Claude's trust dialog in a folder it does not trust;
@@ -53,8 +56,8 @@ A cloud run never carries into the next step. The next cloud step, or the same s
 run with a new session, the whole prompt and a branch of its own.
 
 A start that made no session ends the step `failed`: a refused push, a failed clone, the trust
-dialog, or an error exit. Its summary starts with `the cloud session did not start:`, and what was
-queued for the task waits for its next step.
+dialog, or an error exit. Its summary starts with `the cloud session did not start:`. After any
+`failed` ending, the feedback the run's prompt held waits for the task's next step.
 
 A start that may have made one blocks the task with `cloud run <id> may have started a cloud
 session`, so no retry starts a second: a timeout, a killed command, output with no session id, or a
@@ -71,13 +74,15 @@ prompts. The daemon takes the commit only when all of these hold:
 - it descends from the commit the session started at;
 - the worktree is on the task's branch, at that same commit, with nothing uncommitted.
 
-Then it moves the branch forward with `git merge --ff-only`, and stores the run's result as the run
+Then it moves the branch forward with `git merge --ff-only --no-overwrite-ignore`, so a local file
+that git ignores is never replaced by one the push tracks, and stores the run's result as the run
 would with the `result` tool: outcome `pushed`, the commit's subject as the summary, its body as the
 evidence, and its SHA as the commit. It ends the turn as a `Stop` hook does, so the task moves by
 the step's `next`, as after a local run.
 
-A commit that does not descend from the start ends the step `failed`, and nothing moves. A failed
-fetch, or a worktree that a person changed or switched, waits: the daemon logs why and looks again
+A branch still at the start commit counts as no push yet. A commit that does not descend from the
+start ends the step `failed`, and nothing moves. A failed fetch, a worktree that a person changed or
+switched, or an ignored local file in the way waits: the daemon logs why and looks again
 until the deadline.
 
 The usual next step is a human step that approves `open-pr`. `open-pr` pushes the task's branch,
@@ -98,7 +103,8 @@ A daemon restart keeps a live cloud run: it has no tmux pane to lose, so it is n
 next poll looks for its branch. A run stays what it started as when a person changes its agent's
 `harness`.
 
-`priory cancel` drops the task and prints the session's page. The session itself goes on until a
+`priory cancel` drops the task and prints the session's page. During a start it says that a session
+may still start, and the dropped task's reason then names the session that did. The session itself goes on until a
 person archives it, and the branches it pushed stay on `origin`.
 
 ## Asks and feedback
@@ -121,6 +127,8 @@ hold up its push: the next model step's prompt has it, and an ask that opens nex
 | Approvals, `open-pr`, checks and merge | Apply: they act on the task's branch after the push |
 | Hooks, health checks and nudges | None: the deadline replaces them |
 | Tool guard and `permissions` | None: the cloud environment's own policy applies |
+| Staged triggers | A cloud step's task blocks before its push |
+| Step effects | `none` and `read` are refused by `priory check`: a start pushes the task's branch |
 | Sandbox | Refused by `priory check`, and at the start: Priory cannot jail a session |
 | `ask`, `wait`, `remember`, `progress` and MCP servers | None |
 | Proofs, gates, `plan_requires`, `budget`, `model` and `effort` | Refused by `priory check` |

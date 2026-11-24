@@ -76,6 +76,10 @@ Print and paste the script again after the kit or the factory's skills change.
    next = { pushed = "approve-pr", failed = "stop" }
    ```
 
+   `effect` is `reversible` or `irreversible`, since a start pushes the task's branch. On a public
+   repository, the commits earlier steps made become public at that push, before a person approves
+   `open-pr`. Put a human step before the cloud step if a person must see them first.
+
 3. Let Priory trust the folder `claude --cloud` runs in, `cloud/owner/name` under Priory's home,
    since the command shows Claude's trust dialog in a folder it does not trust. Set
    `trust_worktrees = true` in `factory.toml`, and name the repository in a trigger or in `[repos]`.

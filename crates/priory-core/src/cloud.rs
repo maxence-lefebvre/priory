@@ -58,13 +58,18 @@ pub(crate) fn is_cloud_run(tx: &Transaction, run: i64) -> rusqlite::Result<bool>
     )
 }
 
-/// The page of the live cloud session of `task`, if it has one.
-pub(crate) fn page(tx: &Transaction, task: i64) -> rusqlite::Result<Option<String>> {
+/// What cancelling `task` leaves in the cloud, if it has a live cloud run.
+pub(crate) fn left(tx: &Transaction, task: i64) -> rusqlite::Result<Option<String>> {
     tx.query_row(
-        "SELECT thread FROM runs WHERE task = ?1 AND ended IS NULL AND harness = ?2
-         AND thread IS NOT NULL",
+        "SELECT thread FROM runs WHERE task = ?1 AND ended IS NULL AND harness = ?2",
         params![task, HARNESS],
-        |row| Ok(link(&row.get::<_, String>(0)?)),
+        |row| {
+            Ok(match row.get::<_, Option<String>>(0)? {
+                Some(cloud) => format!("its cloud session still runs: {}", link(&cloud)),
+                None => "its cloud session may still start: look for it at https://claude.ai/code"
+                    .to_owned(),
+            })
+        },
     )
     .optional()
 }
@@ -116,21 +121,33 @@ fn rules(branch: &str) -> String {
     )
 }
 
-/// `text` without `part`.
+/// `text` without the first whole lines that are `part`: a person's later words may quote it.
 fn without(text: &str, part: &str) -> String {
-    if part.is_empty() {
-        return text.trim().to_owned();
+    let found = text.match_indices(part).find(|(at, _)| {
+        let after = &text[at + part.len()..];
+        (*at == 0 || text[..*at].ends_with('\n')) && (after.is_empty() || after.starts_with('\n'))
+    });
+    match found {
+        Some((at, _)) if !part.is_empty() => {
+            let after = &text[at + part.len()..];
+            let after = after.strip_prefix('\n').unwrap_or(after);
+            format!("{}{after}", &text[..at]).trim().to_owned()
+        }
+        _ => text.trim().to_owned(),
     }
-    text.replace(&format!("{part}\n"), "")
-        .replace(part, "")
-        .trim()
-        .to_owned()
+}
+
+/// `text` without each line that tells how to end `step`, which every queued prompt may carry.
+fn unended(text: &str, step: &Step) -> String {
+    let ending = crate::tools::ending(step);
+    let kept: Vec<_> = text.lines().filter(|line| *line != ending).collect();
+    kept.join("\n").trim().to_owned()
 }
 
 /// The step's entry prompt, without how to end a step with the `result` tool.
 fn entry(tx: &Transaction, task: i64, step: &Step) -> rusqlite::Result<String> {
     let prompt = crate::tools::entry_prompt(tx, task, step)?;
-    Ok(without(&prompt, &crate::tools::ending(step)))
+    Ok(unended(&prompt, step))
 }
 
 /// Starts the cloud session of the recorded run `run` on a thread, with the agent's prompt, which
@@ -155,7 +172,7 @@ pub(crate) fn dispatch(
     let entry = entry(&tx, task, step)?;
     let source = crate::state::source(&tx, task)?;
     tx.commit()?;
-    let queued = without(&queued.join("\n"), &crate::tools::ending(step));
+    let queued = unended(&queued.join("\n"), step);
     let queued = without(&without(&queued, &entry), source.trim());
     start.prompt = [
         start.prompt.trim(),
@@ -210,12 +227,19 @@ fn collect(db: &mut Connection, trace: &Trace, kit: crate::kit::Current<'_>) -> 
         )
         .optional()?;
     let Some((task, session, workflow, step)) = live else {
-        if let Ok(started) = started {
-            eprintln!(
-                "priory daemon: cloud run {run} ended while its session started, which still runs: {}",
-                link(&started.id)
-            );
-        }
+        let left = match started {
+            Ok(started) => format!("its cloud session still runs: {}", link(&started.id)),
+            Err(NotStarted::Uncertain(reason)) => format!(
+                "it may have started a cloud session: {reason}. Look for it at https://claude.ai/code"
+            ),
+            Err(NotStarted::Refused(_)) => return Ok(()),
+        };
+        eprintln!("priory daemon: cloud run {run} ended during its start: {left}");
+        db.execute(
+            "UPDATE tasks SET reason = coalesce(reason || '; ', '') || ?2
+             WHERE id = (SELECT task FROM runs WHERE id = ?1) AND state = 'dropped'",
+            params![run, left],
+        )?;
         return Ok(());
     };
     match started {
@@ -244,20 +268,37 @@ fn collect(db: &mut Connection, trace: &Trace, kit: crate::kit::Current<'_>) -> 
             crate::state::block(db, trace, task, "uncertain", &reason)?;
         }
         Err(NotStarted::Refused(reason)) => {
-            let step = trace
-                .factory
-                .workflows
-                .get(&workflow)
-                .and_then(|workflow| workflow.value.step(&step));
-            give_back(db, run, task, step)?;
+            let step = step_of(trace, &workflow, &step);
             let summary = format!("the cloud session did not start: {reason}");
-            end(db, trace, kit, task, &session, "failed", &summary, None)?;
+            fail(db, trace, kit, run, task, &session, step, &summary)?;
         }
     }
     Ok(())
 }
 
-/// Queues again what run `run` claimed, which no session read, without the step's own prompt.
+fn step_of<'f>(trace: &Trace<'f>, workflow: &str, step: &str) -> Option<&'f Step> {
+    let workflow = trace.factory.workflows.get(workflow)?;
+    workflow.value.step(step)
+}
+
+/// Ends run `run` as `failed`, with what it claimed queued again for the task's next step.
+#[allow(clippy::too_many_arguments)]
+fn fail(
+    db: &mut Connection,
+    trace: &Trace,
+    kit: crate::kit::Current<'_>,
+    run: i64,
+    task: i64,
+    session: &str,
+    step: Option<&Step>,
+    summary: &str,
+) -> Result<(), Error> {
+    give_back(db, run, task, step)?;
+    end(db, trace, kit, task, session, "failed", summary, None)
+}
+
+/// Queues again what run `run` claimed, without the step's own prompt. The task's event goes back
+/// to unread, so the next start adds it.
 fn give_back(
     db: &mut Connection,
     run: i64,
@@ -265,16 +306,29 @@ fn give_back(
     step: Option<&Step>,
 ) -> rusqlite::Result<()> {
     let tx = db.transaction()?;
-    let (entry, ending) = match step {
-        Some(step) => (entry(&tx, task, step)?, crate::tools::ending(step)),
-        None => Default::default(),
+    let entry = match step {
+        Some(step) => entry(&tx, task, step)?,
+        None => String::new(),
     };
+    let source = crate::state::source(&tx, task)?;
+    tx.execute(
+        "UPDATE inbox SET outbox = NULL WHERE id = (SELECT source FROM tasks WHERE id = ?1)
+         AND outbox IN (SELECT id FROM outbox WHERE run = ?2)",
+        params![task, run],
+    )?;
     let claimed: Vec<(i64, String)> = tx
-        .prepare("SELECT id, text FROM outbox WHERE run = ?1 AND state = 'attempted'")?
+        .prepare(
+            "SELECT id, text FROM outbox WHERE run = ?1
+             AND state IN ('attempted', 'uncertain', 'confirmed') ORDER BY id",
+        )?
         .query_map([run], |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
     for (id, text) in claimed {
-        let text = without(&without(&text, &ending), &entry);
+        let text = match step {
+            Some(step) => unended(&text, step),
+            None => text,
+        };
+        let text = without(&without(&text, &entry), source.trim());
         if text.is_empty() {
             tx.execute("UPDATE inbox SET outbox = NULL WHERE outbox = ?1", [id])?;
             tx.execute(
@@ -284,7 +338,8 @@ fn give_back(
             tx.execute("DELETE FROM outbox WHERE id = ?1", [id])?;
         } else {
             tx.execute(
-                "UPDATE outbox SET state = 'queued', run = NULL, attempted = NULL, text = ?2
+                "UPDATE outbox SET state = 'queued', run = NULL, attempted = NULL, confirmed = NULL,
+                 text = ?2
                  WHERE id = ?1",
                 params![id, text],
             )?;
@@ -389,6 +444,7 @@ fn follow(
 ) -> Result<bool, Error> {
     let pushes = branch(run.task, &run.session);
     let worktree = Path::new(&run.worktree);
+    let step = step_of(trace, &run.workflow, &run.step);
     if let Some(polling) = &watch.polling {
         let found = match polling.try_recv() {
             Ok(found) => found,
@@ -397,7 +453,7 @@ fn follow(
         };
         watch.polling = None;
         let taken = match found {
-            Ok(Some(commit)) => cloud::adopt(worktree, &run.branch, &run.head, &commit).map(Some),
+            Ok(Some(commit)) => cloud::adopt(worktree, &run.branch, &run.head, &commit),
             Ok(None) => Ok(None),
             Err(reason) => Err(NotTaken::Later(reason)),
         };
@@ -422,15 +478,15 @@ fn follow(
                     "cloud session {} pushed {pushes}, and Priory did not take it: {reason}",
                     link(cloud)
                 );
-                end(
+                fail(
                     db,
                     trace,
                     kit,
+                    run.id,
                     run.task,
                     &run.session,
-                    "failed",
+                    step,
                     &summary,
-                    None,
                 )?;
                 return Ok(false);
             }
@@ -440,13 +496,7 @@ fn follow(
             }
         }
     }
-    let timeout = trace
-        .factory
-        .workflows
-        .get(&run.workflow)
-        .and_then(|workflow| workflow.value.step(&run.step))
-        .and_then(|step| step.timeout)
-        .unwrap_or(DEADLINE);
+    let timeout = step.and_then(|step| step.timeout).unwrap_or(DEADLINE);
     let late = run.age >= 0 && run.age as u64 >= timeout.as_secs();
     if late && watch.last {
         let seconds = timeout.as_secs();
@@ -465,15 +515,15 @@ fn follow(
             " A cloud run cannot ask, so open the session to see why: {}",
             link(cloud)
         ));
-        end(
+        fail(
             db,
             trace,
             kit,
+            run.id,
             run.task,
             &run.session,
-            "failed",
+            step,
             &summary,
-            None,
         )?;
         return Ok(false);
     }
@@ -657,6 +707,18 @@ fn write(into: &str, bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn a_step_prompt_leaves_the_queue_once_and_a_persons_quote_of_it_stays() {
+        let queued = "Fix it.\nA person says: Fix it. Then the docs.\nFix it.";
+        assert_eq!(
+            without(queued, "Fix it."),
+            "A person says: Fix it. Then the docs.\nFix it."
+        );
+        assert_eq!(without("Fix it. Now.", "Fix it."), "Fix it. Now.");
+        assert_eq!(without("Intro\nFix it.", "Fix it."), "Intro");
+        assert_eq!(without("Fix it.", ""), "Fix it.");
+    }
 
     #[test]
     fn the_setup_script_writes_files_through_heredocs_that_their_text_cannot_end() {

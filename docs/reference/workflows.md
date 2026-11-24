@@ -343,6 +343,7 @@ Errors about one step start with `` step `<id>`: `` and point at the step's line
 | `` step id `<id>` is reserved for the end of a workflow `` | A step is named `done` or `stop` |
 | `` step `<id>` is defined twice `` | Two steps share an id |
 | `` agent `<agent>` runs in the cloud, so the step cannot have <key>: Priory never sees the session's work `` | A step whose agent has `harness = "claude-cloud"` has a `proof`, a `guard`, `plan_requires`, a `gate`, a `budget` or `attach`. See [cloud.md](../daemon/cloud.md) |
+| `` agent `<agent>` runs in the cloud, so the step's `effect` cannot be `<effect>`: Priory pushes the task's branch before the session starts `` | A cloud step's `effect` is `none` or `read` |
 | `` agent `<agent>` runs in the cloud, so the workflow cannot have `sandbox`: Priory cannot jail a cloud session `` | A workflow with `sandbox` has a cloud step |
 | `` agent `<agent>` runs in the cloud, so `next` cannot name outcome `<outcome>`: a cloud step ends `pushed` or `failed` `` | A cloud step's `next` names another outcome |
 | `` a debate cannot name a claude-cloud agent: a cloud session has no turns Priory sees `` | A debate names a cloud agent |
