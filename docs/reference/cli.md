@@ -117,7 +117,8 @@ a group. `PRIORY_METRICS` replaces that list for one process, such as `process,l
 
 ## Tasks
 
-- `priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]`: lists tasks in start order.
+- `priory tasks [--all] [--lane <lane>] [--grade red|yellow|green] [--json]`: lists tasks in start
+  order. A task parked by `priory adopt` shows only with `--all`.
 - `priory tasks --graph [TASK] [--mermaid]`: draws how tasks relate, as a tree or a Mermaid
   flowchart. See [relations.md](../daemon/relations.md).
 - `priory task TASK [--json]`: prints one task with the events routed to it. `--json` adds its

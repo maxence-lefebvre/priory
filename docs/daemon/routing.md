@@ -181,8 +181,8 @@ While the task is parked, the pull request's `github.pull_request.closed` ends i
 the reason `<key> merged while parked` when it merged, else `dropped` with `<key> closed while
 parked`. The newest event that says whether the pull request is open decides, even one older than
 the adopt request: a `github.pull_request.closed`, or any event with an `open` field. The desk,
-the Queue's waiting list and `priory tasks` list no row for a parked task. `priory task ID` shows
-it held, with the reason
+the Queue's waiting list and `priory tasks` list no row for a parked task. `priory tasks --all`
+shows it held, with the reason
 `held: adopted for trigger <name>, until a comment or review trigger fires on <key>`.
 
 `priory adopt` skips a pull request that a task in any state owns. A comment reopens a done task,

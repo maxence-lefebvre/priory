@@ -11301,7 +11301,7 @@ fn queued_without_room(name: &str) -> Setup {
 
 /// The state and reason of task `id`.
 fn held_as(setup: &Setup, id: &str) -> [String; 2] {
-    let tasks = setup.rows("tasks");
+    let tasks = setup.listed(&["tasks", "--all"]);
     let row = tasks.iter().find(|row| row[0] == id).unwrap();
     [row[4].clone(), row[7].clone()]
 }
@@ -31818,6 +31818,22 @@ fn adopting(name: &str, open: &[u64]) -> Setup {
     setup
 }
 
+/// Waits until `done` holds for the rows of `priory tasks --all`, which lists parked tasks too.
+fn all_tasks_until(setup: &Setup, done: impl Fn(&[Vec<String>]) -> bool) -> Vec<Vec<String>> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let rows = setup.listed(&["tasks", "--all"]);
+        if done(&rows) {
+            return rows;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out on `priory tasks --all`: {rows:?}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// What `priory adopt` prints for `args`, which must succeed.
 fn adopt(setup: &Setup, args: &[&str]) -> String {
     let factory = setup.dir.join("factory");
@@ -31865,7 +31881,7 @@ fn adopt_parks_a_task_on_each_open_pull_request_no_task_owns_and_leaves_the_desk
     .unwrap();
     setup.publish(&requested(8));
     setup.start();
-    setup.until("tasks", |rows| rows.len() == 1);
+    all_tasks_until(&setup, |rows| rows.len() == 1);
 
     let first = adopt(&setup, &["my-prs"]);
 
@@ -31873,7 +31889,7 @@ fn adopt_parks_a_task_on_each_open_pull_request_no_task_owns_and_leaves_the_desk
         first,
         "adopted github:owner/repo#7\ngithub:owner/repo#8: task 1 owns it\n"
     );
-    setup.until("tasks", |rows| rows.len() == 2);
+    all_tasks_until(&setup, |rows| rows.len() == 2);
     assert_eq!(
         held_as(&setup, "2"),
         [
@@ -31886,7 +31902,7 @@ fn adopt_parks_a_task_on_each_open_pull_request_no_task_owns_and_leaves_the_desk
         adopt(&setup, &["my-prs"]),
         "github:owner/repo#7: task 2 owns it\ngithub:owner/repo#8: task 1 owns it\n"
     );
-    assert_eq!(setup.rows("tasks").len(), 2);
+    assert_eq!(setup.listed(&["tasks", "--all"]).len(), 2);
     let desk = desk_json(&setup);
     let parked: Vec<_> = desk["items"]
         .as_array()
@@ -31916,14 +31932,14 @@ fn adopt_refuses_a_trigger_that_is_not_a_comment_trigger_and_a_pull_request_that
         String::from_utf8_lossy(&closed.stderr),
         "priory adopt: owner/repo#9 is not an open pull request by alice\n"
     );
-    assert!(setup.rows("tasks").is_empty());
+    assert!(setup.listed(&["tasks", "--all"]).is_empty());
 }
 
 #[test]
 fn a_parked_task_keeps_checks_and_comments_and_wakes_on_its_trigger_s_request() {
     let setup = adopting("adopt-wakes", &[7]);
     adopt(&setup, &["my-prs", "https://github.com/owner/repo/pull/7"]);
-    setup.until("tasks", |rows| rows.len() == 1 && rows[0][4] == "held");
+    all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == "held");
     let check = on_alice_pull(
         "github.check_run.completed",
         json!({ "name": "test", "conclusion": "success", "github_id": 900 }),
@@ -31943,7 +31959,7 @@ fn a_parked_task_keeps_checks_and_comments_and_wakes_on_its_trigger_s_request() 
     assert_eq!([&inbox[2][3], &inbox[2][4]], ["1", "kept"]);
     assert_eq!([&inbox[3][3], &inbox[3][4]], ["1", "kept"]);
     std::thread::sleep(Duration::from_millis(1100));
-    assert_eq!(setup.rows("tasks")[0][4], "held");
+    assert_eq!(setup.listed(&["tasks", "--all"])[0][4], "held");
     assert!(setup.rows("runs").is_empty());
     let task = person(&setup, "task", &["1"]);
     assert!(task.contains("github.check_run.completed"), "{task}");
@@ -31970,14 +31986,14 @@ fn a_parked_task_is_done_when_its_pull_request_merges_and_dropped_when_it_closes
     ] {
         let setup = adopting(&format!("adopt-ends-{state}"), &[7]);
         adopt(&setup, &["my-prs", "7"]);
-        setup.until("tasks", |rows| rows.len() == 1 && rows[0][4] == "held");
+        all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == "held");
 
         setup.publish(&on_alice_pull(
             "github.pull_request.closed",
             json!({ "merged": merged, "github_id": 400 }),
         ));
 
-        setup.until("tasks", |rows| rows[0][4] == state);
+        all_tasks_until(&setup, |rows| rows[0][4] == state);
         assert_eq!(held_as(&setup, "1")[1], reason);
         assert!(setup.rows("runs").is_empty());
     }
@@ -31987,7 +32003,7 @@ fn a_parked_task_is_done_when_its_pull_request_merges_and_dropped_when_it_closes
 fn adopt_skips_a_pull_request_a_done_task_owns_and_its_next_comment_reopens_that_task() {
     let setup = gated("adopt-done-owner");
     setup.publish(&check(1, 0));
-    setup.until("tasks", |rows| rows[0][4] == "done");
+    all_tasks_until(&setup, |rows| rows[0][4] == "done");
     fs::write(setup.dir.join("factory/triggers/my-prs.toml"), MY_PRS).unwrap();
     fs::write(
         setup.dir.join("fake/prs"),
@@ -31998,7 +32014,7 @@ fn adopt_skips_a_pull_request_a_done_task_owns_and_its_next_comment_reopens_that
     let adopted = adopt(&setup, &["my-prs"]);
 
     assert_eq!(adopted, "github:owner/repo#7: task 1 owns it\n");
-    assert_eq!(setup.rows("tasks").len(), 1);
+    assert_eq!(setup.listed(&["tasks", "--all"]).len(), 1);
     std::thread::sleep(Duration::from_millis(1100));
     setup.publish(&commented());
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
@@ -32007,21 +32023,21 @@ fn adopt_skips_a_pull_request_a_done_task_owns_and_its_next_comment_reopens_that
         "{:?}",
         setup.typed()
     );
-    assert_eq!(setup.rows("tasks").len(), 1);
+    assert_eq!(setup.listed(&["tasks", "--all"]).len(), 1);
 }
 
 #[test]
 fn adopt_skips_a_pull_request_whose_newest_task_was_dropped() {
     let setup = adopting("adopt-dropped-owner", &[7]);
     adopt(&setup, &["my-prs", "7"]);
-    setup.until("tasks", |rows| rows.len() == 1 && rows[0][4] == "held");
+    all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == "held");
     person(&setup, "cancel", &["1"]);
-    setup.until("tasks", |rows| rows[0][4] == "dropped");
+    all_tasks_until(&setup, |rows| rows[0][4] == "dropped");
 
     let again = adopt(&setup, &["my-prs"]);
 
     assert_eq!(again, "github:owner/repo#7: task 1 owns it\n");
-    assert_eq!(setup.rows("tasks").len(), 1);
+    assert_eq!(setup.listed(&["tasks", "--all"]).len(), 1);
 }
 
 #[test]
@@ -32036,7 +32052,7 @@ fn a_parked_task_ends_on_a_close_that_arrived_before_its_adopt_request() {
 
         adopt(&setup, &["my-prs", "7"]);
 
-        setup.until("tasks", |rows| rows.len() == 1 && rows[0][4] == state);
+        all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == state);
         assert!(setup.rows("runs").is_empty());
     }
 }
@@ -32045,7 +32061,7 @@ fn a_parked_task_ends_on_a_close_that_arrived_before_its_adopt_request() {
 fn a_parked_task_is_left_out_of_the_queue_and_the_task_list() {
     let setup = adopting("adopt-hidden", &[7]);
     adopt(&setup, &["my-prs", "7"]);
-    setup.until("tasks", |rows| rows.len() == 1 && rows[0][4] == "held");
+    all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == "held");
     let factory = setup.dir.join("factory");
 
     let queue = setup.priory(&["queue", factory.to_str().unwrap(), "--json"]);
@@ -32057,7 +32073,9 @@ fn a_parked_task_is_left_out_of_the_queue_and_the_task_list() {
     assert!(tasks.status.success(), "{tasks:?}");
     let tasks: serde_json::Value = serde_json::from_slice(&tasks.stdout).unwrap();
     assert_eq!(tasks["tasks"], json!([]), "{tasks}");
-    assert!(person(&setup, "task", &["1"]).contains("parked"));
+    assert_eq!(setup.listed(&["tasks", "--all"]).len(), 1);
+    let task = person(&setup, "task", &["1"]);
+    assert!(task.contains("step implement, held"), "{task}");
     let found = person(&setup, "search", &["Adopted", "--state", "held"]);
     assert!(found.contains("owner/repo#7"), "{found}");
 }

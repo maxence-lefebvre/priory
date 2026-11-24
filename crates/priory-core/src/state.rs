@@ -3155,7 +3155,7 @@ fn owners(tx: &Transaction, resources: &[String]) -> rusqlite::Result<Vec<Task>>
 }
 
 /// The newest task in any state that owns `resource`, by key, claim, wait or subscription.
-pub fn owner(db: &Connection, resource: &str) -> rusqlite::Result<Option<i64>> {
+pub fn any_owner(db: &Connection, resource: &str) -> rusqlite::Result<Option<i64>> {
     db.query_row(
         "SELECT max(task) FROM owned WHERE resource = ?1",
         [resource],

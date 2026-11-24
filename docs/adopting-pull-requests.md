@@ -37,12 +37,12 @@ brings back a failed or dropped one.
 ## 2. Check the parked tasks
 
 ```sh
-priory search Adopted --state held
+priory tasks --all
 ```
 
 Each adopted task is `held`, with the reason
 `held: adopted for trigger my-prs, until a comment or review trigger fires on github:owner/name#57`.
-The desk, the Queue and `priory tasks` list none of them. `priory task ID` lists the events the
+The desk, the Queue and `priory tasks` without `--all` list none of them. `priory task ID` lists the events the
 task kept since the adopt.
 
 ## 3. Let a comment start the agent

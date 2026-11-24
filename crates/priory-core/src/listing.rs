@@ -694,9 +694,15 @@ fn checked(kind: &str, data: &Value) -> Option<String> {
     Some(format!("{name} {}", data["conclusion"].as_str()?))
 }
 
-/// Every task in start order, or the tasks of one lane, of one grade, or both.
-pub fn tasks(db: &Connection, lane: Option<&str>, grade: Option<&str>) -> rusqlite::Result<Value> {
-    tasks_since(db, lane, grade, None)
+/// Every task in start order but parked ones, or every task with `all`, or the tasks of one lane,
+/// of one grade, or both.
+pub fn tasks(
+    db: &Connection,
+    lane: Option<&str>,
+    grade: Option<&str>,
+    all: bool,
+) -> rusqlite::Result<Value> {
+    tasks_since(db, lane, grade, None, all)
 }
 
 /// The tasks still going and those that ended since `since`, or every task without it, in start
@@ -707,7 +713,7 @@ pub fn recent_tasks(db: &Connection, since: Option<&str>) -> rusqlite::Result<Va
         [since],
         |row| row.get(0),
     )?;
-    Ok(json!({ "tasks": tasks_since(db, None, None, since)?, "older": older }))
+    Ok(json!({ "tasks": tasks_since(db, None, None, since, false)?, "older": older }))
 }
 
 /// The runs live or started since `since`, or every run without it, newest first, each with its
@@ -746,6 +752,7 @@ fn tasks_since(
     lane: Option<&str>,
     grade: Option<&str>,
     since: Option<&str>,
+    all: bool,
 ) -> rusqlite::Result<Value> {
     let query = format!(
         "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place AS position,
@@ -754,12 +761,12 @@ fn tasks_since(
          FROM tasks LEFT JOIN queue USING (id)
          WHERE (?1 IS NULL OR lane = ?1) AND (?2 IS NULL OR grade = ?2)
            AND (?3 IS NULL OR state NOT IN ('done', 'failed', 'dropped') OR changed >= ?3)
-           AND {UNPARKED}
+           AND (?4 OR {UNPARKED})
          ORDER BY {}",
         places(),
         state::START_ORDER
     );
-    let mut tasks = rows(db, &query, [lane, grade, since])?;
+    let mut tasks = rows(db, &query, params![lane, grade, since, all])?;
     for task in tasks.as_array_mut().expect("rows are an array") {
         parse_json(task);
         let id = task["id"].as_i64().expect("a task has an id");
