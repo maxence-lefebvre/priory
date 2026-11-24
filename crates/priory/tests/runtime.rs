@@ -33095,7 +33095,6 @@ fn cloud_setup_script_prints_a_script_that_writes_the_factorys_instructions_and_
     );
 }
 
-#[test]
 /// `CLOUD` whose pushed implement step leads to a cloud step `fix` of the same agent, and whose
 /// failed one runs again.
 fn cloud_then_fix() -> String {
