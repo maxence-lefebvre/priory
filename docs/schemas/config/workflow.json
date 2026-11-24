@@ -285,7 +285,7 @@
         "timeout": {
           "default": null,
           "description": "How long one turn of a model step, a `run` action's command, or the command a human step's\nanswer runs, may run before Priory ends it.",
-          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
           "type": "string"
         }
       },

@@ -1918,6 +1918,9 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                 if let Some(intake) = value["intake"].as_str() {
                     state::emit(intake);
                 }
+                if let Some(reclaim) = value["reclaim"].as_str() {
+                    state::emit(reclaim);
+                }
                 if let Some(unrouted) = value["counts"]["unrouted"].as_u64().filter(|n| *n > 0) {
                     let events = if unrouted == 1 { "event" } else { "events" };
                     state::emit(&format!(
@@ -2581,7 +2584,7 @@ fn memory(args: Vec<OsString>) -> ExitCode {
             "SELECT id, task, state, printf('%.1f', bytes / 1073741824.0),
              replace(command, char(10), '\\n'),
              (strftime('%s', 'now') - strftime('%s', coalesce(granted, created))) || 's', pid
-             FROM grants ORDER BY id",
+             FROM grants ORDER BY created, id",
         ),
         Some((verb, args)) if verb == "acquire" => acquire(args, false),
         Some((verb, args)) if verb == "lease" => acquire(args, true),
@@ -2649,36 +2652,58 @@ fn acquire(args: &[OsString], lease: bool) -> ExitCode {
         );
         return ExitCode::from(127);
     }
-    let acquired = gate(&Gate::Acquire {
+    let acquire = Gate::Acquire {
         bytes: (gb * f64::from(1u32 << 30)) as u64,
         pid: std::process::id(),
         session: std::env::var("PRIORY_SESSION").ok(),
         command: command.join(" ".as_ref()).to_string_lossy().into_owned(),
-    });
-    let mut reply = match acquired {
-        Ok(reply) => reply,
-        Err(error) => return failed(error),
     };
-    let (id, _) = reply.split_once(' ').unwrap_or_default();
-    let grant: i64 = id.parse().expect("the daemon replies with the grant id");
     let timeout = timeout.unwrap_or(GATE_TIMEOUT);
     let deadline = Instant::now() + timeout;
-    let mut said = String::new();
-    while !reply.ends_with(" held") {
+    let (mut grant, mut said, mut sent) = (None, String::new(), false);
+    // The daemon keeps a waiting grant while this process lives, so a lost reply or a daemon
+    // restart only delays the next poll of the same grant.
+    let grant = loop {
+        let asked = match grant {
+            Some(grant) => call(&Gate::Poll { grant }, runtime::call_through_restart),
+            // Until a daemon took the request, none may be coming back: fail at once.
+            None if !sent => call(&acquire, runtime::call),
+            None => call(&acquire, runtime::call_through_restart),
+        };
+        sent |= !matches!(&asked, Err(error) if error.starts_with(runtime::NO_DAEMON));
+        let reply = match asked {
+            Ok(Ok(reply)) => {
+                let (id, _) = reply.split_once(' ').unwrap_or_default();
+                grant = Some(id.parse().expect("the daemon replies with the grant id"));
+                reply
+            }
+            Ok(Err(error)) => return failed(error),
+            // Only an `Acquire` no daemon ever read is safe to give up: one that may have
+            // arrived has a grant that lives while this process does.
+            Err(error) if !sent && error.starts_with(runtime::NO_DAEMON) => {
+                return failed(error);
+            }
+            Err(error) => format!(
+                "{} waits: {error}",
+                grant.map_or("?".into(), |id| id.to_string())
+            ),
+        };
+        if let (Some(grant), true) = (grant, reply.ends_with(" held")) {
+            break grant;
+        }
         if said != reply {
             eprintln!("priory memory: grant {reply} for {gb} GB");
-            said = reply.clone();
+            said = reply;
         }
         if Instant::now() >= deadline {
+            let Some(grant) = grant else {
+                return failed(format!("no grant after {timeout:?}"));
+            };
             let _ = gate(&Gate::Release { grant });
             return failed(format!("grant {grant} still waits after {timeout:?}"));
         }
         std::thread::sleep(Duration::from_millis(250));
-        reply = match gate(&Gate::Poll { grant }) {
-            Ok(reply) => reply,
-            Err(error) => return failed(error),
-        };
-    }
+    };
     let status = if lease {
         leased(program, rest)
     } else {
@@ -2742,10 +2767,19 @@ fn held(
         Ok(child) => child,
         Err(error) => return Ok(Err(error)),
     };
-    let taken = gate(&Gate::Run {
+    let run = Gate::Run {
         grant,
         pid: child.id(),
-    });
+    };
+    // The daemon takes the same pid again, so a lost reply only delays the hand-over.
+    let taken = loop {
+        match call(&run, runtime::call_through_restart) {
+            Err(_) if matches!(child.try_wait(), Ok(None)) => {
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            taken => break taken.flatten(),
+        }
+    };
     if let Err(error) =
         taken.and_then(|_| writer.write_all(b"\n").map_err(|error| error.to_string()))
     {
@@ -2786,11 +2820,17 @@ fn leased(program: &OsString, rest: &[OsString]) -> std::io::Result<std::process
 
 /// Sends `gate` to the daemon and returns its reply.
 fn gate(gate: &Gate) -> Result<String, String> {
+    call(gate, runtime::call_through_restart)?
+}
+
+/// Sends `gate` to the daemon with `send` and returns its reply, or why none came.
+fn call(
+    gate: &Gate,
+    send: fn(&Path, &str, Duration) -> Result<String, String>,
+) -> Result<Result<String, String>, String> {
     let line = serde_json::to_string(gate).expect("a gate message serializes");
-    runtime::call(&runtime::home(), &line, runtime::REPLY).and_then(|reply| {
-        serde_json::from_str::<Result<String, String>>(&reply)
-            .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
-    })
+    let reply = send(&runtime::home(), &line, runtime::REPLY)?;
+    serde_json::from_str(&reply).map_err(|error| format!("unreadable reply {reply:?}: {error}"))
 }
 
 /// `priory gate`, from a run's pane: runs the factory's gate in the run's task worktree at its head,
