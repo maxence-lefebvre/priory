@@ -68,8 +68,9 @@ a group. `PRIORY_METRICS` replaces that list for one process, such as `process,l
   asks for a task with a key of your own, and every field as a flag. See
   [cli.md](../intake/cli.md).
 - `priory adopt [DIR] TRIGGER [PR...]`: parks a task on each open pull request of a comment or
-  review trigger's `author` that no task owns in any state and whose head branch no
-  active task owns, or on the ones named as `42`, `owner/name#42` or a URL. Prints `adopted <key>` or `<key>: task N owns it` per pull request.
+  review trigger's `author` that no task owns in any state and whose head branch no active
+  task owns, or on the ones named as `42`, `owner/name#42` or a URL. Prints `adopted <key>` or
+  `<key>: task N owns it` per pull request.
   See [adopting-pull-requests.md](../adopting-pull-requests.md).
 - `priory batch add [DIR] ISSUE... [--repo <owner/name>] [--entries <workflow>] [--band <band>] [--lane <lane>]`:
   hands several issues to a planning task that orders them under one ask. See
