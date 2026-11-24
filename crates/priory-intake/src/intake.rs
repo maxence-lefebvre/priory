@@ -473,8 +473,16 @@ pub fn run(
             .into_iter()
             .filter(|(source, on)| *on || failed.contains_key(source))
             .map(|(source, _)| {
-                let errors = failed.get(source).filter(|errors| !errors.is_empty());
-                (source, errors.map(|errors| errors.join("; ")))
+                // A backlog shows in the health but fails no poll, so `--once` still succeeds.
+                let backlog = (source == "github").then(|| threads.backlog()).flatten();
+                let errors: Vec<String> = failed
+                    .get(source)
+                    .into_iter()
+                    .flatten()
+                    .cloned()
+                    .chain(backlog)
+                    .collect();
+                (source, (!errors.is_empty()).then(|| errors.join("; ")))
             })
             .collect();
         for (source, errors) in &failed {
@@ -670,7 +678,9 @@ fn publish_all(
                 continue;
             }
             let said = |comment: &Uuid| published.contains(comment) || threads.said(comment);
-            if event.repeats(&source, thread, said) {
+            // `--once` forgets a drop, so an unfinished baseline publishes repeats to make progress.
+            let kept = event.baseline && threads.any_unread();
+            if !kept && event.repeats(&source, thread, said) {
                 continue;
             }
             if CHANGES.contains(&source.kind.as_str()) {

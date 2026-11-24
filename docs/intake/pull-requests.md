@@ -70,7 +70,7 @@ in the thread comment, so the intake judges such a review by its comments when `
 | Its thread comments | The review |
 | ------------------- | ---------- |
 | all marked | `agent: true`, so it starts no task |
-| all marked, and each is already on `factory.intake` | not published |
+| all marked, and each is already on `factory.intake` | not published, except in a first poll that has an unread review: there it is `agent: true`, so the next poll need not look it up |
 | some unmarked, or none | the person's: `agent: false` |
 
 A review with a body is judged by its body. So is another login's review, which is never `agent`.
