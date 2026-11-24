@@ -111,6 +111,7 @@ of them are met. Its keys are in [triggers.md](../reference/triggers.md#hold).
 | `after` | another task, named by its id, is done, failed or dropped; or a Linear issue, such as `"ENG-7"`, is Done or Canceled. One value or a list |
 | `merge` | a pull request, `owner/name#42` or `42` in the task's repository, merges. One value or a list. `if_closed` says what a close without a merge does: `release`, `drop` or `ask`, the default |
 | `blockers = true` | the task's Linear issue has no open blocker left |
+| `parked = true` | a comment or review trigger requests a task for the pull request that keys the task. The pull request's merge marks the task done and its close drops it first. It takes no other condition (see [Parked pull requests](../daemon/routing.md#parked-pull-requests)) |
 
 A trigger sets it as a table:
 

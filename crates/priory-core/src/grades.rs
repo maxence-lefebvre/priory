@@ -71,7 +71,7 @@ pub(crate) fn label(tx: &Transaction, trace: &Trace, message: &Message) -> rusql
             let conclusion = data["conclusion"].as_str().unwrap_or_default();
             let Some(head) = data["head_sha"]
                 .as_str()
-                .filter(|_| !PASSING.contains(&conclusion))
+                .filter(|_| !PASSING.contains(&conclusion) && data["superseded_by"].is_null())
             else {
                 return Ok(());
             };

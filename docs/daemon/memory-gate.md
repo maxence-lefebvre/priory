@@ -8,8 +8,8 @@ duration such as `90s`, `15m` or `2h`.
 1. The command asks the daemon over its socket for a grant of N GB. It sends its pid and, inside
    a run, the run's `PRIORY_SESSION`, which names the grant's task.
 2. Grants wait in one queue, in the order they were requested. The daemon grants the oldest waiting grant when the
-   measured free memory, minus the memory live runs promised and do not use yet and the memory held
-   grants reserved and do not use yet, minus N, stays at or above `(1 - memory share) × MemTotal`, as the room check for runs
+   measured free memory, minus the memory live runs promised and do not use yet and every held
+   grant, minus N, stays at or above `(1 - memory share) × MemTotal`, as the room check for runs
    does (see [Room](room.md)). A grant leaves out the promise of its own task's run, which would
    otherwise wait for itself. A waiting grant that does not fit holds back every grant behind it,
    even a smaller one that fits, so a large build is never starved. Once it has waited 5 minutes,
@@ -26,7 +26,9 @@ duration such as `90s`, `15m` or `2h`.
    again after a lost reply gets the grant it already has. Once its grant is held, it starts a shell that waits
    for a go-ahead, hands the grant to that shell's process, and only then lets the shell run the
    command with `acquire`'s own working directory, environment and terminal. The shell becomes the
-   command, so the grant follows it. An `acquire` that dies before the hand-off closes the shell's
+   command, so the grant follows it. In a run, that environment is the run's own: its `PATH` and
+   every variable its harness got, including the worktree's direnv environment when the run starts
+   in it (see [sessions.md](sessions.md#with-trust_worktrees)). The gate adds and removes nothing. An `acquire` that dies before the hand-off closes the shell's
    go-ahead pipe, and the command never runs.
 4. When the command exits, however it exits, the grant is released. `acquire` exits with the
    command's code, or 128 plus the killing signal.
@@ -44,6 +46,9 @@ for an hour. When the same task acquires the same command again within that hour
 takes the old request time, so a retry keeps its place in the queue. A grant above the runner's share of the machine can never fit, so the daemon refuses it at
 once, as
 `9.0 GB never fits: this runner's agents may take 7.2 GB`. A command that cannot start exits 127, or 126 when it is not executable.
+`acquire` and `lease` look a program name without `/` up on `PATH` before they ask for a grant. A
+missing one exits 127 at once and takes no place in the queue, as
+`moon is not on PATH (/usr/bin:/bin); the command did not run`.
 
 `priory memory lease [--gb N] [--timeout D] -- <command>` runs a server or stack that stays up,
 such as a dev server, with N GB reserved for as long as it runs. It takes the same flags, waits in
@@ -68,8 +73,8 @@ The MCP server's instructions teach every agent the gate. They ask it to wrap ea
 
 Known limits:
 
-- A held grant keeps the room it asked for and does not use yet until its command ends. A command
-  that asks for far more than its peak holds that room back for its whole life.
+- A held grant counts in full until its command ends, whatever the command uses. A command that
+  asks for far more than its peak holds that room back for its whole life.
 - Between its 5 and 15 minutes, a large grant can wait on while smaller grants take the room it
   needs.
 - A retry keeps its request time only inside a run, and only with the same command text. Another

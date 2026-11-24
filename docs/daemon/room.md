@@ -33,11 +33,9 @@ tmux pane process. It keeps that process and its start time in memory for the ru
 reused pid is never read, and asks tmux again after 30 seconds when it found no pane. A run with no
 scope in the slice, as on a host without systemd, or whose use cannot be read, keeps its whole
 promise. Disk promises always count in full, since no run
-reports its disk use. A held memory grant (see Memory gate) counts the part it does not use
-yet, since a granted command may not have allocated yet. Its use is the anonymous and shared memory
-of its holder's process tree, read from `/proc`. A grant whose tree cannot be read counts in full.
-So two runs admitted in turn cannot take the same free room, and no run starts into memory a build
-holds. The daemon measures again before each admission, since a start's
+reports its disk use. Held memory grants (see Memory gate) also count in full, since a granted
+command may not have allocated yet. So two runs admitted in turn cannot take the same free room,
+and no run starts into memory a build holds. The daemon measures again before each admission, since a start's
 clone and worktree take disk.
 
 A task that does not fit stays `queued` or `ready`, with a reason such as
@@ -105,7 +103,7 @@ The daemon never marks these runs, and withdraws a mark it finds on one at the t
 | ------- | --- |
 | Is at a step whose effect is `irreversible` | A stop between two of its calls could leave a push without its pull request |
 | Has an open keyboard grant | A person is typing in it |
-| Has a tmux client attached | A person is watching or typing. A `tmux list-clients` that fails counts as a client |
+| Has a tmux client attached that can type | A person may type. A read-only client does not count. A `tmux list-clients` that fails counts as a client |
 | Runs in a shared session | It serves several tasks |
 | Belongs to the sweeper | It frees the room the queue waits for |
 | Belongs to a task in the head's band or a higher one | A band never stops itself. `priory move --band` protects a task |
@@ -185,9 +183,8 @@ Known limits:
 
 - A run without a scope still counts twice: its use lowers measured free memory, and its whole
   promise counts again on top. So the room errs toward starting fewer runs there.
-- A build that holds a memory grant runs inside its run's scope, so its use lowers both the run's
-  unused promise and the grant's. Room the run's agent could still grow into then goes uncounted,
-  and the room errs toward starting more runs.
+- A build that holds a memory grant runs inside its run's scope, so its use also lowers the run's
+  unused promise, while the grant counts in full. That errs toward fewer starts too.
 - An agent that grows past its declared `memory` can still crowd the machine. The memory gate covers
   builds an agent wraps in it. The agents slice (below) slows the rest down.
 - Load is not declared per agent, so when load leaves no room, no task fits anyway.

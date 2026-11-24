@@ -69,6 +69,30 @@ layout of a view that is gone. It never regenerates without that click.
   notice. Move that file away, then regenerate again.
 - It does not update the mods. Run `install` for those.
 
+## Opening runs in Herdr when they start
+
+To have the runs of a step open in Herdr by themselves, on the machine that runs the daemon:
+
+1. Put the adapter in the factory folder: copy `adapters/herdr/`, or link it with
+   `mkdir -p adapters && ln -s ~/src/priory/adapters/herdr adapters/herdr` from the factory folder.
+2. Add the command to `factory.toml`:
+
+   ```toml
+   [runs]
+   attach = "adapters/herdr/attach"
+   ```
+
+3. Set `attach = true` on each model step whose runs should open.
+4. Set `PRIORY_HERDR_SPACE` to the id of the Herdr space that shows runs, in the daemon's
+   environment. `hc get $HC_TERMINAL_ID` in a terminal of that space prints its `herdr.space`
+   label.
+5. Restart the daemon, and run `priory check`.
+
+The next run of a flagged step opens a kept hc terminal that runs
+`priory attach --run <run> --read-only`, in a tab named `task-<task>` of that space.
+[Opening runs in Herdr](adapters/herdr.md#opening-runs-in-herdr)
+says what the script does and how it fails.
+
 ## Installing for a Herdr on another machine
 
 The mods run on the machine that runs Herdr, and `priory` runs where the `priory` object of

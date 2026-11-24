@@ -417,6 +417,7 @@ request. See Holds in
 | `merge` | string, or a list of them | no | | Pull requests, `owner/name#42` or `42` in the task's repository: until each merges | `"owner/name#42"` |
 | `if_closed` | `release`, `drop` or `ask` | no | `ask` | What a pull request closed without a merge does. With `merge` only | `"drop"` |
 | `blockers` | boolean | no | `false` | Until the task's Linear issue has no open blocker | `true` |
+| `parked` | boolean | no | `false` | Until a comment or review trigger's request for the pull request that keys the task. Takes no other condition. The pull request's merge marks the task done, and its close drops it. `priory adopt` sets it | `true` |
 
 The task is released once every condition is met. With none, a person releases it.
 

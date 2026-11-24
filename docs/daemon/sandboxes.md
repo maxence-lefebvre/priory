@@ -59,6 +59,7 @@ trusted and a path the sweep reads in `/proc` then mean the same file on both si
 | the folder of the state file `PRIORY_DB` names, and its link's target folder | a new empty folder in memory, with only the binds below it, even where a bind above names the same folder |
 | the run's MCP configuration and system prompt files, Priory's binary, the factory's skills and memories folders | read-only |
 | the harness's program, when it lives under a hidden folder such as `~/.local/bin` | its folder read-only, and its link |
+| for a run that starts under direnv ([sessions.md](sessions.md#with-trust_worktrees)): the run's `direnv/<session>/` folder in Priory home, the person's `direnvrc` and `lib` it links to, and the `direnv` program as the harness's | read-only |
 | the daemon's socket folder | read-write |
 | `spools/<session>/` in Priory home, the run's own spool | read-write |
 | the sandbox's `read` and `write` paths | as declared, skipped when missing |
@@ -88,6 +89,7 @@ The shell in the jail runs `env -i` with only these variables, each when it is s
 - `PRIORY_HOME`, `PRIORY_SESSION`, `PRIORY_SPOOL` and the variables Priory gives the run, such as
   `PRIORY_GUARD` and `OTEL_RESOURCE_ATTRIBUTES`;
 - `CLAUDE_CONFIG_DIR` or `CODEX_HOME`, which move the harness's own home;
+- `DIRENV_CONFIG`, for a run that starts under direnv;
 - the sandbox's `env`.
 
 So a jailed run holds none of the daemon's other variables: not a webhook secret and not a cloud
