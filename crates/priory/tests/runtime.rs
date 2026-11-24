@@ -21,6 +21,8 @@ mod tmux_dir;
 
 use herdr_bus::{Bus, Message, Output};
 use serde_json::json;
+use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
@@ -4633,14 +4635,26 @@ fn trust_worktrees_off_writes_no_claude_config() {
 }
 
 /// A fake `direnv` that logs its arguments and `DIRENV_CONFIG`, then runs the rest as `exec` does.
-/// As direnv 2.38.2 does, it refuses a folder its `direnv.toml` does not spell in `[whitelist]
-/// exact`, and FAKE_DIR/direnv.fail fails it as an `.envrc` that exits 1 does.
-const DIRENV: &str = "#!/bin/sh\n\
-printf '%s\\n' \"$*\" \"DIRENV_CONFIG=$DIRENV_CONFIG\" >> \"$FAKE_DIR/direnv.log\"\n\
-grep -qF \"\\\"$2\\\"\" \"$DIRENV_CONFIG/direnv.toml\" || { echo \"direnv: error $2/.envrc is blocked\" >&2; exit 1; }\n\
-[ -e \"$FAKE_DIR/direnv.fail\" ] && { echo 'direnv: error exit status 1' >&2; exit 1; }\n\
-shift 2\n\
-exec \"$@\"\n";
+/// As direnv 2.38.2 does, it refuses an `.envrc` whose path and content have no allow file, and then
+/// reads it again through the stdlib's `source_env`, which a `direnvrc` can replace. FAKE_DIR/direnv.fail
+/// fails it as an `.envrc` that exits 1 does. It puts FAKE_DIR/direnv.early in place of the `.envrc`
+/// before the hash, and FAKE_DIR/direnv.late after it, as a background process can.
+const DIRENV: &str = r#"#!/usr/bin/env bash
+printf '%s\n' "$*" "DIRENV_CONFIG=$DIRENV_CONFIG" >> "$FAKE_DIR/direnv.log"
+envrc=$2/.envrc
+[ ! -e "$FAKE_DIR/direnv.early" ] || cp "$FAKE_DIR/direnv.early" "$envrc"
+sum=$({ printf '%s\n' "$envrc"; cat "$envrc"; } | sha256sum | cut -d' ' -f1)
+[ -e "$XDG_DATA_HOME/direnv/allow/$sum" ] || { echo "direnv: error $envrc is blocked" >&2; exit 1; }
+[ ! -e "$FAKE_DIR/direnv.fail" ] || { echo 'direnv: error exit status 1' >&2; exit 1; }
+[ ! -e "$FAKE_DIR/direnv.late" ] || cp "$FAKE_DIR/direnv.late" "$envrc"
+use() { echo "use $* in $PWD with ${XDG_DATA_HOME-no data}" >> "$FAKE_DIR/direnv.loads"; }
+watch_file() { :; }
+source_env() { pushd "${1%/*}" > /dev/null; . ./.envrc; popd > /dev/null; }
+[ ! -f "$DIRENV_CONFIG/direnvrc" ] || . "$DIRENV_CONFIG/direnvrc"
+source_env "$envrc"
+shift 2
+exec "$@"
+"#;
 
 /// Commits an `.envrc` to the origin's `main`, as a repository that uses direnv has.
 fn envrc(setup: &Setup) {
@@ -4727,12 +4741,12 @@ fn trust_worktrees_makes_direnv_trust_the_worktree_and_starts_the_run_in_its_env
     envrc(&setup);
     setup.hold("hold-stop");
     setup.publish(&requested(42));
-    start_direnv(&mut setup, true, "[global]\nwarn_timeout = \"1m\"\n", &[]);
+    let config = "[global]\nwarn_timeout = \"1m\"\n[whitelist]\nprefix = [\"/\"]\n";
+    start_direnv(&mut setup, true, config, &[]);
 
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
 
     let worktree = fs::canonicalize(setup.dir.join("home/worktrees/owner/repo/1")).unwrap();
-    let clone = fs::canonicalize(setup.dir.join("home/repos/owner/repo")).unwrap();
     let session = &setup.rows("runs")[0][4];
     let folder = setup.dir.join("home/direnv").join(session);
     let log = fs::read_to_string(setup.dir.join("fake/direnv.log")).unwrap();
@@ -4750,12 +4764,10 @@ fn trust_worktrees_makes_direnv_trust_the_worktree_and_starts_the_run_in_its_env
         .parse()
         .unwrap();
     assert_eq!(config["global"]["warn_timeout"].as_str(), Some("1m"));
+    assert!(!config.contains_key("whitelist"));
     assert_eq!(
-        config["whitelist"]["exact"],
-        toml::Value::from(vec![
-            worktree.display().to_string(),
-            clone.display().to_string()
-        ])
+        fs::read_to_string(setup.dir.join("fake/direnv.loads")).unwrap(),
+        format!("use flake in {} with no data\n", worktree.display())
     );
     assert_eq!(
         fs::read_link(folder.join("lib")).unwrap(),
@@ -4778,13 +4790,7 @@ fn trust_worktrees_makes_direnv_trust_the_worktree_and_starts_the_run_in_its_env
             )
         })
         .collect();
-    assert_eq!(
-        outcomes,
-        [
-            (worktree.to_str().unwrap(), "granted"),
-            (clone.to_str().unwrap(), "granted")
-        ]
-    );
+    assert_eq!(outcomes, [(worktree.to_str().unwrap(), "granted")]);
     assert_eq!(
         records[0]["data"]["file"],
         folder.join("direnv.toml").display().to_string()
@@ -4823,25 +4829,103 @@ fn direnv_trusts_a_worktree_whose_priory_home_goes_through_a_symlink() {
         log.starts_with(&format!("exec {} sh -c ", spelled.display())),
         "{log}"
     );
+    let loads = fs::read_to_string(setup.dir.join("fake/direnv.loads")).unwrap();
+    assert!(loads.starts_with("use flake in "), "{loads}");
     let session = &setup.rows("runs")[0][4];
-    let config: toml::Table = fs::read_to_string(
-        setup
-            .dir
-            .join("home/direnv")
-            .join(session)
-            .join("direnv.toml"),
-    )
-    .unwrap()
-    .parse()
-    .unwrap();
-    let canonical = fs::canonicalize(&spelled).unwrap();
-    let exact = config["whitelist"]["exact"].as_array().unwrap();
-    for path in [&spelled, &canonical] {
-        assert!(
-            exact.contains(&toml::Value::from(path.display().to_string())),
-            "{exact:?}"
-        );
-    }
+    let allow = setup.dir.join("home/direnv").join(session);
+    let allowed: BTreeSet<String> = fs::read_dir(allow.join("data/direnv/allow"))
+        .unwrap()
+        .map(|file| fs::read_to_string(file.unwrap().path()).unwrap())
+        .collect();
+    let expected = [&spelled, &fs::canonicalize(&spelled).unwrap()]
+        .map(|path| format!("{}\n", path.join(".envrc").display()));
+    assert_eq!(allowed, BTreeSet::from(expected));
+}
+
+#[test]
+fn an_envrc_swapped_before_direnv_hashes_it_starts_the_run_without_it_and_says_why() {
+    let mut setup = trusting("envrc-swapped-early");
+    envrc(&setup);
+    let bad = "touch \"$FAKE_DIR/swapped\"\n";
+    fs::write(setup.dir.join("fake/direnv.early"), bad).unwrap();
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+    start_direnv(&mut setup, true, "[whitelist]\nprefix = [\"/\"]\n", &[]);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    let tasks = setup.until("tasks", |rows| rows[0][7].starts_with("started without"));
+    assert_eq!(
+        tasks[0][7],
+        "started without its .envrc: direnv: error .envrc is blocked"
+    );
+    assert_eq!(outcomes_of(&setup, "1"), ["granted", "failed"]);
+    assert!(!setup.dir.join("fake/swapped").exists());
+}
+
+#[test]
+fn an_envrc_swapped_after_direnv_hashed_it_loads_the_checked_bytes() {
+    let mut setup = trusting("envrc-swapped-late");
+    envrc(&setup);
+    let bad = "touch \"$FAKE_DIR/swapped\"\n";
+    fs::write(setup.dir.join("fake/direnv.late"), bad).unwrap();
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+    start_direnv(&mut setup, true, "", &[]);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1/.envrc");
+    assert_eq!(fs::read_to_string(worktree).unwrap(), bad);
+    let loads = fs::read_to_string(setup.dir.join("fake/direnv.loads")).unwrap();
+    assert!(loads.starts_with("use flake in "), "{loads}");
+    assert!(!setup.dir.join("fake/swapped").exists());
+}
+
+#[test]
+fn an_envrc_that_a_person_denied_is_refused() {
+    let mut setup = trusting("envrc-denied");
+    envrc(&setup);
+    let data = setup.dir.join("data");
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1/.envrc");
+    let deny = data.join("direnv/deny");
+    fs::create_dir_all(&deny).unwrap();
+    let name: String = Sha256::digest(format!("{}\n", worktree.display()))
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    fs::write(deny.join(name), "").unwrap();
+    setup.publish(&requested(42));
+    start_direnv(
+        &mut setup,
+        true,
+        "",
+        &[("XDG_DATA_HOME", data.to_str().unwrap())],
+    );
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    assert_eq!(outcomes_of(&setup, "1"), ["refused"]);
+    assert!(!setup.dir.join("fake/direnv.log").exists());
+}
+
+#[test]
+fn a_default_branch_that_cannot_be_read_refuses_the_envrc_and_names_no_path() {
+    let setup = blocked_under_direnv("envrc-unreachable");
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+    fs::write(worktree.join(".envrc"), "touch /tmp/agent\n").unwrap();
+    fs::write(setup.dir.join("fake/git-unreachable"), "").unwrap();
+
+    let resumed = setup.priory(&["resume", "1"]);
+
+    assert!(resumed.status.success(), "{resumed:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert_eq!(outcomes_of(&setup, "2"), ["refused"]);
+    assert_eq!(
+        direnv_records(&setup)[1]["data"]["why"],
+        ".envrc differs from the commit the task started from, and the default branch could not \
+         be read"
+    );
 }
 
 #[test]
@@ -4907,6 +4991,7 @@ fn without_trust_worktrees_a_run_does_not_start_under_direnv() {
     assert!(!setup.dir.join("fake/direnv.log").exists());
     assert!(!setup.dir.join("home/direnv").exists());
     assert!(direnv_records(&setup).is_empty());
+    assert!(!setup.dir.join("fake/git-ls-remotes").exists());
 }
 
 #[test]
@@ -4947,11 +5032,11 @@ fn an_unparsable_direnv_toml_refuses_the_grant_and_the_run_starts_without_direnv
 
     assert!(!setup.dir.join("fake/direnv.log").exists());
     let records = direnv_records(&setup);
-    assert_eq!(records.len(), 2);
+    assert_eq!(records.len(), 1);
     for record in &records {
         assert_eq!(record["data"]["outcome"], "refused");
         let why = record["data"]["why"].as_str().unwrap();
-        assert!(why.ends_with("direnv.toml: not TOML, at line 1"), "{why}");
+        assert_eq!(why, "direnv.toml: not TOML, at line 1");
         assert!(!why.contains("sk-secret"));
     }
 }
@@ -4961,7 +5046,7 @@ fn blocked_under_direnv(name: &str) -> Setup {
     let setup = trusting(name);
     envrc(&setup);
     let setup = blocked_with_direnv(setup);
-    assert_eq!(outcomes_of(&setup, "1"), ["granted", "granted"]);
+    assert_eq!(outcomes_of(&setup, "1"), ["granted"]);
     setup
 }
 
@@ -5007,7 +5092,7 @@ fn refs_that_an_agent_moves_during_a_new_start_choose_neither_its_content_nor_it
     assert_eq!(shown["base_sha"], json!(trunk));
     let worktree = setup.dir.join("home/worktrees/owner/repo/1/.envrc");
     assert_eq!(fs::read_to_string(worktree).unwrap(), "use flake\n");
-    assert_eq!(outcomes_of(&setup, "1"), ["granted", "granted"]);
+    assert_eq!(outcomes_of(&setup, "1"), ["granted"]);
 }
 
 #[test]
@@ -5029,7 +5114,7 @@ fn a_tasks_branch_that_an_agent_made_first_starts_it_without_direnv() {
     start_direnv(&mut setup, true, "", &[]);
 
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
-    assert_eq!(outcomes_of(&setup, "1"), ["refused", "refused"]);
+    assert_eq!(outcomes_of(&setup, "1"), ["refused"]);
     assert!(!setup.dir.join("fake/direnv.log").exists());
 }
 
@@ -5065,13 +5150,14 @@ fn an_object_forged_under_the_bases_id_vouches_for_no_envrc() {
 
         assert!(resumed.status.success(), "{object}: {resumed:?}");
         setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
-        assert_eq!(outcomes_of(&setup, "2"), ["refused", "refused"], "{object}");
+        assert_eq!(outcomes_of(&setup, "2"), ["refused"], "{object}");
         assert_eq!(under_direnv(&setup), 1, "{object}");
     }
 }
 
 #[test]
-fn an_untracked_envrc_is_refused_without_a_clone_and_one_added_on_the_default_branch_is_granted() {
+fn an_untracked_envrc_is_refused_without_asking_github_and_one_added_on_the_default_branch_is_granted()
+ {
     for tracked in [false, true] {
         let setup = trusting("envrc-untracked");
         fs::create_dir_all(setup.dir.join("home/direnv")).unwrap();
@@ -5088,20 +5174,16 @@ fn an_untracked_envrc_is_refused_without_a_clone_and_one_added_on_the_default_br
 
         assert!(resumed.status.success(), "{resumed:?}");
         setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
-        let clones = fs::read_to_string(setup.dir.join("fake/git-clones")).unwrap();
+        let reads = fs::read_to_string(setup.dir.join("fake/git-ls-remotes")).unwrap();
         let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
         assert_eq!(log.matches("direnv/stuck: ").count(), 1, "{log}");
         if tracked {
-            assert_eq!(outcomes_of(&setup, "2"), ["granted", "granted"]);
-            assert_eq!(
-                clones.lines().count(),
-                2,
-                "its own and the default branch's"
-            );
+            assert_eq!(outcomes_of(&setup, "2"), ["granted"]);
+            assert_eq!(reads.lines().count(), 2, "the start's and the check's");
             continue;
         }
-        assert_eq!(outcomes_of(&setup, "2"), ["refused", "refused"]);
-        assert_eq!(clones.lines().count(), 1, "its own alone");
+        assert_eq!(outcomes_of(&setup, "2"), ["refused"]);
+        assert_eq!(reads.lines().count(), 1, "the start's alone");
         let reason = &setup.rows("tasks")[0][7];
         assert!(reason.contains(".envrc is untracked"), "{reason}");
     }
@@ -5186,7 +5268,7 @@ fn an_envrc_changed_on_a_kept_worktree_starts_the_next_run_without_direnv_and_sa
             tasks[0][7].starts_with("started without its .envrc: ") && tasks[0][7].contains(why),
             "{name}: {tasks:?}"
         );
-        assert_eq!(outcomes_of(&setup, "2"), ["refused", "refused"], "{name}");
+        assert_eq!(outcomes_of(&setup, "2"), ["refused"], "{name}");
         assert_eq!(under_direnv(&setup), 1, "{name}");
     }
 }
@@ -5226,7 +5308,7 @@ fn an_unchanged_envrc_or_the_default_branchs_new_one_starts_a_kept_worktree_unde
 
         assert!(resumed.status.success(), "{name}: {resumed:?}");
         setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
-        assert_eq!(outcomes_of(&setup, "2"), ["granted", "granted"], "{name}");
+        assert_eq!(outcomes_of(&setup, "2"), ["granted"], "{name}");
         assert_eq!(under_direnv(&setup), 2, "{name}");
         assert!(folder.join("direnv.toml").exists(), "{name}");
     }
@@ -5255,7 +5337,7 @@ fn a_task_stacked_on_a_branch_whose_agent_changed_the_envrc_starts_without_diren
     setup.memory(60);
 
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
-    assert_eq!(outcomes_of(&setup, "2"), ["refused", "refused"]);
+    assert_eq!(outcomes_of(&setup, "2"), ["refused"]);
     assert_eq!(under_direnv(&setup), 1);
     let stacked = setup.dir.join("home/worktrees/owner/repo/2/.envrc");
     assert_eq!(fs::read_to_string(stacked).unwrap(), "touch /tmp/agent\n");

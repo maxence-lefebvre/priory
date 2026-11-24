@@ -3,10 +3,12 @@
 # helper that ignores TERM and keeps stdout open, as a stuck network fetch can. FAKE_DIR/git-hostile
 # holds an `.envrc`: after a fetch into a clone, and after a `worktree add` of priory/1, the ref that
 # the daemon could read next points to a commit with it, as another task's agent can arrange.
-# FAKE_DIR/git-clones gets a line per clone.
+# FAKE_DIR/git-ls-remotes gets a line per ls-remote, which FAKE_DIR/git-unreachable makes fail.
 case " $* " in
   *" fetch "*) if [ -e "$FAKE_DIR/git-hang" ]; then (trap '' TERM; sleep 60) & sleep 60; fi ;;
-  *" clone "*) echo clone >> "$FAKE_DIR/git-clones" ;;
+  *" ls-remote "*)
+    echo ls-remote >> "$FAKE_DIR/git-ls-remotes"
+    if [ -e "$FAKE_DIR/git-unreachable" ]; then echo 'fatal: unreachable' >&2; exit 128; fi ;;
 esac
 PATH=${PATH#*:}
 [ -e "$FAKE_DIR/git-hostile" ] || exec git "$@"

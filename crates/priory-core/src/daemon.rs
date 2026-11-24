@@ -1666,7 +1666,10 @@ fn direnv_failed(
     error: &str,
 ) -> Result<(), Error> {
     let secrets = crate::screen::secrets(&trace.factory.secret_envs());
-    let error = envrc_error(error, &secrets);
+    let mut error = envrc_error(error, &secrets);
+    if let Some(worktree) = &run.worktree {
+        error = error.replace(&format!("{worktree}/"), "");
+    }
     let why = if error.is_empty() {
         "direnv exited before the harness started".to_owned()
     } else {
@@ -2027,7 +2030,13 @@ fn restore_worktree(
         )?;
         return Ok(Restored::Waits);
     }
-    match runtime::worktree(home, repo, &worktree_name(db, runner, task)?, None) {
+    match runtime::worktree(
+        home,
+        repo,
+        &worktree_name(db, runner, task)?,
+        None,
+        factory.trust_worktrees(),
+    ) {
         Ok((worktree, _, added)) => {
             state::set_base(db, task, added.base())?;
             db.execute(
@@ -2542,7 +2551,13 @@ fn start(
     if base.is_some() && parent_moved(db, home, admission.task)? {
         return Ok(Ok(()));
     }
-    let (worktree, branch, added) = match runtime::worktree(home, repo, &folder, base.as_deref()) {
+    let (worktree, branch, added) = match runtime::worktree(
+        home,
+        repo,
+        &folder,
+        base.as_deref(),
+        factory.trust_worktrees(),
+    ) {
         Ok((worktree, branch, added)) => {
             if let runtime::Added::Kept(Some(recovery)) = &added {
                 let tx = db.transaction()?;

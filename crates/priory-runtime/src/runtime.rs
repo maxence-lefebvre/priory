@@ -540,12 +540,14 @@ fn orphaned(path: &Path, clone: &Path) -> bool {
 /// The task's worktree folder `name` on `priory/<name>`, from the local branch `from` of Priory's
 /// own clone of `repo` (`owner/name`), else from its default branch. The clone has no checkout: a person trusts it and the worktrees
 /// folder once in Claude, which covers its worktrees. A worktree of that clone left on that branch by an interrupted
-/// start is reused. The third value says whether the folder was kept, added back, or new.
+/// start is reused. `vouch` reads the default branch's head from GitHub outside the clone, for a base
+/// that no agent chose. The third value says whether the folder was kept, added back, or new.
 pub fn worktree(
     home: &Path,
     repo: &str,
     name: &str,
     from: Option<&str>,
+    vouch: bool,
 ) -> Result<(PathBuf, String, Added), String> {
     check_repo(repo)?;
     let clone = home.join("repos").join(repo);
@@ -609,7 +611,9 @@ pub fn worktree(
     }
     let trunk = phased("fetch", || {
         // Before the fetch, which then brings the commit.
-        let trunk = from.is_none().then(|| trunk(repo)).transpose()?;
+        let trunk = (vouch && from.is_none())
+            .then(|| trunk(repo, command_timeout()))
+            .transpose()?;
         run(git(&clone).args(["fetch", "--quiet", "origin"]))?;
         run(git(&clone).args(["remote", "set-head", "origin", "--auto"]))?;
         if let Some(trunk) = &trunk
@@ -624,7 +628,9 @@ pub fn worktree(
             head(&clone, from).ok_or_else(|| format!("branch {from} to start from is gone"))?
         }
         (None, Some(trunk)) => trunk,
-        (None, None) => unreachable!("a start without a branch read the default branch"),
+        (None, None) => run(git(&clone).args(["rev-parse", "--verify", "origin/HEAD"]))?
+            .trim()
+            .to_owned(),
     };
     phased("checkout", || {
         run(git(&clone)
@@ -641,10 +647,14 @@ pub fn worktree(
 
 /// The head of `repo`'s default branch as GitHub has it. It runs outside the clone, whose refs and
 /// config an agent can write.
-fn trunk(repo: &str) -> Result<String, String> {
+pub(crate) fn trunk(repo: &str, within: Duration) -> Result<String, String> {
     let url = format!("https://github.com/{repo}.git");
-    let refs = run(git(Path::new("/")).args(["ls-remote", &url, "HEAD"]))?;
-    head_of(&refs)
+    let refs = fed_raw_within(
+        git(Path::new("/")).args(["ls-remote", &url, "HEAD"]),
+        None,
+        within,
+    )?;
+    head_of(&String::from_utf8_lossy(&refs))
         .map(str::to_owned)
         .ok_or_else(|| format!("{url} names no HEAD commit"))
 }
@@ -1494,8 +1504,14 @@ pub fn one_line(stderr: &str) -> String {
 /// Runs the rest under `direnv exec "$1"`, with direnv's stderr in `$0/direnv.error`. When direnv
 /// failed before the harness started, which no `$0/direnv.started` tells, it marks
 /// `$0/direnv.failed` and runs the rest without the `.envrc`.
-const DIRENV_EXEC: &str = r#"s=$0 d=$1; shift
-direnv exec "$d" sh -c ': > "$0"; exec 2>&3 3>&-; exec "$@"' "$s/direnv.started" "$@" 3>&2 2>"$s/direnv.error"
+/// direnv alone gets the run's private `XDG_DATA_HOME`. The harness gets the old one, or the one the
+/// `.envrc` exports.
+pub(crate) const DIRENV_EXEC: &str = r#"s=$0 d=$1; shift
+PRIORY_DATA_HOME=${XDG_DATA_HOME-} XDG_DATA_HOME=$DIRENV_CONFIG/data direnv exec "$d" sh -c ': > "$0"; exec 2>&3 3>&-
+if [ "${XDG_DATA_HOME-}" = "$1" ]; then
+  if [ -n "${PRIORY_DATA_HOME-}" ]; then XDG_DATA_HOME=$PRIORY_DATA_HOME; else unset XDG_DATA_HOME; fi
+fi
+unset PRIORY_DATA_HOME; shift; exec "$@"' "$s/direnv.started" "$DIRENV_CONFIG/data" "$@" 3>&2 2>"$s/direnv.error"
 c=$?; [ -e "$s/direnv.started" ] && exit $c; : > "$s/direnv.failed"; exec "$@""#;
 
 /// The folder where a run under direnv leaves `direnv.started` and `direnv.error`: its spool, which
@@ -1586,7 +1602,8 @@ pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), NotStarted> 
             .map_err(|error| format!("{}: {error}", file.display()))?;
     }
     if let Some((file, text)) = harness.private_file(&exe, launch) {
-        write_private(&file, &text).map_err(|error| format!("{}: {error}", file.display()))?;
+        write_private(&file, text.as_bytes())
+            .map_err(|error| format!("{}: {error}", file.display()))?;
     }
     let mut command = tmux();
     command
@@ -2127,7 +2144,7 @@ fn mcp_config(exe: &Path, launch: &Launch) -> String {
 }
 
 /// Writes `text` to `file`, readable by its owner alone, even when an older file was not.
-pub(crate) fn write_private(file: &Path, text: &str) -> std::io::Result<()> {
+pub(crate) fn write_private(file: &Path, text: &[u8]) -> std::io::Result<()> {
     fs::create_dir_all(file.parent().expect("the file has a parent"))?;
     let mut written = OpenOptions::new()
         .write(true)
@@ -2136,7 +2153,7 @@ pub(crate) fn write_private(file: &Path, text: &str) -> std::io::Result<()> {
         .mode(0o600)
         .open(file)?;
     written.set_permissions(fs::Permissions::from_mode(0o600))?;
-    written.write_all(text.as_bytes())
+    written.write_all(text)
 }
 
 /// `priory mcp --session <id>`, with `--debate` for a debate turn and the flag of its tool set, if
@@ -3321,7 +3338,7 @@ mod tests {
         }
 
         fn again(&self) -> Result<Added, String> {
-            worktree(&self.home(), "o/n", "1", None).map(|(_, _, added)| added)
+            worktree(&self.home(), "o/n", "1", None, true).map(|(_, _, added)| added)
         }
     }
 
@@ -3610,7 +3627,7 @@ mod tests {
             ],
         );
 
-        let reason = worktree(&home.home(), "o/n", "2", None).unwrap_err();
+        let reason = worktree(&home.home(), "o/n", "2", None, true).unwrap_err();
 
         assert_eq!(
             reason,
