@@ -15,6 +15,7 @@ use p256::{PublicKey, SecretKey};
 use priory_runtime::runtime;
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::Sha256;
+use std::collections::BTreeMap;
 use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -98,13 +99,17 @@ pub struct Subscription {
     #[serde(rename = "expirationTime", default, skip_serializing)]
     _expiration: Option<serde_json::Value>,
     pub keys: Keys,
-    /// Which notifications it gets. Without them, a new subscription gets the default kinds and a known one
-    /// keeps its choice.
+    /// The kinds a person turned on or off. Without them, a known subscription keeps its choice.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kinds: Option<Vec<Kind>>,
+    pub kinds: Option<Choice>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+type Choice = BTreeMap<Kind, bool>;
+
+/// A kind of notification a subscription takes or leaves.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     Ask,
@@ -116,15 +121,50 @@ pub enum Kind {
     Stall,
 }
 
-/// Whether a subscription's `kinds` hold the kind of the queue row `?1`. A subscription that never
-/// chose gets neither `landed` nor `stall`.
-const WANTED: &str = "(SELECT CASE WHEN kind = 'ask' THEN 'ask'
-     WHEN state IN ('blocked', 'failed') THEN 'stopped'
-     WHEN state = 'report' THEN 'intake'
-     WHEN state IN ('prompt', 'command') THEN 'uncertain'
-     ELSE state END FROM push_queue WHERE id = ?1)
-   IN (SELECT value FROM json_each(coalesce(push_subscriptions.kinds,
-     '[\"ask\",\"stopped\",\"intake\",\"uncertain\",\"cap\"]')))";
+impl Kind {
+    const ALL: [Kind; 7] = [
+        Kind::Ask,
+        Kind::Stopped,
+        Kind::Intake,
+        Kind::Uncertain,
+        Kind::Cap,
+        Kind::Landed,
+        Kind::Stall,
+    ];
+
+    /// The kind of a `push_queue` row, from its `kind` and `state`.
+    fn queued(kind: &str, state: Option<&str>) -> Option<Kind> {
+        match (kind, state.unwrap_or_default()) {
+            ("ask", _) => Some(Kind::Ask),
+            (_, "blocked" | "failed") => Some(Kind::Stopped),
+            (_, "report") => Some(Kind::Intake),
+            (_, "prompt" | "command") => Some(Kind::Uncertain),
+            (_, "cap") => Some(Kind::Cap),
+            (_, "landed") => Some(Kind::Landed),
+            (_, "stall") => Some(Kind::Stall),
+            _ => None,
+        }
+    }
+
+    /// Whether a subscription gets the kind before a person turns it on or off.
+    fn by_default(self) -> bool {
+        !matches!(self, Kind::Landed | Kind::Stall)
+    }
+
+    fn chosen(self, choice: &Choice) -> bool {
+        choice
+            .get(&self)
+            .copied()
+            .unwrap_or_else(|| self.by_default())
+    }
+}
+
+/// A stored choice. One this build cannot read, such as a newer build's, reads as no choice.
+fn choice(stored: Option<&str>) -> Choice {
+    stored
+        .and_then(|stored| serde_json::from_str(stored).ok())
+        .unwrap_or_default()
+}
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -188,7 +228,16 @@ pub(crate) fn change(db: &Connection, line: &Line) -> rusqlite::Result<Result<St
             kinds
         ],
     )?;
-    Ok(Ok("subscribed".to_owned()))
+    let stored: Option<String> = db.query_row(
+        "SELECT kinds FROM push_subscriptions WHERE endpoint = ?1",
+        [&subscription.endpoint],
+        |row| row.get(0),
+    )?;
+    let choice = choice(stored.as_deref());
+    let kinds: Choice = Kind::ALL.map(|kind| (kind, kind.chosen(&choice))).into();
+    Ok(Ok(
+        serde_json::json!({ "ok": "subscribed", "kinds": kinds }).to_string(),
+    ))
 }
 
 fn check(subscription: &Subscription) -> Result<(), String> {
@@ -385,21 +434,13 @@ fn send(
     for retry in due {
         ended.push(retry.row);
         // The item may have closed, or the subscription gone or narrowed, while the retry waited.
-        let Some(notice) = notice(db, retry.row)? else {
+        let Some(to) = targets(db, retry.row)?
+            .into_iter()
+            .find(|to| to.0 == retry.endpoint)
+        else {
             continue;
         };
-        let keys = db
-            .query_row(
-                &format!(
-                    "SELECT p256dh, auth FROM push_subscriptions
-                     WHERE endpoint = ?2 AND {WANTED}"
-                ),
-                params![retry.row, retry.endpoint],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-            )
-            .optional()?;
-        if let Some((p256dh, auth)) = keys {
-            let to = (retry.endpoint, p256dh, auth);
+        if let Some(notice) = notice(db, retry.row)? {
             begin(
                 db,
                 home,
@@ -418,22 +459,56 @@ fn send(
     if sending.requests.is_empty()
         && let Some(row) = next(db, sending)?
     {
-        if let Some(notice) = notice(db, row)? {
-            // A subscription with a send recorded got it before the daemon stopped, or may have.
-            let mut statement = db.prepare(&format!(
-                "SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE endpoint NOT IN
-                   (SELECT endpoint FROM push_sent WHERE row = ?1) AND {WANTED}"
-            ))?;
-            let subscriptions = statement
-                .query_map([row], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
-                .collect::<rusqlite::Result<Vec<(String, String, String)>>>()?;
-            for to in subscriptions {
+        // A subscription with a send recorded got it before the daemon stopped, or may have.
+        let mut sent = db.prepare("SELECT 1 FROM push_sent WHERE row = ?1 AND endpoint = ?2")?;
+        let mut left = Vec::new();
+        for to in targets(db, row)? {
+            if !sent.exists(params![row, to.0])? {
+                left.push(to);
+            }
+        }
+        // A notice can build the whole desk, so a row nobody wants never does.
+        if !left.is_empty()
+            && let Some(notice) = notice(db, row)?
+        {
+            for to in left {
                 begin(db, home, sending, row, 1, &notice, to, post)?;
             }
         }
         finish(db, sending, vec![row])?;
     }
     Ok(())
+}
+
+/// The endpoint, `p256dh` and `auth` of each subscription that takes row `row`'s kind.
+fn targets(db: &Connection, row: i64) -> rusqlite::Result<Vec<(String, String, String)>> {
+    let Some(kind) = db
+        .query_row(
+            "SELECT kind, state FROM push_queue WHERE id = ?1",
+            [row],
+            |row| {
+                let state: Option<String> = row.get(1)?;
+                Ok(Kind::queued(&row.get::<_, String>(0)?, state.as_deref()))
+            },
+        )
+        .optional()?
+    else {
+        return Ok(Vec::new());
+    };
+    let mut statement =
+        db.prepare("SELECT endpoint, p256dh, auth, kinds FROM push_subscriptions")?;
+    let rows = statement
+        .query_map([], |row| {
+            let stored: Option<String> = row.get(3)?;
+            let to = (row.get(0)?, row.get(1)?, row.get(2)?);
+            Ok((choice(stored.as_deref()), to))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows
+        .into_iter()
+        .filter(|(choice, _)| kind.is_none_or(|kind| kind.chosen(choice)))
+        .map(|(_, to)| to)
+        .collect())
 }
 
 /// Removes from the queue each of `rows` that no request or retry still sends.
@@ -520,9 +595,13 @@ fn begin(
     Ok(())
 }
 
-/// The oldest queued row with no retry waiting on it.
+/// The oldest queued row with no retry waiting on it. A stall waits 5 minutes first, so one that the
+/// sweep scripts end tells nobody.
 fn next(db: &Connection, sending: &Sending) -> rusqlite::Result<Option<i64>> {
-    let mut statement = db.prepare("SELECT id FROM push_queue ORDER BY id")?;
+    let mut statement = db.prepare(
+        "SELECT id FROM push_queue WHERE state IS NOT 'stall'
+           OR created <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-5 minutes') ORDER BY id",
+    )?;
     let rows = statement.query_map([], |row| row.get::<_, i64>(0))?;
     for row in rows {
         let row = row?;
@@ -890,11 +969,56 @@ mod tests {
         priory_runtime::runtime::remove_sealed(&home);
     }
 
-    /// The rows each stored choice wants, of one row per queued kind and alarm state.
-    fn wanted(kinds: Option<&str>) -> Vec<&'static str> {
-        const STATES: [&str; 8] = [
-            "blocked", "failed", "report", "prompt", "command", "cap", "landed", "stall",
-        ];
+    /// The alarm states the state's triggers and the spend caps queue.
+    fn states() -> Vec<String> {
+        let db = crate::state::memory();
+        let mut statement = db
+            .prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND sql LIKE '%INTO push_queue%'")
+            .unwrap();
+        let mut sources: Vec<String> = statement
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        sources.push(include_str!("spend.rs").to_owned());
+        let mut states = Vec::new();
+        for source in sources {
+            for queued in source.split("'alarm', ").skip(1) {
+                let state = queued
+                    .split([')', '\n'])
+                    .next()
+                    .unwrap()
+                    .split(", ")
+                    .nth(1)
+                    .unwrap();
+                let state = state.split(' ').next().unwrap().trim_matches('\'');
+                match state {
+                    "NEW.state" => states.extend(["blocked".to_owned(), "failed".to_owned()]),
+                    state => states.push(state.to_owned()),
+                }
+            }
+        }
+        states.sort();
+        states
+    }
+
+    #[test]
+    fn every_state_queued_has_a_kind() {
+        let states = states();
+        assert_eq!(
+            states,
+            [
+                "blocked", "cap", "command", "failed", "landed", "prompt", "report", "stall"
+            ]
+        );
+        for state in &states {
+            assert!(Kind::queued("alarm", Some(state)).is_some(), "{state}");
+        }
+        assert_eq!(Kind::queued("ask", None), Some(Kind::Ask));
+    }
+
+    /// What one subscription with `kinds` stored gets, of one queued row per kind and state.
+    fn gets(kinds: Option<&str>) -> Vec<String> {
         let db = crate::state::memory();
         db.execute(
             "INSERT INTO push_subscriptions (endpoint, p256dh, auth, kinds) VALUES ('e', '', '', ?1)",
@@ -902,7 +1026,8 @@ mod tests {
         )
         .unwrap();
         let mut rows = vec![("ask", None)];
-        rows.extend(STATES.map(|state| ("alarm", Some(state))));
+        let states = states();
+        rows.extend(states.iter().map(|state| ("alarm", Some(state.as_str()))));
         rows.into_iter()
             .filter(|(kind, state)| {
                 db.execute(
@@ -910,34 +1035,66 @@ mod tests {
                     params![kind, state],
                 )
                 .unwrap();
-                let query = format!("SELECT {WANTED} FROM push_subscriptions");
-                db.query_row(&query, [db.last_insert_rowid()], |row| row.get(0))
-                    .unwrap()
+                !targets(&db, db.last_insert_rowid()).unwrap().is_empty()
             })
-            .map(|(_, state)| state.unwrap_or("ask"))
+            .map(|(_, state)| state.unwrap_or("ask").to_owned())
             .collect()
     }
 
     #[test]
-    fn each_kind_takes_its_own_rows_and_no_choice_takes_the_defaults() {
-        assert_eq!(
-            wanted(None),
-            [
-                "ask", "blocked", "failed", "report", "prompt", "command", "cap"
-            ]
-        );
-        assert!(wanted(Some("[]")).is_empty());
-        for (kind, rows) in [
-            ("ask", &["ask"][..]),
-            ("stopped", &["blocked", "failed"]),
-            ("intake", &["report"]),
-            ("uncertain", &["prompt", "command"]),
-            ("cap", &["cap"]),
-            ("landed", &["landed"]),
-            ("stall", &["stall"]),
+    fn each_kind_takes_its_own_rows_and_a_kind_not_chosen_takes_its_default() {
+        let today = [
+            "ask", "blocked", "cap", "command", "failed", "prompt", "report",
+        ];
+        assert_eq!(gets(None), today);
+        assert_eq!(gets(Some("{}")), today);
+        assert_eq!(gets(Some(r#"{"ask":false}"#)), today[1..]);
+        for (only, rows) in [
+            (Kind::Ask, &["ask"][..]),
+            (Kind::Stopped, &["blocked", "failed"]),
+            (Kind::Intake, &["report"]),
+            (Kind::Uncertain, &["command", "prompt"]),
+            (Kind::Cap, &["cap"]),
+            (Kind::Landed, &["landed"]),
+            (Kind::Stall, &["stall"]),
         ] {
-            assert_eq!(wanted(Some(&format!("[\"{kind}\"]"))), rows);
+            let choice: Choice = Kind::ALL.map(|kind| (kind, kind == only)).into();
+            assert_eq!(
+                gets(Some(&serde_json::json!(choice).to_string())),
+                rows,
+                "{only:?}"
+            );
         }
+        let none: Choice = Kind::ALL.map(|kind| (kind, false)).into();
+        assert!(gets(Some(&serde_json::json!(none).to_string())).is_empty());
+    }
+
+    #[test]
+    fn a_stall_is_sent_only_once_it_lasted_5_minutes() {
+        let (home, db) = setup("debounce", 0);
+        db.execute(
+            "UPDATE push_subscriptions SET kinds = '{\"stall\":true}'",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO stalls (resource, missing, task) VALUES ('disk', '3 GB', 1)",
+            [],
+        )
+        .unwrap();
+        let service = Service::new(&["201"]);
+        let mut sending = Sending::default();
+        settle(&db, &home, &mut sending, Instant::now(), &service);
+        assert_eq!((*service.posts.borrow(), queued(&db)), (0, vec![1]));
+
+        db.execute(
+            "UPDATE push_queue SET created = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-6 minutes')",
+            [],
+        )
+        .unwrap();
+        settle(&db, &home, &mut sending, Instant::now(), &service);
+        assert_eq!((*service.posts.borrow(), queued(&db)), (1, vec![]));
+        priory_runtime::runtime::remove_sealed(&home);
     }
 
     #[test]
@@ -949,8 +1106,11 @@ mod tests {
         settle(&db, &home, &mut sending, start, &service);
         assert_eq!((*service.posts.borrow(), queued(&db)), (1, vec![1]));
 
-        db.execute("UPDATE push_subscriptions SET kinds = '[\"ask\"]'", [])
-            .unwrap();
+        db.execute(
+            "UPDATE push_subscriptions SET kinds = '{\"stopped\":false}'",
+            [],
+        )
+        .unwrap();
         settle(
             &db,
             &home,

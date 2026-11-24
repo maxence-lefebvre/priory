@@ -1001,6 +1001,7 @@ fn write(
                 .is_ok_and(|reply| reply.get("error").is_some());
             Reply::json(if repeated { 409 } else { 200 }, added)
         }
+        Ok(Ok(subscribed)) if matches!(write, Write::Subscribe) => Reply::json(200, subscribed),
         Ok(Ok(done)) => Reply::json(200, serde_json::json!({ "ok": done }).to_string()),
         Ok(Err(refused)) => refusal(db, sent, &refused),
         Err(error) => Reply::error(500, &format!("unreadable reply {reply:?}: {error}")),

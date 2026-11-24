@@ -21,6 +21,20 @@ pub fn scope_in(text: &str, slice: &str) -> Option<String> {
     (scope.ends_with(".scope") && parts.next() == Some(slice)).then(|| path.to_owned())
 }
 
+/// Whether this process runs inside the slice `slice`, at any depth.
+pub fn inside(slice: &str) -> bool {
+    std::fs::read_to_string(crate::room::proc().join("self/cgroup")).is_ok_and(|text| {
+        text.lines()
+            .filter_map(|line| line.strip_prefix("0::"))
+            .any(|path| path.trim().split('/').any(|part| part == slice))
+    })
+}
+
+/// The text of `file` in the cgroup `path`.
+pub(crate) fn read(path: &str, file: &str) -> Option<String> {
+    std::fs::read_to_string(root().join(path.trim_start_matches('/')).join(file)).ok()
+}
+
 /// The memory the cgroup `path` holds that measured free memory does not count as free: its
 /// anonymous and shared memory, from its `memory.stat` under `/sys/fs/cgroup`, or under
 /// `PRIORY_CGROUP` when set.

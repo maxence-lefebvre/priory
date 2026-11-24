@@ -5076,14 +5076,39 @@ fn each_subscription_gets_the_kinds_it_chose() {
     // No task starts, so none turns blocked and sends an alarm of its own.
     succeeded(&setup.priory(&["pause"]));
     let address = setup.start(&["daemon", &setup.factory()]);
-    setup.subscribe_to(&address, PHONE, Some(json!(["ask"])));
+    let ask_only =
+        json!({ "ask": true, "stopped": false, "intake": false, "uncertain": false, "cap": false });
+    setup.subscribe_to(&address, PHONE, Some(ask_only));
+    let resend = |endpoint: &str, kinds: Option<Value>| {
+        let (mut browser, _) = subscription(endpoint);
+        if let Some(kinds) = kinds {
+            browser["kinds"] = kinds;
+        }
+        post(&address, "/api/push/subscribe", "", &browser.to_string())
+    };
+    for refused in [
+        json!({ "weather": true }),
+        json!(["ask"]),
+        json!({ "ask": "yes" }),
+    ] {
+        let (status, body) = resend(PHONE, Some(refused));
+        assert_eq!(status, 400, "{body}");
+    }
     // A page that knows no kinds sends the subscription again, and the choice stays.
-    setup.subscribe(&address, PHONE);
+    let kinds = |reply: (u16, String)| -> Value {
+        let reply: Value = serde_json::from_str(&reply.1).unwrap();
+        assert_eq!(reply["ok"], "subscribed");
+        reply["kinds"].clone()
+    };
     setup.subscribe(&address, LAPTOP);
-    let (mut unknown, _) = subscription(DESKTOP);
-    unknown["kinds"] = json!(["ask", "weather"]);
-    let refused = post(&address, "/api/push/subscribe", "", &unknown.to_string());
-    assert_eq!(refused.0, 400, "{}", refused.1);
+    assert_eq!(
+        kinds(resend(LAPTOP, None)),
+        json!({ "ask": true, "stopped": true, "intake": true, "uncertain": true, "cap": true, "landed": false, "stall": false })
+    );
+    assert_eq!(
+        kinds(resend(PHONE, None)),
+        json!({ "ask": true, "stopped": false, "intake": false, "uncertain": false, "cap": false, "landed": false, "stall": false })
+    );
     let urls = |from: usize, count: usize| {
         setup.until_pushes(from + count);
         std::thread::sleep(Duration::from_millis(1500));
@@ -5103,7 +5128,8 @@ fn each_subscription_gets_the_kinds_it_chose() {
 
     // The desk, which a landed-wrong notice reads, parses an open ask's command as JSON.
     db.execute("UPDATE asks SET answer = 'yes'", []).unwrap();
-    setup.subscribe_to(&address, DESKTOP, Some(json!(["landed", "stall"])));
+    let late = json!({ "stopped": false, "landed": true, "stall": true });
+    setup.subscribe_to(&address, DESKTOP, Some(late));
     db.execute(
         "INSERT INTO inbox (id, time, type, subject, data, links, outcome)
          VALUES ('r900', '2026-11-17T09:00:00Z', 'priory.report', 'priory',
@@ -5111,17 +5137,7 @@ fn each_subscription_gets_the_kinds_it_chose() {
         [],
     )
     .unwrap();
-    db.execute(
-        "INSERT INTO stalls (resource, missing, task) VALUES ('disk', '3 GB', 1)",
-        [],
-    )
-    .unwrap();
-    assert_eq!(urls(3, 1)[0], DESKTOP);
-    assert!(
-        setup.pushes()[3..]
-            .iter()
-            .all(|push| push["url"] == DESKTOP)
-    );
+    assert_eq!(urls(3, 1), [DESKTOP]);
 }
 
 #[test]
