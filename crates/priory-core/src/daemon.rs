@@ -1450,7 +1450,9 @@ fn tend(
     }
     // Before admission, so a run's slow start never delays another run's Enter.
     entering.tick(db)?;
-    let (measured, promised, waiting) = loop {
+    // The last measurement of this tick, for the metrics.
+    let mut last = None;
+    let (promised, waiting) = loop {
         // Measured again after each start, since its clone and worktree take disk.
         let measured = OnceCell::new();
         let room = || measured.get_or_init(|| room::measure(home));
@@ -1464,8 +1466,9 @@ fn tend(
             &watched,
             &checking,
         )?;
+        last = measured.into_inner().or(last);
         let Some(admission) = pass.admission else {
-            break (measured, pass.promised, Some(pass.waiting));
+            break (pass.promised, Some(pass.waiting));
         };
         if let Some(me) = &trace.runner {
             match runners::cleared(db, me, admission.task)? {
@@ -1473,7 +1476,7 @@ fn tend(
                 Some(false) => continue,
                 // Its claim is not on the log yet: the next tick tries again. The pass stopped
                 // short of the tasks behind it, so it counts no waiting task.
-                None => break (measured, pass.promised, None),
+                None => break (pass.promised, None),
             }
         }
         if let Err(reason) = start(
@@ -1491,9 +1494,9 @@ fn tend(
             state::block(db, trace, admission.task, "failed", &reason)?;
         }
     };
-    if metrics::wants_room(measured.get().is_some()) {
-        let room = measured.get_or_init(|| room::measure(home));
-        metrics::sample_room(db, share, room, promised.memory, waiting)?;
+    if metrics::wants_room(last.is_some()) {
+        let room = last.unwrap_or_else(|| room::measure(home));
+        metrics::sample_room(db, share, &room, promised.memory, waiting)?;
     }
     // A marked run idle between turns has no turn end to wait for.
     for session in crate::preempt::idle(db)? {
@@ -1910,7 +1913,10 @@ fn restore_worktree(
 ) -> Result<Restored, Error> {
     // A resurrected task goes through the room check, which a code step otherwise skips.
     let waits = match room::measure(home) {
-        Err(error) => Some(format!("waits for room: {error}")),
+        Err(error) => Some(format!(
+            "{}: cannot measure it: {error}",
+            crate::room::RESTORES
+        )),
         Ok(room) if crate::room::short_of_disk(&room) => Some(crate::room::RESTORES.to_owned()),
         Ok(_) => None,
     };
@@ -1925,7 +1931,7 @@ fn restore_worktree(
         Ok((worktree, _, added)) => {
             state::set_base(db, task, added.base())?;
             db.execute(
-                "UPDATE tasks SET reason = NULL WHERE id = ?1 AND reason = ?2",
+                "UPDATE tasks SET reason = NULL WHERE id = ?1 AND substr(reason, 1, length(?2)) = ?2",
                 rusqlite::params![task, crate::room::RESTORES],
             )?;
             // The code step needs no resume; the task's next run starts it first.

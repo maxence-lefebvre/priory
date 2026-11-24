@@ -2,7 +2,7 @@
 //! per-minute cap (docs/daemon/metrics.md).
 
 use crate::otlp;
-use crate::room::{CAUSES, RESTORES, Share};
+use crate::room::{CAUSES, RESTORES, Share, UNMEASURED};
 use priory_factory::factory::{Backend, Factory, METRIC_GROUPS, Price};
 use priory_intake::intake::{EVENTS, FAILURES, MISSED, OUTPUT};
 use priory_intake::log::{self, Log};
@@ -195,13 +195,16 @@ pub(crate) fn sample_room(
     let runs = Number::Int(promised.saturating_sub(held));
     push("priory.room.memory.promised", "By", Vec::new(), runs);
     if let Some(mut waiting) = waiting {
-        let restoring: i64 = db.query_row(
-            "SELECT count(*) FROM tasks
-             WHERE reason = ?1 AND state NOT IN ('done', 'failed', 'dropped')",
+        // A room that cannot be measured adds its error to the reason.
+        let (short, unmeasured): (i64, i64) = db.query_row(
+            "SELECT count(*) FILTER (WHERE reason = ?1), count(*) FILTER (WHERE reason != ?1)
+             FROM tasks WHERE substr(reason, 1, length(?1)) = ?1
+             AND state NOT IN ('done', 'failed', 'dropped')",
             [RESTORES],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        *waiting.entry("disk").or_default() += restoring as u64;
+        *waiting.entry("disk").or_default() += short as u64;
+        *waiting.entry(UNMEASURED).or_default() += unmeasured as u64;
         for cause in CAUSES {
             let attributes = vec![("priory.room.cause", cause.to_owned())];
             let count = Number::Int(waiting.get(cause).copied().unwrap_or_default());

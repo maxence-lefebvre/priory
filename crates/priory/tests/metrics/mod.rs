@@ -1285,3 +1285,32 @@ fn a_task_waiting_for_room_costs_no_second_measurement_a_tick_with_the_room_grou
         );
     }
 }
+
+#[test]
+fn a_task_that_waits_for_disk_to_add_back_its_worktree_counts_until_it_has_it() {
+    let collector = Collector::start();
+    let mut setup = asked_to_open("metrics-room-restore", OPEN_PR);
+    setup.commit(1, "widget.txt");
+    setup.crash();
+    setup.metrics(&collector, ROOM);
+    setup.disk(10);
+    setup.start();
+    setup.removed(1);
+
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    until_waiting(&setup, &collector, &only("disk", 1.0));
+    fs::rename(
+        setup.dir.join("proc/meminfo"),
+        setup.dir.join("proc/hidden"),
+    )
+    .unwrap();
+    until_waiting(&setup, &collector, &only("unmeasured", 1.0));
+    setup.disk(100);
+    setup.memory(60);
+    setup.until("actions", |rows| rows.len() == 1);
+    let sent = collector.requests().len();
+    let requests = collector.until_count(&setup, sent + 2);
+    assert_eq!(waiting(requests.last().unwrap()), only("none", 0.0));
+}
