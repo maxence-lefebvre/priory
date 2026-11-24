@@ -1750,6 +1750,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
             .is_some();
     // Without the factory folder, the queue knows no schedules or workflows, so up next lists none.
     let (mut schedules, mut offered, mut now) = (Vec::new(), None, jiff::Timestamp::now());
+    let mut default_workflow = None;
     if ["queue", "desk"].contains(&verb) || unrouted {
         now = match intake::now() {
             Ok(now) => now,
@@ -1767,6 +1768,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                 return ExitCode::FAILURE;
             };
             schedules = listing::schedule_triggers(&factory);
+            default_workflow = factory.request().map(|defaults| defaults.workflow.clone());
             offered = Some((factory.requestable(), factory.not_requestable()));
         }
         args.clear();
@@ -1817,7 +1819,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                 "desk" => listing::desk(db, &home, all, person.unwrap_or(listing::ME), now),
                 _ => {
                     let offered = offered.as_ref().map(|(yes, no)| (&yes[..], &no[..]));
-                    listing::queue(db, &schedules, offered, now)
+                    listing::queue(db, &schedules, offered, default_workflow.as_deref(), now)
                 }
             }
             .map(Some)
@@ -4436,8 +4438,54 @@ fn guard(input: &Value) -> Option<String> {
             }
         }
     }
+    if let Some(reason) = private_terms(input, tool, command.as_deref(), &session) {
+        return deny(&reason);
+    }
     report_connector_use(tool);
     None
+}
+
+/// Why the call may not publish, when the factory has private terms: one is in what it would
+/// publish to a repository the factory lists, or Priory cannot read what it would publish.
+fn private_terms(
+    input: &Value,
+    tool: &str,
+    command: Option<&str>,
+    session: &str,
+) -> Option<String> {
+    std::env::var_os("PRIORY_PRIVATE").filter(|flag| !flag.is_empty())?;
+    let publishes = priory_factory::publish::calls(tool, command, &input["tool_input"]);
+    if publishes.is_empty() {
+        return None;
+    }
+    let asked = runtime::call(&runtime::home(), r#"{"private":{}}"#, GUARD_WAIT)
+        .and_then(|reply| {
+            serde_json::from_str::<Result<String, String>>(&reply)
+                .map_err(|_| "unreadable reply".to_owned())
+        })
+        .and_then(|rules| rules)
+        .and_then(|rules| serde_json::from_str(&rules).map_err(|_| "unreadable rules".to_owned()));
+    let rules: priory_factory::private::Private = match asked {
+        Ok(rules) => rules,
+        Err(error) => {
+            return Some(format!(
+                "Priory denied this call: it publishes, and the daemon did not give the factory's private terms ({error}). Try again."
+            ));
+        }
+    };
+    let cwd = input["cwd"]
+        .as_str()
+        .map_or_else(|| PathBuf::from("."), PathBuf::from);
+    publishes.iter().find_map(|publish| {
+        let reason = priory_core::private::screen(&rules, &cwd, publish).err()?;
+        let line = serde_json::json!({ "guard": {
+            "session": session, "guard": priory_factory::guard::PRIVATE,
+            "call": publish.call, "tool": tool, "moves_head": false,
+        } });
+        // Best effort: the daemon records the denial, which stands either way.
+        let _ = runtime::call(&runtime::home(), &line.to_string(), Duration::from_secs(1));
+        Some(reason)
+    })
 }
 
 /// The denial of an MCP tool whose server is none of `servers`, the comma-separated servers a run
@@ -4685,7 +4733,7 @@ fn hook(event: &str) -> ExitCode {
         });
         let (denied, input) = receiver.recv_timeout(GUARD_DEADLINE).unwrap_or_else(|_| {
             let reason = format!(
-                "Priory's tool guard failed or did not finish within {}s on this call, so it denied it.",
+                "Priory's tool guard failed or did not finish within {}s on this call, so it denied it. If it pushes, fetch the remote first, or push fewer commits at a time.",
                 GUARD_DEADLINE.as_secs()
             );
             (Some(reason), None)
