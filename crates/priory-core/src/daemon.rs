@@ -2044,7 +2044,7 @@ fn restore_worktree(
         factory.trust_worktrees(),
     ) {
         Ok((worktree, _, added)) => {
-            state::set_base(db, task, added.base())?;
+            state::set_base(db, task, added.base(), factory.trust_worktrees())?;
             db.execute(
                 "UPDATE tasks SET reason = NULL WHERE id = ?1 AND substr(reason, 1, length(?2)) = ?2",
                 rusqlite::params![task, crate::room::RESTORES],
@@ -2579,7 +2579,7 @@ fn start(
                 tx.commit()?;
             }
             let start = added.base();
-            state::set_base(db, admission.task, start)?;
+            state::set_base(db, admission.task, start, factory.trust_worktrees())?;
             if base.is_some() && start.is_some() {
                 db.execute(
                     "UPDATE tasks SET parent_head = ?2 WHERE id = ?1",

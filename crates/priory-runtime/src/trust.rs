@@ -120,24 +120,31 @@ pub fn direnv(
 
 /// The `direnvrc` of a run's folder. direnv reads an `.envrc` once to hash it and again to run it,
 /// so it makes direnv's first `source_env` run the copy that Priory checked. The person's files and
-/// the `.envrc` see the person's `XDG_DATA_HOME`, which direnv alone gets replaced.
-const DIRENVRC: &str = r#"priory_data=$XDG_DATA_HOME
-if [[ -n ${PRIORY_DATA_HOME-} ]]; then export XDG_DATA_HOME=$PRIORY_DATA_HOME; else unset XDG_DATA_HOME; fi
-priory_folder=$DIRENV_CONFIG
+/// the `.envrc` see the person's `XDG_DATA_HOME`, which direnv alone gets replaced. The harness keeps
+/// `DIRENV_CONFIG`, so only the daemon's load may do this. `PRIORY_DATA_HOME` tells it too, since
+/// direnv's revert of an `.envrc` that exports `XDG_DATA_HOME` brings the private one back.
+const DIRENVRC: &str = r#"priory_folder=$DIRENV_CONFIG
+priory_data=
+if [[ ${XDG_DATA_HOME-} == "$priory_folder/data" ]]; then
+  [[ -z ${PRIORY_DATA_HOME+set} ]] || priory_data=$XDG_DATA_HOME
+  if [[ -n ${PRIORY_DATA_HOME-} ]]; then export XDG_DATA_HOME=$PRIORY_DATA_HOME; else unset XDG_DATA_HOME; fi
+fi
 if [[ -f $priory_folder/direnvrc.person ]]; then
   source "$priory_folder/direnvrc.person"
 elif [[ -f $HOME/.direnvrc ]]; then
   source "$HOME/.direnvrc"
 fi
-priory_source_env=$(declare -f source_env)
-source_env() {
-  eval "$priory_source_env"
-  watch_file "$1"
-  pushd "${1%/*}" >/dev/null || return 1
-  . "$priory_folder/envrc"
-  [[ ${XDG_DATA_HOME-} != "${PRIORY_DATA_HOME-}" ]] || export XDG_DATA_HOME=$priory_data
-  popd >/dev/null || return 1
-}
+if [[ -n $priory_data ]]; then
+  priory_source_env=$(declare -f source_env)
+  source_env() {
+    eval "$priory_source_env"
+    watch_file "$1"
+    pushd "${1%/*}" >/dev/null || return 1
+    . "$priory_folder/envrc"
+    [[ ${XDG_DATA_HOME-} != "${PRIORY_DATA_HOME-}" ]] || export XDG_DATA_HOME=$priory_data
+    popd >/dev/null || return 1
+  }
+fi
 "#;
 
 /// Writes the run's direnv config folder for the checked `content` of the `.envrc` at `envrcs`,
@@ -1024,6 +1031,65 @@ mod tests {
             assert_eq!(
                 fs::read_to_string(real.join(".envrc")).unwrap(),
                 "export V=bad\n"
+            );
+        }
+
+        // An agent's own loads, from the harness, of files the person allows.
+        let other = root.join("other");
+        fs::create_dir_all(&other).unwrap();
+        let data = root.join("data");
+        let allow = |data: &Path, envrc: &Path, content: &str| {
+            let allow = data.join("direnv/allow");
+            fs::create_dir_all(&allow).unwrap();
+            let path = line_of(envrc);
+            fs::write(allow.join(sha256(&[&path, content.as_bytes()])), &path).unwrap();
+        };
+        let [foreign, edited] =
+            ["other", "edited"].map(|v| format!("export V={v} D=${{XDG_DATA_HOME-unset}}\n"));
+        let custom = root.join("custom");
+        fs::write(other.join(".envrc"), &foreign).unwrap();
+        for data in [&data, &custom] {
+            allow(data, &other.join(".envrc"), &foreign);
+            allow(data, &real.join(".envrc"), &edited);
+        }
+        let exports = format!("export V=good XDG_DATA_HOME={}\n", custom.display());
+        // direnv's revert keeps no value of the person's under an `.envrc` that exports its own.
+        for (good, seen) in [
+            ("export V=good\n", data.to_str().unwrap()),
+            (&exports, "unset"),
+        ] {
+            let envrc = real.join(".envrc");
+            prepare(
+                &folder,
+                &person,
+                good.as_bytes(),
+                std::slice::from_ref(&envrc),
+            )
+            .unwrap();
+            fs::write(&envrc, good).unwrap();
+            let _ = fs::remove_file(root.join("late"));
+            let out = std::process::Command::new("sh")
+                .args(["-c", crate::runtime::DIRENV_EXEC])
+                .args([&spool, &real])
+                .args(["sh", "-c"])
+                .arg(
+                    r#"echo $V; direnv exec "$0" sh -c 'echo $V $D'
+printf %s "$EDITED" > "$1/.envrc"; direnv exec "$1" sh -c 'echo $V $D'"#,
+                )
+                .args([&other, &real])
+                .env("XDG_DATA_HOME", &data)
+                .env_remove("DIRENV_DIFF")
+                .env("DIRENV_CONFIG", &folder)
+                .env("EDITED", &edited)
+                .env("PRIORY_TEST_LATE", root.join("late"))
+                .env("PRIORY_TEST_WORK", &real)
+                .current_dir("/")
+                .output()
+                .unwrap();
+            assert_eq!(
+                String::from_utf8(out.stdout).unwrap(),
+                format!("good\nother {seen}\nedited {seen}\n"),
+                "{good}"
             );
         }
     }

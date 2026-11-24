@@ -274,7 +274,10 @@ a worktree or clone that a symlink leads elsewhere.
     the daemon spells it and its real path each get one.
   - `envrc`: the checked bytes.
   - `direnvrc`: Priory's own. It runs the person's `direnvrc`, or else their `~/.direnvrc`, then makes
-    direnv run `envrc` where it would read the worktree's `.envrc` a second time.
+    direnv run `envrc` where it would read the worktree's `.envrc` a second time. It does that in the
+    daemon's load alone, so an agent's own `direnv exec` runs the `.envrc` of the folder it names.
+    `BASH_SOURCE` in the `.envrc` names the copy, `envrc` in the run's folder, and `$PWD` the
+    worktree.
   - `direnvrc.person` and `lib`: links to the real paths of the person's, so a home-manager link into
     `/nix/store` still resolves in a jail and libraries such as nix-direnv still load.
 
@@ -287,7 +290,8 @@ a worktree or clone that a symlink leads elsewhere.
   `direnv/` in Priory home is a symlink, or when the `.envrc` fails the check below. The task's reason
   then says `started without its .envrc:` and why. The daemon deletes the folder once the run ended.
   Without `direnv` or without an `.envrc`, nothing changes. An agent's own `direnv exec . <command>`
-  needs the person's own `direnv allow`.
+  needs the person's own `direnv allow`, and sees `XDG_DATA_HOME` unset when the task's `.envrc`
+  exports one.
 
   A worktree outlives its run. So without a check, an `.envrc` that one run's agent wrote would run
   at the start of the next, outside the tool guard and the harness's permissions. The daemon grants
@@ -325,8 +329,9 @@ a worktree or clone that a symlink leads elsewhere.
     refuses a change before its hash, and runs one made after it.
   - The daemon's git reads the clone's config, which an unjailed agent can write. Its
     `core.sshCommand`, filters and credential helpers can run commands as the daemon, at any start.
-  - A task that started before the daemon read its base from GitHub keeps the base it recorded. So
-    does one that started while `trust_worktrees` was off, when the daemon does not ask GitHub.
+  - A task that started before the daemon stored a base for this check has none, and neither has one
+    that started while `trust_worktrees` was off, when the daemon does not ask GitHub. Their `.envrc`
+    must match the default branch.
 
   The variables an `.envrc` exports
   reach the harness's environment as they are, outside the daemon's secret redaction, so keep

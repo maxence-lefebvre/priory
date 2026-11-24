@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 116;
+const VERSION: i64 = 117;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -2068,6 +2068,15 @@ AND (SELECT min(json_extract(run.data, '$.conclusion') IS 'cancelled')
 PRAGMA user_version = 116;
 ";
 
+// The commit a task's `.envrc` is checked against, when the daemon read it outside the clone.
+const SCHEMA_117: &str = "
+CREATE TABLE IF NOT EXISTS envrc_bases (
+  task  INTEGER PRIMARY KEY,
+  sha   TEXT NOT NULL
+);
+PRAGMA user_version = 117;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -2084,7 +2093,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
     SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112, SCHEMA_113,
-    SCHEMA_114, SCHEMA_115, SCHEMA_116,
+    SCHEMA_114, SCHEMA_115, SCHEMA_116, SCHEMA_117,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -2184,9 +2193,22 @@ pub(crate) fn replaying(db: &Connection) -> rusqlite::Result<bool> {
     db.query_row("SELECT EXISTS (SELECT 1 FROM replay)", [], |row| row.get(0))
 }
 
-/// Stores `base` as the commit the task started from, unless it already has one.
-pub(crate) fn set_base(db: &Connection, task: i64, base: Option<&str>) -> rusqlite::Result<()> {
+/// Stores `base` as the commit the task started from, unless it already has one. An `.envrc` is
+/// checked against it only when `vouched`: read with `trust_worktrees` on, outside the clone.
+pub(crate) fn set_base(
+    db: &Connection,
+    task: i64,
+    base: Option<&str>,
+    vouched: bool,
+) -> rusqlite::Result<()> {
     if let Some(base) = base {
+        if vouched {
+            db.execute(
+                "INSERT INTO envrc_bases (task, sha)
+                 SELECT id, ?2 FROM tasks WHERE id = ?1 AND base_sha IS NULL",
+                rusqlite::params![task, base],
+            )?;
+        }
         db.execute(
             "UPDATE tasks SET base_sha = ?2 WHERE id = ?1 AND base_sha IS NULL",
             rusqlite::params![task, base],
@@ -2196,14 +2218,15 @@ pub(crate) fn set_base(db: &Connection, task: i64, base: Option<&str>) -> rusqli
 }
 
 /// The commit that the bottom of `task`'s stack started from, or `task` itself when it stacks on
-/// none. A stacked task's own base is another agent's branch.
+/// none, if it vouches for an `.envrc`. A stacked task's own base is another agent's branch.
 pub(crate) fn root_base(db: &Connection, task: i64) -> rusqlite::Result<Option<String>> {
     db.query_row(
         "WITH RECURSIVE below (id) AS (
            SELECT ?1
            UNION SELECT tasks.base_task FROM tasks JOIN below ON tasks.id = below.id
              WHERE tasks.base_task IS NOT NULL)
-         SELECT base_sha FROM tasks JOIN below ON tasks.id = below.id WHERE base_task IS NULL",
+         SELECT sha FROM tasks JOIN below ON tasks.id = below.id
+           JOIN envrc_bases ON envrc_bases.task = tasks.id WHERE base_task IS NULL",
         [task],
         |row| row.get(0),
     )
@@ -5154,26 +5177,28 @@ mod ready_within {
         }
     }
 
-    fn task(db: &Connection, base: Option<&str>, base_task: Option<i64>) -> i64 {
+    fn task(db: &Connection, base: Option<&str>, base_task: Option<i64>, vouched: bool) -> i64 {
         db.execute(
             "INSERT INTO tasks (key, workflow, step, state, band, lane, lane_derived, trigger,
-               source, entered, base_sha, base_task)
+               source, entered, base_task)
              VALUES ('cli:' || (SELECT count(*) FROM tasks), 'build', 'implement', 'running', 'now',
-               'cli', 0, 'cli', 'a', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?1, ?2)",
-            params![base, base_task],
+               'cli', 0, 'cli', 'a', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?1)",
+            params![base_task],
         )
         .unwrap();
-        db.last_insert_rowid()
+        let task = db.last_insert_rowid();
+        set_base(db, task, base, vouched).unwrap();
+        task
     }
 
     #[test]
     fn a_stacks_base_is_the_commit_its_bottom_task_started_from() {
         let db = memory();
-        let root = task(&db, Some("trunk"), None);
-        let middle = task(&db, Some("agents"), Some(root));
-        let top = task(&db, Some("agents2"), Some(middle));
-        let orphan = task(&db, Some("agents3"), Some(99));
-        let new = task(&db, None, None);
+        let root = task(&db, Some("trunk"), None, true);
+        let middle = task(&db, Some("agents"), Some(root), true);
+        let top = task(&db, Some("agents2"), Some(middle), true);
+        let orphan = task(&db, Some("agents3"), Some(99), true);
+        let new = task(&db, None, None, true);
 
         let bases = [root, top, orphan, new].map(|task| root_base(&db, task).unwrap());
 
@@ -5181,5 +5206,23 @@ mod ready_within {
             bases.each_ref().map(Option::as_deref),
             [Some("trunk"), Some("trunk"), None, None]
         );
+    }
+
+    #[test]
+    fn a_base_read_while_trust_worktrees_is_off_never_vouches_for_an_envrc() {
+        let db = memory();
+        let off = task(&db, Some("clone"), None, false);
+        let above = task(&db, Some("agents"), Some(off), true);
+
+        set_base(&db, off, Some("later"), true).unwrap();
+
+        assert_eq!(root_base(&db, off).unwrap(), None);
+        assert_eq!(root_base(&db, above).unwrap(), None);
+        let base: String = db
+            .query_row("SELECT base_sha FROM tasks WHERE id = ?1", [off], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(base, "clone");
     }
 }
