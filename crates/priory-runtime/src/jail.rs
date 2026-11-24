@@ -211,9 +211,21 @@ impl Jail {
                 binds.add(Path::new(file), Mode::Read, true);
             }
         }
-        // The harness's program, when it lives in a folder the jail empties, such as ~/.local/bin.
+        if let Some(folder) = launch.direnv {
+            binds.add(folder, Mode::Read, true);
+            // Its direnvrc and lib lead to the person's, which the jail empties with their home.
+            for name in ["direnvrc", "lib"] {
+                if let Ok(target) = std::fs::canonicalize(folder.join(name)) {
+                    binds.add(&target, Mode::Read, true);
+                }
+            }
+        }
+        let programs = std::iter::once(harness.program())
+            .chain(launch.direnv.map(|_| "direnv"))
+            .filter_map(find);
+        // A program, when it lives in a folder the jail empties, such as ~/.local/bin.
         let mut link = Vec::new();
-        if let Some(program) = find(harness.program()) {
+        for program in programs {
             let resolved = real(&program);
             if hidden(&resolved, user) {
                 let dir = resolved.parent().expect("a program has a folder");
@@ -250,6 +262,9 @@ impl Jail {
         // The shell runs in the jail, so the variables it keeps are the pane's own.
         let mut kept: Vec<&str> = KEPT.to_vec();
         kept.extend(harness.home_env());
+        if launch.direnv.is_some() {
+            kept.push("DIRENV_CONFIG");
+        }
         kept.extend(
             launch
                 .env

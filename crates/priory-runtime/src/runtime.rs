@@ -353,7 +353,7 @@ fn recover(path: &Path, branch: &str, from: Option<String>) -> Result<Recovery, 
             "{shown} {place}, not on {branch}, and {branch} is gone"
         ));
     }
-    let at_risk = at_risk(path, branch, SCAN)?;
+    let at_risk = at_risk(path, Some(branch), SCAN)?;
     let kept_branch = match (&from, at_risk) {
         (None, 1..) => {
             let kept = format!("{branch}-kept-{short}");
@@ -419,20 +419,27 @@ fn changes(status: &str) -> String {
 
 /// The most remote commits a recovery compares by patch; past it, a detached HEAD's commits are
 /// kept on a branch unread.
-const SCAN: usize = 2000;
+pub(crate) const SCAN: usize = 2000;
 
-/// How many commits on the HEAD of `path` are neither on `branch` nor on a remote-tracking ref,
-/// nor patch-equivalent to a commit there. A merge commit has no patch id, so it always counts.
-/// When more than `scan` remote commits could match, none is compared and every commit counts.
-fn at_risk(path: &Path, branch: &str, scan: usize) -> Result<usize, String> {
-    let local = format!("refs/heads/{branch}");
+/// How many commits on the HEAD of `path` are neither on `branch`, when given, nor on a
+/// remote-tracking ref, nor patch-equivalent to a commit there. A merge commit has no patch id, so
+/// it always counts. When more than `scan` remote commits could match, none is compared and every
+/// commit counts.
+pub(crate) fn at_risk(path: &Path, branch: Option<&str>, scan: usize) -> Result<usize, String> {
+    let local: Vec<String> = branch
+        .map(|branch| format!("refs/heads/{branch}"))
+        .into_iter()
+        .collect();
     let listed = |merges: bool| -> Result<Vec<String>, String> {
         let mut command = git(path);
         command.arg("rev-list");
         if !merges {
             command.arg("--no-merges");
         }
-        let out = run(command.args(["HEAD", "--not", &local, "--remotes"]))?;
+        let out = run(command
+            .args(["HEAD", "--not"])
+            .args(&local)
+            .arg("--remotes"))?;
         Ok(out.lines().map(str::to_owned).collect())
     };
     let all = listed(true)?;
@@ -454,14 +461,9 @@ fn at_risk(path: &Path, branch: &str, scan: usize) -> Result<usize, String> {
         .unwrap_or(0);
     // A rebase keeps the author date, so a rebased copy was committed after it.
     let since = format!("--max-age={oldest}");
-    let window = [
-        "--no-merges".to_owned(),
-        since,
-        "--remotes".to_owned(),
-        local,
-        "--not".to_owned(),
-        "HEAD".to_owned(),
-    ];
+    let mut window = vec!["--no-merges".to_owned(), since, "--remotes".to_owned()];
+    window.extend(local);
+    window.extend(["--not".to_owned(), "HEAD".to_owned()]);
     let count = run(git(path).args(["rev-list", "--count"]).args(&window))?;
     if count
         .trim()
@@ -512,6 +514,21 @@ fn patch_ids(
         .collect())
 }
 
+/// Whether `path` is a worktree of `clone` whose gitdir is gone, as a `git worktree remove` that
+/// failed partway leaves it: git deleted the tracked files and the gitdir, not the rest.
+fn orphaned(path: &Path, clone: &Path) -> bool {
+    let Ok(link) = fs::read_to_string(path.join(".git")) else {
+        return false;
+    };
+    let Some(gitdir) = link.trim().strip_prefix("gitdir: ").map(Path::new) else {
+        return false;
+    };
+    let Ok(registry) = fs::canonicalize(clone.join(".git").join("worktrees")) else {
+        return false;
+    };
+    gitdir.parent() == Some(registry.as_path()) && !gitdir.exists()
+}
+
 /// The task's worktree folder `name` on `priory/<name>`, from the local branch `from` of Priory's
 /// own clone of `repo` (`owner/name`), else from its default branch. The clone has no checkout: a person trusts it and the worktrees
 /// folder once in Claude, which covers its worktrees. A worktree of that clone left on that branch by an interrupted
@@ -542,6 +559,12 @@ pub fn worktree(
                 .arg(&partial))
         })?;
         fs::rename(&partial, &clone).map_err(|error| error.to_string())?;
+    }
+    if orphaned(&path, &clone) {
+        remove_sealed(&path);
+        if path.exists() {
+            move_aside(home, &path)?;
+        }
     }
     if path.exists() {
         let common =
@@ -931,6 +954,8 @@ pub struct Launch<'a> {
     pub jail: Option<&'a crate::jail::Jail>,
     /// The factory turns on `trust_worktrees`, so the harness reads the trust Priory records.
     pub trust: bool,
+    /// The direnv config folder that trusts the worktree, so the harness starts in its `.envrc`.
+    pub direnv: Option<&'a Path>,
 }
 
 /// A coding agent CLI that Priory runs in tmux, with hooks and tools that report to the daemon.
@@ -1372,6 +1397,39 @@ pub(crate) fn one_line(stderr: &str) -> String {
     lines.join("; ")
 }
 
+/// Runs the rest under `direnv exec "$1"`, with direnv's stderr in `$0/direnv.error`. When direnv
+/// failed before the harness started, which no `$0/direnv.started` tells, it marks
+/// `$0/direnv.failed` and runs the rest without the `.envrc`.
+const DIRENV_EXEC: &str = r#"s=$0 d=$1; shift; rm -f "$s/direnv.started" "$s/direnv.failed"
+direnv exec "$d" sh -c ': > "$0"; exec 2>&3 3>&-; exec "$@"' "$s/direnv.started" "$@" 3>&2 2>"$s/direnv.error"
+c=$?; [ -e "$s/direnv.started" ] && exit $c; : > "$s/direnv.failed"; exec "$@""#;
+
+/// The folder where a run under direnv leaves `direnv.started` and `direnv.error`: its spool, which
+/// a jail binds writable.
+pub fn direnv_spool(home: &Path, session: &str) -> PathBuf {
+    let home = fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+    crate::jail::spool_dir(&home, session)
+}
+
+/// What direnv wrote to stderr when it kept the run `session` from starting in its `.envrc`, as
+/// one line with its escape codes kept, if it did.
+pub fn direnv_failed(home: &Path, session: &str) -> Option<String> {
+    let spool = direnv_spool(home, session);
+    if !spool.join("direnv.failed").exists() {
+        return None;
+    }
+    let error = fs::read_to_string(spool.join("direnv.error")).unwrap_or_default();
+    Some(one_line(&error))
+}
+
+/// Whether the run `session` started under direnv is still loading its `.envrc`.
+pub fn direnv_loading(home: &Path, session: &str) -> bool {
+    let spool = direnv_spool(home, session);
+    spool.join("direnv.error").exists()
+        && !spool.join("direnv.started").exists()
+        && !spool.join("direnv.failed").exists()
+}
+
 /// Starts the harness in a detached tmux session, with hooks that report to this daemon. The same
 /// tmux command tags the new pane with the run's session id, so a crash cannot leave it untagged.
 pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), NotStarted> {
@@ -1409,9 +1467,13 @@ pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), NotStarted> 
             .arg("-e")
             .arg(format!("XDG_RUNTIME_DIR={}", run.to_string_lossy()));
     }
-    command
-        .args(launch.env.iter().flat_map(|variable| ["-e", variable]))
-        .arg("--");
+    command.args(launch.env.iter().flat_map(|variable| ["-e", variable]));
+    if let Some(folder) = launch.direnv {
+        command
+            .arg("-e")
+            .arg(format!("DIRENV_CONFIG={}", folder.display()));
+    }
+    command.arg("--");
     if let Some(prompt) = launch.prompt {
         // tmux refuses a command over about 16 KiB, so the prompt reaches the harness through a file.
         let file = launch.home.join("prompts").join(launch.session);
@@ -1439,9 +1501,18 @@ pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), NotStarted> 
         None => Vec::new(),
     };
     // A scope execs the agent in place, so the pane's process is still the agent's, or the jail's.
+    command.args(launch.scope).args(&jail);
+    if launch.direnv.is_some() {
+        let spool = direnv_spool(launch.home, launch.session);
+        fs::create_dir_all(&spool).map_err(|error| format!("{}: {error}", spool.display()))?;
+        // direnv's own failure exits 1 before the harness starts, as the harness's exit 1 might:
+        // the marker tells them apart, and the harness then starts without the `.envrc`.
+        command
+            .args(["sh", "-c", DIRENV_EXEC])
+            .arg(&spool)
+            .arg(launch.dir);
+    }
     command
-        .args(launch.scope)
-        .args(&jail)
         .arg("env")
         .args(NESTED.iter().flat_map(|name| ["-u", name]))
         .arg(harness.program())
@@ -1686,10 +1757,35 @@ fn seal(dir: &Path) -> std::io::Result<()> {
     fs::set_permissions(dir, fs::Permissions::from_mode(0o555))
 }
 
+/// Moves `path`, a worktree folder the daemon could not remove (a container can leave root-owned
+/// files under an ignored folder), into `home/trash`, so the task's worktree can be added back. A
+/// rename needs write access on the parent folder only.
+fn move_aside(home: &Path, path: &Path) -> Result<(), String> {
+    let trash = home.join("trash");
+    fs::create_dir_all(&trash).map_err(|error| format!("{}: {error}", trash.display()))?;
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    let aside = trash.join(format!("{name}-{stamp}"));
+    fs::rename(path, &aside).map_err(|error| {
+        format!(
+            "{} could not be removed or moved aside ({error}): remove it by hand",
+            path.display()
+        )
+    })
+}
+
 /// Removes `dir` and everything under it, a sealed folder included. Use it for any folder that
 /// can hold a `PRIORY_HOME`: a user other than root cannot remove a sealed kit, plugin or memory
 /// folder with `fs::remove_dir_all` alone.
 pub fn remove_sealed(dir: &Path) {
+    unseal(dir);
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// Makes `dir` and every folder under it writable by its owner, so their files can be removed.
+pub(crate) fn unseal(dir: &Path) {
     let mut folders = vec![dir.to_path_buf()];
     while let Some(folder) = folders.pop() {
         if !fs::symlink_metadata(&folder).is_ok_and(|meta| meta.is_dir()) {
@@ -1700,7 +1796,6 @@ pub fn remove_sealed(dir: &Path) {
             folders.extend(entries.filter_map(|entry| entry.ok().map(|entry| entry.path())));
         }
     }
-    let _ = fs::remove_dir_all(dir);
 }
 
 /// Renames `staging` to `target`, and moves aside and removes what `target` held before.
@@ -2007,7 +2102,7 @@ fn mcp_config(exe: &Path, launch: &Launch) -> String {
 }
 
 /// Writes `text` to `file`, readable by its owner alone, even when an older file was not.
-fn write_private(file: &Path, text: &str) -> std::io::Result<()> {
+pub(crate) fn write_private(file: &Path, text: &str) -> std::io::Result<()> {
     fs::create_dir_all(file.parent().expect("the file has a parent"))?;
     let mut written = OpenOptions::new()
         .write(true)
@@ -2742,6 +2837,72 @@ mod tests {
         path
     }
 
+    /// Runs `DIRENV_EXEC` for session `s` under a stub `direnv` whose body is `direnv`, around a
+    /// harness that logs its start and exits 1. Returns the exit code, the starts and Priory home.
+    fn direnv_exec(name: &str, direnv: &str) -> (Option<i32>, usize, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("priory-direnv-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("bin")).unwrap();
+        let stub = dir.join("bin/direnv");
+        fs::write(&stub, format!("#!/bin/sh\n{direnv}\n")).unwrap();
+        fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+        let spool = direnv_spool(&dir, "s");
+        fs::create_dir_all(&spool).unwrap();
+        let path = std::env::join_paths(
+            std::iter::once(dir.join("bin"))
+                .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        )
+        .unwrap();
+        let log = dir.join("starts");
+        let status = Command::new("sh")
+            .args(["-c", DIRENV_EXEC])
+            .arg(&spool)
+            .arg(&dir)
+            .args(["sh", "-c", r#"echo started >> "$0"; exit 1"#])
+            .arg(&log)
+            .env("PATH", path)
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        let starts = fs::read_to_string(&log).unwrap_or_default().lines().count();
+        (status.code(), starts, dir)
+    }
+
+    #[test]
+    fn a_failing_direnv_starts_the_harness_once_without_it_and_keeps_its_error() {
+        let (code, starts, home) =
+            direnv_exec("failed", "echo 'direnv: error exit status 1' >&2; exit 1");
+
+        assert_eq!((code, starts), (Some(1), 1));
+        assert_eq!(
+            direnv_failed(&home, "s").as_deref(),
+            Some("direnv: error exit status 1")
+        );
+        assert!(!direnv_loading(&home, "s"));
+    }
+
+    #[test]
+    fn a_harness_that_exits_1_under_direnv_starts_once() {
+        let (code, starts, home) = direnv_exec("exits", r#"shift 2; exec "$@""#);
+
+        assert_eq!((code, starts), (Some(1), 1));
+        assert_eq!(direnv_failed(&home, "s"), None);
+        assert!(!direnv_loading(&home, "s"));
+    }
+
+    #[test]
+    fn a_run_whose_direnv_has_not_started_the_harness_is_loading() {
+        let home =
+            std::env::temp_dir().join(format!("priory-direnv-loading-{}", std::process::id()));
+        let spool = direnv_spool(&home, "s");
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&spool).unwrap();
+        fs::write(spool.join("direnv.error"), "direnv: loading .envrc\n").unwrap();
+
+        assert!(direnv_loading(&home, "s"));
+        assert_eq!(direnv_failed(&home, "s"), None);
+    }
+
     #[test]
     fn a_call_through_a_restart_has_its_whole_wait_after_a_late_connect() {
         let path = refusing("late");
@@ -2829,6 +2990,7 @@ mod tests {
             tools,
             jail: None,
             trust: false,
+            direnv: None,
         }
     }
 
@@ -3216,8 +3378,8 @@ mod tests {
         );
         sh(&tree, &["checkout", "--quiet", "--detach", &head]);
 
-        assert_eq!(at_risk(&tree, "priory/1", 1), Ok(0));
-        assert_eq!(at_risk(&tree, "priory/1", 0), Ok(1));
+        assert_eq!(at_risk(&tree, Some("priory/1"), 1), Ok(0));
+        assert_eq!(at_risk(&tree, Some("priory/1"), 0), Ok(1));
     }
 
     #[test]
@@ -3392,6 +3554,67 @@ mod tests {
                 home.home().join("repos/o/n").display()
             )
         );
+    }
+
+    /// Task 1's worktree holds `target/sealed/out` under a 0555 folder that git ignores, as a
+    /// test run that seals a kit leaves.
+    fn sealed(home: &Home) -> PathBuf {
+        let exclude = home.home().join("repos/o/n/.git/info/exclude");
+        fs::write(&exclude, "target/\n").unwrap();
+        let sealed = home.tree().join("target/sealed");
+        fs::create_dir_all(&sealed).unwrap();
+        fs::write(sealed.join("out"), "x\n").unwrap();
+        fs::set_permissions(&sealed, fs::Permissions::from_mode(0o555)).unwrap();
+        sealed
+    }
+
+    #[test]
+    fn retiring_a_worktree_with_a_sealed_folder_under_an_ignored_target_removes_it_whole() {
+        let home = Home::new("retire-sealed");
+        sealed(&home);
+        let found = crate::worktrees::Found {
+            path: home.tree(),
+            repo: "o/n".to_owned(),
+            name: "1".to_owned(),
+        };
+
+        crate::worktrees::retire(&home.home(), &found).unwrap();
+
+        assert!(!home.tree().exists());
+        assert!(!home.home().join("repos/o/n/.git/worktrees/1").exists());
+        assert!(head(&home.home().join("repos/o/n"), "priory/1").is_some());
+        assert_eq!(home.again(), Ok(Added::Restored));
+    }
+
+    #[test]
+    fn a_folder_whose_gitdir_is_gone_is_added_back_from_its_branch() {
+        let home = Home::new("orphaned");
+        let sealed = sealed(&home);
+        // What a `git worktree remove` that failed on the sealed folder leaves behind.
+        fs::remove_file(home.tree().join("README.md")).unwrap();
+        fs::remove_dir_all(home.home().join("repos/o/n/.git/worktrees/1")).unwrap();
+
+        assert_eq!(home.again(), Ok(Added::Restored));
+
+        assert!(!sealed.exists());
+        assert!(home.tree().join("README.md").is_file());
+        assert_eq!(sh(&home.tree(), &["branch", "--show-current"]), "priory/1");
+    }
+
+    #[test]
+    fn a_worktree_folder_that_cannot_be_removed_moves_into_the_trash() {
+        let home = Home::new("aside");
+        let leftover = home.home().join("worktrees/o/n/1");
+        fs::create_dir_all(leftover.join("target")).unwrap();
+        fs::write(leftover.join("target/owned-by-root"), "").unwrap();
+
+        move_aside(&home.home(), &leftover).unwrap();
+        fs::create_dir_all(&leftover).unwrap();
+        move_aside(&home.home(), &leftover).unwrap();
+
+        assert!(!leftover.exists());
+        let moved = fs::read_dir(home.home().join("trash")).unwrap().count();
+        assert_eq!(moved, 2, "each move keeps its own name");
     }
 
     #[test]

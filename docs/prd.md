@@ -518,7 +518,8 @@ Priory serves these as MCP tools.
   `auto` lets Claude's auto mode decide its prompts. M0
 - R7.3 Remove the worktree of a task that ended only when Priory created it, its branch merged, it
   has no unpushed commits, no uncommitted changes and no untracked files, and no process runs in it.
-  Report every other worktree instead. Retiring an active task follows R3.3. M0 The `[sweep]` table
+  Remove only the worktree of a done task whose commits are all pushed, and keep its branch. Report
+  every other worktree, with its size, instead. Retiring an active task follows R3.3. M0 The `[sweep]` table
   of `factory.toml` sets the sweep's cadence and lists scripts that run, with a timeout, when the
   resource they name stalls the queue. When the queue stays stalled past a set time after them, a
   sweeper agent cleans by hand and asks, through an approved issue, for the sweep that would have
