@@ -262,8 +262,10 @@ built-in `#n` link.
 
 The Desk and Queue panels share one Add form, `lib/add-form.js`, over the view model `lib/add.js`.
 It holds one field, then chips for workflow, band and lane. The band chips are the factory's bands
-from `priory queue --json`, and the workflow chips its `workflows`. A queue read without the
-factory folder lists no workflows, so the chips then offer the workflows the listed tasks carry.
+from `priory queue --json`, and the workflow chips its `workflows`, the
+[requestable](workflows.md#top-level-keys) ones. A queue read without the factory folder has
+`workflows` null, or `[]` from an older priory, so the chips then offer the workflows the listed
+tasks carry.
 The lane chips are the lanes the listed tasks carry. An unpicked chip leaves the
 value to the factory's [`[request]`](factory.md#request) table, as `priory add` does.
 
@@ -392,7 +394,10 @@ DESIGN.md's "Inbox" section holds its visual rules; this section says how it wor
   `priory subscribe N RESOURCE --expected REVISION`, with the revision the panel read, for an
   active owner. Revive task N runs `priory revive N` for a
   failed or dropped one. Request a task runs `priory add FACTORY --workflow W -- TEXT` with the
-  group's `request_text` for a done one, so the new task owns the resource. A note under the
+  group's `request_text` for a done one, so the new task owns the resource. `W` is the done
+  task's workflow. When `priory queue --json` lists it in `opted_out`, the panel leaves
+  `--workflow` out, the factory's `[request] workflow` applies, and the note says so, also on a
+  refusal. A workflow the factory lacks stays, so priory refuses it by name. A note under the
   group says what the verb did, or why priory refused it. One verb runs at a time, and after one
   succeeds the buttons stay disabled until a read shows its result.
 - **Unheard.** Before the owned groups, under Unheard, each task that kept events no agent read

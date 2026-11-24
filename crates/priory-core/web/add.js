@@ -7,6 +7,16 @@ export function addBody({ text, ...chips }) {
   return { text: trimmed, ...Object.fromEntries(Object.entries(chips).filter(([, value]) => value)) };
 }
 
+/** The draft with the factory's current defaults for each chip the person has not picked. */
+export function withDefaults(draft, defaults) {
+  return { workflow: defaults?.workflow, band: defaults?.band, ...draft };
+}
+
+/** Why the sheet starts on another workflow than the done task's, which is not requestable. */
+export function swapLine(workflow, fallback) {
+  return `Workflow ${workflow} is not requestable${fallback ? `, so this starts the default, ${fallback}` : ". Pick one"}.`;
+}
+
 /** What a reply means for the draft. Status 0 is a send that got no reply: it may have arrived. */
 export function addOutcome(status, body) {
   if (status === 200) return { state: "added", key: body.key, id: body.id };
