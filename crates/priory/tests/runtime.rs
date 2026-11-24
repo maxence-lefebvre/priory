@@ -55,7 +55,7 @@ key = "issue.number"
 
 const OUTPUT: &str = "factory.intake";
 
-/// Undoes migrations 110, a run under direnv, 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
+/// Undoes migrations 111, memory lapses, 110, a run under direnv, 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
 /// `auto_answer` level, 97, the task's `added_by`, and 93: the `pre` script's task columns and the
 /// pending requests.
 macro_rules! undo_pre {
@@ -72,7 +72,7 @@ macro_rules! undo_pre {
   ALTER TABLE tasks DROP COLUMN pre_context; ALTER TABLE tasks DROP COLUMN pre_script; DROP TABLE pending_requests;
   ALTER TABLE memory_candidates DROP COLUMN step; ALTER TABLE gates DROP COLUMN lessons; ALTER TABLE gates DROP COLUMN ask; ALTER TABLE gates DROP COLUMN judges;
   ALTER TABLE runs DROP COLUMN session_started; ALTER TABLE runs DROP COLUMN harness;
-  ALTER TABLE runs DROP COLUMN resumes; ALTER TABLE runs DROP COLUMN sandbox; ALTER TABLE runs DROP COLUMN direnv;
+  ALTER TABLE runs DROP COLUMN resumes; ALTER TABLE runs DROP COLUMN sandbox; ALTER TABLE runs DROP COLUMN direnv; DROP TABLE lapses;
   "
     };
 }
@@ -272,11 +272,17 @@ impl Setup {
 
     fn start_with(&mut self, exe: &Path, env: &[(&str, &str)]) {
         let factory = self.dir.join("factory");
+        self.start_on(exe, env, &factory);
+    }
+
+    /// Starts the daemon in the test's folder on the factory folder `factory`, as typed.
+    fn start_on(&mut self, exe: &Path, env: &[(&str, &str)], factory: &Path) {
         let log = fs::File::create(self.dir.join("daemon.log")).unwrap();
         self.daemon = Some(
             self.command(exe.to_str().unwrap())
                 .envs(env.iter().copied())
                 .args(["daemon", factory.to_str().unwrap()])
+                .current_dir(&self.dir)
                 .env("CLAUDECODE", "1")
                 .env("CLAUDE_CODE_ENTRYPOINT", "cli")
                 .env("CLAUDE_CODE_USE_BEDROCK", "0")
@@ -6655,6 +6661,25 @@ fn an_answered_outside_ask_runs_the_deliver_command_once_with_its_name_revision_
 }
 
 #[test]
+fn deliver_runs_the_command_of_a_relative_factory_folder() {
+    let mut setup = delivering("deliver-relative", "exit 0");
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    setup.start_on(exe, &[], Path::new("factory"));
+    listening(&setup);
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+
+    setup.priory(&["answer", "--expected", "1", "--", "cache.ship", "ship"]);
+
+    let done = delivery(&setup, "cache.ship", |delivery| {
+        ["delivered", "failed"].contains(&delivery["state"].as_str().unwrap_or_default())
+    });
+    assert_eq!(
+        (&done["state"], &done["tries"]),
+        (&"delivered".into(), &1.into())
+    );
+}
+
+#[test]
 fn a_failing_deliver_command_is_retried_with_a_backoff_then_its_failure_shows_on_the_desk() {
     let mut setup = delivering("deliver-fails", "echo 'hc is down' >&2; exit 3");
     setup.start();
@@ -7544,7 +7569,7 @@ fn say_to_a_done_task_is_refused() {
     assert!(!said.status.success());
     assert_eq!(
         String::from_utf8_lossy(&said.stderr),
-        "priory say: task 1 is done\n"
+        "priory say: task 1 is done and owns no pull request\n"
     );
 }
 
@@ -9452,6 +9477,157 @@ fn a_comment_on_the_merged_pull_request_of_a_done_task_reopens_nothing() {
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(setup.rows("tasks")[0][4], "done");
     assert_eq!(setup.rows("runs").len(), 2);
+}
+
+/// Task 1 of `gated`, done at green checks with pull request 7 open, a second ago.
+fn done_with_open_pull_request(name: &str) -> Setup {
+    let setup = gated(name);
+    setup.publish(&check(1, 0));
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    std::thread::sleep(Duration::from_millis(1100));
+    setup
+}
+
+/// Asserts `say` on task 1 is refused with `why`, starting no run.
+fn say_refused(setup: &Setup, why: &str) {
+    let (runs, before) = (setup.rows("runs").len(), generation(setup));
+    let said = setup.priory(&["say", "1", "Fix the empty case."]);
+    assert!(!said.status.success(), "{said:?}");
+    let error = String::from_utf8_lossy(&said.stderr);
+    assert!(error.contains(why), "{error}");
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("runs").len(), runs);
+    assert_eq!(generation(setup), before);
+}
+
+/// The branch and worktree of task 1.
+fn branch(setup: &Setup) -> (String, String) {
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .query_row(
+            "SELECT branch, worktree FROM tasks WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+}
+
+/// The generation of task 1.
+fn generation(setup: &Setup) -> i64 {
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .query_row("SELECT generation FROM tasks WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap()
+}
+
+#[test]
+fn a_say_on_a_done_task_whose_pull_request_is_open_reopens_it_and_resumes_its_session() {
+    let setup = done_with_open_pull_request("say-reopen");
+    let before = branch(&setup);
+
+    let said = setup.priory(&["say", "1", "/fix the empty case."]);
+
+    assert!(said.status.success(), "{said:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&said.stdout).trim(),
+        "task 1 reopened at implement, generation 2"
+    );
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    assert!(
+        typed[2].starts_with(
+            "A person says: /fix the empty case.\nThis reopened your done task as generation 2: github:owner/repo#7 is still open."
+        ),
+        "{typed:?}"
+    );
+    let runs = setup.rows("runs");
+    assert_eq!(runs[2][4], runs[0][4], "the run resumes the session");
+    assert_eq!(generation(&setup), 2);
+    assert_eq!(branch(&setup), before, "the run keeps the branch");
+    assert_eq!(
+        setup
+            .trace()
+            .iter()
+            .filter(|record| record["type"] == "factory.task.reopened"
+                && record["data"]["pull_request"] == "github:owner/repo#7")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_say_on_a_done_task_whose_pull_request_merged_is_refused() {
+    let setup = gated("say-merged");
+    setup.publish(&closed());
+    setup.until("tasks", |rows| rows[0][4] == "done");
+
+    say_refused(
+        &setup,
+        "task 1 is done and its pull request github:owner/repo#7 is merged",
+    );
+}
+
+#[test]
+fn a_say_on_a_done_task_is_refused_once_its_pull_request_closed_until_it_reads_open() {
+    let setup = done_with_open_pull_request("say-closed");
+    let mut close = closed().time(herdr_bus::Timestamp::now());
+    close.data["merged"] = json!(false);
+    setup.publish(&close);
+    setup.until("inbox", |rows| rows.len() == 4);
+
+    say_refused(
+        &setup,
+        "task 1 is done and its pull request github:owner/repo#7 is closed",
+    );
+
+    let mut green = check(2, 0);
+    green.data["open"] = json!(true);
+    setup.publish(&green);
+    setup.until("inbox", |rows| rows.len() == 5);
+    let said = setup.priory(&["say", "1", "Fix the empty case."]);
+    assert!(said.status.success(), "{said:?}");
+}
+
+#[test]
+fn a_say_on_a_done_task_is_refused_once_feedback_reads_its_pull_request_closed() {
+    let setup = done_with_open_pull_request("say-read-closed");
+    let mut late = review_in("approved", 350);
+    late.data["open"] = json!(false);
+    setup.publish(&late);
+    setup.until("inbox", |rows| rows.len() == 4);
+
+    say_refused(
+        &setup,
+        "task 1 is done and its pull request github:owner/repo#7 is closed",
+    );
+}
+
+#[test]
+fn a_say_on_a_done_task_whose_pull_request_another_active_task_owns_is_refused() {
+    let setup = done_with_open_pull_request("say-rival");
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "INSERT INTO tasks (key, workflow, step, state, band, trigger, source)
+           SELECT 'cli:rival', workflow, step, 'blocked', band, trigger, source FROM tasks WHERE id = 1;
+         INSERT INTO subscriptions (task, resource) VALUES (2, 'github:owner/repo#7');",
+    )
+    .unwrap();
+
+    say_refused(&setup, "task 2 is already active on github:owner/repo#7");
+}
+
+#[test]
+fn a_say_on_a_failed_or_dropped_task_with_an_open_pull_request_is_refused() {
+    let setup = done_with_open_pull_request("say-failed");
+    for state in ["failed", "dropped"] {
+        rusqlite::Connection::open(setup.dir.join("priory.db"))
+            .unwrap()
+            .execute("UPDATE tasks SET state = ?1 WHERE id = 1", [state])
+            .unwrap();
+        say_refused(&setup, &format!("task 1 is {state}"));
+    }
 }
 
 #[test]
@@ -15491,6 +15667,140 @@ fn without_a_daemon_the_command_fails_fast_and_never_runs() {
         "{stderr}"
     );
     assert!(!setup.dir.join("fake/ran").exists());
+}
+
+/// A daemon that answers each gate message in turn, or closes the connection with no reply, and
+/// returns the messages and grants it got.
+fn scripted(
+    setup: &Setup,
+    replies: &'static [Option<&'static str>],
+) -> std::thread::JoinHandle<Vec<[serde_json::Value; 2]>> {
+    use std::io::{BufRead, Write};
+    fs::create_dir_all(setup.dir.join("home")).unwrap();
+    fs::create_dir_all(setup.socket().parent().unwrap()).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(setup.socket()).unwrap();
+    std::thread::spawn(move || {
+        let mut lines = Vec::new();
+        for reply in replies {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            std::io::BufReader::new(&stream)
+                .read_line(&mut line)
+                .unwrap();
+            let line: serde_json::Value = serde_json::from_str(&line).unwrap();
+            lines.push([line["memory"].clone(), line["grant"].clone()]);
+            if let Some(reply) = reply {
+                writeln!(stream, "{}", json!({ "Ok": reply })).unwrap();
+            }
+        }
+        lines
+    })
+}
+
+#[test]
+fn a_gated_command_runs_once_after_the_daemon_drops_any_message() {
+    for (name, replies, messages) in [
+        (
+            "gate-dropped-poll",
+            &[
+                Some("7 waiting"),
+                None,
+                Some("7 held"),
+                Some("7 held"),
+                Some("7 released"),
+            ][..],
+            ["acquire", "poll", "poll", "run", "release"],
+        ),
+        (
+            "gate-dropped-acquire",
+            &[
+                None,
+                Some("7 waiting"),
+                Some("7 held"),
+                Some("7 held"),
+                Some("7 released"),
+            ],
+            ["acquire", "acquire", "poll", "run", "release"],
+        ),
+        (
+            "gate-dropped-run",
+            &[
+                Some("7 held"),
+                None,
+                None,
+                Some("7 held"),
+                Some("7 released"),
+            ],
+            ["acquire", "run", "run", "run", "release"],
+        ),
+    ] {
+        let setup = Setup::new(name);
+        let daemon = scripted(&setup, replies);
+
+        let done = acquire(&setup, "8", "echo ran").wait_with_output().unwrap();
+
+        assert_eq!(
+            done.status.code(),
+            Some(0),
+            "{name}: {}",
+            String::from_utf8_lossy(&done.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&done.stdout), "ran\n");
+        let expected = messages.map(|message| {
+            let grant = if message == "acquire" {
+                json!(null)
+            } else {
+                json!(7)
+            };
+            [json!(message), grant]
+        });
+        assert_eq!(daemon.join().unwrap(), expected);
+    }
+}
+
+#[test]
+fn a_stale_socket_fails_the_command_fast_and_it_never_runs() {
+    let setup = Setup::new("gate-stale-socket");
+    fs::create_dir_all(setup.socket().parent().unwrap()).unwrap();
+    drop(std::os::unix::net::UnixListener::bind(setup.socket()).unwrap());
+    let start = Instant::now();
+
+    let done = acquire(&setup, "1", "echo ran > ran")
+        .wait_with_output()
+        .unwrap();
+
+    assert_eq!(done.status.code(), Some(125));
+    assert!(start.elapsed() < Duration::from_secs(10));
+    assert!(!setup.dir.join("fake/ran").exists());
+}
+
+#[test]
+fn a_daemon_restart_keeps_a_waiting_grant_with_its_id() {
+    let mut setup = Setup::new("gate-restart");
+    setup.start();
+    listening(&setup);
+    setup.hold("hold-a");
+    setup.hold("hold-b");
+    let a = acquire(&setup, "40", &held("a"));
+    setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
+    let b = acquire(&setup, "40", &held("b"));
+    let waiting = setup.until("memory", |rows| rows.len() == 2)[1][0].clone();
+
+    setup.crash();
+    setup.start();
+    once_listening(&setup, &["memory"]);
+    setup.release("hold-a");
+
+    assert!(a.wait_with_output().unwrap().status.success());
+    let rows = setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
+    assert_eq!(rows[0][0], waiting);
+    setup.release("hold-b");
+    let b = b.wait_with_output().unwrap();
+    assert!(
+        b.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&b.stderr)
+    );
 }
 
 #[test]
@@ -33230,16 +33540,19 @@ fn a_parked_task_is_left_out_of_the_queue_and_the_task_list() {
 }
 
 /// A factory whose `[runs] attach` command writes its arguments and ids to `attached`, then exits
-/// with `exit`; with `flagged`, the implement step sets `attach = true`.
+/// with `exit`. The review step, after implement, sets `attach = true`; with `flagged`, implement
+/// does too.
 fn attaching(name: &str, flagged: bool, exit: u8) -> Setup {
-    let workflow = if flagged {
-        WORKFLOW.replace(
+    let mut workflow = WORKFLOW.replace("passed = \"done\"", "passed = \"review\"")
+        + "\n[[steps]]\nid = \"review\"\ndecides = \"model\"\nagent = \"reviewer\"\n\
+           prompt = \"Review the change.\"\nattach = true\neffect = \"reversible\"\n\
+           next = { passed = \"done\", failed = \"stop\" }\n";
+    if flagged {
+        workflow = workflow.replace(
             "prompt = \"Implement the issue.\"\n",
             "prompt = \"Implement the issue.\"\nattach = true\n",
-        )
-    } else {
-        WORKFLOW.to_owned()
-    };
+        );
+    }
     let setup = Setup::with_workflow(name, &workflow);
     let factory = setup.dir.join("factory");
     fs::write(
@@ -33261,45 +33574,66 @@ fn attaching(name: &str, flagged: bool, exit: u8) -> Setup {
     setup
 }
 
-fn attached(setup: &Setup) -> Option<String> {
-    fs::read_to_string(setup.dir.join("factory/attached")).ok()
+/// The lines the attach command wrote, sorted, once each of `runs` has one.
+fn attached(setup: &Setup, runs: &[i64]) -> Vec<String> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let text = fs::read_to_string(setup.dir.join("factory/attached")).unwrap_or_default();
+        let mut lines: Vec<_> = text.lines().map(str::to_owned).collect();
+        lines.sort();
+        let has = |run: &i64| {
+            lines
+                .iter()
+                .any(|line| line.starts_with(&format!("1 {run} ")))
+        };
+        if runs.iter().all(has) {
+            return lines;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{lines:?}\ndaemon: {}",
+            fs::read_to_string(setup.dir.join("daemon.log")).unwrap_or_default()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// The line the attach command writes for run `run` of task 1.
+fn attach_line(run: i64) -> String {
+    format!("1 {run} 1 {run} priory-1 {}", env!("CARGO_BIN_EXE_priory"))
 }
 
 #[test]
 fn attach_runs_the_command_once_with_the_task_and_run_when_a_flagged_steps_run_starts() {
     let mut setup = attaching("attach-flagged", true, 0);
+    setup.calls(&[result("passed")]);
     setup.publish(&requested(42));
     setup.start();
 
-    setup.until("tasks", |rows| {
-        rows.first().is_some_and(|row| row[4] == "running")
-    });
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while attached(&setup).is_none() {
-        assert!(Instant::now() < deadline, "the attach command never ran");
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    std::thread::sleep(Duration::from_secs(1));
-
-    assert_eq!(
-        attached(&setup).unwrap(),
-        format!("1 1 1 1 priory-1 {}\n", env!("CARGO_BIN_EXE_priory"))
-    );
+    // The review step's line comes after any second line of the implement step's run.
+    assert_eq!(attached(&setup, &[1, 2]), [attach_line(1), attach_line(2)]);
     assert!(traced(&setup, "factory.run.attach_failed").is_empty());
 }
 
 #[test]
 fn attach_runs_nothing_for_a_step_without_attach() {
     let mut setup = attaching("attach-unflagged", false, 0);
+    setup.calls(&[result("passed")]);
     setup.publish(&requested(42));
     setup.start();
 
-    setup.until("tasks", |rows| {
-        rows.first().is_some_and(|row| row[4] == "running")
-    });
-    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(attached(&setup, &[2]), [attach_line(2)]);
+}
 
-    assert_eq!(attached(&setup), None);
+#[test]
+fn attach_runs_the_command_of_a_relative_factory_folder() {
+    let mut setup = attaching("attach-relative", true, 0);
+    setup.publish(&requested(42));
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+
+    setup.start_on(exe, &[], Path::new("factory"));
+
+    assert_eq!(attached(&setup, &[1]), [attach_line(1)]);
 }
 
 #[test]

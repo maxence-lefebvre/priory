@@ -297,7 +297,15 @@ prompts.
   debater reads it. It replies `task <id> is in a debate at step <step>: the step after the debate
   reads it`.
 
-Otherwise it replies `task <id> will hear it`. It refuses a `done`, `failed` or `dropped` task, a
+- A `done` task whose pull request is open reopens as its next generation, with TEXT as the first
+  prompt. Its step, session and branch are those of [feedback that reopens a done
+  task](routing.md#feedback-reopens-a-done-task). It replies `task <id> reopened at <step>,
+  generation <n>`. It is refused, with the reason, when the task owns no pull request, when that
+  pull request merged or closed, when another active task holds its key or a resource it owns, or
+  when no agent runs the step it would reopen at. A merge the intake has not published yet does not
+  refuse it. A pick or comment on a done task's report reopens nothing.
+
+Otherwise it replies `task <id> will hear it`. It refuses a `failed` or `dropped` task, a
 task at a human or code step with no open ask, and a task that has neither a run nor a queued
 prompt, such as a `queued` one, since its first run builds the step's prompt then.
 
