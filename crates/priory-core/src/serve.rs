@@ -1499,6 +1499,7 @@ fn write_line(
                 hold: None,
                 text: body.text,
                 expected: body.revision,
+                now: false,
             };
             Ok((line(&act), Sent::Task(act.task, act.expected)))
         }
