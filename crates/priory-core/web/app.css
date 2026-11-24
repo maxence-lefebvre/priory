@@ -377,6 +377,13 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .note.warn { color: var(--warn-text); }
 .note.warn .ico { color: var(--warn-text); }
 .push-row { display: grid; gap: 8px; justify-items: start; }
+.push-kinds { border: 0; display: grid; max-width: 62ch; }
+.push-kinds legend { padding-bottom: 8px; font: 650 var(--type-read-h2) var(--font-ui); }
+.push-kind { display: flex; gap: 12px; align-items: center; min-height: 60px; padding: 8px 0; border-top: 1px solid var(--line); cursor: pointer; }
+.push-kind input { width: 20px; height: 20px; flex: none; accent-color: var(--action); }
+.push-kind > span { display: grid; }
+.push-kind b { font-weight: 600; }
+.push-kind span span { font: 400 var(--type-caption) var(--font-ui); color: var(--text-2); }
 .seg { display: grid; grid-template-columns: repeat(3, 1fr); height: var(--control); background: var(--raised); border-radius: var(--radius-md); padding: 3px; }
 .seg button { border-radius: calc(var(--radius-md) - 3px); text-align: center; font: 600 var(--type-small) var(--font-ui); color: var(--text-2); }
 .seg button[aria-checked="true"] { background: var(--surface); color: var(--text); }
