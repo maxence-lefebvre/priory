@@ -529,6 +529,12 @@ fn a_fault_of_this_machine_puts_the_upgrade_off() {
             "the running version's priory check failed",
         ),
         (
+            "disk",
+            "exit 0",
+            fake(CURRENT, "echo 'database or disk is full' >&2; exit 1", ":"),
+            "disk is full",
+        ),
+        (
             "killed-check",
             "exit 0",
             fake(CURRENT, "kill -9 $$", ":"),

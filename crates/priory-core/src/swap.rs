@@ -486,6 +486,13 @@ pub(crate) fn run(command: &mut Command) -> Result<String, Fault> {
         let error = format!("{}: {}", output.status, error.trim());
         return Err(match output.status.signal() {
             Some(9 | 15) => Fault::Machine(error),
+            // SQLite's and the system's words for a full or failing disk.
+            _ if ["disk is full", "disk I/O error", "No space left"]
+                .iter()
+                .any(|words| error.contains(words)) =>
+            {
+                Fault::Machine(error)
+            }
             _ => Fault::Release(error),
         });
     }
@@ -522,22 +529,26 @@ fn watch(home: &Path, journal: &Journal, daemon: &str, intake: Option<&str>) -> 
     if answered != journal.to {
         return Err(Fault::Release(format!("the daemon answers as {answered}")));
     }
-    let pid = journal::property(daemon, "MainPID")?;
-    let intake_pid = intake
-        .map(|unit| journal::property(unit, "MainPID"))
-        .transpose()?;
+    // Each with the line it fails with, seen while systemd still holds how it ended.
+    let mut watched = vec![(daemon, "the daemon stopped after it answered")];
+    watched.extend(intake.map(|unit| (unit, "the intake did not stay up")));
+    let pids = || -> Result<Vec<String>, String> {
+        let pid = |(unit, _): &(&str, _)| journal::property(unit, "MainPID");
+        watched.iter().map(pid).collect()
+    };
+    let first = pids()?;
     let until = Instant::now() + Duration::from_secs(journal.watch);
-    while Instant::now() < until {
-        std::thread::sleep(Duration::from_secs(1).min(until.duration_since(Instant::now())));
-        if journal::property(daemon, "MainPID")? != pid {
-            return Err(ended(daemon, "the daemon stopped after it answered")?);
+    loop {
+        for ((unit, what), (before, now)) in watched.iter().zip(first.iter().zip(pids()?)) {
+            if *before != now || now == "0" {
+                return Err(ended(unit, what)?);
+            }
         }
-    }
-    if let Some(intake) = intake
-        && (journal::property(intake, "ActiveState")? != "active"
-            || Some(journal::property(intake, "MainPID")?) != intake_pid)
-    {
-        return Err(ended(intake, "the intake did not stay up")?);
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        std::thread::sleep(left.min(Duration::from_secs(1)));
     }
     answer(home, journal).map(drop)
 }

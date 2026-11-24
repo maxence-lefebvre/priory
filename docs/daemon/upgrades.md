@@ -140,6 +140,8 @@ factory on a herdr-bus log.
 - Once a migration is committed, going back is a person's choice: it loses what came after the backup.
 - A rollback compares tables, indexes, triggers and the schema's number. What a release writes into
   unchanged tables before it fails stays.
+- Both versions check the live factory, each twice on a failure. Edits that hit both checks of the
+  new version and neither of the old one refuse it, until `priory upgrade retry`.
 - After a migration, what the daemon does only after the commit, such as its server's start, is not
   watched.
 - The binary's folder must be on a filesystem with hard links.
