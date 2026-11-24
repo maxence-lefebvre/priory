@@ -11704,7 +11704,12 @@ impl Setup {
     fn removed(&self, task: u64) {
         let deadline = Instant::now() + Duration::from_secs(60);
         while self.worktree(task).exists() {
-            assert!(Instant::now() < deadline, "worktree {task} stays");
+            assert!(
+                Instant::now() < deadline,
+                "worktree {task} stays\n{:?}\ndaemon: {}",
+                self.rows("tasks"),
+                fs::read_to_string(self.dir.join("daemon.log")).unwrap_or_default()
+            );
             std::thread::sleep(Duration::from_millis(50));
         }
     }
@@ -16953,6 +16958,50 @@ fn an_idle_task_build_output_goes_under_the_reclaim_threshold_even_read_only() {
 }
 
 #[test]
+fn a_build_folder_with_a_mount_stays_with_what_is_mounted() {
+    let unshare = "unshare --user --map-current-user --keep-caps --mount";
+    let allowed = harness::command("sh")
+        .args(["-c", &format!("{unshare} mount -t tmpfs none /mnt")])
+        .output()
+        .unwrap();
+    if !allowed.status.success() {
+        eprintln!("skipped, this machine refuses a mount in a user namespace: {allowed:?}");
+        return;
+    }
+    let (mut setup, target) = asleep_with_build_output("reclaim-mount");
+    setup.crash();
+    let outside = setup.dir.join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("keep"), "x\n").unwrap();
+    let point = target.join("debug/mount");
+    fs::create_dir_all(&point).unwrap();
+    let link = setup.worktree(1).join("link");
+    fs::create_dir_all(&link).unwrap();
+    fs::write(link.join("out.o"), "x\n").unwrap();
+    let exe = setup.dir.join("mounted-priory");
+    let script = format!(
+        "#!/bin/sh\nexec {unshare} sh -c 'mount --bind \"$0\" \"$1\" && shift && exec \"$@\"' '{}' '{}' '{}' \"$@\"\n",
+        outside.display(),
+        point.display(),
+        env!("CARGO_BIN_EXE_priory"),
+    );
+    fs::write(&exe, script).unwrap();
+    fs::set_permissions(&exe, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+
+    setup.disk(30);
+    setup.start_as(&exe);
+    let records = until_record(&setup, "factory.worktree.reclaimed");
+    // Two more sweeps, which would take the larger folder too.
+    std::thread::sleep(Duration::from_millis(2100));
+
+    assert_eq!(records[0]["path"], link.to_str().unwrap());
+    assert!(!link.exists());
+    assert_eq!(trace_records(&setup, "factory.worktree.reclaimed").len(), 1);
+    assert!(target.join("debug/locked/lib.rlib").exists());
+    assert!(outside.join("keep").exists());
+}
+
+#[test]
 fn a_symlink_inside_the_build_output_goes_without_what_it_points_to() {
     use std::os::unix::fs::PermissionsExt;
     let (setup, target) = asleep_with_build_output("reclaim-escape");
@@ -17028,7 +17077,7 @@ fn the_sweep_deletes_one_build_folder_per_tick() {
 
 #[test]
 fn a_retirement_waits_for_the_reclaim_to_take_the_build_output() {
-    let (setup, target) = asleep_with_build_output("reclaim-retire");
+    let (mut setup, target) = asleep_with_build_output("reclaim-retire");
     // Ignored, so it does not itself keep the worktree from retiring.
     let exclude = setup.git(
         &setup.worktree(1),
@@ -17041,7 +17090,10 @@ fn a_retirement_waits_for_the_reclaim_to_take_the_build_output() {
     );
     fs::write(exclude.trim(), "target\n").unwrap();
 
+    // A disk that drops between the two readings of one tick would retire without a reclaim.
+    setup.crash();
     setup.disk(10);
+    setup.start();
     setup.removed(1);
 
     assert!(!target.exists());
