@@ -34627,14 +34627,6 @@ impl Setup {
         }
     }
 
-    /// Task 1's state and reason.
-    fn blocked(&self) -> String {
-        let tasks = self.until("tasks", |rows| {
-            rows.first().is_some_and(|row| row[4] == "blocked")
-        });
-        tasks[0][7].clone()
-    }
-
     /// Adds a workflow whose one local step runs the reviewer, and a request for it.
     fn local_task(&self, issue: u64) {
         fs::write(
