@@ -71,6 +71,7 @@ fn main() -> ExitCode {
         Some("batch") => batch(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("add") => add(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("request") => request(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
+        Some("adopt") => adopt(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("post") => match (args.next(), args.next(), args.next()) {
             (Some(source), Some(line), None) => {
                 post(&source.to_string_lossy(), &line.to_string_lossy())
@@ -126,6 +127,7 @@ fn main() -> ExitCode {
             verb,
             args.map(|arg| arg.to_string_lossy().into_owned()).collect(),
             None,
+            false,
         ),
         Some("pause") => match (args.next(), args.next()) {
             (reason, None) => {
@@ -255,7 +257,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory --version\n       priory check [DIR] [--explain [--json]]\n       priory check [DIR] --repo PATH [--json]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory intake pre [DIR] TRIGGER < EVENT.json    runs the trigger's pre script on one event, publishes nothing\n       priory daemon [DIR] [--once]    --once routes pending events, starts no task and exits\n       priory daemon --view-only [DIR]    mirrors every runner's asks and tasks and serves them, runs nothing\n       priory batch add [DIR] ISSUE... [--repo <owner/name>] [--entries <workflow>] [--band <band>] [--lane <lane>]\n       priory batch show [BATCH] [--json]\n       priory batch edit BATCH --expected REVISION (--drop ENTRY [--with-successors] | --move ENTRY (--top | --before OTHER | --after OTHER) | --moment ENTRY OTHER MOMENT)\n       priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... <text>\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--unrouted] [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory tasks --graph [TASK] [--mermaid]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory links [DIR] [--json]\n       priory flows [DIR] --json\n       priory views [DIR] --json\n       priory runs [--json]\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory screen [DIR] (TASK | --run RUN) [--history N] [--json]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory todo add TEXT [--band B] [--due TIME]\n       priory todo done ID\n       priory todo list [--json]\n       priory trace\n       priory recap [--since <instant-or-duration>] [--max-bytes N]\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report list [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report comment ROW --expected REVISION TEXT\n       priory report (reply COMMENT TEXT | resolve COMMENT | reopen COMMENT)\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory report risk [DIR] [--workflow <name>] [--since <instant-or-duration>] [--by lane] [--json]\n       priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]\n       priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo|lane] [--json]\n       priory grades [--since <instant-or-duration>] [--by lane] [--json]\n       priory score [DIR] TASK [--scorer NAME] [--budget USD] [--json]\n       priory score [DIR] --calibrate SCORER --budget USD [--json]\n       priory calibrate triage [DIR] [--json]\n       priory bench capture [DIR] TASK --into FOLDER\n       priory bench replay [DIR] CASE --budget USD [--turn-timeout DURATION]\n       priory bench FILE --base REF --head REF --budget USD [--runs N] [--case NAME] [--turn-timeout DURATION] [--post OWNER/NAME#N]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory (resume | cancel | release | revive [--step STEP]) [--generation N] [DIR] RUNNER:KEY\n       priory say [--generation N] [DIR] RUNNER:KEY TEXT\n       priory task TASK [--json]\n       priory label [DIR] TASK wrong (--evidence URL [--happened DATE] | --clear)\n       priory patterns [--all] [--json]\n       priory patterns find [DIR] [--since <instant-or-duration>]\n       priory patterns show ID [--json]\n       priory patterns (close | dismiss) [DIR] ID\n       priory patterns capture [DIR] ID --into FOLDER\n       priory relate TASK builds-on|fixes|takes-up|relates OTHER [--remove]\n       priory subscribe TASK RESOURCE [--expected REVISION]\n       priory unsubscribe TASK RESOURCE\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory gate\n       priory evidence add FILE --caption TEXT\n       priory evidence TASK [--json]\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory memories [DIR] [--all] [--json]\n       priory memories (accept | drop) [DIR] CANDIDATE\n       priory answer [--revision N | --expected N] [--run] [--] [DIR] [RUNNER:]ASK OPTION-OR-TEXT\n       priory give [DIR] KEY RUNNER [--force]\n       priory ask ID JSON\n       priory dismiss [--revision N | --expected N] [DIR] [RUNNER:]ASK\n       priory deliver ASK (--retry | --clear)\n       priory mcp --session ID [--debate] [--consult | --investigator]\n       priory mcp --outside\n       priory mcp --eval LOG [--describe TOOL TEXT]\n       priory eval FILE --budget USD [--case NAME] [--runs N] [--model MODEL]\n       priory hook EVENT\n       priory hook PreToolUse --outside"
+        "usage: priory --version\n       priory check [DIR] [--explain [--json]]\n       priory check [DIR] --repo PATH [--json]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory intake pre [DIR] TRIGGER < EVENT.json    runs the trigger's pre script on one event, publishes nothing\n       priory daemon [DIR] [--once]    --once routes pending events, starts no task and exits\n       priory daemon --view-only [DIR]    mirrors every runner's asks and tasks and serves them, runs nothing\n       priory batch add [DIR] ISSUE... [--repo <owner/name>] [--entries <workflow>] [--band <band>] [--lane <lane>]\n       priory batch show [BATCH] [--json]\n       priory batch edit BATCH --expected REVISION (--drop ENTRY [--with-successors] | --move ENTRY (--top | --before OTHER | --after OTHER) | --moment ENTRY OTHER MOMENT)\n       priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... <text>\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... [--hold <reason> [CONDITION]...] <text>\n       priory adopt [DIR] TRIGGER [PR...]\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--unrouted] [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--all] [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory tasks --graph [TASK] [--mermaid]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory links [DIR] [--json]\n       priory flows [DIR] --json\n       priory views [DIR] --json\n       priory runs [--json]\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory screen [DIR] (TASK | --run RUN) [--history N] [--json]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory todo add TEXT [--band B] [--due TIME]\n       priory todo done ID\n       priory todo list [--json]\n       priory trace\n       priory recap [--since <instant-or-duration>] [--max-bytes N]\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report list [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report comment ROW --expected REVISION TEXT\n       priory report (reply COMMENT TEXT | resolve COMMENT | reopen COMMENT)\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory report risk [DIR] [--workflow <name>] [--since <instant-or-duration>] [--by lane] [--json]\n       priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]\n       priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo|lane] [--json]\n       priory grades [--since <instant-or-duration>] [--by lane] [--json]\n       priory score [DIR] TASK [--scorer NAME] [--budget USD] [--json]\n       priory score [DIR] --calibrate SCORER --budget USD [--json]\n       priory calibrate triage [DIR] [--json]\n       priory bench capture [DIR] TASK --into FOLDER\n       priory bench replay [DIR] CASE --budget USD [--turn-timeout DURATION]\n       priory bench FILE --base REF --head REF --budget USD [--runs N] [--case NAME] [--turn-timeout DURATION] [--post OWNER/NAME#N]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--now] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory (resume | cancel | release | revive [--step STEP]) [--generation N] [DIR] RUNNER:KEY\n       priory say [--generation N] [DIR] RUNNER:KEY TEXT\n       priory task TASK [--json]\n       priory label [DIR] TASK wrong (--evidence URL [--happened DATE] | --clear)\n       priory patterns [--all] [--json]\n       priory patterns find [DIR] [--since <instant-or-duration>]\n       priory patterns show ID [--json]\n       priory patterns (close | dismiss) [DIR] ID\n       priory patterns capture [DIR] ID --into FOLDER\n       priory relate TASK builds-on|fixes|takes-up|relates OTHER [--remove]\n       priory subscribe TASK RESOURCE [--expected REVISION]\n       priory unsubscribe TASK RESOURCE\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory gate\n       priory evidence add FILE --caption TEXT\n       priory evidence TASK [--json]\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory memories [DIR] [--all] [--json]\n       priory memories (accept | drop) [DIR] CANDIDATE\n       priory answer [--revision N | --expected N] [--run] [--] [DIR] [RUNNER:]ASK OPTION-OR-TEXT\n       priory give [DIR] KEY RUNNER [--force]\n       priory ask ID JSON\n       priory dismiss [--revision N | --expected N] [DIR] [RUNNER:]ASK\n       priory deliver ASK (--retry | --clear)\n       priory mcp --session ID [--debate] [--consult | --investigator]\n       priory mcp --outside\n       priory mcp --eval LOG [--describe TOOL TEXT]\n       priory eval FILE --budget USD [--case NAME] [--runs N] [--model MODEL]\n       priory hook EVENT\n       priory hook PreToolUse --outside"
     );
     ExitCode::from(2)
 }
@@ -1682,8 +1684,15 @@ fn snooze(args: Vec<String>) -> ExitCode {
     let [kind, id, rest @ ..] = &args[..] else {
         return usage();
     };
-    let Ok(id) = id.parse() else {
-        return usage();
+    let id = match kind.as_str() {
+        "ask" => match ask_id(id) {
+            Ok(id) => id,
+            Err(error) => return exit("snooze", Err(error)),
+        },
+        _ => match id.parse() {
+            Ok(id) => id,
+            Err(_) => return usage(),
+        },
     };
     let until = match rest {
         [flag] if flag == "--clear" => snooze::until(None, None),
@@ -1730,7 +1739,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
         .map(|at| args.remove(at));
     let all = args
         .iter()
-        .position(|arg| arg == "--all" && ["asks", "desk"].contains(&verb))
+        .position(|arg| arg == "--all" && ["asks", "desk", "tasks"].contains(&verb))
         .map(|at| args.remove(at))
         .is_some();
     let unrouted = verb == "inbox"
@@ -1740,7 +1749,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
             .map(|at| args.remove(at))
             .is_some();
     // Without the factory folder, the queue knows no schedules or workflows, so up next lists none.
-    let (mut schedules, mut workflows, mut now) = (Vec::new(), Vec::new(), jiff::Timestamp::now());
+    let (mut schedules, mut offered, mut now) = (Vec::new(), None, jiff::Timestamp::now());
     if ["queue", "desk"].contains(&verb) || unrouted {
         now = match intake::now() {
             Ok(now) => now,
@@ -1758,7 +1767,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                 return ExitCode::FAILURE;
             };
             schedules = listing::schedule_triggers(&factory);
-            workflows = factory.workflows.into_keys().collect();
+            offered = Some((factory.requestable(), factory.not_requestable()));
         }
         args.clear();
     }
@@ -1803,10 +1812,13 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
             match verb {
                 "inbox" if unrouted => listing::unrouted(db, since.unwrap_or(0), now),
                 "inbox" => listing::inbox(db, since.unwrap_or(0)),
-                "tasks" => listing::tasks(db, lane, grade),
+                "tasks" => listing::tasks(db, lane, grade, all),
                 "asks" => listing::asks(db, &bands, &risks),
                 "desk" => listing::desk(db, &home, all, person.unwrap_or(listing::ME), now),
-                _ => listing::queue(db, &schedules, &workflows, now),
+                _ => {
+                    let offered = offered.as_ref().map(|(yes, no)| (&yes[..], &no[..]));
+                    listing::queue(db, &schedules, offered, now)
+                }
             }
             .map(Some)
         })
@@ -1909,6 +1921,9 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                 }
                 if let Some(intake) = value["intake"].as_str() {
                     state::emit(intake);
+                }
+                if let Some(reclaim) = value["reclaim"].as_str() {
+                    state::emit(reclaim);
                 }
                 if let Some(unrouted) = value["counts"]["unrouted"].as_u64().filter(|n| *n > 0) {
                     let events = if unrouted == 1 { "event" } else { "events" };
@@ -2272,6 +2287,111 @@ fn request(args: Vec<String>) -> ExitCode {
     }
 }
 
+/// `priory adopt [DIR] TRIGGER [PR...]` parks a task on each open pull request of the comment or
+/// review trigger `TRIGGER`'s author that no task in any state owns, or on the ones `PR...` names.
+fn adopt(args: Vec<String>) -> ExitCode {
+    let mut args = args.into_iter().peekable();
+    let dir = match args.peek() {
+        Some(dir) if Path::new(dir).is_dir() => PathBuf::from(args.next().unwrap_or_default()),
+        _ => factory::folder(None),
+    };
+    let Some(name) = args.next().filter(|name| !name.starts_with("--")) else {
+        return usage();
+    };
+    let named: Vec<String> = args.collect();
+    let Some(factory) = load(&dir) else {
+        return ExitCode::FAILURE;
+    };
+    let fail = |error: &str| {
+        eprintln!("priory adopt: {error}");
+        ExitCode::FAILURE
+    };
+    let Some(trigger) = factory.triggers.get(&name).map(|trigger| &trigger.value) else {
+        return fail(&format!("the factory has no trigger {name}"));
+    };
+    let (Some(repo), Some(author)) = (
+        trigger.repo.as_deref(),
+        trigger
+            .filter
+            .as_ref()
+            .and_then(|filter| filter.get("author")),
+    ) else {
+        return fail(&format!(
+            "trigger {name} is not a pull request comment or review trigger"
+        ));
+    };
+    if trigger.source != "github" || !rules::FEEDBACK.contains(&trigger.on.as_str()) {
+        return fail(&format!(
+            "trigger {name} is not a pull request comment or review trigger"
+        ));
+    }
+    let mut numbers = vec![];
+    for pr in &named {
+        match pull_request_number(pr, repo) {
+            Some(number) => numbers.push(number),
+            None => return fail(&format!("{pr} is not a pull request of {repo}")),
+        }
+    }
+    let open = match runtime::open_pull_requests(repo, Some(author)) {
+        Ok(open) => open,
+        Err(error) => return fail(&error),
+    };
+    let listed = |number: u64| {
+        open.iter()
+            .find(|pull| pull["number"].as_u64() == Some(number))
+    };
+    if let Some(number) = numbers.iter().find(|&&number| listed(number).is_none()) {
+        return fail(&format!(
+            "{repo}#{number} is not an open pull request by {author}"
+        ));
+    }
+    let db = match state::open() {
+        Ok(db) => db,
+        Err(error) => return fail(&error),
+    };
+    for pull in &open {
+        let Some(number) = pull["number"].as_u64() else {
+            continue;
+        };
+        if !numbers.is_empty() && !numbers.contains(&number) {
+            continue;
+        }
+        let key = format!("github:{repo}#{number}");
+        // A fork's branch of the same name is someone else's.
+        let branch = pull["headRefName"]
+            .as_str()
+            .filter(|_| pull["isCrossRepository"] == false)
+            .map(|head| format!("github:{repo}@{head}"));
+        match state::any_owner(&db, &key, branch.as_deref()) {
+            Ok(Some(task)) => {
+                println!("{key}: task {task} owns it");
+                continue;
+            }
+            Ok(None) => {}
+            Err(error) => return fail(&error.to_string()),
+        }
+        let title = pull["title"].as_str().unwrap_or_default();
+        let url = pull["url"].as_str().unwrap_or_default();
+        match request::adopt(&factory, &name, trigger, number, title, url) {
+            Ok(key) => println!("adopted {key}"),
+            Err(error) => return fail(&error),
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// The number of the pull request `pr` names in `repo`: `42`, `owner/name#42` or its URL.
+fn pull_request_number(pr: &str, repo: &str) -> Option<u64> {
+    let url = format!("https://github.com/{repo}/pull/");
+    let number = match (pr.strip_prefix(&url), pr.split_once('#')) {
+        (Some(number), _) => number,
+        (None, Some((named, number))) if named == repo => number,
+        (None, None) => pr,
+        _ => return None,
+    };
+    number.parse().ok()
+}
+
 fn add(args: Vec<String>) -> ExitCode {
     let Some((dir, add)) = request::parse_add(args) else {
         return usage();
@@ -2468,7 +2588,7 @@ fn memory(args: Vec<OsString>) -> ExitCode {
             "SELECT id, task, state, printf('%.1f', bytes / 1073741824.0),
              replace(command, char(10), '\\n'),
              (strftime('%s', 'now') - strftime('%s', coalesce(granted, created))) || 's', pid
-             FROM grants ORDER BY id",
+             FROM grants ORDER BY created, id",
         ),
         Some((verb, args)) if verb == "acquire" => acquire(args, false),
         Some((verb, args)) if verb == "lease" => acquire(args, true),
@@ -2524,36 +2644,70 @@ fn acquire(args: &[OsString], lease: bool) -> ExitCode {
         eprintln!("priory memory: {error}; the command did not run");
         ExitCode::from(GATE_FAILED)
     };
-    let acquired = gate(&Gate::Acquire {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    // A name without `/` is looked up on PATH; check it before the command waits for its grant.
+    if !program.as_encoded_bytes().contains(&b'/')
+        && !std::env::split_paths(&path).any(|dir| executable(&dir.join(program)))
+    {
+        eprintln!(
+            "priory memory: {} is not on PATH ({}); the command did not run",
+            program.to_string_lossy(),
+            path.to_string_lossy()
+        );
+        return ExitCode::from(127);
+    }
+    let acquire = Gate::Acquire {
         bytes: (gb * f64::from(1u32 << 30)) as u64,
         pid: std::process::id(),
         session: std::env::var("PRIORY_SESSION").ok(),
         command: command.join(" ".as_ref()).to_string_lossy().into_owned(),
-    });
-    let mut reply = match acquired {
-        Ok(reply) => reply,
-        Err(error) => return failed(error),
     };
-    let (id, _) = reply.split_once(' ').unwrap_or_default();
-    let grant: i64 = id.parse().expect("the daemon replies with the grant id");
     let timeout = timeout.unwrap_or(GATE_TIMEOUT);
     let deadline = Instant::now() + timeout;
-    let mut said = String::new();
-    while !reply.ends_with(" held") {
+    let (mut grant, mut said, mut sent) = (None, String::new(), false);
+    // The daemon keeps a waiting grant while this process lives, so a lost reply or a daemon
+    // restart only delays the next poll of the same grant.
+    let grant = loop {
+        let asked = match grant {
+            Some(grant) => call(&Gate::Poll { grant }, runtime::call_through_restart),
+            // Until a daemon took the request, none may be coming back: fail at once.
+            None if !sent => call(&acquire, runtime::call),
+            None => call(&acquire, runtime::call_through_restart),
+        };
+        sent |= !matches!(&asked, Err(error) if error.starts_with(runtime::NO_DAEMON));
+        let reply = match asked {
+            Ok(Ok(reply)) => {
+                let (id, _) = reply.split_once(' ').unwrap_or_default();
+                grant = Some(id.parse().expect("the daemon replies with the grant id"));
+                reply
+            }
+            Ok(Err(error)) => return failed(error),
+            // Only an `Acquire` no daemon ever read is safe to give up: one that may have
+            // arrived has a grant that lives while this process does.
+            Err(error) if !sent && error.starts_with(runtime::NO_DAEMON) => {
+                return failed(error);
+            }
+            Err(error) => format!(
+                "{} waits: {error}",
+                grant.map_or("?".into(), |id| id.to_string())
+            ),
+        };
+        if let (Some(grant), true) = (grant, reply.ends_with(" held")) {
+            break grant;
+        }
         if said != reply {
             eprintln!("priory memory: grant {reply} for {gb} GB");
-            said = reply.clone();
+            said = reply;
         }
         if Instant::now() >= deadline {
+            let Some(grant) = grant else {
+                return failed(format!("no grant after {timeout:?}"));
+            };
             let _ = gate(&Gate::Release { grant });
             return failed(format!("grant {grant} still waits after {timeout:?}"));
         }
         std::thread::sleep(Duration::from_millis(250));
-        reply = match gate(&Gate::Poll { grant }) {
-            Ok(reply) => reply,
-            Err(error) => return failed(error),
-        };
-    }
+    };
     let status = if lease {
         leased(program, rest)
     } else {
@@ -2585,6 +2739,12 @@ fn acquire(args: &[OsString], lease: bool) -> ExitCode {
     }
 }
 
+fn executable(file: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(file)
+        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+}
+
 /// Runs a command that holds `grant` from before it starts: a shell waits for a go-ahead on a pipe,
 /// the daemon takes its pid, and only then it execs the command. A holder that dies first closes
 /// the pipe, so the command never runs without its grant.
@@ -2611,10 +2771,19 @@ fn held(
         Ok(child) => child,
         Err(error) => return Ok(Err(error)),
     };
-    let taken = gate(&Gate::Run {
+    let run = Gate::Run {
         grant,
         pid: child.id(),
-    });
+    };
+    // The daemon takes the same pid again, so a lost reply only delays the hand-over.
+    let taken = loop {
+        match call(&run, runtime::call_through_restart) {
+            Err(_) if matches!(child.try_wait(), Ok(None)) => {
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            taken => break taken.flatten(),
+        }
+    };
     if let Err(error) =
         taken.and_then(|_| writer.write_all(b"\n").map_err(|error| error.to_string()))
     {
@@ -2655,11 +2824,17 @@ fn leased(program: &OsString, rest: &[OsString]) -> std::io::Result<std::process
 
 /// Sends `gate` to the daemon and returns its reply.
 fn gate(gate: &Gate) -> Result<String, String> {
+    call(gate, runtime::call_through_restart)?
+}
+
+/// Sends `gate` to the daemon with `send` and returns its reply, or why none came.
+fn call(
+    gate: &Gate,
+    send: fn(&Path, &str, Duration) -> Result<String, String>,
+) -> Result<Result<String, String>, String> {
     let line = serde_json::to_string(gate).expect("a gate message serializes");
-    runtime::call(&runtime::home(), &line, runtime::REPLY).and_then(|reply| {
-        serde_json::from_str::<Result<String, String>>(&reply)
-            .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
-    })
+    let reply = send(&runtime::home(), &line, runtime::REPLY)?;
+    serde_json::from_str(&reply).map_err(|error| format!("unreadable reply {reply:?}: {error}"))
 }
 
 /// `priory gate`, from a run's pane: runs the factory's gate in the run's task worktree at its head,
@@ -3636,7 +3811,12 @@ fn hold(args: Vec<String>) -> ExitCode {
     };
     let mut hold = factory::Hold::default();
     let (mut reason, mut task) = (None, vec![task]);
+    let mut now = false;
     while let Some(flag) = args.next() {
+        if flag == "--now" {
+            now = true;
+            continue;
+        }
         if flag == "--blockers" {
             hold.blockers = true;
             continue;
@@ -3664,13 +3844,13 @@ fn hold(args: Vec<String>) -> ExitCode {
         return usage();
     };
     hold.reason = reason;
-    act("hold", task, Some(hold))
+    act("hold", task, Some(hold), now)
 }
 
 /// Sends `priory resume`, `cancel`, `revive TASK [--step STEP]`, `release`, `say TASK TEXT` or `hold` for one task to
 /// the daemon, which applies it. Each but `hold` also takes `[DIR] RUNNER:KEY [--generation N]`,
 /// another runner's task, which it publishes on the log for that runner to apply.
-fn act(act: &str, mut args: Vec<String>, hold: Option<factory::Hold>) -> ExitCode {
+fn act(act: &str, mut args: Vec<String>, hold: Option<factory::Hold>, now: bool) -> ExitCode {
     // Taken first, so a text such as `--step` stays text.
     let text = match act {
         "say" if (2..=5).contains(&args.len()) => args.pop(),
@@ -3757,6 +3937,7 @@ fn act(act: &str, mut args: Vec<String>, hold: Option<factory::Hold>) -> ExitCod
         hold,
         text,
         expected,
+        now,
     })
     .expect("an action serializes");
     send(act, &line)

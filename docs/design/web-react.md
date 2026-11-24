@@ -1,7 +1,7 @@
 # The web view in React
 
 This page explains how the web view moves from hand-built HTML strings to a React app, slice by
-slice, without a visible change. It holds the plan the lead approved on 2026-11-23, with Max's "go
+slice, without a visible change. It holds the plan the lead approved on 2026-11-23, with the person's "go
 SPA" decisions applied. [ADR 0004](../adr/0004-the-web-view-is-a-react-app-whose-built-bundle-is-committed.md)
 records the build decision.
 
@@ -70,7 +70,8 @@ at `/app.js`. CI rebuilds it and fails on any difference.
 
 - esbuild writes one minified file with no code splitting, so no new served path appears.
 - `build.mjs --check` builds in memory, compares with `dist/app.js`, and fails with "run corepack
-  pnpm web:build" on a stale bundle. It also fails past a 450 KB budget: today's JavaScript plus React.
+  pnpm web:build" on a stale bundle. It also fails past a 500 KB budget: the JavaScript
+  plus React, with room for the page ports.
 - pnpm comes through corepack, which ships with Node 22 and 24. The exact `packageManager` pin keeps
   every machine on 12.21.0. No nixpkgs package and no new Action.
 - `pnpm-workspace.yaml` refuses esbuild's install script. It only checks the binary that esbuild's
@@ -93,10 +94,10 @@ Approval of this plan approves exactly this list. Versions and dates come from t
 | Package | Licence | Pin | Released | Kind | From | Why |
 |---|---|---|---|---|---|---|
 | esbuild | MIT | 0.28.2 | 2026-08-08 | dev | slice 1 | Bundles, minifies and compiles JSX. No plugins. |
-| pnpm | MIT | 12.21.0 | 2026-11-13 | tool, via corepack | slice 1 | The workspace and lockfile Max asked for |
+| pnpm | MIT | 12.21.0 | 2026-11-13 | tool, via corepack | slice 1 | The workspace and lockfile the person asked for |
 | react | MIT | 19.3.1 | 2026-10-14 | runtime | slice 2a | Components |
 | react-dom | MIT | 19.3.1 | 2026-10-14 | runtime | slice 2a | `createRoot`; `react-dom/server` renders component tests to markup. Brings `scheduler` (MIT). |
-| @tanstack/react-query | MIT | 5.107.1 | 2026-11-06 | runtime | slice 2a | The server data cache, approved by Max. Brings `@tanstack/query-core` (MIT). |
+| @tanstack/react-query | MIT | 5.107.1 | 2026-11-06 | runtime | slice 2a | The server data cache, approved by the person. Brings `@tanstack/query-core` (MIT). |
 
 Slice 2a pins `@tanstack/react-query` at 5.107.1, the newest patch at least a week old on
 2026-11-23. The newest was then 5.108.4, released that day.
@@ -110,7 +111,7 @@ Rejected:
   `renderToStaticMarkup` the markup, and browser checks against the demo the interactions.
 - TanStack Router and React Router: `pages.js` and the History API already route. A router comes
   only with a concrete need, such as a loader a page cannot do without.
-- Preact: smaller, but Max asked for React.
+- Preact: smaller, but the person asked for React.
 - Tailwind or CSS-in-JS: `DESIGN.md` tokens and the CSP (`style-src 'self'`) keep plain CSS files.
 
 ## 4. Migration order
@@ -121,16 +122,21 @@ Rejected:
 2. **Slice 2a, the shell and the query layer.** Built. `main.jsx` is the bundle's entry. React owns
    the root, the route, the server data and the events long poll:
    - `router.js` holds the route. `go()` pushes it with the History API and draws the new page
-     before it returns, as `app.js` expects. Back moves it too.
-   - `queries.js` holds one `QueryClient`, with one query per listing. `refresh()` reads them all
-     through it, and the shell observes them with `useQueries` and `keepPreviousData`.
+     before it returns, as `app.js` expects. Back moves it too. Each visit draws, also one to the
+     address already shown.
+   - `queries.js` holds one `QueryClient`, with one query per listing. `refresh()` reads every
+     listing from the server, drops the read when a later one supersedes it, and then writes all of
+     them in one step. So a read draws once, and a failed read changes nothing. No component observes
+     the queries yet: the first page port does.
    - `events.js` is the long poll, which `main.jsx` runs. `/api/events` answers only a revision, not
      what changed, so a moved revision reads every listing again. Structural sharing keeps each
      unchanged listing the same object, so a read with nothing new draws nothing.
-   - `LegacyPage` renders `#app` once and lets `app.js` draw inside it, frame included.
-   The frame (navigation, the top bar, the page title) moves to React with the first page port,
+   - `LegacyPage` renders `#app` once and lets `app.js` draw inside it, frame included. A draw that
+     throws is reported and leaves the page as it was, since React would unmount the root.
+   The person approved that the frame (navigation, the top bar, the page title) moves to React with
+   slice 2b,
    since the compact and wide layouts compose it around each page differently.
-3. **Slice 2b, the task page**, stacked on 2a. Max's Say textarea bug lives there. The frame moves
+3. **Slice 2b, the task page**, stacked on 2a. The Say textarea bug lives there. The frame moves
    with it.
 4. Then one pull request per page: Asks with the answer sheet, Desk, Tasks, Runs, Queue, Inbox,
    Costs, Reports, Flows, Batch, Terminal, Settings and sign-in, the Add sheet. Each port deletes
@@ -188,7 +194,7 @@ Four briefs change today's web code: `priory-asks-decide-first-web` (Asks order,
 Rules, each with a test:
 
 1. **Keep the last data while re-reading.** A refresh never swaps a drawn page or section for a
-   loading state. Every query uses `placeholderData: keepPreviousData`, and structural sharing keeps
+   loading state. A ported page's query uses `placeholderData: keepPreviousData`, and structural sharing keeps
    the objects that did not change, so their components do not redraw. Only a first visit to an id
    draws "Loading". A failed re-read keeps the last data and shows the error beside it.
 2. **Never unmount a focused input or move its caret.** Keys come from ids, never from a revision or
@@ -197,7 +203,7 @@ Rules, each with a test:
 
 Tests:
 - `queries.test.js`, with a fake server: the cache shows the last listings until a re-read lands; a
-  failed re-read keeps them; a read with nothing new keeps every listing the same object, and one
+  failed re-read keeps them; a read lands in one notification; a read with nothing new keeps every listing the same object, and one
   with a change replaces only that listing. `events.test.js` covers the long poll.
 - `scripts/demo/refresh.mjs`, a browser check. It changes the demo's data while a page is open and
   samples the DOM every animation frame. It fails on the ask drawer losing a section it drew
@@ -229,7 +235,7 @@ tests into the package unchanged.
 
 The port changes no pixel, so the artifact records the screens each slice must reproduce, not a new
 look: the shell and `LegacyPage` diagram, the build path, and today's screens at 1440 and 390 px.
-Max reviews it before slice 2a merges: https://claude.ai/artifact/DJzXheB2nzY27bSuxTgerC.
+The person approved it on 2026-11-24: https://claude.ai/artifact/DJzXheB2nzY27bSuxTgerC.
 
 ## Risks
 
@@ -237,7 +243,7 @@ Max reviews it before slice 2a merges: https://claude.ai/artifact/DJzXheB2nzY27b
    `LegacyPage` container only, with a test per page.
 2. Offline start after the upgrade: the cache rename and cleanup, tested in `sw.test.js`.
 3. Bundle size over plain HTTP: minifying the legacy code offsets part of React. The budget fails
-   the build past 450 KB.
+   the build past 500 KB.
 4. A stale or hand-merged bundle: `web:check` in CI.
 
 ## Later slices

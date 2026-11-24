@@ -95,7 +95,7 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
 - [health.md](health.md): run verdicts, failed or blocked tasks, a step's budget, repair, and the stall handler.
 - [desk.md](desk.md): `priory desk`, reports and `priory post`, resume, cancel, revive, snooze, say,
   pause, and `priory seen` for Since you looked.
-- [sweep.md](sweep.md): worktree removal, retiring asleep tasks, sweep scripts and the sweeper.
+- [sweep.md](sweep.md): worktree removal, reclaiming build output, retiring asleep tasks, sweep scripts and the sweeper.
 - [tools.md](tools.md): how a run uses the MCP tools: ending a turn, subscriptions, consulting an
   investigator, proofs and `priory gate`, moving between steps, intervention, code steps, the `run`
   action, approvals and staged tasks, which a `staged` trigger runs as a trial that writes nothing.
@@ -116,7 +116,7 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
   report, outcome labels, `priory grades`, `priory report risk` and the OpenTelemetry export. To send
   the export to a backend, follow
   [How to send traces to an OpenTelemetry backend](../sending-traces-to-opentelemetry.md).
-- [metrics.md](metrics.md): the metrics each process sends over OTLP, the process, log, runs, intake and work groups,
+- [metrics.md](metrics.md): the metrics each process sends over OTLP, the process, log, runs, intake, work and room groups,
   `PRIORY_METRICS`, the per-minute cap and what a failed send loses. To send them to a collector
   or a backend and set alerts, follow [How to send metrics to an OpenTelemetry backend](../sending-metrics.md).
 - [spend.md](spend.md): spend caps per task, day and week on the factory, a trigger or a lane,

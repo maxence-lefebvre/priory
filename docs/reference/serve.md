@@ -30,7 +30,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `/api/batches` | `priory batch show --json` | `batches`: every batch, newest first, without its entries and closes. See [batches.md](../daemon/batches.md#priory-batch-show) |
 | `/api/batches/{id}` | `priory batch show ID --json` | one batch with its entries, closes and splits. `ID` is the batch's id or its key |
 | `/api/views` | `priory views --json` | an object: [Views](#views) |
-| `/api/request` | | what the web view's Add prefills: `workflow` and `band`, the [`[request]`](factory.md#request) defaults, each `null` when unset; `workflows`, the factory's workflow names; and `bands`, its bands in order |
+| `/api/request` | | what the web view's Add prefills: `workflow` and `band`, the [`[request]`](factory.md#request) defaults, each `null` when unset; `workflows`, the names of its [requestable](workflows.md#top-level-keys) workflows, sorted; `opted_out`, the names of its other workflows, sorted; and `bands`, its bands in order |
 | `/api/links` | `priory links --json` | an object: [Links](#links) |
 | `/api/flows` | `priory flows --json` | an object: [Flows](#flows) |
 | `/api/reports` | `priory report list --json` | `reports`: each task's report as `task`, `date`, `greeting` and `put`, newest first |
@@ -253,6 +253,7 @@ curl -X POST http://127.0.0.1:7340/api/asks/42/answer -H "Authorization: Bearer 
 | `200` `{"key": "cli:2026-11-20-1", "id": 7, "outcome": "created"}` | For `/api/request`: the daemon published the request and task `id` holds `key`. `id` is `null` when no task took the key. `outcome` is `created` for a new task; `said` when the text joined an active task that hears it now, or that shows it on its open step's ask; `kept` when it joined a task with no run yet, which reads it in its first prompt; `null` while the log has not handed the request back |
 | `409` `{"error", "ask"}` | The ask's revision is no longer the one sent, or it was answered, dismissed or withdrawn. `ask` is its current state |
 | `409` `{"error"}` | Another runner's task is held by a third runner, or is at another generation than the one sent. Or a cancel's or a move's `revision` is no longer the state's. Or a pick's report is at another revision than the one sent, or the pick already holds that choice or an applied one: read the report again |
+| `400` `{"error"}` | For `/api/request`: `workflow` names a workflow of the factory that is not [requestable](workflows.md#top-level-keys), so nothing was sent. The daemon answers a name the factory lacks |
 | `409` `{"error", "key", "id"}` | For `/api/request`: the same text already went to `key`, so nothing was added. `id` is the active task that holds `key`, or `null` |
 | `404`, `422` `{"error"}` | The ask, task or pick is gone, or the daemon refused for another reason, such as a resume of a task that is not blocked, a say to a task with no run yet, or a comment on a stale report revision. `error` is the CLI's sentence |
 | `503` `{"error"}` | No daemon listens on the socket, or the log cannot be reached for another runner's ask or task, so nothing was sent. Reads keep working |
@@ -383,6 +384,7 @@ conversation that lacks its `id` or `created_at`, gets `400`.
 | `caps` | array of strings | One line per spend cap reached whose new runs wait, such as `spend cap reached: lane core/intake spent $12.40 of its day cap of $10.00; its new runs wait for the next day` (see [spend.md](../daemon/spend.md)) |
 | `reviews` | array of strings | One line per lane or batch whose review limit holds a queued task, such as `review limit reached: lane core/intake has 5 pull requests waiting for a person, at the limit of 5; its new runs wait` (see [runs.md](../daemon/runs.md#review-limit)) |
 | `banner` | string or null | The stall banner while the queue is stalled |
+| `reclaim` | string or null | `reclaimed <n> GB of build output from <n> folders in the last 24 hours, last at <time>` when the sweep deleted build output in the 24 hours before now (`PRIORY_NOW` when set), else null. See [sweep.md](../daemon/sweep.md#reclaiming-build-output) |
 | `intake` | string or null | The intake banner: `the intake has not polled since <time>: ...` when no source polled in the last 5 minutes, else `the intake fails to poll <source> since <time>: <error>` for each source that reported, or `the intake retries <source> since <time>: <error>` for one that has failed for less than `[intake] alarm_after`, joined by `; `. Null while every source polls. See [desk.md](../daemon/desk.md#intake-banner) |
 | `counts.asleep` | integer | Tasks asleep on a wait |
 | `counts.snoozed` | integer | Items snoozed now, which `items` leaves out |
@@ -437,7 +439,7 @@ group per resource, the group with the newest event first:
 | `resource` | string | The resource, such as `github:owner/name#7` |
 | `task` | object | The newest task that owned it: `id`, `key`, `state`, `workflow` |
 | `events` | array | Its events, newest first: `seq`, `type`, `subject`, `time`, and `line`, the first line of its body, text or title, a check run's name and conclusion such as `test (ubuntu) failure`, or null |
-| `follow_up` | string or null | The command that routes its next event, each argument shell-quoted: `priory revive ID` for a failed or dropped task, `priory add --workflow WORKFLOW 'TEXT'` with the task's workflow and `request_text` for a done one, else `priory subscribe ID RESOURCE`. Null for a done task's resource that `request_text` cannot name, such as a Slack thread |
+| `follow_up` | string or null | The command that routes its next event, each argument shell-quoted: `priory revive ID` for a failed or dropped task, `priory add --workflow WORKFLOW 'TEXT'` with the task's workflow and `request_text` for a done one, else `priory subscribe ID RESOURCE`. Null for a done task's resource that `request_text` cannot name, such as a Slack thread. [`priory say ID TEXT`](../daemon/desk.md#say) reopens a done task whose pull request is open, in place of that command |
 | `request_text` | string or null | For a GitHub or Linear resource, the text of a new task keyed by it: `Follow up on URL after event SEQ`, the issue's URL, which `priory add` turns into the resource as key, and the newest event's sequence number, so each follow-up is a new request |
 
 `dropped` lists the task requests a trigger's `pre` script dropped, newest first, except one whose
@@ -467,7 +469,7 @@ event's `time` against now (`PRIORY_NOW` when set), so a task about to start or 
 | ----- | ---- | ------- |
 | `task` | object | The task that kept them: `id`, `key`, `state`, `workflow` |
 | `events` | array | Its events, newest first, as in `owned` |
-| `follow_up` | string or null | `priory say ID 'Read the events that came while you slept.'` for an `asleep` or `blocked` task, whose next run carries them. For a done, failed or dropped task, the command `owned` gives for its key. Null for a task whose next run reads them anyway, such as a `queued` or `ready` one, and for a task that waits on a step's ask, which shows them |
+| `follow_up` | string or null | `priory say ID 'Read the events that came while you slept.'` for an `asleep` or `blocked` task, whose next run carries them. For a done, failed or dropped task, the command `owned` gives for its key; `priory say` reopens a done one as in `owned`. Null for a task whose next run reads them anyway, such as a `queued` or `ready` one, and for a task that waits on a step's ask, which shows them |
 | `say_text` | string or null | The text `follow_up` says to an `asleep` or `blocked` task, which the web Inbox's Say sends; null for any other task, and for a task that waits on a step's ask |
 | `request_text` | string or null | For a done task, the text of a new task keyed by its key, as in `owned`: null when its key is not a GitHub or Linear resource, and for any other task |
 
@@ -715,7 +717,8 @@ image or a video `Content-Disposition: inline`. See [evidence.md](../daemon/evid
 | Field | Each entry |
 | ----- | ---------- |
 | `bands` | The name of one of the factory's bands, highest first, as the daemon last recorded them. A band that holds no task is listed too |
-| `workflows` | The name of one of the factory's workflows, sorted. `priory queue --json` without `DIR` lists none |
+| `workflows` | The name of one of the factory's [requestable](workflows.md#top-level-keys) workflows, sorted. `null` from `priory queue --json` without `DIR` |
+| `opted_out` | The name of one of the factory's other workflows, sorted. `null` as `workflows` is |
 | `up_next` | One of the next three runs, soonest first: `at`, `kind`, `task`, `key`, `title`, `trigger` and `why`. See [Up next](#up-next) |
 | `waiting` | A queued or ready task in start order, then each held task by when it was held: `position` and `band_position` (its place in the queue and in its band, null for a held task), `id`, `key`, `title`, `workflow`, `step`, `state`, `band`, `aged` (the band [`[queue] age`](../daemon/runs.md#aging) moved it up to in start order, null when it starts in its own band or is held), `lane`, `reason`, `since`, `conditions` (see [Conditions](#conditions)), null for a task that is not held, `stops`, the tasks whose runs stop at their next turn end to make room for it, and `protected`, each live run's task that it may not stop, as `{task, reason}` (see [room.md](../daemon/room.md#urgent-wakes)); both are `[]` for any other task |
 | `asleep` | An asleep task, longest asleep first: `id`, `key`, `title`, `workflow`, `step`, `band`, `lane`, `since` (when it fell asleep), `retired`, and `waits`, each open wait as `kind`, `on` (what it waits on, as `priory waits` shows it) and `since` (when it was stored). A task asleep only on an ask has no waits |

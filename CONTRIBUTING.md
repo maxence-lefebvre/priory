@@ -9,6 +9,9 @@ change behaviour or name a concept, and use the terms of its Concepts table.
 
 Before you call a change done, run the checks in the [Verify section of
 AGENTS.md](AGENTS.md#verify) and fix every failure. CI runs the same checks on every pull request.
+To finish sooner, CI splits the tests into 4 jobs with
+[cargo-nextest](https://nexte.st/)'s `--partition`, using the `ci` profile in
+`.config/nextest.toml`. To run the tests as CI does, run `cargo nextest run --workspace --profile ci`.
 
 With Nix, `nix develop` opens a shell with the tools the checks need. With
 [direnv](https://direnv.net/), run `direnv allow` once and the repository's `.envrc` opens that
@@ -26,8 +29,9 @@ the one CI uses.
   it kills every process that inherited it, even when the test panics.
 - Start every process a test runs with `harness::priory()` or `harness::command(program)` from
   `crates/priory/tests/harness`, never `Command::new`. It drops the `PRIORY_*` and `HERDR_*`
-  variables your shell exports, so the suite passes on your machine as it does in CI. Set a
-  variable the test needs on the command itself.
+  variables your shell exports, so the suite passes on your machine as it does in CI. It
+  also hides your systemd user manager, so no test changes your agents slice. Set a variable the
+  test needs on the command itself.
 - Cover each parser of outside text (JSON, request heads, shell commands) with a `proptest` test
   that feeds it random and mutated input and asserts it returns or refuses without panicking.
   `proptest` is a dev-dependency only. Keep each test to a few seconds in a debug build.

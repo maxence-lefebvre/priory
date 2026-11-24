@@ -1662,6 +1662,104 @@ fn a_sweep_table_passes_and_a_bad_one_names_its_line() {
 }
 
 #[test]
+fn build_output_paths_must_stay_inside_the_worktree() {
+    let text = |build: &str| {
+        format!(
+            "name = \"demo\"\n\n[sweep]\nreclaim = \"60GB\"\n\n[repos.\"owner/repo\"]\nbuild = [{build}]\n"
+        )
+    };
+    let ok = check(&factory(
+        "build-ok",
+        &with("factory.toml", &text("\"target\", \"web/dist\"")),
+    ));
+    let up = check(&factory(
+        "build-up",
+        &with("factory.toml", &text("\"../x\"")),
+    ));
+    let root = check(&factory(
+        "build-root",
+        &with("factory.toml", &text("\"/tmp\"")),
+    ));
+    let empty = check(&factory(
+        "build-empty",
+        &with("factory.toml", &text("\"\"")),
+    ));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    for (path, out) in [("../x", up), ("/tmp", root), ("", empty)] {
+        assert_eq!(
+            (out.code, out.stderr.as_str()),
+            (
+                1,
+                format!("factory.toml:6: `[repos.\"owner/repo\"] build` path `{path}` needs to be a folder inside the worktree, with no `..`\n").as_str()
+            )
+        );
+    }
+}
+
+#[test]
+fn a_sweep_script_needs_when_or_every_and_a_valid_every() {
+    let good = "name = \"demo\"\n\n[sweep]\nscripts = [\n  { run = \"nh clean all\", every = \"4h\" },\n  { run = \"cargo-prune\", every = \"7d\", when = \"disk\" },\n]\n";
+    let ok = check(&factory("sweep-every-ok", &with("factory.toml", good)));
+    let neither = good.replace(", every = \"4h\"", "");
+    let bad_neither = check(&factory("sweep-neither", &with("factory.toml", &neither)));
+    let malformed = good.replace("\"4h\"", "\"soon\"");
+    let bad_every = check(&factory(
+        "sweep-every-bad",
+        &with("factory.toml", &malformed),
+    ));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(
+        (bad_neither.code, bad_neither.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: the sweep script `nh clean all` needs `when`, `every` or both\n"
+        )
+    );
+    assert_eq!(bad_every.code, 1);
+    assert!(
+        bad_every
+            .stderr
+            .starts_with("factory.toml:5:35: \"soon\" is not a duration such as 90s, 15m or 2h"),
+        "{}",
+        bad_every.stderr
+    );
+}
+
+#[test]
+fn a_sweep_script_runs_every_10_seconds_at_most_and_every_36500_days_at_least() {
+    let least =
+        "name = \"demo\"\n\n[sweep]\nscripts = [{ run = \"nh clean all\", every = \"10s\" }]\n";
+    let ok = check(&factory("sweep-least", &with("factory.toml", least)));
+    let under = least.replace("\"10s\"", "\"9s\"");
+    let refused = check(&factory("sweep-under", &with("factory.toml", &under)));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(
+        (refused.code, refused.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: the sweep script `nh clean all` has `every` 9s: it needs to be 10s or more\n"
+        )
+    );
+
+    let most = least.replace("\"10s\"", "\"36500d\"");
+    let ok = check(&factory("sweep-most", &with("factory.toml", &most)));
+    let over = least.replace("\"10s\"", "\"36501d\"");
+    let refused = check(&factory("sweep-over", &with("factory.toml", &over)));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(
+        (refused.code, refused.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: the sweep script `nh clean all` has `every` 3153686400s: it needs to be 36500d or less\n"
+        )
+    );
+}
+
+#[test]
 fn repository_recipes_pass_and_a_bad_one_names_its_line() {
     let good = "name = \"demo\"\n\n[repos.\"owner/repo\"]\nsetup = { argv = [\"npm\", \"ci\"], timeout = \"15m\" }\nresume = { shell = \"npm ci --prefer-offline\" }\nteardown = { shell = \"docker compose down\" }\n";
     let ok = check(&factory("recipes-ok", &with("factory.toml", good)));
@@ -1898,6 +1996,19 @@ fn a_request_table_passes_and_an_unknown_workflow_or_band_is_refused() {
 }
 
 #[test]
+fn a_request_default_passes_even_when_its_workflow_opts_out() {
+    let good = "name = \"demo\"\n\n[request]\nworkflow = \"implement\"\n";
+    let opted_out = format!("requestable = false\n{WORKFLOW}");
+    let mut files = with("factory.toml", good);
+    files.retain(|(path, _)| *path != "workflows/implement.toml");
+    files.push(("workflows/implement.toml", &opted_out));
+
+    let outcome = check(&factory("request-opted-out", &files));
+
+    assert_eq!((outcome.code, outcome.stderr.as_str()), (0, ""));
+}
+
+#[test]
 fn a_batch_workflow_needs_a_human_step_after_a_model_step() {
     let good = "name = \"demo\"\n\n[batch]\nworkflow = \"implement\"\nentries = \"implement\"\n";
     let ok = check(&factory("batch-ok", &with("factory.toml", good)));
@@ -2070,7 +2181,7 @@ fn telemetry_headers_env_names_a_variable_and_never_holds_the_headers() {
 fn check_refuses_an_unknown_metrics_group_a_short_interval_and_a_zero_cap_naming_each_value() {
     let telemetry = "name = \"demo\"\n\n[telemetry]\notlp = \"http://127.0.0.1:4318\"\n";
     let ok = format!(
-        "{telemetry}metrics = [\"process\", \"log\", \"runs\", \"intake\"]\nmetrics_every = \"10s\"\nmetrics_cap = 1\n"
+        "{telemetry}metrics = [\"process\", \"log\", \"runs\", \"intake\", \"work\", \"room\"]\nmetrics_every = \"10s\"\nmetrics_cap = 1\n"
     );
     let refused = format!(
         "{telemetry}metrics = [\"process\", \"nope\"]\nmetrics_every = \"9s\"\nmetrics_cap = 0\n"
@@ -2084,7 +2195,7 @@ fn check_refuses_an_unknown_metrics_group_a_short_interval_and_a_zero_cap_naming
     assert_eq!(
         refused.stderr,
         "factory.toml:3: `metrics` names `nope`, which is not a metrics group: the groups are \
-         process, log, runs, intake, work\n\
+         process, log, runs, intake, work, room\n\
          factory.toml:3: `metrics_every` is 9s: it needs to be 10s or more\n\
          factory.toml:3: `metrics_cap` is 0: it needs to be 1 or more\n"
     );
@@ -2148,6 +2259,58 @@ fn the_deliver_command_is_an_executable_file_in_the_factory() {
         (
             1,
             "factory.toml:3: `[asks] deliver`: bin/deliver is not executable: chmod +x it\n"
+        )
+    );
+    assert_eq!((runnable.code, runnable.stderr.as_str()), (0, ""));
+}
+
+#[test]
+fn attach_runs_on_model_steps_only_and_needs_an_executable_runs_attach_command() {
+    use std::os::unix::fs::PermissionsExt;
+    let workflow = WORKFLOW
+        .replace(
+            "prompt = \"Implement the issue.\"\n",
+            "prompt = \"Implement the issue.\"\nattach = true\n",
+        )
+        .replace(
+            "approves = [\"open-pr\"]\n",
+            "approves = [\"open-pr\"]\nattach = true\n",
+        );
+    let mut files = valid();
+    files[3] = ("workflows/implement.toml", &workflow);
+    let without = check(&factory("attach-without", &files));
+    let toml = "name = \"demo\"\n\n[runs]\nattach = \"bin/attach\"\n";
+    files[0] = ("factory.toml", toml);
+    files[3] = ("workflows/implement.toml", WORKFLOW);
+    let missing = check(&factory("attach-missing", &files));
+    files.push(("bin/attach", "#!/bin/sh\nexit 0\n"));
+    let dir = factory("attach-runnable", &files);
+    fs::set_permissions(dir.join("bin/attach"), fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(
+        dir.join("workflows/implement.toml"),
+        WORKFLOW.replace(
+            "prompt = \"Implement the issue.\"\n",
+            "prompt = \"Implement the issue.\"\nattach = true\n",
+        ),
+    )
+    .unwrap();
+
+    let runnable = check(&dir);
+
+    assert_eq!(
+        (without.code, without.stderr.as_str()),
+        (
+            1,
+            "workflows/implement.toml:4: step `implement`: `attach = true` needs `[runs] attach` \
+             in the factory's settings\n\
+             workflows/implement.toml:13: step `approve-pr`: only a model step has `attach = true`\n"
+        )
+    );
+    assert_eq!(
+        (missing.code, missing.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: `[runs] attach`: bin/attach is not a file in the factory folder\n"
         )
     );
     assert_eq!((runnable.code, runnable.stderr.as_str()), (0, ""));

@@ -65,6 +65,43 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 format!("the sweeper agent `{agent}` does not exist"),
             ));
         }
+        for script in &settings.value.sweep.scripts {
+            if script.when.is_none() && script.every.is_none() {
+                problems.push(problem(
+                    settings,
+                    settings.lines.field("sweep"),
+                    format!(
+                        "the sweep script `{}` needs `when`, `every` or both",
+                        script.run
+                    ),
+                ));
+            }
+            let least = crate::factory::SCRIPT_EVERY_LEAST;
+            if let Some(every) = script.every.filter(|every| *every < least) {
+                problems.push(problem(
+                    settings,
+                    settings.lines.field("sweep"),
+                    format!(
+                        "the sweep script `{}` has `every` {}s: it needs to be {}s or more",
+                        script.run,
+                        every.as_secs(),
+                        least.as_secs()
+                    ),
+                ));
+            }
+            let most = crate::factory::SCRIPT_EVERY_MOST_DAYS;
+            if let Some(every) = script.every.filter(|every| every.as_secs() > most * 86400) {
+                problems.push(problem(
+                    settings,
+                    settings.lines.field("sweep"),
+                    format!(
+                        "the sweep script `{}` has `every` {}s: it needs to be {most}d or less",
+                        script.run,
+                        every.as_secs()
+                    ),
+                ));
+            }
+        }
         if let Some(kit) = &settings.value.kit {
             let at = settings.lines.field("kit");
             for message in kit_problems(kit) {
@@ -149,21 +186,18 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 "`gate` is empty".to_owned(),
             ));
         }
-        if let (Some(named), Some(path)) = (&settings.value.asks.deliver, factory.deliver()) {
-            use std::os::unix::fs::PermissionsExt;
-            let named = named.display();
-            let refused = match std::fs::metadata(&path) {
-                Ok(file) if file.is_file() && file.permissions().mode() & 0o111 == 0 => {
-                    Some(format!("{named} is not executable: chmod +x it"))
-                }
-                Ok(file) if file.is_file() => None,
-                _ => Some(format!("{named} is not a file in the factory folder")),
-            };
-            if let Some(refused) = refused {
+        let commands = [
+            ("asks", "deliver", &settings.value.asks.deliver),
+            ("runs", "attach", &settings.value.runs.attach),
+        ];
+        for (table, key, named) in commands {
+            if let Some(named) = named
+                && let Some(refused) = not_executable(&factory.dir, named)
+            {
                 problems.push(problem(
                     settings,
-                    settings.lines.field("asks"),
-                    format!("`[asks] deliver`: {refused}"),
+                    settings.lines.field(table),
+                    format!("`[{table}] {key}`: {refused}"),
                 ));
             }
         }
@@ -388,6 +422,17 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                     if let Some(message) = recipe_problem(&settings.value.guard, &name, recipe) {
                         problems.push(problem(settings, at, message));
                     }
+                }
+            }
+            for path in recipes.build.iter().flatten() {
+                let inside = Path::new(path)
+                    .components()
+                    .all(|part| matches!(part, std::path::Component::Normal(_)));
+                if path.is_empty() || !inside {
+                    let message = format!(
+                        "`[repos.\"{repo}\"] build` path `{path}` needs to be a folder inside the worktree, with no `..`"
+                    );
+                    problems.push(problem(settings, at, message));
                 }
             }
         }
@@ -2189,6 +2234,7 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
             (step.command.is_some(), Decider::Human, "a `command`"),
             (step.budget.is_some(), Decider::Model, "a `budget`"),
             (step.record.is_some(), Decider::Model, "a `record` command"),
+            (step.attach, Decider::Model, "`attach = true`"),
             (step.action.is_some(), Decider::Code, "an `action`"),
             (step.run.is_some(), Decider::Code, "a `run` command"),
         ];
@@ -2243,6 +2289,11 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
                     && let Err(refused) = recorder(&factory.dir, record)
                 {
                     report(format!("`record`: {refused}"));
+                }
+                if step.attach && factory.attach().is_none() {
+                    report(
+                        "`attach = true` needs `[runs] attach` in the factory's settings".into(),
+                    );
                 }
                 if let Some(budget) = &step.budget {
                     if step.budget().is_none() {
@@ -2692,6 +2743,19 @@ fn path_problems(table: &str, what: &str, paths: &[(&str, &str)]) -> Vec<String>
         }
     }
     problems
+}
+
+/// Why the command `named`, under the factory folder `dir`, is not an executable file, if it is not.
+fn not_executable(dir: &Path, named: &Path) -> Option<String> {
+    use std::os::unix::fs::PermissionsExt;
+    let shown = named.display();
+    match std::fs::metadata(dir.join(named)) {
+        Ok(file) if file.is_file() && file.permissions().mode() & 0o111 == 0 => {
+            Some(format!("{shown} is not executable: chmod +x it"))
+        }
+        Ok(file) if file.is_file() => None,
+        _ => Some(format!("{shown} is not a file in the factory folder")),
+    }
 }
 
 /// Why the `record` command `record` is not an executable file inside the factory folder `dir`, as

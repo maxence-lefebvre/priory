@@ -61,6 +61,10 @@
           ],
           "description": "Pull requests, `owner/name#42` or `42` in the task's repository: until each merges. One\nvalue or a list."
         },
+        "parked": {
+          "description": "Parks a task keyed by a pull request: a comment or review trigger's request for that pull\nrequest releases it, and the pull request's merge or close ends it.",
+          "type": "boolean"
+        },
         "reason": {
           "description": "Why the task waits, shown to a person.",
           "type": "string"
@@ -204,7 +208,7 @@
         "timeout": {
           "default": null,
           "description": "How long it may run, at most `60s`; 10 seconds when unset.",
-          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
           "type": "string"
         }
       },
@@ -284,7 +288,7 @@
     "every": {
       "default": null,
       "description": "How often a schedule fires again after `at`, the same day; once a day when unset.",
-      "pattern": "^0*[1-9][0-9]*[smh]$",
+      "pattern": "^0*[1-9][0-9]*[smhd]$",
       "type": "string"
     },
     "filter": {
@@ -430,7 +434,7 @@
     },
     "until": {
       "description": "When a schedule's day of firings ends; the end of the day when unset.",
-      "pattern": "^(([01]?[0-9]|2[0-3]):[0-5][0-9]|0*[1-9][0-9]*[smh])$",
+      "pattern": "^(([01]?[0-9]|2[0-3]):[0-5][0-9]|0*[1-9][0-9]*[smhd])$",
       "type": "string"
     },
     "view": {

@@ -7,7 +7,7 @@ the slices after it, what stays out, and the open questions with a recommendatio
 
 Every slice is built. [metrics.md](../daemon/metrics.md) describes the first one: the exporter,
 the keys, `PRIORY_METRICS`, the cap and the `process` group. Its tests use a fake collector on
-127.0.0.1 rather than a fake `curl`. The `log`, `runs`, `intake` and `work` groups follow in
+127.0.0.1 rather than a fake `curl`. The `log`, `runs`, `intake`, `work` and `room` groups follow in
 [metrics.md](../daemon/metrics.md#the-log-group), and [the metrics reference](../reference/metrics.md)
 lists every metric. The how-to is [How to send metrics to an OpenTelemetry backend](../sending-metrics.md).
 
@@ -61,8 +61,8 @@ each runner's lease age over the hour, not one banner at the end. The PRD's succ
   `priory_log_cursors`, and herdr-bus its own.
 - A run's row has `started` and `ended`. `SessionStart` sets the run idle and records its
   transcript, but no time. The daemon reads the screen of each run with no `SessionStart` every
-  second: Claude's trust dialog blocks the task at once, and 60 seconds with no `SessionStart`
-  blocks it too ([sessions.md](../daemon/sessions.md#trusting-the-worktrees-and-the-clone),
+  second: Claude's trust dialog blocks the task at once, and no `SessionStart`
+  within the run's window blocks it too ([sessions.md](../daemon/sessions.md#trusting-the-worktrees-and-the-clone),
   [health.md](../daemon/health.md)). Whether a run resumes a session is known at its start
   ([runs.md](../daemon/runs.md)).
 - The `recipes` table holds each `setup`, `resume` and `teardown` with `started`, `ended` and
@@ -87,7 +87,7 @@ off unless `factory.toml` names the groups to send:
 ```toml
 [telemetry]
 otlp = "http://127.0.0.1:4318"
-metrics = ["process", "log", "runs", "intake", "work"]   # the groups, by name
+metrics = ["process", "log", "runs", "intake", "work", "room"]   # the groups, by name
 metrics_every = "60s"                                     # how often each process sends
 metrics_cap = 1000                                        # data points per minute, per process
 ```
@@ -113,6 +113,7 @@ Each process sends only the groups it owns:
 | `runs` | the daemon |
 | `intake` | the intake, and whichever process takes webhooks for its deliveries |
 | `work` | the daemon |
+| `room` | the daemon |
 
 ### What a data point carries
 
@@ -196,7 +197,7 @@ From the `runs` and `recipes` tables, and timers around the start's git commands
 
 | Metric | Type | Attributes | Source |
 | ------ | ---- | ---------- | ------ |
-| `priory.run.start.duration` | histogram, s | `priory.harness`, `priory.session` = `first`, `resume`; `outcome` = `ok`, `error` | from the run's `started` to its `SessionStart`. `error` is a run that ended before one: the trust dialog, 60 seconds with none, an exit |
+| `priory.run.start.duration` | histogram, s | `priory.harness`, `priory.session` = `first`, `resume`; `outcome` = `ok`, `error` | from the run's `started` to its `SessionStart`. `error` is a run that ended before one: the trust dialog, its window with none, an exit |
 | `priory.run.starts.active` | gauge, runs | `priory.harness` | live runs with no `SessionStart` yet |
 | `priory.run.start.oldest.age` | gauge, s | `priory.harness` | the oldest of those, since its `started`; 0 with none |
 | `priory.worktree.phase.duration` | histogram, s | `priory.phase` = `clone`, `fetch`, `checkout`, `setup`, `resume`, `teardown`; `outcome` = `ok`, `error`, `timeout` | clone, fetch and checkout timed around their `git` commands; setup, resume and teardown from the `recipes` row's `started`, `ended` and `status` |
@@ -204,7 +205,7 @@ From the `runs` and `recipes` tables, and timers around the start's git commands
 
 `priory.run.start.oldest.age` is the hung start. Claude's trust dialog blocks its task within a
 second, but a start that hangs on something the screen check does not know, such as a new dialog in
-a later Claude Code, climbs to 60 seconds every time. A start's duration needs the time of
+a later Claude Code, climbs to its window every time. A start's duration needs the time of
 `SessionStart`, which the run's row does not keep. The slice that builds this group adds a column,
 so it needs a migration, numbered after the ones open pull requests reserve.
 
@@ -336,6 +337,10 @@ export's tests do, and a `PRIORY_PROC` folder for `/proc/self`:
    recipe was run against `otelcol` 0.139.0. Its alerts add the lease age and the tick's p95, and
    take each threshold from a limit Priory enforces. The oldest ask's age has no such limit, so the
    page leaves its threshold to the person.
+6. **Built.** The `room` group: the machine's load, memory and disk against the room's ceilings, the
+   memory gate's grants and the tasks waiting for room by cause
+   ([the reference](../reference/metrics.md#room)). The daemon's thread hands over what its room check
+   measured, and counts the tasks as it walks the queue. It needs no migration.
 
 ## What stays out
 

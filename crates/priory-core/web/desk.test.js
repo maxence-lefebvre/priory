@@ -178,14 +178,16 @@ test("a wide Desk opens its oldest ask on arrival, and stays empty once that dra
   assert.equal(arrivalAsk({ from: null, list: "desk", view: "needs", asks: [] }), null);
 });
 
-test("the desk's banners say why runs wait: the pause first, then room, intake and each cap reached", () => {
+test("the desk's banners say why runs wait: the pause first, then room, intake, reclaim and each cap reached", () => {
   const cap = "spend cap reached: factory spent $50.10 of its day cap of $50.00; its new runs wait for the next day";
   const lane = "spend cap reached: lane core/intake spent $12.40 of its day cap of $10.00; its new runs wait for the next day";
+  const reclaim = "reclaimed 14.2 GB of build output from 2 folders in the last 24 hours, last at 2026-11-23T19:00:00Z";
   const ago = () => "1 h ago";
-  assert.deepEqual(deskBanners({ paused: "paused since 2026-11-22T21:40:00Z: freeze", banner: "waits for room", intake: "the intake fails", caps: [cap, lane] }, ago), [
+  assert.deepEqual(deskBanners({ paused: "paused since 2026-11-22T21:40:00Z: freeze", banner: "waits for room", intake: "the intake fails", reclaim, caps: [cap, lane] }, ago), [
     { text: "paused 1 h ago: freeze", icon: "pause", intake: false },
     { text: "waits for room", icon: "hard-drive", intake: false },
     { text: "the intake fails", icon: "unplug", intake: true },
+    { text: reclaim, icon: "hard-drive", intake: false },
     { text: cap, icon: "hourglass", intake: false },
     { text: lane, icon: "hourglass", intake: false },
   ]);

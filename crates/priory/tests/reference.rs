@@ -30,16 +30,66 @@ fn files(root: &Path, dir: &Path) -> BTreeSet<String> {
     found
 }
 
-/// Copies the example factory to `to`, with the `deliver` script its `factory.toml` names, which
-/// the reference pages do not show.
+/// Copies the example factory to `to`, with the `deliver` and `attach` scripts its `factory.toml`
+/// names, which the reference pages do not show.
 fn example_factory(to: &Path) {
     use std::os::unix::fs::PermissionsExt;
     let _ = fs::remove_dir_all(to);
     copy(&examples().join("factory"), to);
-    let deliver = to.join("bin/deliver");
-    fs::create_dir_all(deliver.parent().unwrap()).unwrap();
-    fs::write(&deliver, "#!/bin/sh\n").unwrap();
-    fs::set_permissions(&deliver, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::create_dir_all(to.join("bin")).unwrap();
+    for script in ["bin/deliver", "bin/attach"] {
+        let script = to.join(script);
+        fs::write(&script, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+/// The tutorial's files: each fenced block whose paragraph starts with the file's path.
+fn tutorial_files(page: &str) -> Vec<(&str, &str)> {
+    let fences = page.split("\n```").collect::<Vec<_>>();
+    let mut found = Vec::new();
+    for pair in fences.chunks_exact(2) {
+        let intro = pair[0].trim_end().rsplit("\n\n").next().unwrap();
+        let path = intro
+            .strip_prefix('`')
+            .and_then(|rest| rest.split_once('`'))
+            .map(|(path, _)| path)
+            .filter(|path| path.ends_with(".toml") || path.ends_with(".md"));
+        if let (Some(path), Some((_, content))) = (path, pair[1].split_once('\n')) {
+            found.push((path, content));
+        }
+    }
+    found
+}
+
+#[test]
+fn the_tutorials_factory_passes_check_and_prints_the_line_the_page_quotes() {
+    let page = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../GETTING_STARTED.md");
+    let page = fs::read_to_string(page).unwrap();
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("tutorial");
+    let _ = fs::remove_dir_all(&dir);
+    let files = tutorial_files(&page);
+    for (path, content) in &files {
+        let file = dir.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, format!("{content}\n")).unwrap();
+    }
+
+    let output = harness::priory().arg("check").arg(&dir).output().unwrap();
+
+    assert_eq!(
+        files.iter().map(|(path, _)| *path).collect::<Vec<_>>(),
+        [
+            "factory.toml",
+            "agents/implementer/agent.md",
+            "workflows/implement.toml",
+            "triggers/agent-label.toml"
+        ]
+    );
+    let printed = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{printed}{stderr}");
+    assert!(page.contains(&format!("`{}`", printed.trim())), "{printed}");
 }
 
 #[test]
@@ -118,6 +168,7 @@ fn the_config_schemas_accept_the_values_the_loader_accepts() {
         ("every", "60"),
         ("until", "18:00"),
         ("until", "9h"),
+        ("until", "1d"),
         ("until", "6pm"),
     ]
     .map(|(key, value)| {

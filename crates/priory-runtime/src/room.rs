@@ -1,5 +1,7 @@
+use crate::runtime::fed_within;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 /// The machine's room, measured live.
 #[derive(Debug)]
@@ -20,15 +22,6 @@ pub struct Room {
 /// `home`.
 pub fn measure(home: &Path) -> Result<Room, String> {
     let proc = proc();
-    let meminfo = read(&proc.join("meminfo"))?;
-    let kilobytes = |key: &str| {
-        meminfo
-            .lines()
-            .find_map(|line| line.strip_prefix(key)?.strip_prefix(':'))
-            .and_then(|value| value.trim().strip_suffix("kB")?.trim().parse::<u64>().ok())
-            .map(|value| value << 10)
-            .ok_or_else(|| format!("no {key} in {}", proc.join("meminfo").display()))
-    };
     let loadavg = read(&proc.join("loadavg"))?;
     let load = loadavg
         .split_whitespace()
@@ -38,13 +31,42 @@ pub fn measure(home: &Path) -> Result<Room, String> {
         .ok_or_else(|| format!("no load in {}", proc.join("loadavg").display()))?;
     let (disk_total, disk_free) = disk(home)?;
     Ok(Room {
-        memory_free: kilobytes("MemAvailable")?,
-        memory_total: kilobytes("MemTotal")?,
+        memory_free: meminfo("MemAvailable")?,
+        memory_total: meminfo("MemTotal")?,
         disk_free,
         disk_total,
         load,
-        cpus: std::thread::available_parallelism().map_or(1, usize::from),
+        cpus: cpus(),
     })
+}
+
+/// The field `key` of `/proc/meminfo`, in bytes.
+pub(crate) fn meminfo(key: &str) -> Result<u64, String> {
+    let file = proc().join("meminfo");
+    read(&file)?
+        .lines()
+        .find_map(|line| line.strip_prefix(key)?.strip_prefix(':'))
+        .and_then(|value| value.trim().strip_suffix("kB")?.trim().parse::<u64>().ok())
+        .and_then(|value| value.checked_mul(1024))
+        .ok_or_else(|| format!("no {key} in {}", file.display()))
+}
+
+/// The machine's online CPUs, from `/proc/stat`. Rust's `available_parallelism` counts the caller's
+/// own cgroup quota, so it only stands in where there is no such file.
+pub fn cpus() -> usize {
+    let stat = read(&proc().join("stat")).unwrap_or_default();
+    match cpus_of(&stat) {
+        0 => std::thread::available_parallelism().map_or(1, usize::from),
+        online => online,
+    }
+}
+
+/// The CPUs the text of a `/proc/stat` file lists: its `cpu<n>` lines, not their `cpu` total.
+pub fn cpus_of(stat: &str) -> usize {
+    stat.lines()
+        .filter_map(|line| line.strip_prefix("cpu"))
+        .filter(|rest| rest.starts_with(|first: char| first.is_ascii_digit()))
+        .count()
 }
 
 /// The machine's host name, which names its runner file.
@@ -101,13 +123,17 @@ fn read(path: &Path) -> Result<String, String> {
     std::fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))
 }
 
+/// How long `df` may take, since a hung mount would hold the daemon's thread.
+const DF: Duration = Duration::from_secs(5);
+
 /// Total and available bytes of the file system holding `path`, from POSIX `df -Pk`.
 fn disk(path: &Path) -> Result<(u64, u64), String> {
-    let output = Command::new("df")
-        .arg("-Pk")
-        .arg(path)
-        .output()
-        .map_err(|error| format!("df: {error}"))?;
+    let output = fed_within(Command::new("df").arg("-Pk").arg(path), None, DF)
+        .map_err(|error| format!("df: {error}"))?
+        .ok_or_else(|| {
+            let seconds = DF.as_secs();
+            format!("df -Pk {}: timed out after {seconds}s", path.display())
+        })?;
     let text = String::from_utf8_lossy(&output.stdout);
     // Columns: file system, 1024-blocks, used, available, capacity, mount point.
     let fields: Vec<&str> = text

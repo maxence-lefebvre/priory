@@ -2,17 +2,19 @@
 import { flushSync } from "react-dom";
 import { store } from "./store.js";
 
-const where = () => location.pathname + location.search;
-export const route = store(typeof location === "undefined" ? "/" : where());
+// A new object for each visit: a visit to the address already stored still draws.
+const visit = () => ({ at: typeof location === "undefined" ? "/" : location.pathname + location.search });
+export const route = store(visit());
 
-// Draws the new page before go() returns, so code after it finds the page's elements.
+// Draws the new page before it returns, so code after it finds the page's elements.
+const move = () => flushSync(() => route.set(visit()));
+
 export function go(path) {
   history.pushState(null, "", path);
-  flushSync(() => route.set(where()));
+  move();
 }
 
 export function followBack() {
-  const back = () => route.set(where());
-  addEventListener("popstate", back);
-  return () => removeEventListener("popstate", back);
+  addEventListener("popstate", move);
+  return () => removeEventListener("popstate", move);
 }

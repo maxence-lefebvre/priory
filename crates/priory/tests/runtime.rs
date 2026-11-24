@@ -7,6 +7,7 @@ mod conform;
 mod consult;
 mod debate;
 mod evidence;
+mod hold_running;
 mod metrics;
 mod outside_answer;
 #[cfg(feature = "postgres")]
@@ -55,12 +56,25 @@ key = "issue.number"
 
 const OUTPUT: &str = "factory.intake";
 
-/// Undoes migrations 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
+/// Undoes migration 112, which lets a sweep script run with no stall.
+macro_rules! undo_scheduled_sweeps {
+    () => {
+        "CREATE TABLE sweeps_undone (id INTEGER PRIMARY KEY AUTOINCREMENT,
+    stall INTEGER NOT NULL REFERENCES stalls (id), script TEXT NOT NULL,
+    started TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    ended TEXT, status TEXT, output TEXT, pid INTEGER, pid_started INTEGER);
+  INSERT INTO sweeps_undone SELECT * FROM sweeps WHERE stall IS NOT NULL;
+  DROP TABLE sweeps; ALTER TABLE sweeps_undone RENAME TO sweeps;
+  "
+    };
+}
+
+/// Undoes migrations 112, scheduled sweeps, 111, memory lapses, 110, a run under direnv, 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
 /// `auto_answer` level, 97, the task's `added_by`, and 93: the `pre` script's task columns and the
 /// pending requests.
 macro_rules! undo_pre {
     () => {
-        "ALTER TABLE asks DROP COLUMN confidence; ALTER TABLE asks DROP COLUMN rationale;
+        concat!(undo_scheduled_sweeps!(), "ALTER TABLE asks DROP COLUMN confidence; ALTER TABLE asks DROP COLUMN rationale;
   ALTER TABLE tasks DROP COLUMN auto_answer; ALTER TABLE tasks DROP COLUMN added_by; DROP VIEW task_text; CREATE VIEW task_text AS SELECT tasks.id AS task,
     coalesce(json_extract(inbox.data, '$.title'), '') AS title,
     coalesce(json_extract(inbox.data, '$.text'), json_extract(inbox.data, '$.body'),
@@ -72,8 +86,8 @@ macro_rules! undo_pre {
   ALTER TABLE tasks DROP COLUMN pre_context; ALTER TABLE tasks DROP COLUMN pre_script; DROP TABLE pending_requests;
   ALTER TABLE memory_candidates DROP COLUMN step; ALTER TABLE gates DROP COLUMN lessons; ALTER TABLE gates DROP COLUMN ask; ALTER TABLE gates DROP COLUMN judges;
   ALTER TABLE runs DROP COLUMN session_started; ALTER TABLE runs DROP COLUMN harness;
-  ALTER TABLE runs DROP COLUMN resumes; ALTER TABLE runs DROP COLUMN sandbox;
-  "
+  ALTER TABLE runs DROP COLUMN resumes; ALTER TABLE runs DROP COLUMN sandbox; ALTER TABLE runs DROP COLUMN direnv; DROP TABLE lapses;
+  ")
     };
 }
 
@@ -272,11 +286,17 @@ impl Setup {
 
     fn start_with(&mut self, exe: &Path, env: &[(&str, &str)]) {
         let factory = self.dir.join("factory");
+        self.start_on(exe, env, &factory);
+    }
+
+    /// Starts the daemon in the test's folder on the factory folder `factory`, as typed.
+    fn start_on(&mut self, exe: &Path, env: &[(&str, &str)], factory: &Path) {
         let log = fs::File::create(self.dir.join("daemon.log")).unwrap();
         self.daemon = Some(
             self.command(exe.to_str().unwrap())
                 .envs(env.iter().copied())
                 .args(["daemon", factory.to_str().unwrap()])
+                .current_dir(&self.dir)
                 .env("CLAUDECODE", "1")
                 .env("CLAUDE_CODE_ENTRYPOINT", "cli")
                 .env("CLAUDE_CODE_USE_BEDROCK", "0")
@@ -1473,7 +1493,7 @@ fn a_codex_run_with_no_session_start_names_the_codex_command_whose_hooks_to_trus
     assert!(reason.starts_with(&prefix), "{reason}");
     assert!(
         reason.ends_with(
-            ", accept the folder, type /hooks and trust Priory's hooks, then exit. Its pane ended with: token [redacted] refused | Hooks need review | 3 hooks are new or changed | › 1. Review hooks"
+            ", accept the folder, type /hooks and trust Priory's hooks, then exit. Resume the task to try again. Its pane ended with: token [redacted] refused | Hooks need review | 3 hooks are new or changed | › 1. Review hooks"
         ),
         "{reason}"
     );
@@ -2987,6 +3007,320 @@ fn a_disk_stall_runs_the_disk_scripts_once_with_a_timeout_and_the_desk_shows_the
     setup.until("desk", |rows| !rows.iter().any(|row| row[1] == "sweep"));
 }
 
+/// Polls the lines of `fake/<name>` until `done` holds for them, and returns them.
+fn until_fake_lines(setup: &Setup, name: &str, done: impl Fn(&[String]) -> bool) -> Vec<String> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let text = fs::read_to_string(setup.dir.join("fake").join(name)).unwrap_or_default();
+        let lines: Vec<String> = text.lines().map(str::to_owned).collect();
+        if done(&lines) {
+            return lines;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out on fake/{name}: {lines:?}\ndaemon: {}",
+            fs::read_to_string(setup.dir.join("daemon.log")).unwrap_or_default()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn a_scheduled_script_runs_on_its_every_and_never_overlaps_itself() {
+    let mut setup = Setup::new("scheduled-cadence");
+    let factory = r#"name = "demo"
+
+[sweep]
+scripts = [
+  { run = "echo start >> \"$FAKE_DIR/log\"; sleep 12; echo end >> \"$FAKE_DIR/log\"", every = "10s" },
+]
+"#;
+    fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
+
+    setup.start();
+
+    let log = until_fake_lines(&setup, "log", |lines| lines.len() >= 4);
+    assert_eq!(log[..4], ["start", "end", "start", "end"]);
+}
+
+#[test]
+fn a_failed_scheduled_script_whose_text_changes_leaves_the_desk() {
+    let mut setup = Setup::new("scheduled-fixed");
+    let failing = r#"name = "demo"
+
+[sweep]
+scripts = [{ run = "echo nope; exit 3", every = "1h" }]
+"#;
+    let config = setup.dir.join("factory/factory.toml");
+    fs::write(&config, failing).unwrap();
+    setup.start();
+    setup.until("desk", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "sweep" && row[5] == "echo nope; exit 3: exit 3: nope")
+    });
+
+    // The added script starts right after the first prune under the reloaded factory.
+    let added = failing.replace(
+        "every = \"1h\" }]",
+        "every = \"1h\" }, { run = \"echo ran >> \\\"$FAKE_DIR/ran\\\"\", every = \"1h\" }]",
+    );
+    write_atomic(&config, &added);
+    until_fake_lines(&setup, "ran", |lines| lines.len() == 1);
+    assert!(
+        setup
+            .rows("desk")
+            .iter()
+            .any(|row| row[1] == "sweep" && row[5] == "echo nope; exit 3: exit 3: nope")
+    );
+
+    write_atomic(&config, &failing.replace("exit 3", "exit 0"));
+
+    setup.until("desk", |rows| !rows.iter().any(|row| row[1] == "sweep"));
+}
+
+#[test]
+fn pruning_scheduled_runs_keeps_a_running_one() {
+    let mut setup = Setup::new("scheduled-running");
+    let factory = r#"name = "demo"
+
+[sweep]
+scripts = [{ run = "echo start >> \"$FAKE_DIR/log\"; sleep 60", every = "1h" }]
+"#;
+    fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
+    setup.start();
+    until_fake_lines(&setup, "log", |lines| lines == ["start"]);
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "INSERT INTO sweeps (stall, script, ended, status, output)
+         SELECT NULL, value, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), 'exit 0', ''
+         FROM (SELECT script AS value FROM sweeps
+               UNION ALL SELECT 'other' UNION ALL SELECT 'other');",
+    )
+    .unwrap();
+
+    let kept = || -> Vec<(String, bool)> {
+        db.prepare("SELECT script, ended IS NULL FROM sweeps ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while kept().len() > 3 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let script = "echo start >> \"$FAKE_DIR/log\"; sleep 60".to_owned();
+    assert_eq!(
+        kept(),
+        [
+            (script.clone(), true),
+            (script, false),
+            ("other".to_owned(), false),
+        ]
+    );
+}
+
+#[test]
+fn a_state_file_at_111_keeps_its_stall_runs_and_takes_scheduled_ones() {
+    let mut setup = Setup::new("scheduled-upgrade");
+    setup.start();
+    setup.crash();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(concat!(
+        undo_scheduled_sweeps!(),
+        "PRAGMA foreign_keys = OFF;
+         INSERT INTO stalls (id, resource, missing, task, ended)
+           VALUES (7, 'disk', '1 GB', 1, '2026-01-01T00:00:00Z');
+         INSERT INTO sweeps VALUES (5, 7, 'old', '2026-01-01T00:00:00Z', '2026-01-01T00:00:01Z',
+           'exit 3', 'nope', 42, 43);
+         INSERT INTO tasks (id, key, workflow, step, state, trigger, source)
+           VALUES (1, 'k', 'w', 's', 'done', 't', 'e');
+         PRAGMA user_version = 111;"
+    ))
+    .unwrap();
+    let refused = db.execute("INSERT INTO sweeps (script) VALUES ('x')", []);
+    assert!(refused.is_err(), "schema 111 takes a run with no stall");
+    let factory = r#"name = "demo"
+
+[sweep]
+scripts = [{ run = "echo ran >> \"$FAKE_DIR/ran\"", every = "1h" }]
+"#;
+    fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
+
+    setup.start();
+
+    until_fake_lines(&setup, "ran", |lines| lines.len() == 1);
+    let mut rows: Vec<String> = db
+        .prepare(
+            "SELECT concat_ws('|', id, coalesce(stall, '-'), script, started, ended, status, output,
+               pid, pid_started) FROM sweeps WHERE stall IS NOT NULL
+             UNION ALL SELECT 'scheduled ' || id FROM sweeps WHERE stall IS NULL
+             UNION ALL SELECT name FROM sqlite_master
+               WHERE name LIKE 'revision_sweeps_%' OR name = 'sweeps_by_script'",
+        )
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    rows.sort();
+    assert_eq!(
+        rows,
+        [
+            "5|7|old|2026-01-01T00:00:00Z|2026-01-01T00:00:01Z|exit 3|nope|42|43",
+            "revision_sweeps_delete",
+            "revision_sweeps_insert",
+            "revision_sweeps_update",
+            "scheduled 6",
+            "sweeps_by_script",
+        ]
+    );
+}
+
+#[test]
+fn the_daemon_keeps_only_the_latest_ended_scheduled_run_of_each_script() {
+    let mut setup = Setup::new("scheduled-pruned");
+    let factory = r#"name = "demo"
+
+[sweep]
+scripts = [{ run = "echo ran >> \"$FAKE_DIR/ran\"", every = "1h" }]
+"#;
+    fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
+    setup.start();
+    until_fake_lines(&setup, "ran", |lines| lines.len() == 1);
+    setup.crash();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+         DELETE FROM sweeps;
+         INSERT INTO stalls (id, resource, missing, task, ended)
+           VALUES (7, 'disk', '1 GB', 1, '2026-01-01T00:00:00Z');",
+    )
+    .unwrap();
+    let script = "echo ran >> \"$FAKE_DIR/ran\"";
+    for (stall, script, status) in [
+        (Some(7), script, "exit 0"),
+        (None, script, "exit 3"),
+        (None, script, "exit 0"),
+        (None, "gone", "exit 0"),
+        (None, "gone", "exit 0"),
+        (None, "broken", "exit 3"),
+        (None, script, "exit 0"),
+    ] {
+        db.execute(
+            "INSERT INTO sweeps (stall, script, ended, status, output)
+             VALUES (?1, ?2, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), ?3, '')",
+            rusqlite::params![stall, script, status],
+        )
+        .unwrap();
+    }
+
+    setup.start();
+
+    let kept = || -> Vec<(Option<i64>, String)> {
+        db.prepare("SELECT stall, script FROM sweeps ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while kept().len() > 3 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(
+        kept(),
+        [
+            (Some(7), script.to_owned()),
+            (None, "gone".to_owned()),
+            (None, script.to_owned()),
+        ]
+    );
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(
+        fs::read_to_string(setup.dir.join("fake/ran")).unwrap(),
+        "ran\n"
+    );
+}
+
+#[test]
+fn a_restarted_daemon_keeps_each_scheduled_scripts_last_run_and_the_desk_shows_only_a_failed_one() {
+    let mut setup = Setup::new("scheduled-restart");
+    let factory = r#"name = "demo"
+
+[sweep]
+scripts = [
+  { run = "echo ran >> \"$FAKE_DIR/ran\"", every = "1h" },
+  { run = "echo nope; exit 3", every = "1h" },
+]
+"#;
+    fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
+    setup.start();
+    until_fake_lines(&setup, "ran", |lines| lines.len() == 1);
+    let desk = setup.until("desk", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "sweep" && !row[5].ends_with(": running"))
+    });
+    let sweeps: Vec<_> = desk
+        .iter()
+        .filter(|row| row[1] == "sweep")
+        .map(|row| row[5].as_str())
+        .collect();
+    assert_eq!(sweeps, ["echo nope; exit 3: exit 3: nope"]);
+
+    setup.crash();
+    setup.start();
+    setup.until("desk", |rows| rows.iter().any(|row| row[1] == "sweep"));
+    std::thread::sleep(Duration::from_secs(3));
+
+    assert_eq!(
+        fs::read_to_string(setup.dir.join("fake/ran")).unwrap(),
+        "ran\n"
+    );
+    let sweeps: Vec<_> = setup
+        .rows("desk")
+        .into_iter()
+        .filter(|row| row[1] == "sweep")
+        .map(|row| row[5].clone())
+        .collect();
+    assert_eq!(sweeps, ["echo nope; exit 3: exit 3: nope"]);
+}
+
+#[test]
+fn a_disk_stall_adopts_the_running_scheduled_run_of_its_script_instead_of_starting_another() {
+    let mut setup = Setup::new("scheduled-stall");
+    let factory = r#"name = "demo"
+
+[sweep]
+scripts = [
+  { run = "echo start >> \"$FAKE_DIR/log\"; sleep 3; echo end >> \"$FAKE_DIR/log\"", when = "disk", every = "1h" },
+]
+"#;
+    fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
+    setup.start();
+    until_fake_lines(&setup, "log", |lines| lines == ["start"]);
+
+    setup.disk(10);
+    setup.publish(&requested(42));
+
+    let desk = setup.until("desk", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "sweep" && row[5].ends_with(": exit 0"))
+    });
+    let sweeps: Vec<_> = desk
+        .iter()
+        .filter(|row| row[1] == "sweep")
+        .map(|row| row[3].as_str())
+        .collect();
+    assert_eq!(sweeps, ["1"]);
+    assert_eq!(
+        fs::read_to_string(setup.dir.join("fake/log")).unwrap(),
+        "start\nend\n"
+    );
+}
+
 #[test]
 fn a_head_that_waits_only_for_live_runs_to_end_opens_no_stall() {
     let mut setup = Setup::new("backpressure");
@@ -3727,6 +4061,353 @@ fn the_agents_slice_takes_its_name_from_priory_slice_and_its_caps_from_the_runne
     );
 }
 
+/// Writes the slice's cgroup files that the fake `systemctl show` leads to.
+fn slice_file(setup: &Setup, file: &str, text: &str) {
+    let dir = setup.dir.join("cgroup/priory-agents.slice");
+    fs::create_dir_all(&dir).unwrap();
+    write_atomic(&dir.join(file), text);
+}
+
+#[test]
+fn the_slices_quota_counts_the_machines_cpus_not_the_daemons_own_limit() {
+    let mut setup = Setup::new("slice-online-cpus");
+    let stat: String = (0..22).map(|cpu| format!("cpu{cpu} 1 2 3\n")).collect();
+    fs::write(
+        setup.dir.join("proc/stat"),
+        format!("cpu  1 2 3\n{stat}intr 1\n"),
+    )
+    .unwrap();
+    // One CPU for the daemon, as under a one-CPU quota.
+    let status = fs::read_to_string("/proc/self/status").unwrap();
+    let allowed = status
+        .lines()
+        .find_map(|line| line.strip_prefix("Cpus_allowed_list:"))
+        .unwrap();
+    let cpu = allowed.trim().split([',', '-']).next().unwrap();
+    let pinned = setup.dir.join("pinned");
+    fs::write(
+        &pinned,
+        format!(
+            "#!/bin/sh\nexec taskset -c {cpu} '{}' \"$@\"\n",
+            env!("CARGO_BIN_EXE_priory")
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&pinned, fs::Permissions::from_mode(0o755)).unwrap();
+    setup.publish(&requested(42));
+
+    setup.start_as(&pinned);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    assert_eq!(
+        fake_log(&setup, "systemctl.log")[1],
+        "--user set-property --runtime priory-agents.slice CPUQuota=1980% MemoryHigh=90%"
+    );
+}
+
+/// The daemon left the slice's limits alone, logged `why`, and started its run in the slice.
+fn left_alone(setup: &Setup, why: &str) {
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    assert!(fake_log(setup, "systemctl.log").is_empty());
+    assert_eq!(
+        fake_log(setup, "systemd-run.log"),
+        ["--user --scope --quiet --collect --expand-environment=no --slice=priory-agents.slice"]
+    );
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    let line = format!("left the limits of priory-agents.slice alone: {why}");
+    assert!(log.contains(&line), "daemon log: {log}");
+}
+
+#[test]
+fn a_daemon_inside_the_agents_slice_leaves_its_limits_alone() {
+    let mut setup = Setup::new("slice-nested");
+    fs::create_dir_all(setup.dir.join("proc/self")).unwrap();
+    fs::write(
+        setup.dir.join("proc/self/cgroup"),
+        "0::/user.slice/user@1000.service/priory.slice/priory-agents.slice/run-r1.scope/inner\n",
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    left_alone(&setup, "this daemon runs inside it");
+}
+
+/// Another home whose daemon runs until the returned lock drops, as the slice's owner.
+fn owned_by_another(setup: &Setup) -> (PathBuf, fs::File) {
+    let owner = setup.dir.join("other-home");
+    fs::create_dir_all(&owner).unwrap();
+    let lock = fs::File::create(owner.join("daemon.lock")).unwrap();
+    lock.lock().unwrap();
+    fs::create_dir_all(setup.tmux.path().join("priory")).unwrap();
+    let file = setup.tmux.path().join("priory/priory-agents.slice.owner");
+    write_atomic(&file, owner.to_str().unwrap());
+    (owner, lock)
+}
+
+fn every_second(setup: &Setup) {
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\n\n[sweep]\nevery = \"1s\"\n",
+    )
+    .unwrap();
+}
+
+fn desk_text(setup: &Setup) -> String {
+    String::from_utf8(setup.priory(&["desk"]).stdout).unwrap()
+}
+
+/// Waits until `setup`'s fake systemctl got `calls` calls.
+fn capped(setup: &Setup, calls: usize) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while fake_log(setup, "systemctl.log").len() < calls {
+        assert!(Instant::now() < deadline, "the slice was not capped");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_daemon_takes_the_slice_once_the_daemon_of_its_owner_is_gone() {
+    let mut setup = Setup::new("slice-owner");
+    every_second(&setup);
+    let (owner, lock) = owned_by_another(&setup);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let why = format!("the daemon of {} set them", owner.display());
+    left_alone(&setup, &why);
+    std::thread::sleep(Duration::from_millis(2500));
+    assert!(fake_log(&setup, "systemctl.log").is_empty());
+    let said = format!("left the limits of priory-agents.slice alone: {why}");
+    assert_eq!(desk_text(&setup).matches(&said).count(), 1);
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    assert_eq!(log.matches(&said).count(), 1, "daemon log: {log}");
+
+    drop(lock);
+    capped(&setup, 2);
+
+    let home = fs::canonicalize(setup.dir.join("home")).unwrap();
+    let file = setup.tmux.path().join("priory/priory-agents.slice.owner");
+    assert_eq!(fs::read_to_string(&file).unwrap(), home.to_str().unwrap());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while desk_text(&setup).contains("the limits of") {
+        assert!(Instant::now() < deadline, "{}", desk_text(&setup));
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(!desk_text(&setup).contains("another process set"));
+}
+
+#[test]
+fn a_daemon_whose_bus_is_not_its_runtime_directorys_leaves_the_limits_alone() {
+    let mut setup = Setup::new("slice-foreign-bus");
+    setup.publish(&requested(42));
+
+    setup.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/bus")],
+    );
+
+    left_alone(&setup, "DBUS_SESSION_BUS_ADDRESS is not the bus of");
+}
+
+#[test]
+fn a_daemon_whose_socket_falls_back_to_tmp_still_claims_the_slice() {
+    let mut setup = Setup::new("slice-long-run");
+    let run = setup.dir.join("r".repeat(100));
+    fs::create_dir_all(&run).unwrap();
+
+    setup.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("XDG_RUNTIME_DIR", run.to_str().unwrap())],
+    );
+
+    capped(&setup, 2);
+    let home = fs::canonicalize(setup.dir.join("home")).unwrap();
+    let owner = fs::read_to_string(run.join("priory/priory-agents.slice.owner")).unwrap();
+    assert_eq!(owner, home.to_str().unwrap());
+    let socket = priory_runtime::runtime::socket_in(Some(&run), &home);
+    assert!(socket.starts_with("/tmp"));
+    setup.crash();
+    let _ = fs::remove_file(socket);
+}
+
+#[test]
+fn the_sweep_restores_the_quota_of_a_slice_with_no_memory_limit() {
+    let mut setup = Setup::new("slice-no-memory");
+    every_second(&setup);
+    let stat: String = (0..22).map(|cpu| format!("cpu{cpu} 1 2 3\n")).collect();
+    fs::write(setup.dir.join("proc/stat"), stat).unwrap();
+    slice_file(&setup, "cpu.max", "90000 100000\n");
+    fs::write(setup.dir.join("fake/capped"), "90000 100000\n").unwrap();
+    setup.start();
+    capped(&setup, 2);
+    fs::write(setup.dir.join("fake/capped"), "1980000 100000\n").unwrap();
+
+    capped(&setup, 4);
+
+    let said = "another process set priory-agents.slice to CPUQuota=90%; the sweep restored";
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !desk_text(&setup).contains(said) {
+        assert!(Instant::now() < deadline, "{}", desk_text(&setup));
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn the_sweep_restores_the_slices_limits_another_process_changed_and_says_so_once() {
+    let mut setup = Setup::new("slice-restored");
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\n\n[sweep]\nevery = \"1s\"\n",
+    )
+    .unwrap();
+    let stat: String = (0..22).map(|cpu| format!("cpu{cpu} 1 2 3\n")).collect();
+    fs::write(setup.dir.join("proc/stat"), stat).unwrap();
+    let high = |share: f64| format!("{}\n", ((64u64 << 30) as f64 * share) as u64);
+    slice_file(&setup, "cpu.max", "1980000 100000\n");
+    slice_file(&setup, "memory.high", &high(0.9));
+    setup.start();
+    listening(&setup);
+    std::thread::sleep(Duration::from_millis(2500));
+    assert_eq!(fake_log(&setup, "systemctl.log").len(), 2);
+
+    fs::write(setup.dir.join("fake/capped"), "1980000 100000\n").unwrap();
+    slice_file(&setup, "cpu.max", "90000 100000\n");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while fake_log(&setup, "systemctl.log").len() < 4 {
+        assert!(Instant::now() < deadline, "nothing restored the slice");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(2500));
+
+    let calls = fake_log(&setup, "systemctl.log");
+    assert_eq!(calls.len(), 4, "{calls:?}");
+    assert_eq!(
+        calls[3],
+        "--user set-property --runtime priory-agents.slice CPUQuota=1980% MemoryHigh=90%"
+    );
+    let said = "another process set priory-agents.slice to CPUQuota=90% MemoryHigh=90%; the sweep restored its limits";
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    assert_eq!(log.matches(said).count(), 1, "daemon log: {log}");
+    let desk = setup.priory(&["desk"]);
+    let desk = String::from_utf8(desk.stdout).unwrap();
+    assert_eq!(desk.matches(said).count(), 1, "{desk}");
+
+    // Another home takes the slice, so this daemon's next sweep leaves a change alone.
+    let _owner = owned_by_another(&setup);
+    slice_file(&setup, "cpu.max", "90000 100000\n");
+    std::thread::sleep(Duration::from_millis(2500));
+    assert_eq!(fake_log(&setup, "systemctl.log").len(), 4);
+}
+
+/// Claude Code 2.1.331 at its prompt, as a run whose hook came late showed it.
+const READY_PROMPT: &str = "Claude Code v2.1.331
+────────────────────────────────────────
+❯ Try \"how does main.rs work?\"
+────────────────────────────────────────
+  auto mode on (shift+tab to cycle)
+";
+
+/// The slice's counters before a run, then those after its quota held it back to 12 %, under
+/// `quota`.
+fn throttle(setup: &Setup, quota: &str) {
+    // `show` runs at the daemon's start, at its first sweep, then for the run's first counters.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while fake_log(setup, "shown.log").len() < 3 {
+        assert!(Instant::now() < deadline, "the counters were never read");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_secs(1));
+    slice_file(setup, "cpu.max", quota);
+    slice_file(
+        setup,
+        "cpu.stat",
+        "usage_usec 1012000\nnr_throttled 600\nthrottled_usec 9088000\n",
+    );
+}
+
+/// The reason a run that never reports `SessionStart` and shows `screen` blocks its task with, in a
+/// slice throttled under `quota`, if any.
+fn late(setup: &mut Setup, screen: &str, quota: Option<&str>) -> String {
+    setup.publish(&requested(42));
+    fs::write(setup.dir.join("fake/silent"), screen).unwrap();
+    slice_file(
+        setup,
+        "cpu.stat",
+        "usage_usec 1000000\nnr_throttled 500\nthrottled_usec 9000000\n",
+    );
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1);
+    if let Some(quota) = quota {
+        throttle(setup, quota);
+    }
+    let tasks = setup.within(75, "tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+    tasks[0][7].clone()
+}
+
+const THROTTLING: &str = "priory-agents.slice was throttled: its quota kept back 88% of the CPU its agents wanted since the run started, under CPUQuota=90%";
+
+#[test]
+fn a_late_run_at_a_ready_prompt_gets_no_trust_advice() {
+    let mut setup = Setup::new("late-ready");
+
+    // A quota of `max` throttles nothing, whatever the counters say.
+    let reason = late(&mut setup, READY_PROMPT, Some("max 100000\n"));
+
+    assert!(
+        reason.starts_with(
+            "claude showed no SessionStart within 60s; its prompt is ready and asks for no trust, so its SessionStart hook is late or never reached the daemon. Resume the task to try again. Its pane ended with: "
+        ),
+        "{reason}"
+    );
+    assert!(!reason.contains("trust the"), "{reason}");
+    assert!(!reason.contains("throttled"), "{reason}");
+}
+
+#[test]
+fn a_late_run_at_a_ready_prompt_in_a_throttled_slice_names_the_throttling() {
+    let mut setup = Setup::new("late-throttled");
+
+    let reason = late(&mut setup, READY_PROMPT, Some("90000 100000\n"));
+
+    let prefix = format!(
+        "claude showed no SessionStart within 60s; {THROTTLING}. Resume the task to try again. Its pane ended with: "
+    );
+    assert!(reason.starts_with(&prefix), "{reason}");
+    assert!(!reason.contains("trust the"), "{reason}");
+}
+
+#[test]
+fn a_late_run_in_a_slice_throttled_only_before_it_started_names_no_throttling() {
+    let mut setup = Setup::new("late-throttled-before");
+    slice_file(&setup, "cpu.max", "90000 100000\n");
+
+    let reason = late(&mut setup, READY_PROMPT, None);
+
+    assert!(!reason.contains("throttled"), "{reason}");
+}
+
+#[test]
+fn a_late_codex_run_in_a_throttled_slice_keeps_its_hooks_command() {
+    let mut setup = Setup::new("late-throttled-codex");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+
+    let reason = late(
+        &mut setup,
+        "  Hooks need review\n\n  3 hooks are new or changed\n",
+        Some("90000 100000\n"),
+    );
+
+    let tail = format!(
+        "type /hooks and trust Priory's hooks, then exit; {THROTTLING}. Resume the task to try again. Its pane ended with: Hooks need review | 3 hooks are new or changed"
+    );
+    assert!(reason.ends_with(&tail), "{reason}");
+}
+
 #[test]
 fn a_host_without_systemd_starts_its_runs_as_before_and_logs_why() {
     let mut setup = Setup::new("no-systemd");
@@ -3791,7 +4472,7 @@ fn a_run_with_no_session_start_within_60_seconds_ends_and_names_the_folders_to_t
     assert_eq!(
         tasks[0][7],
         format!(
-            "claude showed no SessionStart within 60s; trust the worktrees folder and the clone once: cd {} && claude, accept, exit, then cd {} && claude, accept, exit",
+            "claude showed no SessionStart within 60s; trust the worktrees folder and the clone once: cd {} && claude, accept, exit, then cd {} && claude, accept, exit. Resume the task to try again",
             setup.dir.join("home/worktrees").display(),
             clone.display()
         )
@@ -3948,6 +4629,328 @@ fn trust_worktrees_off_writes_no_claude_config() {
     assert!(!codex_profile(&setup).exists());
 }
 
+/// A fake `direnv` that logs its arguments and `DIRENV_CONFIG`, then runs the rest as `exec` does.
+/// As direnv 2.38.2 does, it refuses a folder its `direnv.toml` does not spell in `[whitelist]
+/// exact`, and FAKE_DIR/direnv.fail fails it as an `.envrc` that exits 1 does.
+const DIRENV: &str = "#!/bin/sh\n\
+printf '%s\\n' \"$*\" \"DIRENV_CONFIG=$DIRENV_CONFIG\" >> \"$FAKE_DIR/direnv.log\"\n\
+grep -qF \"\\\"$2\\\"\" \"$DIRENV_CONFIG/direnv.toml\" || { echo \"direnv: error $2/.envrc is blocked\" >&2; exit 1; }\n\
+[ -e \"$FAKE_DIR/direnv.fail\" ] && { echo 'direnv: error exit status 1' >&2; exit 1; }\n\
+shift 2\n\
+exec \"$@\"\n";
+
+/// Commits an `.envrc` to the origin's `main`, as a repository that uses direnv has.
+fn envrc(setup: &Setup) {
+    let work = setup.dir.join("work");
+    fs::write(work.join(".envrc"), "use flake\n").unwrap();
+    let bare = setup.dir.join("origin/owner/repo.git");
+    for args in [
+        &["add", ".envrc"][..],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "direnv",
+        ],
+        &["push", "-q", bare.to_str().unwrap(), "main"],
+    ] {
+        assert!(git(&work).args(args).status().unwrap().success());
+    }
+}
+
+/// Starts the daemon with a HOME of its own whose direnv config is `config`, and a fake `direnv`
+/// on PATH when `installed`, and `env` on top. Any real `direnv` is off PATH.
+fn start_direnv(setup: &mut Setup, installed: bool, config: &str, env: &[(&str, &str)]) {
+    let home = setup.dir.join("user");
+    // Its `lib` links into a store, as home-manager links it into /nix/store.
+    fs::create_dir_all(home.join("store/lib")).unwrap();
+    fs::create_dir_all(home.join(".config/direnv")).unwrap();
+    let lib = home.join(".config/direnv/lib");
+    if fs::symlink_metadata(&lib).is_err() {
+        std::os::unix::fs::symlink(home.join("store/lib"), &lib).unwrap();
+    }
+    fs::write(home.join(".config/direnv/direnv.toml"), config).unwrap();
+    let bin = setup.dir.join("direnv-bin");
+    fs::create_dir_all(&bin).unwrap();
+    let fake = bin.join("direnv");
+    fs::write(&fake, DIRENV).unwrap();
+    fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    // A folder of PATH that holds a real `direnv` gets a copy of its other programs instead.
+    let others = setup.dir.join("path-bin");
+    fs::create_dir_all(&others).unwrap();
+    let mut dirs = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fake")];
+    dirs.extend(installed.then_some(bin));
+    for dir in std::env::split_paths(&std::env::var_os("PATH").unwrap()) {
+        if !dir.join("direnv").exists() {
+            dirs.push(dir);
+            continue;
+        }
+        for entry in fs::read_dir(&dir).unwrap().flatten() {
+            let link = others.join(entry.file_name());
+            if entry.file_name() != "direnv" && !link.exists() {
+                std::os::unix::fs::symlink(entry.path(), link).unwrap();
+            }
+        }
+        if !dirs.contains(&others) {
+            dirs.push(others.clone());
+        }
+    }
+    let path = std::env::join_paths(dirs).unwrap();
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    let xdg = home.join(".config");
+    let mut vars = vec![
+        ("HOME", home.to_str().unwrap()),
+        ("PATH", path.to_str().unwrap()),
+        ("XDG_CONFIG_HOME", xdg.to_str().unwrap()),
+        ("DIRENV_CONFIG", ""),
+    ];
+    vars.extend_from_slice(env);
+    setup.start_with(exe, &vars);
+}
+
+fn direnv_records(setup: &Setup) -> Vec<serde_json::Value> {
+    traced(setup, "factory.run.trusted")
+        .into_iter()
+        .filter(|record| record["data"]["harness"] == "direnv")
+        .collect()
+}
+
+#[test]
+fn trust_worktrees_makes_direnv_trust_the_worktree_and_starts_the_run_in_its_envrc() {
+    let mut setup = trusting("trust-direnv");
+    envrc(&setup);
+    setup.publish(&requested(42));
+    start_direnv(&mut setup, true, "[global]\nwarn_timeout = \"1m\"\n", &[]);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    let worktree = fs::canonicalize(setup.dir.join("home/worktrees/owner/repo/1")).unwrap();
+    let clone = fs::canonicalize(setup.dir.join("home/repos/owner/repo")).unwrap();
+    let session = &setup.rows("runs")[0][4];
+    let folder = setup.dir.join("home/direnv").join(session);
+    let log = fs::read_to_string(setup.dir.join("fake/direnv.log")).unwrap();
+    let lines: Vec<&str> = log.lines().collect();
+    assert!(
+        lines[0].starts_with(&format!(
+            "exec {} sh -c ",
+            setup.dir.join("home/worktrees/owner/repo/1").display()
+        )),
+        "{log}"
+    );
+    assert_eq!(lines[1], format!("DIRENV_CONFIG={}", folder.display()));
+    let config: toml::Table = fs::read_to_string(folder.join("direnv.toml"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(config["global"]["warn_timeout"].as_str(), Some("1m"));
+    assert_eq!(
+        config["whitelist"]["exact"],
+        toml::Value::from(vec![
+            worktree.display().to_string(),
+            clone.display().to_string()
+        ])
+    );
+    assert_eq!(
+        fs::read_link(folder.join("lib")).unwrap(),
+        fs::canonicalize(setup.dir.join("user/store/lib")).unwrap()
+    );
+    let mode = fs::metadata(folder.join("direnv.toml"))
+        .unwrap()
+        .permissions();
+    assert_eq!(
+        std::os::unix::fs::PermissionsExt::mode(&mode) & 0o777,
+        0o600
+    );
+    let records = direnv_records(&setup);
+    let outcomes: Vec<(&str, &str)> = records
+        .iter()
+        .map(|record| {
+            (
+                record["data"]["path"].as_str().unwrap(),
+                record["data"]["outcome"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        outcomes,
+        [
+            (worktree.to_str().unwrap(), "granted"),
+            (clone.to_str().unwrap(), "granted")
+        ]
+    );
+    assert_eq!(
+        records[0]["data"]["file"],
+        folder.join("direnv.toml").display().to_string()
+    );
+}
+
+#[test]
+fn direnv_trusts_a_worktree_whose_priory_home_goes_through_a_symlink() {
+    let mut setup = trusting("trust-direnv-symlink");
+    envrc(&setup);
+    setup.publish(&requested(42));
+    let linked = setup.dir.join("linked-home");
+    let _ = fs::remove_file(&linked);
+    fs::create_dir_all(setup.dir.join("home")).unwrap();
+    std::os::unix::fs::symlink(setup.dir.join("home"), &linked).unwrap();
+    start_direnv(
+        &mut setup,
+        true,
+        "",
+        &[("PRIORY_HOME", linked.to_str().unwrap())],
+    );
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    assert!(
+        direnv_records(&setup)
+            .iter()
+            .all(|record| record["data"]["outcome"] == "granted"),
+        "{:?}",
+        direnv_records(&setup)
+    );
+    let log = fs::read_to_string(setup.dir.join("fake/direnv.log")).unwrap();
+    let spelled = linked.join("worktrees/owner/repo/1");
+    assert!(
+        log.starts_with(&format!("exec {} sh -c ", spelled.display())),
+        "{log}"
+    );
+    let session = &setup.rows("runs")[0][4];
+    let config: toml::Table = fs::read_to_string(
+        setup
+            .dir
+            .join("home/direnv")
+            .join(session)
+            .join("direnv.toml"),
+    )
+    .unwrap()
+    .parse()
+    .unwrap();
+    let canonical = fs::canonicalize(&spelled).unwrap();
+    let exact = config["whitelist"]["exact"].as_array().unwrap();
+    for path in [&spelled, &canonical] {
+        assert!(
+            exact.contains(&toml::Value::from(path.display().to_string())),
+            "{exact:?}"
+        );
+    }
+}
+
+#[test]
+fn a_failing_direnv_starts_the_harness_without_the_envrc_and_says_why() {
+    let mut setup = trusting("trust-direnv-failed");
+    envrc(&setup);
+    fs::write(setup.dir.join("fake/direnv.fail"), "").unwrap();
+    setup.publish(&requested(42));
+    start_direnv(&mut setup, true, "", &[]);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    setup.until("tasks", |rows| {
+        rows.first()
+            .is_some_and(|row| row.iter().any(|cell| cell.contains("without its .envrc")))
+    });
+
+    let failed: Vec<_> = direnv_records(&setup)
+        .into_iter()
+        .filter(|record| record["data"]["outcome"] == "failed")
+        .collect();
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert_eq!(
+        failed[0]["data"]["why"].as_str(),
+        Some("direnv: error exit status 1")
+    );
+}
+
+#[test]
+fn a_harness_that_exits_1_under_direnv_is_not_started_again_without_it() {
+    let mut setup = trusting("trust-direnv-harness-exit");
+    envrc(&setup);
+    fs::write(
+        setup.dir.join("fake/probe"),
+        "echo started >> \"$FAKE_DIR/launches\"\n",
+    )
+    .unwrap();
+    setup.hold("die");
+    setup.publish(&requested(42));
+    start_direnv(&mut setup, true, "", &[]);
+
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+
+    let launches = fs::read_to_string(setup.dir.join("fake/launches")).unwrap();
+    assert_eq!(launches.lines().count(), 1, "{launches}");
+    assert!(
+        direnv_records(&setup)
+            .iter()
+            .all(|record| record["data"]["outcome"] != "failed")
+    );
+}
+
+#[test]
+fn without_trust_worktrees_a_run_does_not_start_under_direnv() {
+    let mut setup = Setup::new("trust-direnv-off");
+    envrc(&setup);
+    setup.publish(&requested(42));
+    start_direnv(&mut setup, true, "", &[]);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    assert!(!setup.dir.join("fake/direnv.log").exists());
+    assert!(!setup.dir.join("home/direnv").exists());
+    assert!(direnv_records(&setup).is_empty());
+}
+
+#[test]
+fn trust_worktrees_changes_nothing_for_direnv_without_direnv_or_an_envrc() {
+    for (name, installed, with_envrc) in [
+        ("trust-direnv-missing", false, true),
+        ("trust-direnv-no-envrc", true, false),
+    ] {
+        let mut setup = trusting(name);
+        if with_envrc {
+            envrc(&setup);
+        }
+        setup.publish(&requested(42));
+        start_direnv(&mut setup, installed, "", &[]);
+
+        setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+        assert!(!setup.dir.join("fake/direnv.log").exists(), "{name}");
+        assert!(!setup.dir.join("home/direnv").exists(), "{name}");
+        assert!(direnv_records(&setup).is_empty(), "{name}");
+        assert_eq!(traced(&setup, "factory.run.trusted").len(), 2, "{name}");
+    }
+}
+
+#[test]
+fn an_unparsable_direnv_toml_refuses_the_grant_and_the_run_starts_without_direnv() {
+    let mut setup = trusting("trust-direnv-refused");
+    envrc(&setup);
+    setup.publish(&requested(42));
+    start_direnv(
+        &mut setup,
+        true,
+        "[whitelist\ntoken = \"sk-secret-9\"\n",
+        &[],
+    );
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    assert!(!setup.dir.join("fake/direnv.log").exists());
+    let records = direnv_records(&setup);
+    assert_eq!(records.len(), 2);
+    for record in &records {
+        assert_eq!(record["data"]["outcome"], "refused");
+        let why = record["data"]["why"].as_str().unwrap();
+        assert!(why.ends_with("direnv.toml: not TOML, at line 1"), "{why}");
+        assert!(!why.contains("sk-secret"));
+    }
+}
+
 #[test]
 fn a_trust_dialog_despite_trust_worktrees_blocks_with_its_own_reason_and_is_traced() {
     let mut setup = trusting("trust-missed");
@@ -4096,6 +5099,219 @@ fn a_grant_claude_overwrote_restarts_the_run_once_then_fails_the_task() {
         "claude overwrote Priory's trust grant"
     );
     assert_eq!(repaired[0]["data"]["outcome"], "ready");
+}
+
+impl Setup {
+    /// Makes the live run look as if it started `seconds` ago.
+    fn started_ago(&self, seconds: u32) {
+        let db = rusqlite::Connection::open(self.dir.join("priory.db")).unwrap();
+        let changed = db
+            .execute(
+                &format!("UPDATE runs SET started = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-{seconds} seconds') WHERE ended IS NULL"),
+                [],
+            )
+            .unwrap();
+        assert_eq!(changed, 1);
+    }
+
+    /// Asserts that the daemon's next ticks leave task 1's live run alone.
+    fn stays_live(&self) {
+        std::thread::sleep(Duration::from_secs(3));
+        assert_eq!(self.rows("runs").last().unwrap()[7], "-");
+        assert_eq!(self.rows("tasks")[0][4], "running");
+    }
+
+    /// The reason task 1 blocks with.
+    fn blocked(&self) -> String {
+        let blocked = |rows: &[Vec<String>]| rows.first().is_some_and(|row| row[4] == "blocked");
+        self.until("tasks", blocked)[0][7].clone()
+    }
+}
+
+#[test]
+fn a_trusted_run_that_starts_slowly_gets_180_seconds_then_blocks_until_a_person_resumes_it() {
+    let mut setup = trusting("trust-slow");
+    setup.memory(12);
+    setup.publish(&requested(42));
+    setup.hold("silent");
+    start_trusting(&mut setup);
+    setup.written("fake/pid");
+    setup.publish(&requested(43));
+    setup.until("tasks", |rows| rows.len() == 2);
+    person(
+        &setup,
+        "hold",
+        &["2", "--reason", "needs it", "--after", "1"],
+    );
+
+    setup.started_ago(120);
+    setup.stays_live();
+    setup.started_ago(180);
+    let reason = setup.blocked();
+
+    assert_eq!(
+        reason,
+        "claude showed no SessionStart within 180s although Priory recorded its trust; it started too slowly. Resume the task to try again"
+    );
+    setup.gone("priory-1");
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(setup.rows("runs").len(), 1);
+    assert_eq!(held_as(&setup, "2")[0], "held");
+    assert!(traced(&setup, "factory.task.repaired").is_empty());
+
+    setup.release("silent");
+    assert!(setup.priory(&["resume", "1"]).status.success());
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+}
+
+#[test]
+fn a_resumed_run_that_starts_slowly_gets_the_same_180_seconds() {
+    let mut setup = trusting("trust-slow-resumed");
+    setup.hold("undecided");
+    setup.hold("hold-stop");
+    setup.calls(&[json!({ "name": "Bash", "arguments": { "command": "rm -rf /" } })]);
+    setup.publish(&requested(42));
+    start_trusting(&mut setup);
+    setup.blocked();
+    setup.gone("priory-1");
+    setup.hold("silent");
+    setup.release("pid");
+
+    assert!(setup.priory(&["resume", "1"]).status.success());
+    let runs = setup.until("runs", |rows| rows.len() == 2);
+    setup.written("fake/pid");
+    assert_eq!(runs[0][4], runs[1][4]);
+    assert!(has(&launched(&setup), ["--resume", &runs[0][4]]));
+    setup.started_ago(120);
+    setup.stays_live();
+    setup.started_ago(180);
+
+    let reason = setup.blocked();
+    assert!(
+        reason.starts_with("claude showed no SessionStart within 180s although Priory recorded its trust; it started too slowly"),
+        "{reason}"
+    );
+    assert_eq!(setup.rows("runs").len(), 2);
+}
+
+#[test]
+fn a_trusted_codex_run_whose_hooks_need_review_keeps_the_command_that_trusts_them() {
+    let mut setup = trusting("trust-codex-hooks");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    fs::create_dir_all(setup.dir.join("codex")).unwrap();
+    fs::write(setup.dir.join("fake/silent"), "  Hooks need review\n").unwrap();
+    setup.publish(&requested(42));
+    start_trusting(&mut setup);
+    setup.written("fake/codex-args.log");
+    assert_eq!(
+        until_traced(&setup, "factory.run.trusted")["data"]["outcome"],
+        "granted"
+    );
+
+    setup.started_ago(120);
+    setup.stays_live();
+    setup.started_ago(180);
+
+    let reason = setup.blocked();
+    assert!(
+        reason.starts_with(
+            "codex showed no SessionStart within 180s; trust the clone and Priory's hooks once: cd "
+        ),
+        "{reason}"
+    );
+    assert!(
+        reason.ends_with("type /hooks and trust Priory's hooks, then exit. Resume the task to try again. Its pane ended with: Hooks need review"),
+        "{reason}"
+    );
+}
+
+/// The reason a run with recorded trust that shows `screen` blocks its task with after 180 seconds,
+/// in a slice throttled under a 90% quota when `throttled`.
+fn late_trusted(setup: &mut Setup, screen: &str, throttled: bool) -> String {
+    setup.publish(&requested(42));
+    fs::write(setup.dir.join("fake/silent"), screen).unwrap();
+    slice_file(
+        setup,
+        "cpu.stat",
+        "usage_usec 1000000\nnr_throttled 500\nthrottled_usec 9000000\n",
+    );
+    start_trusting(setup);
+    setup.written("fake/pid");
+    if throttled {
+        throttle(setup, "90000 100000\n");
+    }
+    // The harness writes its pid before it draws the screen.
+    std::thread::sleep(Duration::from_secs(1));
+    setup.started_ago(180);
+    setup.blocked()
+}
+
+const TRUSTED_LATE: &str =
+    "claude showed no SessionStart within 180s although Priory recorded its trust; ";
+
+#[test]
+fn a_trusted_late_run_in_a_throttled_slice_names_the_throttling_not_a_slow_start() {
+    let mut setup = trusting("trust-late-throttled");
+
+    let reason = late_trusted(&mut setup, "", true);
+
+    assert_eq!(
+        reason,
+        format!("{TRUSTED_LATE}{THROTTLING}. Resume the task to try again")
+    );
+}
+
+#[test]
+fn a_trusted_late_run_at_a_ready_prompt_names_the_late_hook_not_a_slow_start() {
+    let mut setup = trusting("trust-late-ready");
+
+    let reason = late_trusted(&mut setup, READY_PROMPT, false);
+
+    let prefix = format!(
+        "{TRUSTED_LATE}its prompt is ready and asks for no trust, so its SessionStart hook is late or never reached the daemon. Resume the task to try again. Its pane ended with: "
+    );
+    assert!(reason.starts_with(&prefix), "{reason}");
+}
+
+#[test]
+fn a_trusted_late_codex_run_in_a_throttled_slice_keeps_its_hooks_command() {
+    let mut setup = trusting("trust-late-throttled-codex");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    fs::create_dir_all(setup.dir.join("codex")).unwrap();
+
+    let reason = late_trusted(&mut setup, "  Hooks need review\n", true);
+
+    assert!(
+        reason.starts_with(
+            "codex showed no SessionStart within 180s; trust the clone and Priory's hooks once: cd "
+        ),
+        "{reason}"
+    );
+    let tail = format!(
+        "type /hooks and trust Priory's hooks, then exit; {THROTTLING}. Resume the task to try again. Its pane ended with: Hooks need review"
+    );
+    assert!(reason.ends_with(&tail), "{reason}");
+}
+
+#[test]
+fn a_trusted_run_under_direnv_keeps_its_600_seconds() {
+    let mut setup = trusting("trust-slow-direnv");
+    envrc(&setup);
+    setup.publish(&requested(42));
+    setup.hold("silent");
+    start_direnv(&mut setup, true, "", &[]);
+    setup.written("fake/pid");
+
+    setup.started_ago(300);
+    setup.stays_live();
+    setup.started_ago(600);
+
+    let reason = setup.blocked();
+    assert!(
+        reason.starts_with("claude showed no SessionStart within 600s although Priory recorded its trust; it started too slowly"),
+        "{reason}"
+    );
 }
 
 fn codex_profile(setup: &Setup) -> PathBuf {
@@ -5790,6 +7006,30 @@ fn an_outside_ask_takes_an_answer_or_a_dismiss_only_at_its_current_revision() {
 }
 
 #[test]
+fn an_outside_ask_snoozes_by_the_id_asks_lists() {
+    let mut setup = Setup::new("outside-snooze");
+    setup.start();
+    listening(&setup);
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+
+    let snoozed = setup.priory(&["snooze", "ask", "cache.ship", "--for", "20h"]);
+
+    assert!(snoozed.status.success(), "{snoozed:?}");
+    let asks: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
+    assert_eq!(asks["asks"][0]["id"], "cache.ship");
+    assert!(asks["asks"][0]["snoozed_until"].is_string(), "{asks}");
+    let desk: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["desk", "--json"]).stdout).unwrap();
+    assert_eq!(desk["counts"]["snoozed"], 1, "{desk}");
+    let cleared = setup.priory(&["snooze", "ask", "cache.ship", "--clear"]);
+    assert!(cleared.status.success(), "{cleared:?}");
+    let asks: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
+    assert!(asks["asks"][0]["snoozed_until"].is_null(), "{asks}");
+}
+
+#[test]
 fn a_revised_ask_lists_each_revision_oldest_first() {
     let mut setup = Setup::new("ask-revisions");
     setup.start();
@@ -5960,6 +7200,25 @@ fn an_answered_outside_ask_runs_the_deliver_command_once_with_its_name_revision_
     assert_eq!(
         delivered(&setup),
         [["cache.ship", "1", "cache-worker", "answered", "ship"]]
+    );
+}
+
+#[test]
+fn deliver_runs_the_command_of_a_relative_factory_folder() {
+    let mut setup = delivering("deliver-relative", "exit 0");
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    setup.start_on(exe, &[], Path::new("factory"));
+    listening(&setup);
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+
+    setup.priory(&["answer", "--expected", "1", "--", "cache.ship", "ship"]);
+
+    let done = delivery(&setup, "cache.ship", |delivery| {
+        ["delivered", "failed"].contains(&delivery["state"].as_str().unwrap_or_default())
+    });
+    assert_eq!(
+        (&done["state"], &done["tries"]),
+        (&"delivered".into(), &1.into())
     );
 }
 
@@ -6853,7 +8112,7 @@ fn say_to_a_done_task_is_refused() {
     assert!(!said.status.success());
     assert_eq!(
         String::from_utf8_lossy(&said.stderr),
-        "priory say: task 1 is done\n"
+        "priory say: task 1 is done and owns no pull request\n"
     );
 }
 
@@ -8763,6 +10022,157 @@ fn a_comment_on_the_merged_pull_request_of_a_done_task_reopens_nothing() {
     assert_eq!(setup.rows("runs").len(), 2);
 }
 
+/// Task 1 of `gated`, done at green checks with pull request 7 open, a second ago.
+fn done_with_open_pull_request(name: &str) -> Setup {
+    let setup = gated(name);
+    setup.publish(&check(1, 0));
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    std::thread::sleep(Duration::from_millis(1100));
+    setup
+}
+
+/// Asserts `say` on task 1 is refused with `why`, starting no run.
+fn say_refused(setup: &Setup, why: &str) {
+    let (runs, before) = (setup.rows("runs").len(), generation(setup));
+    let said = setup.priory(&["say", "1", "Fix the empty case."]);
+    assert!(!said.status.success(), "{said:?}");
+    let error = String::from_utf8_lossy(&said.stderr);
+    assert!(error.contains(why), "{error}");
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("runs").len(), runs);
+    assert_eq!(generation(setup), before);
+}
+
+/// The branch and worktree of task 1.
+fn branch(setup: &Setup) -> (String, String) {
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .query_row(
+            "SELECT branch, worktree FROM tasks WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+}
+
+/// The generation of task 1.
+fn generation(setup: &Setup) -> i64 {
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .query_row("SELECT generation FROM tasks WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap()
+}
+
+#[test]
+fn a_say_on_a_done_task_whose_pull_request_is_open_reopens_it_and_resumes_its_session() {
+    let setup = done_with_open_pull_request("say-reopen");
+    let before = branch(&setup);
+
+    let said = setup.priory(&["say", "1", "/fix the empty case."]);
+
+    assert!(said.status.success(), "{said:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&said.stdout).trim(),
+        "task 1 reopened at implement, generation 2"
+    );
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    assert!(
+        typed[2].starts_with(
+            "A person says: /fix the empty case.\nThis reopened your done task as generation 2: github:owner/repo#7 is still open."
+        ),
+        "{typed:?}"
+    );
+    let runs = setup.rows("runs");
+    assert_eq!(runs[2][4], runs[0][4], "the run resumes the session");
+    assert_eq!(generation(&setup), 2);
+    assert_eq!(branch(&setup), before, "the run keeps the branch");
+    assert_eq!(
+        setup
+            .trace()
+            .iter()
+            .filter(|record| record["type"] == "factory.task.reopened"
+                && record["data"]["pull_request"] == "github:owner/repo#7")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_say_on_a_done_task_whose_pull_request_merged_is_refused() {
+    let setup = gated("say-merged");
+    setup.publish(&closed());
+    setup.until("tasks", |rows| rows[0][4] == "done");
+
+    say_refused(
+        &setup,
+        "task 1 is done and its pull request github:owner/repo#7 is merged",
+    );
+}
+
+#[test]
+fn a_say_on_a_done_task_is_refused_once_its_pull_request_closed_until_it_reads_open() {
+    let setup = done_with_open_pull_request("say-closed");
+    let mut close = closed().time(herdr_bus::Timestamp::now());
+    close.data["merged"] = json!(false);
+    setup.publish(&close);
+    setup.until("inbox", |rows| rows.len() == 4);
+
+    say_refused(
+        &setup,
+        "task 1 is done and its pull request github:owner/repo#7 is closed",
+    );
+
+    let mut green = check(2, 0);
+    green.data["open"] = json!(true);
+    setup.publish(&green);
+    setup.until("inbox", |rows| rows.len() == 5);
+    let said = setup.priory(&["say", "1", "Fix the empty case."]);
+    assert!(said.status.success(), "{said:?}");
+}
+
+#[test]
+fn a_say_on_a_done_task_is_refused_once_feedback_reads_its_pull_request_closed() {
+    let setup = done_with_open_pull_request("say-read-closed");
+    let mut late = review_in("approved", 350);
+    late.data["open"] = json!(false);
+    setup.publish(&late);
+    setup.until("inbox", |rows| rows.len() == 4);
+
+    say_refused(
+        &setup,
+        "task 1 is done and its pull request github:owner/repo#7 is closed",
+    );
+}
+
+#[test]
+fn a_say_on_a_done_task_whose_pull_request_another_active_task_owns_is_refused() {
+    let setup = done_with_open_pull_request("say-rival");
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "INSERT INTO tasks (key, workflow, step, state, band, trigger, source)
+           SELECT 'cli:rival', workflow, step, 'blocked', band, trigger, source FROM tasks WHERE id = 1;
+         INSERT INTO subscriptions (task, resource) VALUES (2, 'github:owner/repo#7');",
+    )
+    .unwrap();
+
+    say_refused(&setup, "task 2 is already active on github:owner/repo#7");
+}
+
+#[test]
+fn a_say_on_a_failed_or_dropped_task_with_an_open_pull_request_is_refused() {
+    let setup = done_with_open_pull_request("say-failed");
+    for state in ["failed", "dropped"] {
+        rusqlite::Connection::open(setup.dir.join("priory.db"))
+            .unwrap()
+            .execute("UPDATE tasks SET state = ?1 WHERE id = 1", [state])
+            .unwrap();
+        say_refused(&setup, &format!("task 1 is {state}"));
+    }
+}
+
 #[test]
 fn a_comment_from_someone_outside_the_repository_reopens_nothing_and_stays_in_the_inbox() {
     let setup = gated("reopen-outsider");
@@ -10114,15 +11524,35 @@ fn a_reopened_approval_shows_the_verification_a_later_result_sent() {
 impl Setup {
     /// A setup whose tasks 1 to `n` ran to done, with the daemon stopped.
     fn ended(name: &str, n: u64) -> Setup {
+        Setup::ended_as(name, &vec!["passed"; n as usize])
+    }
+
+    /// A setup whose task `i + 1` ended with result `outcomes[i]`, with the daemon stopped.
+    fn ended_as(name: &str, outcomes: &[&str]) -> Setup {
         let mut setup = Setup::new(name);
-        setup.calls(&vec![result("passed"); n as usize]);
+        setup.calls(
+            &outcomes
+                .iter()
+                .map(|outcome| result(outcome))
+                .collect::<Vec<_>>(),
+        );
         setup.start();
-        for issue in 1..=n {
-            setup.publish(&requested(issue));
-            setup.until("tasks", |rows| with(rows, 4, "done") == issue as usize);
+        for issue in 1..=outcomes.len() {
+            setup.publish(&requested(issue as u64));
+            setup.until("tasks", |rows| {
+                rows.len() == issue && matches!(rows[issue - 1][4].as_str(), "done" | "dropped")
+            });
         }
         setup.crash();
         setup
+    }
+
+    /// Pushes the worktree of `task` to `branch` of origin, as a task on a person's pull request does.
+    fn push_to(&self, task: u64, branch: &str) {
+        self.git(
+            &self.worktree(task),
+            &["push", "-q", "origin", &format!("HEAD:refs/heads/{branch}")],
+        );
     }
 
     fn worktree(&self, task: u64) -> PathBuf {
@@ -10225,13 +11655,35 @@ fn a_sweep_removes_the_worktree_and_branch_of_a_done_task_whose_branch_merged() 
 }
 
 impl Setup {
-    /// The reason `priory desk` gives for keeping the worktree of `task`, if it lists one.
+    /// The reason `priory desk` gives for keeping the worktree of `task`, if it lists one, without
+    /// the size a sweep measured.
     fn stays(&self, task: u64) -> Option<String> {
+        self.kept(task).map(|what| match what.rsplit_once(", ") {
+            Some((reason, size)) if size.ends_with('B') => reason.to_owned(),
+            _ => what,
+        })
+    }
+
+    /// What `priory desk` says of the worktree of `task`, if it lists one.
+    fn kept(&self, task: u64) -> Option<String> {
         let wanted = self.worktree(task).display().to_string();
         self.rows("desk")
             .into_iter()
             .find(|row| row[1] == "worktree" && row[2] == wanted)
             .map(|row| row[5].clone())
+    }
+
+    /// What `priory desk` says of the worktree of `task` once the walk after a sweep measured it.
+    fn measured(&self, task: u64) -> String {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let kept = self.kept(task);
+            if let Some(kept) = kept.filter(|kept| kept.ends_with('B')) {
+                return kept;
+            }
+            assert!(Instant::now() < deadline, "worktree {task} is not measured");
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
     /// Merges task 1, the control, starts the daemon, and waits until its sweep removed task 1.
@@ -10256,12 +11708,87 @@ fn kept_by(name: &str, spoil: impl FnOnce(&Setup)) -> (Setup, Option<String>) {
 }
 
 #[test]
-fn a_sweep_keeps_a_branch_that_is_not_merged_and_the_desk_says_so() {
-    let (_setup, reason) = kept_by("sweep-unmerged", |setup| {
-        setup.work_on(2);
-        setup.push(2);
-    });
-    assert_eq!(reason.as_deref(), Some("not merged"));
+fn a_sweep_removes_the_worktree_of_a_done_task_pushed_to_a_persons_branch_and_keeps_its_branch() {
+    let mut setup = Setup::ended("sweep-pushed", 2);
+    setup.work_on(2);
+    setup.push_to(2, "ana/fix");
+
+    setup.swept();
+
+    setup.removed(2);
+    assert!(setup.branches().contains("priory/2"));
+    assert_eq!(setup.stays(2), None);
+}
+
+#[test]
+fn a_sweep_removes_the_worktree_of_a_done_task_whose_commit_a_rebase_rewrote_on_the_remote() {
+    let mut setup = Setup::ended("sweep-rebased", 2);
+    let commit = setup.commit(2, "widget.txt");
+    let tree = format!("{commit}^{{tree}}");
+    let parent = format!("{commit}^");
+    let rebased = setup.git(
+        &setup.clone(),
+        &[
+            "-c",
+            "user.name=ana",
+            "-c",
+            "user.email=ana@a",
+            "commit-tree",
+            &tree,
+            "-p",
+            &parent,
+            "-m",
+            "widget, rebased",
+        ],
+    );
+    let rebased = rebased.trim();
+    assert_ne!(rebased, commit);
+    setup.git(
+        &setup.clone(),
+        &[
+            "push",
+            "-q",
+            "origin",
+            &format!("{rebased}:refs/heads/ana/fix"),
+        ],
+    );
+
+    setup.swept();
+
+    setup.removed(2);
+    assert!(setup.branches().contains("priory/2"));
+}
+
+#[test]
+fn a_sweep_keeps_a_dropped_task_pushed_to_a_persons_branch_as_not_merged_with_its_size() {
+    let mut setup = Setup::ended_as("sweep-dropped", &["passed", "failed"]);
+    setup.work_on(2);
+    setup.push_to(2, "ana/fix");
+
+    setup.swept();
+
+    assert!(setup.worktree(2).is_dir());
+    let kept = setup.measured(2);
+    let size = kept
+        .strip_prefix("not merged, ")
+        .and_then(|size| size.strip_suffix(" KiB"))
+        .and_then(|size| size.parse::<f64>().ok());
+    assert!(size.is_some_and(|size| size > 0.0), "{kept}");
+}
+
+#[test]
+fn the_desk_reads_why_the_last_sweep_kept_a_done_tasks_worktree_and_its_size_without_git() {
+    let setup = Setup::ended("sweep-recorded", 1);
+    assert_eq!(setup.kept(1), None, "no sweep recorded a reason yet");
+    let path = setup.worktree(1).display().to_string();
+    fs::create_dir_all(setup.dir.join("home/sweep")).unwrap();
+    fs::write(
+        setup.dir.join("home/sweep/sizes.json"),
+        json!({ path: { "reason": "not merged", "bytes": 2048 } }).to_string(),
+    )
+    .unwrap();
+
+    assert_eq!(setup.kept(1).as_deref(), Some("not merged, 2.0 KiB"));
 }
 
 #[test]
@@ -10318,9 +11845,20 @@ fn a_sweep_keeps_a_worktree_the_task_does_not_record() {
     setup.start();
     setup.removed(1);
 
-    let desk = setup.rows("desk");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let desk = loop {
+        let desk = setup.rows("desk");
+        if desk[0][5].ends_with('B') || Instant::now() > deadline {
+            break desk;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
     assert_eq!(desk[0][2], other.display().to_string());
-    assert_eq!(desk[0][5], "not recorded as the worktree of task 1");
+    assert!(
+        desk[0][5].starts_with("not recorded as the worktree of task 1, "),
+        "{}",
+        desk[0][5]
+    );
 }
 
 #[test]
@@ -10434,30 +11972,6 @@ fn a_sweep_keeps_a_worktree_a_process_runs_in_that_claims_to_be_priorys_git() {
     assert_eq!(setup.stays(2).as_deref(), Some("a process runs in it"));
     second.kill().unwrap();
     second.wait().unwrap();
-}
-
-#[test]
-fn a_sweep_removes_a_merged_worktree_while_the_desk_checks_it() {
-    let mut setup = Setup::ended("sweep-desk", 1);
-    setup.work_on(1);
-    setup.push(1);
-    setup.merge(1);
-    let hold = setup.dir.join("fake/desk-hold");
-    fs::write(&hold, "").unwrap();
-    let mut desk = setup
-        .command(env!("CARGO_BIN_EXE_priory"))
-        .arg("desk")
-        .env("FAKE_GIT_HOLD", &hold)
-        .stdout(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
-    setup.written("fake/desk-hold.held");
-
-    setup.start();
-
-    setup.removed(1);
-    fs::remove_file(&hold).unwrap();
-    desk.wait().unwrap();
 }
 
 #[test]
@@ -11330,7 +12844,7 @@ fn queued_without_room(name: &str) -> Setup {
 
 /// The state and reason of task `id`.
 fn held_as(setup: &Setup, id: &str) -> [String; 2] {
-    let tasks = setup.rows("tasks");
+    let tasks = setup.listed(&["tasks", "--all"]);
     let row = tasks.iter().find(|row| row[0] == id).unwrap();
     [row[4].clone(), row[7].clone()]
 }
@@ -11666,24 +13180,6 @@ fn a_task_request_whose_hold_names_null_conditions_files_its_task_held() {
     assert_eq!(
         held_as(&setup, "1"),
         ["held", "held: a, until a person releases it"]
-    );
-}
-
-#[test]
-fn a_running_task_cannot_be_held() {
-    let mut setup = Setup::new("hold-running");
-    setup.publish(&requested(42));
-    setup.start();
-    setup.until("tasks", |rows| {
-        rows.first().is_some_and(|row| row[4] == "running")
-    });
-
-    let refused = setup.priory(&["hold", "1", "--reason", "too late"]);
-
-    assert!(!refused.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&refused.stderr),
-        "priory hold: task 1 is running: only a queued or ready task can be held\n"
     );
 }
 
@@ -14342,6 +15838,88 @@ fn a_gated_command_runs_and_its_exit_code_passes_through() {
     assert!(setup.rows("memory").is_empty());
 }
 
+/// Starts `priory memory acquire --gb 1 -- <command>` in the test's `fake` directory, with `PATH`.
+fn acquire_on(setup: &Setup, path: &std::ffi::OsStr, command: &[&str]) -> Command {
+    let mut acquire = setup.command(env!("CARGO_BIN_EXE_priory"));
+    acquire
+        .args(["memory", "acquire", "--gb", "1", "--"])
+        .args(command)
+        .current_dir(setup.dir.join("fake"))
+        .env("PATH", path);
+    acquire
+}
+
+#[test]
+fn a_gated_command_finds_a_tool_only_on_acquires_path() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut setup = Setup::new("gate-path");
+    setup.start();
+    listening(&setup);
+    let tools = setup.dir.join("tools");
+    fs::create_dir_all(&tools).unwrap();
+    let tool = tools.join("only-here");
+    fs::write(&tool, "#!/bin/sh\necho ran-only-here\nexit 5\n").unwrap();
+    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(tools).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+
+    let done = acquire_on(&setup, &path, &["only-here"]).output().unwrap();
+
+    assert_eq!(
+        done.status.code(),
+        Some(5),
+        "stderr: {}",
+        String::from_utf8_lossy(&done.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&done.stdout), "ran-only-here\n");
+}
+
+#[test]
+fn a_gated_command_sees_a_variable_set_only_on_acquire() {
+    let mut setup = Setup::new("gate-env");
+    setup.start();
+    listening(&setup);
+
+    let done = acquire_on(
+        &setup,
+        &std::env::var_os("PATH").unwrap(),
+        &["sh", "-c", "echo \"$GATE_PROBE\""],
+    )
+    .env("GATE_PROBE", "from-the-run")
+    .output()
+    .unwrap();
+
+    assert!(
+        done.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&done.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&done.stdout), "from-the-run\n");
+}
+
+#[test]
+fn a_gated_tool_missing_from_path_exits_127_naming_the_path_and_takes_no_grant() {
+    let mut setup = Setup::new("gate-missing");
+    setup.start();
+    listening(&setup);
+    let path = format!("{}:/usr/bin:/bin", setup.dir.join("tools").display());
+
+    let done = acquire_on(&setup, path.as_ref(), &["no-such-tool", "run"])
+        .output()
+        .unwrap();
+
+    let said = String::from_utf8_lossy(&done.stderr);
+    assert_eq!(done.status.code(), Some(127), "stderr: {said}");
+    assert!(
+        said.contains(&format!("no-such-tool is not on PATH ({path})")),
+        "stderr: {said}"
+    );
+    assert!(!said.contains("grant"), "stderr: {said}");
+    assert!(setup.rows("memory").is_empty());
+}
+
 #[test]
 fn an_acquire_without_gb_reserves_10_gb() {
     let mut setup = Setup::new("gate-default");
@@ -14614,6 +16192,140 @@ fn without_a_daemon_the_command_fails_fast_and_never_runs() {
         "{stderr}"
     );
     assert!(!setup.dir.join("fake/ran").exists());
+}
+
+/// A daemon that answers each gate message in turn, or closes the connection with no reply, and
+/// returns the messages and grants it got.
+fn scripted(
+    setup: &Setup,
+    replies: &'static [Option<&'static str>],
+) -> std::thread::JoinHandle<Vec<[serde_json::Value; 2]>> {
+    use std::io::{BufRead, Write};
+    fs::create_dir_all(setup.dir.join("home")).unwrap();
+    fs::create_dir_all(setup.socket().parent().unwrap()).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(setup.socket()).unwrap();
+    std::thread::spawn(move || {
+        let mut lines = Vec::new();
+        for reply in replies {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            std::io::BufReader::new(&stream)
+                .read_line(&mut line)
+                .unwrap();
+            let line: serde_json::Value = serde_json::from_str(&line).unwrap();
+            lines.push([line["memory"].clone(), line["grant"].clone()]);
+            if let Some(reply) = reply {
+                writeln!(stream, "{}", json!({ "Ok": reply })).unwrap();
+            }
+        }
+        lines
+    })
+}
+
+#[test]
+fn a_gated_command_runs_once_after_the_daemon_drops_any_message() {
+    for (name, replies, messages) in [
+        (
+            "gate-dropped-poll",
+            &[
+                Some("7 waiting"),
+                None,
+                Some("7 held"),
+                Some("7 held"),
+                Some("7 released"),
+            ][..],
+            ["acquire", "poll", "poll", "run", "release"],
+        ),
+        (
+            "gate-dropped-acquire",
+            &[
+                None,
+                Some("7 waiting"),
+                Some("7 held"),
+                Some("7 held"),
+                Some("7 released"),
+            ],
+            ["acquire", "acquire", "poll", "run", "release"],
+        ),
+        (
+            "gate-dropped-run",
+            &[
+                Some("7 held"),
+                None,
+                None,
+                Some("7 held"),
+                Some("7 released"),
+            ],
+            ["acquire", "run", "run", "run", "release"],
+        ),
+    ] {
+        let setup = Setup::new(name);
+        let daemon = scripted(&setup, replies);
+
+        let done = acquire(&setup, "8", "echo ran").wait_with_output().unwrap();
+
+        assert_eq!(
+            done.status.code(),
+            Some(0),
+            "{name}: {}",
+            String::from_utf8_lossy(&done.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&done.stdout), "ran\n");
+        let expected = messages.map(|message| {
+            let grant = if message == "acquire" {
+                json!(null)
+            } else {
+                json!(7)
+            };
+            [json!(message), grant]
+        });
+        assert_eq!(daemon.join().unwrap(), expected);
+    }
+}
+
+#[test]
+fn a_stale_socket_fails_the_command_fast_and_it_never_runs() {
+    let setup = Setup::new("gate-stale-socket");
+    fs::create_dir_all(setup.socket().parent().unwrap()).unwrap();
+    drop(std::os::unix::net::UnixListener::bind(setup.socket()).unwrap());
+    let start = Instant::now();
+
+    let done = acquire(&setup, "1", "echo ran > ran")
+        .wait_with_output()
+        .unwrap();
+
+    assert_eq!(done.status.code(), Some(125));
+    assert!(start.elapsed() < Duration::from_secs(10));
+    assert!(!setup.dir.join("fake/ran").exists());
+}
+
+#[test]
+fn a_daemon_restart_keeps_a_waiting_grant_with_its_id() {
+    let mut setup = Setup::new("gate-restart");
+    setup.start();
+    listening(&setup);
+    setup.hold("hold-a");
+    setup.hold("hold-b");
+    let a = acquire(&setup, "40", &held("a"));
+    setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
+    let b = acquire(&setup, "40", &held("b"));
+    let waiting = setup.until("memory", |rows| rows.len() == 2)[1][0].clone();
+
+    setup.crash();
+    setup.start();
+    once_listening(&setup, &["memory"]);
+    setup.release("hold-a");
+
+    assert!(a.wait_with_output().unwrap().status.success());
+    let rows = setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
+    assert_eq!(rows[0][0], waiting);
+    setup.release("hold-b");
+    let b = b.wait_with_output().unwrap();
+    assert!(
+        b.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&b.stderr)
+    );
 }
 
 #[test]
@@ -14917,6 +16629,244 @@ fn a_dirty_asleep_task_never_retires_and_says_why() {
     assert!(setup.worktree(1).join("notes.txt").exists());
 }
 
+/// Names `target` and `link` the build output of `owner/repo`, and sweeps every second.
+const BUILD: &str = "build = [\"target\", \"link\"]\n\n[sweep]\nevery = \"1s\"";
+
+/// Writes 1 MiB of build output into task 1's worktree, in a folder the test may make read-only.
+fn build_output(setup: &Setup) -> PathBuf {
+    let locked = setup.worktree(1).join("target/debug/locked");
+    fs::create_dir_all(&locked).unwrap();
+    fs::write(locked.join("lib.rlib"), vec![1u8; 1 << 20]).unwrap();
+    setup.worktree(1).join("target")
+}
+
+/// Task 1 sleeps on pull request 7 with build output in its worktree, under a factory that names
+/// it.
+fn asleep_with_build_output(name: &str) -> (Setup, PathBuf) {
+    let mut setup = Setup::new(name);
+    setup.recipes(BUILD);
+    setup.calls(&[wait(on_pull_7("pull_request"))]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    let target = build_output(&setup);
+    (setup, target)
+}
+
+#[test]
+fn an_idle_task_build_output_goes_under_the_reclaim_threshold_even_read_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let (setup, target) = asleep_with_build_output("reclaim");
+    let outside = setup.dir.join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("keep"), "x\n").unwrap();
+    std::os::unix::fs::symlink(&outside, setup.worktree(1).join("link")).unwrap();
+    fs::set_permissions(
+        target.join("debug/locked"),
+        fs::Permissions::from_mode(0o555),
+    )
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(2100));
+    assert!(target.exists(), "100 GB free is over the 40 GB threshold");
+
+    setup.disk(30);
+    let records = until_record(&setup, "factory.worktree.reclaimed");
+
+    assert!(!target.exists());
+    assert!(
+        outside.join("keep").exists(),
+        "a symlinked build folder is not followed"
+    );
+    assert!(setup.worktree(1).join("link").exists());
+    assert!(setup.worktree(1).join(".git").exists());
+    assert!(setup.branches().contains("priory/1"));
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        [&records[0]["task"], &records[0]["path"]],
+        ["1", target.to_str().unwrap()]
+    );
+    assert!(records[0]["bytes"].as_u64().unwrap() >= 1 << 20);
+    let desk = String::from_utf8(setup.priory(&["desk"]).stdout).unwrap();
+    assert!(
+        desk.contains(
+            "reclaimed 0.0 GB of build output from 1 folder in the last 24 hours, last at "
+        ),
+        "{desk}"
+    );
+}
+
+#[test]
+fn a_symlink_inside_the_build_output_goes_without_what_it_points_to() {
+    use std::os::unix::fs::PermissionsExt;
+    let (setup, target) = asleep_with_build_output("reclaim-escape");
+    // Empty, so the test's cleanup can still remove it.
+    let sealed = setup.dir.join("outside/sealed");
+    fs::create_dir_all(&sealed).unwrap();
+    fs::set_permissions(&sealed, fs::Permissions::from_mode(0o555)).unwrap();
+    std::os::unix::fs::symlink(&sealed, target.join("debug/escape")).unwrap();
+
+    setup.disk(30);
+    until_record(&setup, "factory.worktree.reclaimed");
+
+    assert!(!target.exists());
+    let mode = fs::metadata(&sealed).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o555, "a chmod does not follow the symlink");
+}
+
+#[test]
+fn a_build_folder_holding_a_tracked_file_stays() {
+    let (setup, target) = asleep_with_build_output("reclaim-tracked");
+    setup.commit(1, "target/app.js");
+
+    setup.disk(30);
+    std::thread::sleep(Duration::from_millis(2100));
+
+    assert!(target.join("app.js").exists());
+    assert!(target.join("debug/locked/lib.rlib").exists());
+    assert!(trace_records(&setup, "factory.worktree.reclaimed").is_empty());
+}
+
+#[test]
+fn a_staged_deletion_inside_a_build_folder_keeps_it() {
+    let (setup, target) = asleep_with_build_output("reclaim-staged");
+    setup.commit(1, "target/app.js");
+    setup.git(&setup.worktree(1), &["rm", "-q", "target/app.js"]);
+
+    setup.disk(30);
+    std::thread::sleep(Duration::from_millis(2100));
+
+    assert!(target.join("debug/locked/lib.rlib").exists());
+    assert!(trace_records(&setup, "factory.worktree.reclaimed").is_empty());
+}
+
+#[test]
+fn the_sweep_deletes_one_build_folder_per_tick() {
+    let (setup, target) = asleep_with_build_output("reclaim-tick");
+    let link = setup.worktree(1).join("link");
+    fs::create_dir_all(&link).unwrap();
+    fs::write(link.join("out.o"), vec![1u8; 1 << 10]).unwrap();
+
+    setup.disk(30);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while trace_records(&setup, "factory.worktree.reclaimed").len() < 2 {
+        assert!(Instant::now() < deadline, "two reclaims");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    assert!(!target.exists() && !link.exists());
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    let gap: f64 = db
+        .query_row(
+            "SELECT (julianday(max(time)) - julianday(min(time))) * 86400 FROM trace
+             WHERE type = 'factory.worktree.reclaimed'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        gap >= 0.5,
+        "the second folder waits for the next tick: {gap}s"
+    );
+}
+
+#[test]
+fn a_retirement_waits_for_the_reclaim_to_take_the_build_output() {
+    let (setup, target) = asleep_with_build_output("reclaim-retire");
+    // Ignored, so it does not itself keep the worktree from retiring.
+    let exclude = setup.git(
+        &setup.worktree(1),
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "info/exclude",
+        ],
+    );
+    fs::write(exclude.trim(), "target\n").unwrap();
+
+    setup.disk(10);
+    setup.removed(1);
+
+    assert!(!target.exists());
+    assert_eq!(trace_records(&setup, "factory.worktree.reclaimed").len(), 1);
+}
+
+#[test]
+fn a_live_run_keeps_its_build_output_until_it_ends() {
+    let mut setup = Setup::new("reclaim-live");
+    setup.recipes(BUILD);
+    setup.hold("hold-stop");
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(42));
+    setup.disk(30);
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1);
+    let target = build_output(&setup);
+
+    std::thread::sleep(Duration::from_millis(2100));
+    assert!(target.exists());
+
+    setup.release("hold-stop");
+    until_record(&setup, "factory.worktree.reclaimed");
+    assert!(!target.exists());
+}
+
+#[test]
+fn a_held_memory_grant_keeps_its_task_build_output_after_the_run_sleeps() {
+    let mut setup = Setup::new("reclaim-grant");
+    setup.recipes(BUILD);
+    setup.hold("hold-stop");
+    setup.calls(&[wait(on_pull_7("pull_request"))]);
+    setup.publish(&requested(42));
+    setup.start();
+    let runs = setup.until("runs", |rows| rows.len() == 1);
+    setup.hold("hold-g");
+    let grant = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .env("PRIORY_SESSION", &runs[0][4])
+        .args([
+            "memory",
+            "acquire",
+            "--gb",
+            "1",
+            "--",
+            "sh",
+            "-c",
+            &held("g"),
+        ])
+        .current_dir(setup.dir.join("fake"))
+        .spawn()
+        .unwrap();
+    setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
+    setup.release("hold-stop");
+    setup.until("runs", |rows| rows[0][7] == "asleep");
+    let target = build_output(&setup);
+    setup.disk(30);
+
+    std::thread::sleep(Duration::from_millis(2100));
+    assert!(target.exists());
+
+    setup.release("hold-g");
+    assert!(grant.wait_with_output().unwrap().status.success());
+    until_record(&setup, "factory.worktree.reclaimed");
+    assert!(!target.exists());
+}
+
+#[test]
+fn an_uncommitted_change_keeps_the_build_output() {
+    let (setup, target) = asleep_with_build_output("reclaim-dirty");
+    setup.commit(1, "widget.txt");
+    fs::write(setup.worktree(1).join("widget.txt"), "edited\n").unwrap();
+
+    setup.disk(30);
+    std::thread::sleep(Duration::from_millis(2100));
+
+    assert!(target.exists());
+    assert!(trace_records(&setup, "factory.worktree.reclaimed").is_empty());
+}
+
 impl Setup {
     /// Gives `owner/repo` the recipes `table`, the body of its `[repos."owner/repo"]` table.
     fn recipes(&self, table: &str) {
@@ -15091,6 +17041,51 @@ fn a_retiring_task_tears_down_first_and_resumes_when_it_resurrects_without_a_new
         format!("1 {}\n", setup.worktree(1).display())
     );
     assert_eq!(setup.faked("set-up"), "1\n2\n");
+}
+
+#[test]
+fn a_done_task_whose_worktree_the_sweep_removed_gets_it_back_and_resumes_when_feedback_reopens_it()
+{
+    let mut setup = Setup::new("recipe-reopen-retired");
+    setup.recipes(concat!(
+        r#"setup = { shell = "echo $PRIORY_TASK >> $FAKE_DIR/set-up" }"#,
+        "\n",
+        r#"resume = { shell = "echo $PRIORY_TASK $PWD >> $FAKE_DIR/resumed" }"#,
+    ));
+    setup.calls(&[
+        wait(on_pull_7("review")),
+        passed_at("abc0000000000000000000000000000000000000"),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.publish(&reviewed());
+    setup.until("runs", |rows| rows.len() == 2 && rows[1][7] != "-");
+    setup.gone("priory-1");
+    setup.publish(&check(1, 0));
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    setup.work_on(1);
+    setup.push(1);
+    setup.crash();
+    setup.start();
+    setup.removed(1);
+    assert!(setup.branches().contains("priory/1"));
+    // The comment comes after the task was done, to the second.
+    std::thread::sleep(Duration::from_millis(1100));
+
+    setup.publish(&commented());
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while setup.faked("resumed").is_empty() {
+        assert!(Instant::now() < deadline, "the resume recipe never ran");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(
+        setup.faked("resumed"),
+        format!("1 {}\n", setup.worktree(1).display())
+    );
+    assert_eq!(setup.faked("set-up"), "1\n");
 }
 
 #[test]
@@ -16276,7 +18271,7 @@ fn attach_read_only_adds_tmuxs_read_only_flag() {
     assert_eq!(
         String::from_utf8(printed.stdout).unwrap(),
         format!(
-            "tmux -S {} attach-session -r -t '=priory-1'\n",
+            "tmux -S {} attach-session -f read-only,ignore-size -t '=priory-1'\n",
             socket(&setup)
         )
     );
@@ -18100,6 +20095,156 @@ fn a_comment_on_a_row_stores_shows_as_a_thread_and_wakes_the_task_with_one_line(
         Some(
             "The person commented on row fnd-2409 in your report (reply with `priory report reply 1 TEXT`): Check the release branch first"
         )
+    );
+}
+
+#[test]
+fn a_comment_on_a_rows_key_lands_on_that_row() {
+    let setup = asleep_on_a_report("report-comment-key", &ask_rows(&["cache.ship"]));
+
+    let commented = setup.priory(&["report", "comment", "cache.ship", "--expected", "1", "Why?"]);
+
+    assert!(commented.status.success(), "{commented:?}");
+    let comments = &shown(&setup)["sections"][0]["rows"][0]["comments"];
+    assert_eq!(comments[0]["text"], "Why?", "{comments}");
+}
+
+#[test]
+fn a_comment_on_an_id_lands_on_that_row_before_a_newer_reports_key() {
+    let setup = asleep_on_a_report("report-comment-id-first", &ask_rows(&["cache.ship"]));
+    // Task 2's newer report has a row whose key is task 1's row id.
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "CREATE TEMP TABLE copy AS SELECT * FROM tasks WHERE id = 1;
+         UPDATE copy SET id = 2, key = 'cli:other';
+         INSERT INTO tasks SELECT * FROM copy;
+         INSERT INTO reports SELECT 2, 1, json_set(report,
+             '$.sections[0].rows[0].id', 'other', '$.sections[0].rows[0].key', 'ask-cache.ship'),
+           '9999-01-01T00:00:00Z' FROM reports WHERE task = 1;",
+    )
+    .unwrap();
+    drop(db);
+
+    let commented = setup.priory(&[
+        "report",
+        "comment",
+        "ask-cache.ship",
+        "--expected",
+        "1",
+        "Why?",
+    ]);
+
+    assert!(commented.status.success(), "{commented:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&commented.stdout),
+        "comment 1 on row ask-cache.ship at revision 2\n"
+    );
+}
+
+/// A report with one row per outside ask, whose `Dismiss ask` and `Not today` act on it.
+fn ask_rows(asks: &[&str]) -> serde_json::Value {
+    let rows: Vec<serde_json::Value> = asks
+        .iter()
+        .map(|ask| {
+            json!({
+                "id": format!("ask-{ask}"), "key": ask, "text": "Ship the cache today?",
+                "pick": { "id": format!("2026-11-23_t1_ask_{ask}"),
+                          "options": ["Not today", "Dismiss ask"],
+                          "asks": {
+                              "Not today": { "act": "snooze", "ask": ask, "until": "2099-11-24T06:00:00Z" },
+                              "Dismiss ask": { "act": "dismiss", "ask": ask },
+                          } },
+                "comments": []
+            })
+        })
+        .collect();
+    json!({
+        "date": "2026-11-23",
+        "since": "2026-11-22T18:00:00+01:00",
+        "greeting": "Bonjour, Max",
+        "sections": [{ "id": "agree", "title": "To agree", "rows": rows }]
+    })
+}
+
+#[test]
+fn a_pick_on_an_ask_row_dismisses_or_snoozes_the_ask_and_wakes_no_agent() {
+    let setup = asleep_on_a_report("report-ask-pick", &ask_rows(&["cache.ship", "cache.notes"]));
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+    setup.priory(&["ask", "cache.notes", &fleet_ask(&["ship", "wait"])]);
+    let prompts = setup.rows("outbox").len();
+
+    let dismissed = setup.priory(&[
+        "report",
+        "pick",
+        "2026-11-23_t1_ask_cache.ship",
+        "Dismiss ask",
+        "--expected",
+        "1",
+    ]);
+    let snoozed = setup.priory(&[
+        "report",
+        "pick",
+        "2026-11-23_t1_ask_cache.notes",
+        "Not today",
+        "--expected",
+        "2",
+    ]);
+
+    assert!(dismissed.status.success(), "{dismissed:?}");
+    assert!(snoozed.status.success(), "{snoozed:?}");
+    let asks: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
+    let asks = &asks["asks"];
+    assert_eq!(
+        [&asks[0]["id"], &asks[0]["withdrawn_reason"]],
+        ["cache.ship", "dismissed"]
+    );
+    assert_eq!([&asks[1]["id"], &asks[1]["state"]], ["cache.notes", "open"]);
+    assert_eq!(asks[1]["snoozed_until"], "2099-11-24T06:00:00Z");
+    let rows = &shown(&setup)["sections"][0]["rows"];
+    assert_eq!(rows[0]["pick"]["applied"], "dismissed");
+    assert_eq!(
+        rows[1]["pick"]["applied"],
+        "snoozed until 2099-11-24T06:00:00Z"
+    );
+    assert_eq!(
+        setup.rows("outbox").len(),
+        prompts,
+        "no prompt for the agent"
+    );
+}
+
+#[test]
+fn a_snooze_pick_made_after_its_time_snoozes_until_the_next_six_utc() {
+    let mut report = ask_rows(&["cache.notes"]);
+    report["sections"][0]["rows"][0]["pick"]["asks"]["Not today"]["until"] =
+        json!("2020-01-01T06:00:00Z");
+    let setup = asleep_on_a_report("report-ask-snooze-late", &report);
+    setup.priory(&["ask", "cache.notes", &fleet_ask(&["ship", "wait"])]);
+
+    let snoozed = setup.priory(&[
+        "report",
+        "pick",
+        "2026-11-23_t1_ask_cache.notes",
+        "Not today",
+        "--expected",
+        "1",
+    ]);
+
+    assert!(snoozed.status.success(), "{snoozed:?}");
+    let asks: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
+    let until = asks["asks"][0]["snoozed_until"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        until.ends_with("T06:00:00Z") && until.as_str() > "2026-11-23",
+        "{until}"
+    );
+    assert_eq!(
+        shown(&setup)["sections"][0]["rows"][0]["pick"]["applied"],
+        format!("snoozed until {until}")
     );
 }
 
@@ -20303,6 +22448,19 @@ fn overlapping(name: &str, second: &str, factory: &str) -> Setup {
 }
 
 fn overlapping_after(name: &str, second: &str, factory: &str, first: impl Fn(&Setup)) -> Setup {
+    overlapping_as(name, &requested(43), factory, first, |setup| {
+        setup.commit(2, second);
+    })
+}
+
+/// `request` starts task 2, and `work` is what its `implement` run does.
+fn overlapping_as(
+    name: &str,
+    request: &Message,
+    factory: &str,
+    first: impl Fn(&Setup),
+    work: impl Fn(&Setup),
+) -> Setup {
     let mut setup = Setup::with_workflow(name, TWO_MODEL_STEPS);
     fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
     setup.publish(&requested(42));
@@ -20320,9 +22478,9 @@ fn overlapping_after(name: &str, second: &str, factory: &str, first: impl Fn(&Se
         })
     });
     first(&setup);
-    setup.publish(&requested(43));
+    setup.publish(request);
     setup.until("tasks", |rows| with(rows, 4, "running") == 2);
-    setup.commit(2, second);
+    work(&setup);
     setup.calls(&[passed_with_evidence()]);
     setup.until("tasks", |rows| {
         rows.iter()
@@ -20389,6 +22547,7 @@ fn a_task_overlapping_one_with_an_open_pull_request_is_held_until_it_merges() {
             [],
         )
         .unwrap();
+        setup.push_to(1, "priory/1");
     });
     setup.until("tasks", |rows| {
         rows.iter().any(|row| row[0] == "2" && row[4] != "ready")
@@ -20400,6 +22559,352 @@ fn a_task_overlapping_one_with_an_open_pull_request_is_held_until_it_merges() {
     assert!(
         reason.contains("until owner/repo#7 merges")
             || reason.contains("until github:owner/repo#7 merges"),
+        "{reason}"
+    );
+}
+
+/// Task 1 opened a pull request, and task 2, requested next, works on it. `rows` records
+/// that pull request.
+fn own_pull_request(name: &str, rows: &'static str) -> Setup {
+    overlapping_after(name, "shared.txt", "name = \"demo\"", move |setup| {
+        records_pull_requests(setup, rows);
+    })
+}
+
+fn assert_runs_its_check(setup: &Setup) {
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| {
+            row[0] == "2" && (row[4] == "held" || row[3] == "check" && row[4] == "running")
+        })
+    });
+    assert_eq!(
+        state_of(setup, "2").0,
+        "running",
+        "{:?}",
+        state_of(setup, "2")
+    );
+}
+
+#[test]
+fn a_task_working_on_the_open_pull_request_it_overlaps_is_not_held_on_it() {
+    let setup = own_pull_request(
+        "overlap-own-pr",
+        "(1, 'github:owner/repo#7', 'priory/1', 'main'), (2, 'github:owner/repo#7', 'priory/1', 'main')",
+    );
+
+    assert_runs_its_check(&setup);
+}
+
+#[test]
+fn a_task_keyed_on_the_open_pull_request_it_overlaps_is_not_held_on_it() {
+    // Task 2's key is `github:owner/repo#43`, as for a task requested on pull request 43.
+    let setup = own_pull_request(
+        "overlap-own-key",
+        "(1, 'github:owner/repo#43', 'priory/1', 'main')",
+    );
+
+    assert_runs_its_check(&setup);
+}
+
+/// A task request keyed `key`, as `priory request` publishes it.
+fn requested_as(key: &str) -> Message {
+    let mut request = requested(43);
+    request.data["key"] = json!(key);
+    request.subject(key)
+}
+
+/// Task 1's branch is pushed and is the head of the open pull request 7.
+fn opened_pull_request(setup: &Setup) {
+    setup.push_to(1, "priory/1");
+    records_pull_requests(setup, "(1, 'github:owner/repo#7', 'priory/1', 'main')");
+}
+
+/// Moves task 2's branch to the pull request's head.
+fn checks_out_the_pull_request(setup: &Setup) {
+    setup.git(
+        &setup.worktree(2),
+        &["reset", "-q", "--hard", "origin/priory/1"],
+    );
+}
+
+#[test]
+fn a_task_that_pushed_to_the_open_pull_request_it_overlaps_is_not_held_on_it() {
+    let setup = overlapping_as(
+        "overlap-pushed",
+        &requested_as("cli:fix-435"),
+        "name = \"demo\"",
+        opened_pull_request,
+        |setup| {
+            checks_out_the_pull_request(setup);
+            setup.commit(2, "fix.txt");
+            setup.push_to(2, "priory/1");
+            // Task 1 pushes on top, so the pull request is ahead of task 2.
+            setup.commit(2, "more.txt");
+            setup.push_to(2, "priory/1");
+            setup.git(&setup.worktree(2), &["reset", "-q", "--hard", "HEAD~1"]);
+        },
+    );
+
+    assert_runs_its_check(&setup);
+}
+
+#[test]
+fn a_task_built_on_the_open_pull_request_it_overlaps_is_not_held_on_it_before_it_pushes() {
+    let setup = overlapping_as(
+        "overlap-built-on",
+        &requested_as("cli:fix-435"),
+        "name = \"demo\"",
+        opened_pull_request,
+        |setup| {
+            checks_out_the_pull_request(setup);
+            setup.commit(2, "fix.txt");
+        },
+    );
+
+    assert_runs_its_check(&setup);
+}
+
+#[test]
+fn a_task_whose_cli_key_names_the_open_pull_request_it_overlaps_is_not_held_on_it() {
+    let setup = overlapping_as(
+        "overlap-cli-key",
+        &requested_as("cli:github:owner/repo#7"),
+        "name = \"demo\"",
+        opened_pull_request,
+        |setup| {
+            setup.commit(2, "shared.txt");
+        },
+    );
+
+    assert_runs_its_check(&setup);
+}
+
+/// Task 2 is held on pull request 7, which its branch diverged from.
+fn held_on_the_pull_request(name: &str) -> Setup {
+    let setup = overlapping_as(
+        name,
+        &requested_as("cli:fix-435"),
+        "name = \"demo\"",
+        opened_pull_request,
+        |setup| {
+            setup.commit(2, "shared.txt");
+            setup.commit(2, "fix.txt");
+        },
+    );
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "2" && row[4] == "held")
+    });
+    setup
+}
+
+#[test]
+fn a_restart_keeps_a_task_held_on_another_tasks_pull_request() {
+    let mut setup = held_on_the_pull_request("overlap-restart-held");
+    setup.crash();
+
+    setup.start();
+    // A request the restarted daemon routes proves that its start is over.
+    setup.publish(&requested(44));
+    setup.until("tasks", |rows| rows.iter().any(|row| row[0] == "3"));
+
+    assert_eq!(state_of(&setup, "2").0, "held");
+}
+
+#[test]
+fn a_restart_keeps_a_persons_hold_whatever_its_reason_says() {
+    let mut setup = queued_without_room("overlap-person-hold");
+    setup.publish(&requested(43));
+    setup.publish(&requested(44));
+    setup.until("tasks", |rows| rows.len() == 3);
+    let own = "(1, 'github:owner/repo#7', 'priory/1', 'main'),
+               (2, 'github:owner/repo#7', 'priory/1', 'main')";
+    records_pull_requests(&setup, own);
+    for (task, reason) in [
+        ("2", "overlaps task 1 on shared.txt"),
+        ("3", "overlaps task 999 elsewhere"),
+    ] {
+        person(&setup, "hold", &[task, "--reason", reason, "--after", "1"]);
+    }
+    setup.crash();
+
+    setup.start();
+    setup.publish(&requested(45));
+    setup.until("tasks", |rows| rows.len() == 4);
+
+    assert_eq!(state_of(&setup, "2").0, "held");
+    assert_eq!(state_of(&setup, "3").0, "held");
+}
+
+/// Records the open pull requests `rows`.
+fn records_pull_requests(setup: &Setup, rows: &str) {
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute_batch(&format!(
+            "PRAGMA foreign_keys = OFF;
+             INSERT INTO pull_requests (task, resource, branch, base) VALUES {rows};"
+        ))
+        .unwrap();
+}
+
+/// Adds the done task 0, which changed `shared.txt` too and has the open pull request 6.
+fn earlier_pull_request(setup: &Setup) {
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute(
+            "INSERT INTO tasks (id, key, workflow, step, state, trigger, source, branch, worktree, files)
+             SELECT 0, 'cli:earlier', workflow, step, 'done', trigger, source, 'priory/0',
+               substr(worktree, 1, length(worktree) - 1) || '0', '[\"shared.txt\"]'
+             FROM tasks WHERE id = 1",
+            [],
+        )
+        .unwrap();
+    records_pull_requests(setup, "(0, 'github:owner/repo#6', 'priory/0', 'main')");
+}
+
+#[test]
+fn a_fix_task_is_not_held_on_earlier_tasks_either() {
+    let setup = overlapping_as(
+        "overlap-fix-earlier",
+        &requested_as("cli:fix-435"),
+        "name = \"demo\"",
+        |setup| {
+            opened_pull_request(setup);
+            earlier_pull_request(setup);
+        },
+        |setup| {
+            checks_out_the_pull_request(setup);
+            setup.commit(2, "fix.txt");
+        },
+    );
+
+    assert_runs_its_check(&setup);
+}
+
+#[test]
+fn two_fix_tasks_are_not_held_on_each_others_pull_requests() {
+    let setup = overlapping_as(
+        "overlap-fix-both",
+        &requested_as("cli:fix-7"),
+        "name = \"demo\"",
+        |setup| {
+            opened_pull_request(setup);
+            earlier_pull_request(setup);
+        },
+        |setup| {
+            checks_out_the_pull_request(setup);
+            setup.commit(2, "fix.txt");
+        },
+    );
+    assert_runs_its_check(&setup);
+    setup.until("outbox", |rows| {
+        rows.iter().any(|row| {
+            row[2] == "4" && row[3] == "confirmed" && row[4].starts_with("Your last turn ended")
+        })
+    });
+
+    setup.publish(&requested_as("cli:fix-6"));
+    setup.until("tasks", |rows| with(rows, 4, "running") == 3);
+    setup.commit(3, "shared.txt");
+    setup.commit(3, "fix-6.txt");
+    setup.push_to(3, "priory/0");
+    setup.calls(&[passed_with_evidence()]);
+
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| {
+            row[0] == "3" && (row[4] == "held" || row[3] == "check" && row[4] == "running")
+        })
+    });
+    assert_eq!(state_of(&setup, "3").0, "running");
+}
+
+#[test]
+fn a_task_with_its_own_open_pull_request_is_not_held_on_an_earlier_one() {
+    let setup = own_pull_request(
+        "overlap-own-red",
+        "(1, 'github:owner/repo#7', 'priory/1', 'main'), (2, 'github:owner/repo#8', 'priory/2', 'main')",
+    );
+
+    assert_runs_its_check(&setup);
+}
+
+#[test]
+fn a_task_built_on_the_newer_pull_request_of_a_stack_is_not_held_on_the_older() {
+    let setup = overlapping_as(
+        "overlap-stack",
+        &requested_as("cli:fix-435"),
+        "name = \"demo\"",
+        |setup| {
+            records_pull_requests(setup, "(1, 'github:owner/repo#5', 'priory/1-a', 'main')");
+            opened_pull_request(setup);
+            let tree = ["-c", "user.name=t", "-c", "user.email=t@t", "commit-tree"];
+            let rewritten = [
+                &tree[..],
+                &["HEAD^{tree}", "-p", "HEAD~1", "-m", "rewritten"],
+            ];
+            let commit = setup.git(&setup.worktree(1), &rewritten.concat());
+            let refspec = format!("{}:refs/heads/priory/1-a", commit.trim());
+            setup.git(&setup.worktree(1), &["push", "-q", "origin", &refspec]);
+        },
+        |setup| {
+            checks_out_the_pull_request(setup);
+            setup.commit(2, "fix.txt");
+        },
+    );
+
+    assert_runs_its_check(&setup);
+}
+
+#[test]
+fn new_work_is_held_beside_an_open_pull_request_whose_branch_is_in_the_trunk() {
+    let setup = overlapping_as(
+        "overlap-new-work",
+        &requested_as("cli:new-work"),
+        "name = \"demo\"",
+        |setup| {
+            earlier_pull_request(setup);
+            let trunk = "origin/HEAD:refs/heads/priory/0";
+            setup.git(&setup.worktree(1), &["push", "-q", "origin", trunk]);
+        },
+        |setup| {
+            setup.commit(2, "shared.txt");
+            setup.commit(2, "new.txt");
+        },
+    );
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "2" && row[4] != "ready")
+    });
+
+    assert_eq!(state_of(&setup, "2").0, "held");
+}
+
+#[test]
+fn a_stacked_entry_is_held_on_a_task_it_is_not_stacked_on() {
+    let setup = overlapping_as(
+        "overlap-stacked-entry",
+        &requested_as("cli:stacked"),
+        "name = \"demo\"",
+        |setup| {
+            opened_pull_request(setup);
+            earlier_pull_request(setup);
+        },
+        |setup| {
+            rusqlite::Connection::open(setup.dir.join("priory.db"))
+                .unwrap()
+                .execute("UPDATE tasks SET base_task = 1 WHERE id = 2", [])
+                .unwrap();
+            checks_out_the_pull_request(setup);
+            setup.commit(2, "new.txt");
+        },
+    );
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "2" && row[4] != "ready")
+    });
+
+    let (state, reason) = state_of(&setup, "2");
+
+    assert_eq!(state, "held");
+    assert!(
+        reason.starts_with("held: overlaps task 0 on shared.txt"),
         "{reason}"
     );
 }
@@ -31816,4 +34321,506 @@ fn uncalibrated_pre_review(name: &str, workflow: &str) -> (Setup, Vec<Vec<String
 
     let asks = setup.until("asks", |rows| rows.len() == 1);
     (setup, asks)
+}
+
+/// A comment trigger on alice's pull requests, which `priory adopt` names.
+const MY_PRS: &str = r#"
+source = "github"
+repo = "owner/repo"
+on = "pull_request.comment"
+filter = { author = "alice" }
+workflow = "implement"
+"#;
+
+/// A running daemon whose factory has the `my-prs` trigger, and a fake GitHub where alice has
+/// `open` pull requests open.
+fn adopting(name: &str, open: &[u64]) -> Setup {
+    let mut setup = Setup::new(name);
+    fs::write(setup.dir.join("factory/triggers/my-prs.toml"), MY_PRS).unwrap();
+    let prs: Vec<_> = open
+        .iter()
+        .map(|number| {
+            json!({
+                "number": number,
+                "title": format!("Rename flag {number}"),
+                "url": format!("https://github.com/owner/repo/pull/{number}")
+            })
+        })
+        .collect();
+    fs::write(setup.dir.join("fake/prs"), json!(prs).to_string()).unwrap();
+    setup.start();
+    setup
+}
+
+/// Waits until `done` holds for the rows of `priory tasks --all`, which lists parked tasks too.
+fn all_tasks_until(setup: &Setup, done: impl Fn(&[Vec<String>]) -> bool) -> Vec<Vec<String>> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let rows = setup.listed(&["tasks", "--all"]);
+        if done(&rows) {
+            return rows;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out on `priory tasks --all`: {rows:?}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// What `priory adopt` prints for `args`, which must succeed.
+fn adopt(setup: &Setup, args: &[&str]) -> String {
+    let factory = setup.dir.join("factory");
+    person(
+        setup,
+        "adopt",
+        &[&[factory.to_str().unwrap()], args].concat(),
+    )
+}
+
+/// An event `kind` on alice's pull request 7, from a branch no task made.
+fn on_alice_pull(kind: &str, extra: serde_json::Value) -> Message {
+    let mut message = on_pull(kind, extra);
+    message.data["head_branch"] = json!("feature");
+    message.data["author"] = json!("alice");
+    message
+}
+
+/// The task request the `my-prs` trigger publishes for `comment`.
+fn my_prs_requested(comment: &Message) -> Message {
+    Message::new(
+        "factory.task.requested",
+        json!({
+            "workflow": "implement",
+            "key": "github:owner/repo#7",
+            "band": null,
+            "lane": null,
+            "trigger": "my-prs",
+            "source": comment.id.to_string()
+        }),
+    )
+    .subject("github:owner/repo#7")
+}
+
+#[test]
+fn adopt_parks_a_task_on_each_open_pull_request_no_task_owns_and_leaves_the_desk_alone() {
+    let mut setup = Setup::new("adopt-parks");
+    setup.memory(0);
+    fs::write(setup.dir.join("factory/triggers/my-prs.toml"), MY_PRS).unwrap();
+    fs::write(
+        setup.dir.join("fake/prs"),
+        r#"[{"number":7,"title":"Rename the flag","url":"https://github.com/owner/repo/pull/7"},
+            {"number":8,"title":"Other","url":"https://github.com/owner/repo/pull/8"}]"#,
+    )
+    .unwrap();
+    setup.publish(&requested(8));
+    setup.start();
+    all_tasks_until(&setup, |rows| rows.len() == 1);
+
+    let first = adopt(&setup, &["my-prs"]);
+
+    assert_eq!(
+        first,
+        "adopted github:owner/repo#7\ngithub:owner/repo#8: task 1 owns it\n"
+    );
+    all_tasks_until(&setup, |rows| rows.len() == 2);
+    assert_eq!(
+        held_as(&setup, "2"),
+        [
+            "held".to_owned(),
+            "held: adopted for trigger my-prs, until a comment or review trigger fires on github:owner/repo#7"
+                .to_owned()
+        ]
+    );
+    assert_eq!(
+        adopt(&setup, &["my-prs"]),
+        "github:owner/repo#7: task 2 owns it\ngithub:owner/repo#8: task 1 owns it\n"
+    );
+    assert_eq!(setup.listed(&["tasks", "--all"]).len(), 2);
+    let desk = desk_json(&setup);
+    let parked: Vec<_> = desk["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["task"] == 2)
+        .collect();
+    assert!(parked.is_empty(), "{desk}");
+}
+
+#[test]
+fn adopt_refuses_a_trigger_that_is_not_a_comment_trigger_and_a_pull_request_that_is_not_open() {
+    let setup = adopting("adopt-refuses", &[7]);
+    let factory = setup.dir.join("factory");
+    let factory = factory.to_str().unwrap();
+
+    let label = setup.priory(&["adopt", factory, "agent-label"]);
+    let closed = setup.priory(&["adopt", factory, "my-prs", "owner/repo#9"]);
+
+    assert!(!label.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&label.stderr),
+        "priory adopt: trigger agent-label is not a pull request comment or review trigger\n"
+    );
+    assert!(!closed.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&closed.stderr),
+        "priory adopt: owner/repo#9 is not an open pull request by alice\n"
+    );
+    assert!(setup.listed(&["tasks", "--all"]).is_empty());
+}
+
+#[test]
+fn a_parked_task_keeps_checks_and_comments_and_wakes_on_its_trigger_s_request() {
+    let setup = adopting("adopt-wakes", &[7]);
+    adopt(&setup, &["my-prs", "https://github.com/owner/repo/pull/7"]);
+    all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == "held");
+    let check = on_alice_pull(
+        "github.check_run.completed",
+        json!({ "name": "test", "conclusion": "success", "github_id": 900 }),
+    );
+    let comment = on_alice_pull(
+        "github.pull_request.comment",
+        json!({
+            "actor": "alice", "body": "Why this name?", "github_id": 701, "open": true,
+            "url": "https://github.com/owner/repo/pull/7#issuecomment-701"
+        }),
+    );
+
+    setup.publish(&check);
+    setup.publish(&comment);
+
+    let inbox = setup.until("inbox", |rows| rows.len() == 4);
+    assert_eq!([&inbox[2][3], &inbox[2][4]], ["1", "kept"]);
+    assert_eq!([&inbox[3][3], &inbox[3][4]], ["1", "kept"]);
+    std::thread::sleep(Duration::from_millis(1100));
+    assert_eq!(setup.listed(&["tasks", "--all"])[0][4], "held");
+    assert!(setup.rows("runs").is_empty());
+    let task = person(&setup, "task", &["1"]);
+    assert!(task.contains("github.check_run.completed"), "{task}");
+    assert!(task.contains("github.pull_request.comment"), "{task}");
+
+    setup.publish(&my_prs_requested(&comment));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let inbox = setup.rows("inbox");
+    assert_eq!([&inbox[4][3], &inbox[4][4]], ["1", "released"]);
+    let first = &setup.typed()[0];
+    assert!(
+        first.contains("Adopted owner/repo#7: Rename flag 7"),
+        "{first}"
+    );
+    assert!(first.contains("Why this name?"), "{first}");
+}
+
+#[test]
+fn a_parked_task_is_done_when_its_pull_request_merges_and_dropped_when_it_closes() {
+    for (merged, state, reason) in [
+        (true, "done", "github:owner/repo#7 merged while parked"),
+        (false, "dropped", "github:owner/repo#7 closed while parked"),
+    ] {
+        let setup = adopting(&format!("adopt-ends-{state}"), &[7]);
+        adopt(&setup, &["my-prs", "7"]);
+        all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == "held");
+
+        setup.publish(&on_alice_pull(
+            "github.pull_request.closed",
+            json!({ "merged": merged, "github_id": 400 }),
+        ));
+
+        all_tasks_until(&setup, |rows| rows[0][4] == state);
+        assert_eq!(held_as(&setup, "1")[1], reason);
+        assert!(setup.rows("runs").is_empty());
+    }
+}
+
+#[test]
+fn adopt_skips_a_pull_request_a_done_task_owns_and_its_next_comment_reopens_that_task() {
+    let setup = gated("adopt-done-owner");
+    setup.publish(&check(1, 0));
+    all_tasks_until(&setup, |rows| rows[0][4] == "done");
+    fs::write(setup.dir.join("factory/triggers/my-prs.toml"), MY_PRS).unwrap();
+    fs::write(
+        setup.dir.join("fake/prs"),
+        r#"[{"number":7,"title":"Rename the flag","url":"https://github.com/owner/repo/pull/7"}]"#,
+    )
+    .unwrap();
+
+    let adopted = adopt(&setup, &["my-prs"]);
+
+    assert_eq!(adopted, "github:owner/repo#7: task 1 owns it\n");
+    assert_eq!(setup.listed(&["tasks", "--all"]).len(), 1);
+    std::thread::sleep(Duration::from_millis(1100));
+    setup.publish(&commented());
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    assert!(
+        setup.typed()[2].starts_with("Feedback reopened this done task as generation 2"),
+        "{:?}",
+        setup.typed()
+    );
+    assert_eq!(setup.listed(&["tasks", "--all"]).len(), 1);
+}
+
+#[test]
+fn adopt_skips_a_pull_request_whose_newest_task_was_dropped() {
+    let setup = adopting("adopt-dropped-owner", &[7]);
+    adopt(&setup, &["my-prs", "7"]);
+    all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == "held");
+    person(&setup, "cancel", &["1"]);
+    all_tasks_until(&setup, |rows| rows[0][4] == "dropped");
+
+    let again = adopt(&setup, &["my-prs"]);
+
+    assert_eq!(again, "github:owner/repo#7: task 1 owns it\n");
+    assert_eq!(setup.listed(&["tasks", "--all"]).len(), 1);
+}
+
+#[test]
+fn a_parked_task_ends_on_a_close_that_arrived_before_its_adopt_request() {
+    for (merged, state) in [(true, "done"), (false, "dropped")] {
+        let setup = adopting(&format!("adopt-closed-before-{state}"), &[7]);
+        setup.publish(&on_alice_pull(
+            "github.pull_request.closed",
+            json!({ "merged": merged, "open": false, "github_id": 400 }),
+        ));
+        setup.until("inbox", |rows| rows.len() == 1);
+
+        adopt(&setup, &["my-prs", "7"]);
+
+        all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == state);
+        assert!(setup.rows("runs").is_empty());
+    }
+}
+
+/// A review on alice's pull request 7 that saw it `open` at its poll.
+fn polled_review(open: bool, id: u64) -> Message {
+    on_alice_pull(
+        "github.pull_request_review.submitted",
+        json!({
+            "actor": "bob", "state": "commented", "body": "Late note", "github_id": id,
+            "open": open,
+            "url": format!("https://github.com/owner/repo/pull/7#pullrequestreview-{id}")
+        }),
+    )
+}
+
+#[test]
+fn a_parked_task_waits_for_the_close_after_a_review_that_saw_its_pull_request_closed() {
+    let setup = adopting("adopt-review-before-close", &[7]);
+    adopt(&setup, &["my-prs", "7"]);
+    all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == "held");
+
+    setup.publish(&polled_review(false, 801));
+
+    setup.until("inbox", |rows| rows.len() == 2);
+    assert_eq!(setup.listed(&["tasks", "--all"])[0][4], "held");
+
+    setup.publish(&on_alice_pull(
+        "github.pull_request.closed",
+        json!({ "merged": true, "github_id": 400 }),
+    ));
+
+    all_tasks_until(&setup, |rows| rows[0][4] == "done");
+    assert!(setup.rows("runs").is_empty());
+}
+
+#[test]
+fn a_parked_task_stays_parked_when_its_pull_request_reopened_before_its_adopt_request() {
+    let setup = adopting("adopt-reopened", &[7]);
+    setup.publish(&on_alice_pull(
+        "github.pull_request.closed",
+        json!({ "merged": false, "open": false, "github_id": 400 }),
+    ));
+    setup.publish(&polled_review(true, 801));
+    setup.until("inbox", |rows| rows.len() == 2);
+
+    adopt(&setup, &["my-prs", "7"]);
+
+    all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == "held");
+
+    setup.publish(&polled_review(false, 802));
+
+    setup.until("inbox", |rows| rows.len() == 4);
+    assert_eq!(setup.listed(&["tasks", "--all"])[0][4], "held");
+}
+
+#[test]
+fn a_parked_task_is_done_when_a_late_open_review_follows_the_merge_before_its_adopt_request() {
+    let setup = adopting("adopt-merged-then-open", &[7]);
+    setup.publish(&on_alice_pull(
+        "github.pull_request.closed",
+        json!({ "merged": true, "open": false, "github_id": 400 }),
+    ));
+    setup.publish(&polled_review(true, 801));
+    setup.until("inbox", |rows| rows.len() == 2);
+
+    adopt(&setup, &["my-prs", "7"]);
+
+    all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == "done");
+    assert!(setup.rows("runs").is_empty());
+}
+
+#[test]
+fn adopt_skips_a_pull_request_whose_head_branch_an_active_task_owns() {
+    let mut setup = Setup::new("adopt-branch-owner");
+    fs::write(setup.dir.join("factory/triggers/my-prs.toml"), MY_PRS).unwrap();
+    fs::write(
+        setup.dir.join("fake/prs"),
+        r#"[{"number":7,"title":"Own","url":"https://github.com/owner/repo/pull/7",
+             "headRefName":"priory/1","isCrossRepository":false},
+            {"number":8,"title":"Fork","url":"https://github.com/owner/repo/pull/8",
+             "headRefName":"priory/1","isCrossRepository":true}]"#,
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    let adopted = adopt(&setup, &["my-prs"]);
+
+    assert_eq!(
+        adopted,
+        "github:owner/repo#7: task 1 owns it\nadopted github:owner/repo#8\n"
+    );
+}
+
+#[test]
+fn a_parked_task_is_left_out_of_the_queue_and_the_task_list() {
+    let setup = adopting("adopt-hidden", &[7]);
+    adopt(&setup, &["my-prs", "7"]);
+    all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == "held");
+    let factory = setup.dir.join("factory");
+
+    let queue = setup.priory(&["queue", factory.to_str().unwrap(), "--json"]);
+    let tasks = setup.priory(&["tasks", "--json"]);
+
+    assert!(queue.status.success(), "{queue:?}");
+    let queue: serde_json::Value = serde_json::from_slice(&queue.stdout).unwrap();
+    assert_eq!(queue["waiting"], json!([]), "{queue}");
+    assert!(tasks.status.success(), "{tasks:?}");
+    let tasks: serde_json::Value = serde_json::from_slice(&tasks.stdout).unwrap();
+    assert_eq!(tasks["tasks"], json!([]), "{tasks}");
+    assert_eq!(setup.listed(&["tasks", "--all"]).len(), 1);
+    let task = person(&setup, "task", &["1"]);
+    assert!(task.contains("step implement, held"), "{task}");
+    let found = person(&setup, "search", &["Adopted", "--state", "held"]);
+    assert!(found.contains("owner/repo#7"), "{found}");
+}
+
+/// A factory whose `[runs] attach` command writes its arguments and ids to `attached`, then exits
+/// with `exit`. The review step, after implement, sets `attach = true`; with `flagged`, implement
+/// does too.
+fn attaching(name: &str, flagged: bool, exit: u8) -> Setup {
+    let mut workflow = WORKFLOW.replace("passed = \"done\"", "passed = \"review\"")
+        + "\n[[steps]]\nid = \"review\"\ndecides = \"model\"\nagent = \"reviewer\"\n\
+           prompt = \"Review the change.\"\nattach = true\neffect = \"reversible\"\n\
+           next = { passed = \"done\", failed = \"stop\" }\n";
+    if flagged {
+        workflow = workflow.replace(
+            "prompt = \"Implement the issue.\"\n",
+            "prompt = \"Implement the issue.\"\nattach = true\n",
+        );
+    }
+    let setup = Setup::with_workflow(name, &workflow);
+    let factory = setup.dir.join("factory");
+    fs::write(
+        factory.join("factory.toml"),
+        "name = \"demo\"\n[runs]\nattach = \"bin/attach\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(factory.join("bin")).unwrap();
+    let script = factory.join("bin/attach");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\necho \"$1 $2 $PRIORY_TASK $PRIORY_RUN $PRIORY_TMUX $PRIORY_EXE\" >> attached\n\
+             echo 'hc: no such space' >&2\nexit {exit}\n"
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    setup
+}
+
+/// The lines the attach command wrote, sorted, once each of `runs` has one.
+fn attached(setup: &Setup, runs: &[i64]) -> Vec<String> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let text = fs::read_to_string(setup.dir.join("factory/attached")).unwrap_or_default();
+        let mut lines: Vec<_> = text.lines().map(str::to_owned).collect();
+        lines.sort();
+        let has = |run: &i64| {
+            lines
+                .iter()
+                .any(|line| line.starts_with(&format!("1 {run} ")))
+        };
+        if runs.iter().all(has) {
+            return lines;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{lines:?}\ndaemon: {}",
+            fs::read_to_string(setup.dir.join("daemon.log")).unwrap_or_default()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// The line the attach command writes for run `run` of task 1.
+fn attach_line(run: i64) -> String {
+    format!("1 {run} 1 {run} priory-1 {}", env!("CARGO_BIN_EXE_priory"))
+}
+
+#[test]
+fn attach_runs_the_command_once_with_the_task_and_run_when_a_flagged_steps_run_starts() {
+    let mut setup = attaching("attach-flagged", true, 0);
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+
+    // The review step's line comes after any second line of the implement step's run.
+    assert_eq!(attached(&setup, &[1, 2]), [attach_line(1), attach_line(2)]);
+    assert!(traced(&setup, "factory.run.attach_failed").is_empty());
+}
+
+#[test]
+fn attach_runs_nothing_for_a_step_without_attach() {
+    let mut setup = attaching("attach-unflagged", false, 0);
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+
+    assert_eq!(attached(&setup, &[2]), [attach_line(2)]);
+}
+
+#[test]
+fn attach_runs_the_command_of_a_relative_factory_folder() {
+    let mut setup = attaching("attach-relative", true, 0);
+    setup.publish(&requested(42));
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+
+    setup.start_on(exe, &[], Path::new("factory"));
+
+    assert_eq!(attached(&setup, &[1]), [attach_line(1)]);
+}
+
+#[test]
+fn a_failing_attach_command_leaves_the_run_running_and_records_why() {
+    let mut setup = attaching("attach-failing", true, 3);
+    setup.publish(&requested(42));
+    setup.start();
+
+    let record = until_traced(&setup, "factory.run.attach_failed");
+
+    assert_eq!(
+        [
+            &record["data"]["task"],
+            &record["data"]["run"],
+            &record["data"]["step"],
+            &record["data"]["reason"],
+            &record["data"]["output"],
+        ],
+        ["1", "1", "implement", "exit 3", "hc: no such space"]
+    );
+    assert_eq!(setup.rows("tasks")[0][4], "running");
+    assert_eq!(setup.rows("runs")[0][7], "-");
 }

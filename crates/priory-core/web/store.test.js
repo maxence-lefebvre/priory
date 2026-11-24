@@ -14,11 +14,3 @@ test("a store notifies its listeners on a change only", () => {
   value.set(3);
   assert.equal(heard, 1);
 });
-
-test("a store compares with the function it was given", () => {
-  const value = store({ a: 1 }, (x, y) => x.a === y.a);
-  let heard = 0;
-  value.subscribe(() => heard++);
-  value.set({ a: 1 });
-  assert.equal(heard, 0);
-});

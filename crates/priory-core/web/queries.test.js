@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { client, observed, params, readAll, sameListings, sameParams } from "./queries.js";
+import { QueryObserver, notifyManager } from "@tanstack/react-query";
+import { client, land, params, readAll, sameListings } from "./queries.js";
+
+// A refresh: a read, then its landing.
+const refresh = async (cache, api, wanted = params()) => land(cache, await readAll(cache, api, wanted), wanted);
 
 // A cache that drops its queries, and their timers, once the test ends.
 function fresh(t) {
@@ -32,17 +36,17 @@ function server() {
 test("a read with nothing new keeps every listing the same object", async (t) => {
   const { api } = server();
   const cache = fresh(t);
-  const first = await readAll(cache, api, params());
-  const second = await readAll(cache, api, params());
+  const first = await refresh(cache, api);
+  const second = await refresh(cache, api);
   assert.ok(sameListings(first, second));
 });
 
 test("a read keeps the listings that did not change and replaces the one that did", async (t) => {
   const { api, body } = server();
   const cache = fresh(t);
-  const first = await readAll(cache, api, params());
+  const first = await refresh(cache, api);
   body.tasks.tasks[0].title = "b";
-  const second = await readAll(cache, api, params());
+  const second = await refresh(cache, api);
   assert.equal(second.asks, first.asks);
   assert.notEqual(second.tasks, first.tasks);
   assert.equal(second.tasks.tasks[0].title, "b");
@@ -52,10 +56,10 @@ test("a read keeps the listings that did not change and replaces the one that di
 test("the cache shows the last listings until a re-read lands", async (t) => {
   const { api, body, hold } = server();
   const cache = fresh(t);
-  await readAll(cache, api, params());
+  await refresh(cache, api);
   body.tasks.tasks[0].title = "b";
   const release = hold();
-  const reading = readAll(cache, api, params());
+  const reading = refresh(cache, api);
   assert.equal(cache.getQueryData(["tasks", false]).tasks[0].title, "a");
   release();
   await reading;
@@ -65,26 +69,26 @@ test("the cache shows the last listings until a re-read lands", async (t) => {
 test("a failed re-read throws and keeps the last listings", async (t) => {
   const { api, failing } = server();
   const cache = fresh(t);
-  const first = await readAll(cache, api, params());
+  const first = await refresh(cache, api);
   failing.add("desk");
-  await assert.rejects(readAll(cache, api, params()), /answered 500/);
+  await assert.rejects(refresh(cache, api), /answered 500/);
   assert.equal(cache.getQueryData(["desk"]), first.desk);
-  assert.equal(cache.getQueryState(["desk"]).status, "error");
+  assert.ok(sameListings(Object.fromEntries(Object.keys(first).map((name) => [name, cache.getQueryCache().findAll({ queryKey: [name] })[0].state.data])), first));
 });
 
 test("the views and links are read once, the listings every time", async (t) => {
   const { api, paths } = server();
   const cache = fresh(t);
-  await readAll(cache, api, params());
+  await refresh(cache, api);
   paths.length = 0;
-  await readAll(cache, api, params());
+  await refresh(cache, api);
   assert.deepEqual(paths.sort(), ["/api/asks", "/api/desk", "/api/queue", "/api/reports", "/api/reports/latest", "/api/runs", "/api/tasks"]);
 });
 
 test("older rows read the listing in full, under a key of its own", async (t) => {
   const { api, paths } = server();
   const cache = fresh(t);
-  await readAll(cache, api, params({ asks: false, tasks: true, runs: false }, 7));
+  await refresh(cache, api, params({ asks: false, tasks: true, runs: false }, 7));
   assert.ok(paths.includes("/api/tasks?all=1"));
   assert.ok(paths.includes("/api/reports/7"));
   assert.ok(cache.getQueryData(["tasks", true]));
@@ -97,21 +101,39 @@ test("a report the arrows reached that is gone reads as none", async (t) => {
     if (path === "/api/reports/9") throw Object.assign(new Error("gone"), { status: 404 });
     return path === "/api/links" ? { links: [] } : path === "/api/reports" ? { reports: [] } : { revision: 1 };
   };
-  const read = await readAll(cache, api, params(undefined, 9));
+  const read = await refresh(cache, api, params(undefined, 9));
   assert.equal(read.report, null);
 });
 
-test("useQueries' listings are none until every listing has data, then each by name", () => {
-  const { queries, combine } = observed(async () => ({}), params());
-  assert.equal(queries.length, 9);
-  assert.ok(queries.every((query) => typeof query.placeholderData === "function"));
-  assert.equal(combine(queries.map(() => ({ data: undefined }))), null);
-  const all = combine(queries.map((query) => ({ data: query.queryKey[0] })));
-  assert.equal(all.tasks, "tasks");
-  assert.equal(all.reports, "reports");
+test("a read lands all its listings in one notification", async (t) => {
+  const { api, body } = server();
+  const cache = fresh(t);
+  await refresh(cache, api);
+  for (const listing of Object.values(body)) listing.revision = 2;
+  const read = await readAll(cache, api, params());
+  let heard = 0;
+  for (const name of ["asks", "tasks"]) t.after(new QueryObserver(cache, { queryKey: [name, false], enabled: false }).subscribe(notifyManager.batchCalls(() => heard++)));
+  let flushes = 0;
+  notifyManager.setBatchNotifyFunction((flush) => (flushes++, flush()));
+  t.after(() => notifyManager.setBatchNotifyFunction((flush) => flush()));
+  land(cache, read, params());
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(heard, 2);
+  assert.equal(flushes, 1);
 });
 
-test("params compare by value", () => {
-  assert.ok(sameParams(params(), params()));
-  assert.ok(!sameParams(params(), params({ asks: true, tasks: false, runs: false })));
+test("overlapping reads each ask the server, and write nothing until they land", async (t) => {
+  const { api, body, paths, hold } = server();
+  const cache = fresh(t);
+  const first = await refresh(cache, api);
+  paths.length = 0;
+  const release = hold();
+  const superseded = readAll(cache, api, params());
+  const latest = readAll(cache, api, params());
+  assert.equal(paths.length, 14);
+  body.tasks.tasks[0].title = "b";
+  release();
+  await Promise.all([superseded, latest]);
+  assert.equal(cache.getQueryData(["tasks", false]), first.tasks);
+  assert.equal(land(cache, await latest, params()).tasks.tasks[0].title, "b");
 });

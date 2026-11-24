@@ -3,12 +3,13 @@ import assert from "node:assert/strict";
 import { follow } from "./events.js";
 
 // Runs follow() over scripted answers to the long poll, and records what it did.
-async function run({ ready = () => 4, answers, refreshed = true }) {
+async function run({ ready = () => 4, held = ready, answers, refreshed = true }) {
   const did = [];
   let turns = answers.length;
   await follow({
     live: () => turns-- > 0,
     ready,
+    held,
     wait: async (since) => {
       did.push(`wait ${since}`);
       const answer = answers.shift();
@@ -40,4 +41,8 @@ test("a failed read after a move pauses 5 s", async () => {
 
 test("no wait while signed out, hidden or before the first read", async () => {
   assert.deepEqual(await run({ ready: () => undefined, answers: [5] }), ["sleep 1000"]);
+});
+
+test("a revision that a refresh took during the wait reads nothing again", async () => {
+  assert.deepEqual(await run({ held: () => 5, answers: [5] }), ["wait 4"]);
 });

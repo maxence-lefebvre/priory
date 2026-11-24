@@ -37,6 +37,7 @@ A task gets its resources at these moments:
 
 | When | Resource | Example |
 | ---- | -------- | ------- |
+| `priory adopt` parks it on a pull request | that pull request as its key, subscribed, as the first row does | `github:owner/name#57` |
 | The task is created | its trigger key, and a subscription to it when the key names an issue, a pull request, a Linear issue or a Slack thread | `github:owner/name#42`, `linear:ENG-7`, `cli:docs-1` |
 | A request whose `pre` script printed another `key` creates the task or joins it | a subscription to the issue, pull request or thread the trigger named before the script | `github:owner/name#43` |
 | Its first run starts | its branch | `github:owner/name@priory/3` |
@@ -154,6 +155,45 @@ That task's key is the pull request, `github:owner/name#42`, and it subscribes t
 A `priory request --key github:owner/name#42` keys its task the same way, so that task subscribes
 to the pull request too (see [cli.md](../intake/cli.md)).
 
+### Parked pull requests
+
+A pull request opened by hand has no task, so its events reach none. `priory adopt` parks a task
+on it (see [adopting-pull-requests.md](../adopting-pull-requests.md)). The task is keyed by the
+pull request, so it owns and subscribes to it as a comment trigger's task does. Its source is a
+CLI request, and the pull request still counts as its own, so after its first run the checks gate
+and the merge apply to it as they do to a pull request that `open-pr` opened (see
+[waits.md](waits.md#done-and-checks)).
+
+The task is `held` with one condition, `parked`. A held task has no run, no worktree and no
+process, so it costs nothing while it waits. Every event of the pull request, a comment, a review,
+a check or a push, is `kept` on it with no prompt, and its Inbox lists them.
+
+1. Ana comments on pull request 42. Task 5 is parked on it, so it keeps the event.
+2. The comment trigger's request for pull request 42 finds task 5 parked. Its outcome is
+   `released`, and task 5 is `queued`.
+3. Task 5's first run reads the step's prompt, the adopt request, then every event it kept, the
+   comment among them.
+
+So the agent starts exactly when the trigger would have started a task. A comment the trigger does
+not match stays kept, and the next run reads it. `priory release` starts the task by hand.
+
+While the task is parked, the pull request's `github.pull_request.closed` ends it: `done` with
+the reason `<key> merged while parked` when it merged, else `dropped` with `<key> closed while
+parked`. The newest closed event decides, even one older than the adopt request, unless a later
+event from before the adopt carries `open: true`. A merge stands whatever came after it. A reopen
+after the drop does not bring the task back. An event with `open: false` ends nothing: only the
+closed event says whether the pull request merged. If a parked task's close never arrives, run
+`priory cancel ID`. The desk, the Queue's waiting list and `priory tasks` list no row for a parked
+task. `priory tasks --all` shows it held, with the reason
+`held: adopted for trigger <name>, until a comment or review trigger fires on <key>`.
+
+`priory adopt` skips a pull request that a task in any state owns, and one whose head branch in
+the repository an active task owns, even before its first event arrives. A comment reopens a done
+task, and `priory revive` brings back a failed or dropped one.
+
+Events of the pull request from before the adopt stay unrouted: the daemon routes only new
+messages.
+
 ### An agent's own comments
 
 Agents post with the person's own `gh` login, so the login alone cannot tell an agent's comment from
@@ -183,6 +223,7 @@ Each inbox entry gets one of these outcomes:
 | ----------------------------------------- | --------- | -------------------------------------------- |
 | A schedule's or review request's `factory.task.requested`, with a task asleep at a model step owning its key | `woke` | that task, now `ready` |
 | A schedule's or review request's `factory.task.requested`, with a task in another active state owning its key | `coalesced` | that task, unchanged |
+| A comment or review trigger's `factory.task.requested`, with a parked task owning its pull request | `released` | that task, now `queued` (see [Parked pull requests](#parked-pull-requests)) |
 | A comment or review trigger's `factory.task.requested`, with a task its comment reached or an active task owning its pull request | `coalesced` | that task, unchanged |
 | A comment or review trigger's `factory.task.requested`, with no such task and the pull request's newest task failed or dropped | `ignored` | none |
 | A review, comment or review thread comment, with no active task owning a resource it names, and a done task it reopens | `reopened` | that task, now `ready` at its reopen step |
@@ -227,6 +268,7 @@ task's wait it fired. Together they say what the event did:
 | `woke` | `confirmed` | It woke the asleep task, and its prompt was delivered |
 | `reopened` | `confirmed` | It reopened the done task, and its prompt was delivered |
 | `coalesced` | null | A schedule firing or review request that the task already covered |
+| `released` | null | A comment or review trigger's request that released the parked task: its first run reads the events it kept |
 | `said` | `queued` or `confirmed` | A repeated `priory request` for the task's key: its text is queued, then delivered |
 | `ignored` | `confirmed` | The task's source event, which its first prompt carried |
 | `kept` | `queued` | Its prompt is still queued: for after the current turn, or for the next run |
@@ -411,6 +453,8 @@ Feedback reopened this done task as generation 2: Ana replied in slack:C0123:176
 
 The task is `ready`, so its next run resumes the session of the step's agent. The daemon appends a
 `factory.task.reopened` trace record (see [trace.md](trace.md)).
+
+A person reopens a done task with [`priory say`](desk.md#say) while its pull request is open.
 
 A prompt that carries feedback, on a reopen or any wake, ends with the rule to sort each item as
 `trivial`, `nothing-to-do` or `persons-call`, and the result records the classes (see [Review

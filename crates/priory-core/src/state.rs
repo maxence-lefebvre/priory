@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 107;
+const VERSION: i64 = 112;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1901,6 +1901,105 @@ ALTER TABLE runs ADD COLUMN sandbox TEXT;
 PRAGMA user_version = 107;
 ";
 
+// An outside ask has no task, and a person snoozes it too.
+const SCHEMA_108: &str = concat!(
+    "
+CREATE TABLE snoozes_108 (
+  kind        TEXT NOT NULL CHECK (kind IN ('ask', 'task', 'prompt')),
+  item        INTEGER NOT NULL,
+  task        INTEGER REFERENCES tasks (id),
+  snoozed     TEXT NOT NULL,
+  until       TEXT NOT NULL,
+  back        TEXT,
+  back_reason TEXT,
+  ended       TEXT,
+  PRIMARY KEY (kind, item)
+);
+INSERT INTO snoozes_108 SELECT kind, item, task, snoozed, until, back, back_reason, ended FROM snoozes;
+DROP TABLE snoozes;
+PRAGMA legacy_alter_table = ON;
+ALTER TABLE snoozes_108 RENAME TO snoozes;
+PRAGMA legacy_alter_table = OFF;
+",
+    bumps!("snoozes"),
+    "PRAGMA user_version = 108;
+"
+);
+
+// A parked hold: a task adopted onto a pull request, which a trigger's request releases.
+const SCHEMA_109: &str = concat!(
+    "CREATE TABLE holds_109 (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  task        INTEGER NOT NULL REFERENCES tasks (id),
+  reason      TEXT NOT NULL,
+  kind        TEXT NOT NULL CHECK (kind IN
+                ('person', 'time', 'task', 'merge', 'blockers', 'issue', 'merged', 'waiting', 'parked')),
+  until       TEXT,
+  target      INTEGER REFERENCES tasks (id),
+  resource    TEXT,
+  if_closed   TEXT CHECK (if_closed IN ('release', 'drop', 'ask')),
+  resume      TEXT NOT NULL CHECK (resume IN ('queued', 'ready')),
+  ask         INTEGER REFERENCES asks (id),
+  created     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  met         TEXT,
+  met_as      TEXT,
+  released    TEXT,
+  released_as TEXT
+);
+INSERT INTO holds_109 SELECT id, task, reason, kind, until, target, resource, if_closed, resume, ask,
+  created, met, met_as, released, released_as FROM holds;
+DROP TABLE holds;
+ALTER TABLE holds_109 RENAME TO holds;
+CREATE INDEX open_holds ON holds (task) WHERE released IS NULL;
+",
+    bumps!("holds"),
+    "PRAGMA user_version = 109;
+"
+);
+
+// Whether a run started under `direnv exec`: 1, then 2 once the daemon saw direnv fail and the
+// harness start without the `.envrc`.
+const SCHEMA_110: &str = "
+ALTER TABLE runs ADD COLUMN direnv INTEGER;
+PRAGMA user_version = 110;
+";
+
+// A memory grant that timed out, whose request time a retry of its task's command keeps.
+const SCHEMA_111: &str = "
+CREATE TABLE lapses (
+  task    INTEGER NOT NULL REFERENCES tasks (id),
+  command TEXT NOT NULL,
+  bytes   INTEGER NOT NULL,
+  created TEXT NOT NULL,
+  lapsed  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+PRAGMA user_version = 111;
+";
+
+// A scheduled sweep script runs outside any stall.
+const SCHEMA_112: &str = concat!(
+    "CREATE TABLE sweeps_112 (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  stall   INTEGER REFERENCES stalls (id),
+  script  TEXT NOT NULL,
+  started TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  ended   TEXT,
+  status  TEXT,
+  output  TEXT,
+  pid     INTEGER,
+  pid_started INTEGER
+);
+INSERT INTO sweeps_112 SELECT id, stall, script, started, ended, status, output, pid, pid_started
+  FROM sweeps;
+DROP TABLE sweeps;
+ALTER TABLE sweeps_112 RENAME TO sweeps;
+CREATE INDEX sweeps_by_script ON sweeps (script, started);
+",
+    bumps!("sweeps"),
+    "PRAGMA user_version = 112;
+"
+);
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1916,7 +2015,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
-    SCHEMA_106, SCHEMA_107,
+    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -2378,7 +2477,14 @@ pub(crate) fn route_in(
             }
             (Some(id), "created")
         }
-        Decision::Keep(id) if feedback => (Some(id), "coalesced"),
+        // A parked task's release starts its first run, which reads the events it kept.
+        Decision::Keep(id) if feedback => (
+            Some(id),
+            match crate::hold::unpark(tx, id, message.data["trigger"].as_str().unwrap_or("?"))? {
+                true => "released",
+                false => "coalesced",
+            },
+        ),
         Decision::Keep(id) if route::tick(message, factory) => (
             Some(id),
             if wakes(tx, id, factory)? {
@@ -2975,7 +3081,8 @@ pub fn merges(db: &Connection, since: &str) -> rusqlite::Result<Vec<priory_intak
            AND json_extract(data, '$.failing') <= (SELECT count(*) FROM inbox AS red
              WHERE red.type = ?3 AND json_extract(red.data, '$.repo') = json_extract(closed.data, '$.repo')
              AND json_extract(red.data, '$.head_sha') = json_extract(closed.data, '$.merge_commit')
-             AND json_extract(red.data, '$.conclusion') NOT IN ('success', 'neutral', 'skipped')))
+             AND json_extract(red.data, '$.conclusion') NOT IN ('success', 'neutral', 'skipped')
+             AND json_extract(red.data, '$.superseded_by') IS NULL))
          ORDER BY time",
     )?
     .query_map(params![CLOSED, since, CHECKED], |row| {
@@ -3114,6 +3221,22 @@ fn owners(tx: &Transaction, resources: &[String]) -> rusqlite::Result<Vec<Task>>
     )?
     .query_map([resources], |row| Ok(Task { id: row.get(0)? }))?
     .collect()
+}
+
+/// The newest task in any state that owns `resource`, by key, claim, wait or subscription, or the
+/// newest active task that owns `branch`, the resource of its pull request's head branch.
+pub fn any_owner(
+    db: &Connection,
+    resource: &str,
+    branch: Option<&str>,
+) -> rusqlite::Result<Option<i64>> {
+    db.query_row(
+        "SELECT coalesce((SELECT max(task) FROM owned WHERE resource = ?1),
+           (SELECT max(owns.task) FROM owns JOIN tasks ON tasks.id = owns.task
+            WHERE owns.resource = ?2 AND tasks.state NOT IN ('done', 'failed', 'dropped')))",
+        params![resource, branch],
+        |row| row.get(0),
+    )
 }
 
 /// What `priory attach` names: a task, which stands for its live run, or one run.
@@ -3281,6 +3404,16 @@ pub(crate) struct Admission {
     pub lane: Option<String>,
 }
 
+/// One pass over the queue.
+pub(crate) struct Pass {
+    /// The task to start, if any. The pass stops at it.
+    pub admission: Option<Admission>,
+    /// What live runs and held grants reserved in this pass.
+    pub promised: room::Need,
+    /// The tasks passed that wait for room, by what their queue's head lacks.
+    pub waiting: BTreeMap<&'static str, u64>,
+}
+
 /// The first queued or ready task at a model step, in start order, that fits in the runner's room.
 /// Each one before it gets the reason it waits.
 pub(crate) fn admissible<'r>(
@@ -3291,10 +3424,13 @@ pub(crate) fn admissible<'r>(
     room: impl Fn() -> &'r Result<Room, String>,
     watched: &dyn Fn(&str) -> bool,
     checking: &dyn Fn(i64) -> bool,
-) -> rusqlite::Result<Option<Admission>> {
+) -> rusqlite::Result<Pass> {
     let mut statement = db.prepare(&format!(
         "SELECT id, workflow, step, trigger, state = 'queued', repo, preempted, lane FROM tasks
              WHERE state IN ('queued', 'ready')
+             -- A task marked to be held while it ran is held on the next tick.
+             AND NOT EXISTS (SELECT 1 FROM holds WHERE holds.task = tasks.id
+               AND holds.released IS NULL)
              -- A task waits while a recipe runs in its worktree, or a teardown is owed there.
              AND NOT EXISTS (SELECT 1 FROM recipes WHERE recipes.task = tasks.id
                AND recipes.ended IS NULL
@@ -3325,6 +3461,7 @@ pub(crate) fn admissible<'r>(
     let book = crate::spend::Book::new(factory);
     // The first task that waits for room: no task behind it starts, so it is never starved.
     let mut head = None;
+    let mut waiting = BTreeMap::new();
     let mut stall = None;
     let mut planned = false;
     for admission in queued {
@@ -3386,7 +3523,10 @@ pub(crate) fn admissible<'r>(
             (Some(reason), _) => Some(reason),
             // The sweeper frees the room the queue waits for, so it never waits for room itself.
             (None, _) if admission.trigger == crate::stall::TRIGGER => None,
-            (None, Some(head)) => Some(format!("waits behind task {head}, which waits for room")),
+            (None, Some((head, cause))) => {
+                *waiting.entry(cause).or_default() += 1;
+                Some(format!("waits behind task {head}, which waits for room"))
+            }
             (None, None) => {
                 let need = room::need(agent.map(|(_, agent)| agent));
                 match room() {
@@ -3404,14 +3544,20 @@ pub(crate) fn admissible<'r>(
                             )?;
                             continue;
                         }
+                        if let Some(short) = &short {
+                            *waiting.entry(short.cause()).or_default() += 1;
+                        }
                         // A task that can never fit would hold the queue forever.
-                        if short.is_some() && room::fits_ever(measured, share, need) {
-                            head = Some(admission.task);
+                        if let Some(short) = short
+                            .as_ref()
+                            .filter(|_| room::fits_ever(measured, share, need))
+                        {
+                            head = Some((admission.task, short.cause()));
                             // Waiting only for live runs to end is backpressure, not a stall.
                             stall = room::wait(measured, share, room::Need::default(), need)
                                 .map(|short| (admission.task, short));
                             // Only memory and declared disk are promises a stop gives back.
-                            if short.as_ref().is_some_and(|short| short.resource != "CPU") {
+                            if short.resource != "CPU" {
                                 planned = true;
                                 let urgent = crate::preempt::Head {
                                     task: admission.task,
@@ -3429,14 +3575,19 @@ pub(crate) fn admissible<'r>(
                         reason
                     }
                     Err(error) => {
-                        head = Some(admission.task);
+                        head = Some((admission.task, room::UNMEASURED));
+                        *waiting.entry(room::UNMEASURED).or_default() += 1;
                         Some(format!("waits for room: cannot measure it: {error}"))
                     }
                 }
             }
         };
         let Some(mut reason) = waits else {
-            return Ok(Some(admission));
+            return Ok(Pass {
+                admission: Some(admission),
+                promised,
+                waiting,
+            });
         };
         // A stopped task waits for the room its stop made; its own plan, if any, says more.
         if let Some(head) = admission.preempted
@@ -3455,7 +3606,11 @@ pub(crate) fn admissible<'r>(
         crate::preempt::withdraw(db)?;
     }
     crate::stall::record(db, stall.as_ref().map(|(task, short)| (*task, short)))?;
-    Ok(None)
+    Ok(Pass {
+        admission: None,
+        promised,
+        waiting,
+    })
 }
 
 /// Why a task waits for its lane's or trigger's `max_running`: `waits: lane core/intake has 2
@@ -4164,6 +4319,17 @@ fn share(tx: &Transaction, run: &NewRun) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Queues again the prompt `run` was launched with when it never reached `SessionStart`, so it never
+/// took it.
+pub(crate) fn requeue_unready(tx: &Transaction, run: i64) -> rusqlite::Result<()> {
+    tx.execute(
+        "UPDATE outbox SET state = 'queued', run = NULL, attempted = NULL
+         WHERE run = ?1 AND state IN ('attempted', 'uncertain') AND (SELECT NOT ready FROM runs WHERE id = ?1)",
+        [run],
+    )
+    .map(drop)
+}
+
 /// Blocks `task` with `reason`, ending its live run first as `ended_as`, if it has one, after reading
 /// its transcript.
 pub(crate) fn block(
@@ -4184,20 +4350,18 @@ pub(crate) fn block(
     if let Some(run) = live {
         // The step goes on after a resume, so the turn cut short still counts toward it.
         crate::trace::account(&tx, trace, run, None)?;
-        // A run that never reached SessionStart never took the prompt it was launched with.
-        tx.execute(
-            "UPDATE outbox SET state = 'queued', run = NULL, attempted = NULL
-             WHERE run = ?1 AND state IN ('attempted', 'uncertain') AND (SELECT NOT ready FROM runs WHERE id = ?1)",
-            [run],
-        )?;
+        requeue_unready(&tx, run)?;
     }
     tx.execute(
         &format!("UPDATE runs SET ended = {NOW}, ended_as = ?2 WHERE task = ?1 AND ended IS NULL"),
         params![task, ended_as],
     )?;
+    // A run that started without its `.envrc` keeps saying so, since that may be why it stopped.
     tx.execute(
-        "UPDATE tasks SET state = 'blocked', reason = ?2 WHERE id = ?1",
-        params![task, reason],
+        "UPDATE tasks SET state = 'blocked', reason = ?2 || coalesce('; ' || CASE
+           WHEN (SELECT direnv FROM runs WHERE id = ?3) = 2 THEN reason END, '')
+         WHERE id = ?1",
+        params![task, reason, live],
     )?;
     tx.commit()
 }
@@ -4222,23 +4386,44 @@ pub(crate) struct LiveRun {
     pub worktree: Option<String>,
     /// Its `SessionStart` arrived.
     pub ready: bool,
-    /// No `SessionStart` arrived within `READY_WITHIN` of the start.
-    pub late: bool,
+    /// Seconds since its start while no `SessionStart` has arrived.
+    pub waited: Option<i64>,
+    /// 1 when it started under `direnv exec`, 2 once direnv failed and it started without, else 0.
+    pub direnv: i64,
     /// How long its current turn has run, in seconds.
     pub turn: Option<i64>,
     /// Claude's message for the permission prompt it shows, if any.
     pub prompted: Option<String>,
 }
 
-pub(crate) const READY_WITHIN: &str = "60 seconds";
+/// How many seconds a run may take to send `SessionStart`. A run under direnv may build a cold nix
+/// shell first, and a run with recorded trust is slow, not stuck on the trust dialog.
+pub(crate) fn ready_within(direnv: i64, trusted: bool) -> i64 {
+    match (direnv, trusted) {
+        (0, false) => 60,
+        (0, true) => 180,
+        _ => 600,
+    }
+}
+
+/// Marks run `run` as started under direnv (1), or as started without its `.envrc` after direnv
+/// failed (2).
+pub(crate) fn direnv(db: &Connection, run: i64, state: i64) -> rusqlite::Result<()> {
+    db.execute(
+        "UPDATE runs SET direnv = ?2 WHERE id = ?1",
+        params![run, state],
+    )?;
+    Ok(())
+}
 
 pub(crate) fn live(db: &Connection) -> rusqlite::Result<Vec<LiveRun>> {
-    let mut statement = db.prepare(&format!(
+    let mut statement = db.prepare(
         "SELECT runs.id, runs.task, runs.step, tasks.workflow, runs.tmux, runs.session, tasks.worktree,
-         NOT runs.ready AND runs.started <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-{READY_WITHIN}'),
-         unixepoch('now') - unixepoch(runs.turn), runs.prompted, coalesce(runs.agent, ''), runs.ready
-         FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.ended IS NULL ORDER BY runs.id"
-    ))?;
+         CASE WHEN NOT runs.ready THEN unixepoch('now') - unixepoch(runs.started) END,
+         unixepoch('now') - unixepoch(runs.turn), runs.prompted, coalesce(runs.agent, ''), runs.ready,
+         coalesce(runs.direnv, 0)
+         FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.ended IS NULL ORDER BY runs.id",
+    )?;
     statement
         .query_map([], |row| {
             Ok(LiveRun {
@@ -4249,11 +4434,12 @@ pub(crate) fn live(db: &Connection) -> rusqlite::Result<Vec<LiveRun>> {
                 tmux: row.get(4)?,
                 session: row.get(5)?,
                 worktree: row.get(6)?,
-                late: row.get(7)?,
+                waited: row.get(7)?,
                 turn: row.get(8)?,
                 prompted: row.get(9)?,
                 agent: row.get(10)?,
                 ready: row.get(11)?,
+                direnv: row.get(12)?,
             })
         })?
         .collect()
@@ -4327,9 +4513,21 @@ pub(crate) fn signal(
         "Stop" => {
             tx.execute("UPDATE runs SET idle = 1, turn = NULL WHERE id = ?1", [run])?;
             let context = crate::trace::account(&tx, trace, run, signal.transcript.as_deref())?;
-            // A run marked for an urgent wake ends here; its resumed session compacts instead.
-            if let Some(head) = crate::preempt::due(&tx, run, watched)? {
-                kill = crate::tools::preempt(&tx, &signal.session, trace, head)?;
+            // A run marked for a hold or an urgent wake ends here; its resumed session compacts instead.
+            if crate::hold::stops(&tx, run, trace.factory)? {
+                kill = crate::tools::stop_marked(
+                    &tx,
+                    &signal.session,
+                    trace,
+                    crate::tools::Stopped::Held,
+                )?;
+            } else if let Some(head) = crate::preempt::due(&tx, run, watched)? {
+                kill = crate::tools::stop_marked(
+                    &tx,
+                    &signal.session,
+                    trace,
+                    crate::tools::Stopped::For(head),
+                )?;
             // The run settles its ask or wait once its compact is typed, so it never sleeps past it.
             // A result carried into the next step on this process compacts there. A run whose gate
             // grades waits, idle, for the verdict, which settles it.
@@ -4764,5 +4962,47 @@ mod promises {
         // Run 1 uses all of its 4 GB, run 2 has no scope, run 3 is the grant's own, and the grant
         // counts all of its 10 GB.
         assert_eq!(promised.memory, 14 * GB);
+    }
+}
+
+#[cfg(test)]
+mod ready_within {
+    use super::*;
+
+    #[test]
+    fn a_run_under_direnv_is_late_only_after_its_longer_window() {
+        let db = memory();
+        for (task, ago, direnv) in [(1, 120, None), (2, 120, Some(1)), (3, 700, Some(1))] {
+            db.execute(
+                "INSERT INTO tasks
+                   (key, workflow, step, state, band, lane, lane_derived, trigger, source, entered)
+                 VALUES ('cli:' || ?1, 'build', 'implement', 'running', 'now', 'cli', 0, 'cli', 'a',
+                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+                [task],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO runs (task, step, agent, tmux, session, started, direnv)
+                 VALUES (?1, 'implement', 'implementer', 'priory-' || ?1, 's' || ?1,
+                   strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-' || ?2 || ' seconds'), ?3)",
+                params![task, ago, direnv],
+            )
+            .unwrap();
+        }
+
+        let late: Vec<(i64, bool, i64)> = live(&db)
+            .unwrap()
+            .into_iter()
+            .map(|run| {
+                let late = run.waited.unwrap() >= ready_within(run.direnv, false);
+                (run.task, late, run.direnv)
+            })
+            .collect();
+
+        assert_eq!(late, [(1, true, 0), (2, false, 1), (3, true, 1)]);
+        assert_eq!(
+            [0, 1, 2].map(|direnv| ready_within(direnv, true)),
+            [180, 600, 600]
+        );
     }
 }

@@ -2,13 +2,13 @@
 // Agent text is untrusted: every value goes through `html`, which escapes it.
 import { ARM_MS, ASK_VIEWS, answeredAsks, answeredBy, askBody, askGroups, askHeading, confidenceNote, openAsksOf, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, optionKey, press, runsCommand, submitted, takesText, writeNote } from "./asks.js";
 import { SPLITS, attentionView, costTiles, dayBars, money, scoreTable, splitTable } from "./costs.js";
-import { addBody, addOutcome } from "./add.js";
+import { addBody, addOutcome, swapLine, withDefaults } from "./add.js";
 import { linked } from "./links.js";
 import { markdown } from "./markdown.js";
 import { around, dossier, nextPick, refusal } from "./reports.js";
 import { checkState, prStack, stateWords } from "./stack.js";
 import { KINDS, edgeStyle, historyRows, lockBadge, nodeShape, timeline, ungatedPairs } from "./flows.js";
-import { droppedNote, droppedWhy, emptyDetail, eventWords, handled, neverOwned, sinceWords, routeAction, unheardActs, unheardNote, unroutedNote } from "./inbox.js";
+import { droppedNote, droppedWhy, emptyDetail, eventWords, handled, neverOwned, requestedWorkflow, sinceWords, routeAction, unheardActs, unheardNote, unroutedNote } from "./inbox.js";
 import { editBody, issueName, laneLayout, momentWords, stages, successors } from "./batches.js";
 import { EARLIER_CAP, KEYS, keyboardSession, paintRows, sayLine, screenRows, screenWatch } from "./terminal.js";
 import { actionNote, arrivalAsk, batchParts, capsuleWords, countHead, countWords, deskBanners, dueParts, plural, memoryNote, memoryTag, mergeSince, nextLink, onRoom, progressView, rowAction, sectionInView, sinceGroups, taskRepo } from "./desk.js";
@@ -16,9 +16,8 @@ import { TASK_VIEWS, elsewhere, filtered, olderPart, remoteActs, remoteId, remot
 import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "./runs.js";
 import { PANELS, TYPED_FIELDS, backTo, pageTitle, taskRead } from "./pages.js";
 import { QUEUE_VIEWS, moveOptions, queueBands, waitReason } from "./queue.js";
-import { client, params, readAll, sameListings, sameParams } from "./queries.js";
+import { client, land, params, readAll, sameListings } from "./queries.js";
 import { go } from "./router.js";
-import { store } from "./store.js";
 
 const ICONS = {
   check: '<path d="M20 6 9 17l-5-5"/>',
@@ -245,12 +244,10 @@ async function api(path) {
   return response.json();
 }
 
-// The server data lives in one QueryClient; main.jsx observes it, refresh() reads it again.
+// The server data lives in one QueryClient; refresh() reads it again.
 export const cache = client();
-// What the next read asks for, and whether a token is set; main.jsx renders from both.
-export const wanted = store(params(), sameParams);
-export const signedIn = store(Boolean(state.token));
-export const revision = () => state.revision;
+// What the long poll waits on: none while signed out or before the first read.
+export const revision = () => (state.token ? state.revision : undefined);
 export const revisionMoved = () => watch.revision();
 export { api, render };
 
@@ -266,14 +263,13 @@ export async function refresh() {
   };
   for (const listing of ["asks", "tasks", "runs"]) state.all[listing] &&= history[listing];
   const asked = params(state.all, state.reportShown);
-  wanted.set(asked);
   try {
     // Taken before the read, so an event between that read and the visit still shows next time.
     const read = new Date().toISOString().replace(/\.\d+Z$/, "Z");
     const listings = await readAll(cache, api, asked);
     // A later call, such as the one that loads older rows, supersedes this one.
     if (call !== state.refreshes) return true;
-    accept(listings, { read, failed });
+    if (!accept(land(cache, listings, asked), { read, failed })) return true;
   } catch (error) {
     // A superseded call, such as one from before a sign-out, must not sign the new session out.
     if (call !== state.refreshes) return true;
@@ -282,12 +278,13 @@ export async function refresh() {
     render();
     return false;
   }
+  render();
   return true;
 }
 
-// Takes a read's listings into state and draws them. A listing that did not change is the same
-// object, so a read with nothing new only repaints the ages, once a minute at most.
-export function accept(listings, { read = new Date().toISOString().replace(/\.\d+Z$/, "Z"), failed = state.failed } = {}) {
+// Takes a read's listings into state, and says whether to draw them. A listing that did not change
+// is the same object, so a read with nothing new only repaints the ages, once a minute at most.
+function accept(listings, { read, failed }) {
   const { views, links, desk, asks: asksList, queue, tasks: tasksList, runs: runsList, report, reports } = listings;
   if (!state.since.opened) Object.assign(state.since, { opened: read, from: desk.last_visit });
   state.since.events = mergeSince(state.since.events, desk.since_you_looked);
@@ -298,7 +295,7 @@ export function accept(listings, { read = new Date().toISOString().replace(/\.\d
   state.cached = false;
   if (current() === "costs") loadCosts();
   if (current() === "inbox") loadUnrouted();
-  if (state.data && sameListings(listings, state.listings) && !failed && Date.now() - state.rendered < 60000) return keep();
+  if (state.data && sameListings(listings, state.listings) && !failed && Date.now() - state.rendered < 60000) return keep(), false;
   const before = state.data ? new Set(state.data.asks.filter((ask) => ask.state === "open").map((ask) => ask.id)) : null;
   const [asks, tasks, runs] = [asksList.asks, tasksList.tasks, runsList.runs];
   const older = { asks: asksList.older, tasks: tasksList.older, runs: runsList.older };
@@ -310,7 +307,7 @@ export function accept(listings, { read = new Date().toISOString().replace(/\.\d
   state.listings = listings;
   keep();
   announce(before);
-  render();
+  return true;
 }
 
 function announce(before) {
@@ -346,8 +343,6 @@ function signOut(reason) {
   keyboard.leave();
   cache.clear();
   Object.assign(state, { token: null, data: null, listings: null, revision: undefined, signInError: reason, drawn: null, flowsError: null, all: { asks: false, tasks: false, runs: false }, costs: { by: "workflow", loading: false, slow: false, error: null } });
-  wanted.set(params());
-  signedIn.set(false);
   render();
 }
 
@@ -821,9 +816,16 @@ async function subscribeTask(resource, task) {
 }
 
 // The Add sheet with the server's text, whose URL keys the new task by the group's resource.
-function requestTask(text, workflow) {
-  state.add.draft.text = text;
-  if (workflow) state.add.draft.workflow = workflow;
+async function requestTask(text, workflow) {
+  await readAddDefaults();
+  // The person may have opened the sheet and typed while the read ran.
+  if (addSheet().open) return renderAdd();
+  const { draft, defaults } = state.add;
+  draft.text = text;
+  const offered = requestedWorkflow(workflow, defaults?.opted_out);
+  if (offered === undefined) delete draft.workflow;
+  else draft.workflow = offered;
+  state.add.swapped = offered === undefined ? workflow : null;
   keepDraft();
   openAdd();
 }
@@ -2391,17 +2393,25 @@ const keepDraft = () => localStorage.setItem(DRAFT_KEY, JSON.stringify({ draft: 
 // Lanes have no list of their own: the chip offers each lane a listed task carries.
 const knownLanes = () => [...new Set([...state.data.tasks, ...state.data.queue.waiting].map((task) => task.lane).filter(Boolean))].sort();
 
+// The factory may reload while the page is open; a read that fails keeps the last one.
+async function readAddDefaults() {
+  state.add.defaults = await api("/api/request").catch(() => state.add.defaults);
+}
+
 async function openAdd() {
   if (!state.data || addSheet().open) return;
   if (state.add.phase === "added") Object.assign(state.add, { phase: "empty", task: null });
-  if (!state.add.defaults) {
-    state.add.defaults = await api("/api/request").catch(() => null);
-    const { draft, defaults } = state.add;
-    if (defaults && draft.workflow === undefined) Object.assign(draft, { workflow: defaults.workflow || "", band: defaults.band || "" });
-  }
+  const before = state.add.defaults;
+  const read = readAddDefaults();
+  if (!before) await read;
+  const { defaults } = state.add;
+  if (addSheet().open) return renderAdd();
   renderAdd();
   addSheet().showModal();
   document.getElementById("add-text")?.focus();
+  await read;
+  // A redraw closes an open picker, so only a changed list draws again.
+  if (addSheet().open && JSON.stringify(state.add.defaults) !== JSON.stringify(defaults)) renderAdd();
 }
 
 function closeAdd() {
@@ -2455,7 +2465,8 @@ const ADD_LINES = {
 function renderAdd() {
   const sheet = addSheet();
   if (!sheet) return;
-  const { draft, phase, error, defaults } = state.add;
+  const { phase, error, defaults, swapped } = state.add;
+  const draft = withDefaults(state.add.draft, defaults);
   const sending = phase === "sending";
   const back = !state.failed && ["offline", "unsure"].includes(phase);
   const status = phase === "refused"
@@ -2469,8 +2480,8 @@ function renderAdd() {
   const label = sending ? "Adding…" : back ? "Send" : state.failed ? "Keep draft" : "Add";
   const body = phase === "added" ? addedTask() : html`<form data-action="add" ${sending ? raw('aria-busy="true"') : ""}>
     <label class="sr" for="add-text">What should the factory do?</label>
-    <input id="add-text" name="text" autocomplete="off" enterkeyhint="send" placeholder="What should the factory do?" value="${draft.text}" ${sending ? raw("readonly") : ""} ${status ? raw('aria-describedby="add-status"') : ""}>
-    ${status}
+    <input id="add-text" name="text" autocomplete="off" enterkeyhint="send" placeholder="What should the factory do?" value="${draft.text}" ${sending ? raw("readonly") : ""} ${status || swapped ? raw('aria-describedby="add-status add-swapped"') : ""}>
+    ${status}${swapped ? html`<p class="warnline" id="add-swapped">${icon("circle-alert", "s15")}<span>${swapLine(swapped, defaults?.workflow)}</span></p>` : ""}
     <div class="chips">${chip("workflow", "Workflow", draft.workflow, defaults?.workflows || [], defaults?.workflow ? `default (${defaults.workflow})` : "pick one")}
       ${chip("band", "Band", draft.band, defaults?.bands || state.data?.bands || [], "default")}
       ${chip("lane", "Lane", draft.lane, state.data ? knownLanes() : [], "routed")}</div>
@@ -2486,7 +2497,7 @@ function renderAdd() {
 
 async function submitAdd() {
   const { draft, phase } = state.add;
-  const body = addBody(draft);
+  const body = addBody(withDefaults(draft, state.add.defaults));
   if (!body || phase === "sending") return;
   // Offline, Enter only keeps the draft; it goes once the person confirms it after reconnecting.
   if (state.failed) {
@@ -2507,8 +2518,8 @@ async function submitAdd() {
     return signOut("The daemon refused this token. Paste the current one.");
   }
   if (outcome.state === "added") {
-    const { defaults } = state.add;
-    state.add.draft = { text: "", workflow: defaults?.workflow || "", band: defaults?.band || "", lane: "" };
+    state.add.draft = { text: "" };
+    state.add.swapped = null;
     state.add.task = { key: outcome.key, id: outcome.id, body: null };
     localStorage.removeItem(DRAFT_KEY);
     if (outcome.id !== null) api(`/api/tasks/${outcome.id}`).then((task) => { if (state.add.task?.id === outcome.id) { state.add.task.body = task; renderAdd(); } }, () => {});
@@ -2521,8 +2532,7 @@ async function submitAdd() {
 }
 
 function discardAdd() {
-  const { defaults } = state.add;
-  Object.assign(state.add, { phase: "empty", error: null, draft: { text: "", workflow: defaults?.workflow || "", band: defaults?.band || "", lane: "" } });
+  Object.assign(state.add, { phase: "empty", error: null, swapped: null, draft: { text: "" } });
   localStorage.removeItem(DRAFT_KEY);
   renderAdd();
   document.getElementById("add-text")?.focus();
@@ -2933,7 +2943,7 @@ function signIn() {
 function loading() {
   return state.failed
     ? html`${staleStrip()}<p class="empty">Could not load the desk: ${state.failed}. Check that <code>priory serve</code> or the daemon runs, then retry.</p>`
-    : "";
+    : html`<p class="empty" role="status">Loading the desk…</p>`;
 }
 
 const routeKey = () => location.pathname + location.search;
@@ -3236,6 +3246,10 @@ document.addEventListener("input", (event) => {
   if (event.target.id === "add-text" || event.target.dataset.addChip) {
     state.add.draft[event.target.dataset.addChip || "text"] = event.target.value;
     keepDraft();
+    if (event.target.dataset.addChip === "workflow") {
+      state.add.swapped = null;
+      document.getElementById("add-swapped")?.remove();
+    }
     // Only the button's state changes; a full redraw would reset the caret on every letter.
     addSheet().querySelector("form .btn.primary")?.setAttribute("aria-disabled", String(!state.add.draft.text.trim() || state.add.phase === "sending"));
     return;
@@ -3295,7 +3309,6 @@ document.addEventListener("submit", (event) => {
   localStorage.setItem("priory.token", token);
   keepTokenForWorker(token);
   Object.assign(state, { token, signInError: null });
-  signedIn.set(true);
   refresh();
 });
 

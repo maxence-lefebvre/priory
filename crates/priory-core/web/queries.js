@@ -1,16 +1,15 @@
 // The server data: one QueryClient holds each listing under its own key. A read keeps the last data
-// on screen until the new data lands, and a failed read keeps it (stale-while-revalidate).
-import { QueryClient, keepPreviousData } from "@tanstack/react-query";
+// on screen until the new data lands, and a failed read keeps it.
+import { QueryClient, notifyManager } from "@tanstack/react-query";
 
 // Queries never read by themselves: refresh() and the events long poll decide when to read again.
 export const client = () => new QueryClient({
-  defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: 10 * 60_000, refetchOnWindowFocus: false, refetchOnReconnect: false } },
+  defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity, refetchOnWindowFocus: false, refetchOnReconnect: false } },
 });
 
 // What a refresh reads: the listings in full once the person scrolled to their older rows, and the
 // report the arrows reached, null for the newest.
 export const params = (all = { asks: false, tasks: false, runs: false }, reportShown = null) => ({ all: { ...all }, reportShown });
-export const sameParams = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 // The server reads its views once, when it starts, so a page reads them and the links once.
 const ONCE = new Set(["views", "links"]);
@@ -36,22 +35,17 @@ export function reads({ all, reportShown }) {
   ];
 }
 
-const options = (api, [name, queryKey, read]) => ({ queryKey, queryFn: () => read(api), staleTime: ONCE.has(name) ? Infinity : 0 });
-
-// Reads every listing again, at once. Throws the first failure; the cache keeps what each had.
-// fetchQuery answers the raw reply; the cache holds the copy that shares what did not change.
+// Reads every listing at once and writes nothing, so a read that fails or that a later one
+// supersedes leaves the cache as it was. It never joins a read already in flight.
 export async function readAll(cache, api, wanted) {
-  const all = reads(wanted);
-  await Promise.all(all.map((read) => cache.fetchQuery(options(api, read))));
-  return Object.fromEntries(all.map(([name, queryKey]) => [name, cache.getQueryData(queryKey)]));
+  return Promise.all(reads(wanted).map(([name, queryKey, read]) => (ONCE.has(name) && cache.getQueryData(queryKey)) || read(api)));
 }
 
-// The listings as useQueries observes them: the last ones while new params read, null before
-// every listing has data once.
-export const observed = (api, wanted) => ({
-  queries: reads(wanted).map((read) => ({ ...options(api, read), placeholderData: keepPreviousData })),
-  combine: (results) => (results.every((result) => result.data !== undefined) ? Object.fromEntries(reads(wanted).map(([name], i) => [name, results[i].data])) : null),
-});
+// Writes a read into the cache in one step, and returns the listings by name, as the cache holds
+// them: structural sharing keeps each unchanged listing the same object.
+export function land(cache, listings, wanted) {
+  return notifyManager.batch(() => Object.fromEntries(reads(wanted).map(([name, queryKey], i) => [name, cache.setQueryData(queryKey, listings[i])])));
+}
 
 // Whether two reads hold the same listings. Structural sharing keeps an unchanged listing the same
 // object, so this compares references, not contents.

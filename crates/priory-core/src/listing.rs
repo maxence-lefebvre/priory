@@ -139,7 +139,9 @@ fn desk_items() -> String {
            (SELECT generation FROM tasks WHERE tasks.id = desk.task) AS generation, {},
            {}, {DESK_TITLE}
          FROM ({DESK}) AS desk
-         LEFT JOIN snoozes ON snoozes.item = desk.id AND typeof(desk.id) = 'integer' AND snoozes.kind =
+         LEFT JOIN snoozes ON snoozes.item = CASE WHEN typeof(desk.id) = 'integer' THEN desk.id
+             WHEN desk.kind = 'ask' THEN (SELECT id FROM asks WHERE asks.name = desk.id) END
+           AND snoozes.kind =
            CASE WHEN desk.kind IN ('blocked', 'failed') THEN 'task' ELSE desk.kind END
          ORDER BY desk.part, CASE WHEN desk.part = 0 THEN desk.since END, desk.kind, desk.id",
         places(),
@@ -147,6 +149,10 @@ fn desk_items() -> String {
         urgency()
     )
 }
+
+/// No open `parked` hold holds the task: adopted tasks stay out of the lists until released.
+const UNPARKED: &str = "NOT EXISTS (SELECT 1 FROM holds AS parked WHERE parked.task = tasks.id
+  AND parked.kind = 'parked' AND parked.released IS NULL)";
 
 const DESK: &str = concat!(
     "SELECT 0 AS part, asks.created AS since, 'ask' AS kind,
@@ -186,11 +192,15 @@ const DESK: &str = concat!(
                WHERE actions.action = 'answer' AND actions.status = 'uncertain'
                  AND tasks.state NOT IN ('done', 'failed', 'dropped')
                UNION ALL
-               SELECT 0, holds.created, 'held', holds.id, holds.task, tasks.lane, tasks.reason
+               SELECT 0, holds.created, 'held', holds.id, holds.task, tasks.lane,
+                 CASE tasks.state WHEN 'held' THEN tasks.reason
+                   WHEN 'running' THEN 'holds after this turn: ' || holds.reason
+                   ELSE 'holds once it is ready: ' || holds.reason END
                FROM holds JOIN tasks ON tasks.id = holds.task
-               WHERE holds.released IS NULL AND tasks.state = 'held' AND holds.id = (
+               WHERE holds.released IS NULL AND tasks.state NOT IN ('done', 'failed', 'dropped')
+                 AND holds.id = (
                  SELECT min(id) FROM holds AS hold WHERE hold.task = holds.task
-                 AND hold.released IS NULL)
+                 AND hold.released IS NULL) AND holds.kind != 'parked'
                  AND (tasks.batch_entry IS NULL OR EXISTS (SELECT 1 FROM holds AS hold
                    WHERE hold.task = holds.task AND hold.released IS NULL
                    AND (hold.kind NOT IN ('merged', 'waiting') OR EXISTS (SELECT 1 FROM asks WHERE asks.id = hold.ask
@@ -209,6 +219,12 @@ const DESK: &str = concat!(
                    || coalesce(nullif(': ' || sweeps.output, ': '), ''), 'running')
                FROM sweeps JOIN stalls ON stalls.id = sweeps.stall JOIN tasks ON tasks.id = stalls.task
                WHERE stalls.ended IS NULL
+               UNION ALL
+               SELECT 0, started, 'sweep', id, NULL, NULL,
+                 script || ': ' || coalesce(status
+                   || coalesce(nullif(': ' || output, ': '), ''), 'running')
+               FROM sweeps WHERE stall IS NULL AND coalesce(status, '') != 'exit 0'
+                 AND id = (SELECT max(id) FROM sweeps AS later WHERE later.script = sweeps.script)
                UNION ALL
                SELECT 0, grants.created, 'memory', grants.id, grants.task, tasks.lane,
                  'waits for ' || printf('%.1f', grants.bytes / 1073741824.0) || ' GB: '
@@ -690,9 +706,15 @@ fn checked(kind: &str, data: &Value) -> Option<String> {
     Some(format!("{name} {}", data["conclusion"].as_str()?))
 }
 
-/// Every task in start order, or the tasks of one lane, of one grade, or both.
-pub fn tasks(db: &Connection, lane: Option<&str>, grade: Option<&str>) -> rusqlite::Result<Value> {
-    tasks_since(db, lane, grade, None)
+/// Every task in start order but parked ones, or every task with `all`, or the tasks of one lane,
+/// of one grade, or both.
+pub fn tasks(
+    db: &Connection,
+    lane: Option<&str>,
+    grade: Option<&str>,
+    all: bool,
+) -> rusqlite::Result<Value> {
+    tasks_since(db, lane, grade, None, all)
 }
 
 /// The tasks still going and those that ended since `since`, or every task without it, in start
@@ -703,7 +725,7 @@ pub fn recent_tasks(db: &Connection, since: Option<&str>) -> rusqlite::Result<Va
         [since],
         |row| row.get(0),
     )?;
-    Ok(json!({ "tasks": tasks_since(db, None, None, since)?, "older": older }))
+    Ok(json!({ "tasks": tasks_since(db, None, None, since, false)?, "older": older }))
 }
 
 /// The runs live or started since `since`, or every run without it, newest first, each with its
@@ -742,6 +764,7 @@ fn tasks_since(
     lane: Option<&str>,
     grade: Option<&str>,
     since: Option<&str>,
+    all: bool,
 ) -> rusqlite::Result<Value> {
     let query = format!(
         "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place AS position,
@@ -750,11 +773,12 @@ fn tasks_since(
          FROM tasks LEFT JOIN queue USING (id)
          WHERE (?1 IS NULL OR lane = ?1) AND (?2 IS NULL OR grade = ?2)
            AND (?3 IS NULL OR state NOT IN ('done', 'failed', 'dropped') OR changed >= ?3)
+           AND (?4 OR {UNPARKED})
          ORDER BY {}",
         places(),
         state::START_ORDER
     );
-    let mut tasks = rows(db, &query, [lane, grade, since])?;
+    let mut tasks = rows(db, &query, params![lane, grade, since, all])?;
     for task in tasks.as_array_mut().expect("rows are an array") {
         parse_json(task);
         let id = task["id"].as_i64().expect("a task has an id");
@@ -967,12 +991,12 @@ fn asks_of(
     Ok(asks)
 }
 
-/// The factory's bands highest first, its workflow names, the waiting tasks in start order, then the held ones with
+/// The factory's bands highest first, its requestable and opted-out workflows (`null` without the factory), the waiting tasks in start order, then the held ones with
 /// their hold, the live runs, and the tasks that ended in the last day, each with its title, and up next: the next three runs, with `schedules`' firings.
 pub fn queue(
     db: &Connection,
     schedules: &[(String, Trigger)],
-    workflows: &[String],
+    offered: Option<(&[String], &[String])>,
     now: Timestamp,
 ) -> rusqlite::Result<Value> {
     let waiting = format!(
@@ -991,7 +1015,7 @@ pub fn queue(
              tasks.reason,
              changed, {CONDITIONS}, '[]', '[]',
              (SELECT min(id) FROM holds WHERE holds.task = tasks.id AND holds.released IS NULL)
-           FROM tasks WHERE tasks.state = 'held'
+           FROM tasks WHERE tasks.state = 'held' AND {UNPARKED}
          ) ORDER BY part, sort",
         places(),
         aged = state::AGED_BAND
@@ -1004,7 +1028,8 @@ pub fn queue(
         .for_each(parse_json);
     Ok(json!({
         "bands": state::band_names(db)?,
-        "workflows": workflows,
+        "workflows": offered.map(|(requestable, _)| requestable),
+        "opted_out": offered.map(|(_, opted_out)| opted_out),
         "up_next": up_next(db, &waiting, schedules, now)?,
         "waiting": waiting,
         "asleep": asleep(db)?,
@@ -1576,6 +1601,7 @@ pub fn desk(
         post::intake_banner(db)?,
         crate::kit::banner(db)?,
         sweep::fetch_banner(home),
+        sweep::slice_banner(home),
     ]
     .into_iter()
     .flatten()
@@ -1589,6 +1615,7 @@ pub fn desk(
         "reviews": crate::review::desk_lines(db)?,
         "banner": stall::banner(db)?,
         "intake": outside,
+        "reclaim": sweep::reclaim_line(db, now)?,
         "counts": {
             "asleep": asleep, "snoozed": snoozed, "unrouted": unrouted, "unheard": unheard,
             "dropped": dropped, "outsider": outsider,

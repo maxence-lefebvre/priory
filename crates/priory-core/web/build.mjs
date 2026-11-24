@@ -6,8 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const here = (path) => fileURLToPath(new URL(path, import.meta.url));
 const OUT = here("./dist/app.js");
-// Today's JavaScript, minified, plus React's ~190 KB from slice 2.
-const BUDGET = 450 * 1024;
+const BUDGET = 500 * 1024;
 
 const result = await build({
   entryPoints: [here("./main.jsx")],

@@ -167,7 +167,7 @@
         "deadline": {
           "default": null,
           "description": "How long from the `consult` call to its report, the wait for room included; 15m when unset.",
-          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
           "type": "string"
         },
         "per_task": {
@@ -231,7 +231,7 @@
         "timeout": {
           "default": null,
           "description": "How long one call may run; 5s when unset, 30s at most.",
-          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
           "type": "string"
         }
       },
@@ -270,7 +270,7 @@
         "timeout": {
           "default": null,
           "description": "How long one Postgres call may wait on the database before the log counts as unreachable;\n10 seconds when unset.",
-          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
           "type": "string"
         },
         "url_env": {
@@ -356,7 +356,7 @@
         "alarm_after": {
           "default": null,
           "description": "How long a source's polls fail before the intake posts its report, which the desk ranks as\nan alarm; 15 minutes when unset. Until then the desk shows only its banner.",
-          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
           "type": "string"
         }
       },
@@ -388,7 +388,7 @@
         "every": {
           "default": null,
           "description": "How often a runner fetches the ref again; every 5 minutes when unset.",
-          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
           "type": "string"
         },
         "instructions": {
@@ -500,7 +500,7 @@
         "every": {
           "default": null,
           "description": "How often a runner fetches the ref again; every 5 minutes when unset.",
-          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
           "type": "string"
         },
         "path": {
@@ -547,7 +547,7 @@
         "age": {
           "default": null,
           "description": "How long a task waits in the queue for each band it moves up in start order, up to the\nhighest band not in `preempt`; no task moves when unset.",
-          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
           "type": "string"
         },
         "fair": {
@@ -613,7 +613,7 @@
         "timeout": {
           "default": null,
           "description": "How long it may run before Priory kills it with its process group; `command_timeout` when\nunset.",
-          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
           "type": "string"
         }
       },
@@ -623,6 +623,16 @@
       "additionalProperties": false,
       "description": "`[repos.\"owner/name\"]`: what the daemon runs in a worktree of the repository, so no run has to\nfind out how to install and build it.",
       "properties": {
+        "build": {
+          "description": "The folders, relative to the worktree, that a build regenerates and a reclaim may delete;\n`[\"target\"]` in a worktree with a `Cargo.toml` when unset.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "resume": {
           "anyOf": [
             {
@@ -689,6 +699,20 @@
       ],
       "type": "string"
     },
+    "Runs": {
+      "additionalProperties": false,
+      "description": "What happens when a run starts.",
+      "properties": {
+        "attach": {
+          "description": "The command that opens a run where a person can watch it, relative to the factory folder.\nThe daemon runs it once per new run of a step with `attach = true`, with the task id and\nrun id as its arguments.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "Sandbox": {
       "additionalProperties": false,
       "description": "`[sandboxes.<name>]`: a jail around a run's agent, which sees its worktree, its harness's own\nhome and what the sandbox names, each at the same path as outside.",
@@ -739,6 +763,12 @@
     "Script": {
       "additionalProperties": false,
       "properties": {
+        "every": {
+          "default": null,
+          "description": "How often the script runs, at least 10s, counted from its last run, a stall's run included;\nonly when `when` stalls the queue when unset.",
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
+          "type": "string"
+        },
         "run": {
           "description": "A shell command, run by `sh -c` in `PRIORY_HOME`.",
           "type": "string"
@@ -746,21 +776,23 @@
         "timeout": {
           "default": null,
           "description": "How long it may run before Priory kills it; 5 minutes when unset.",
-          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
           "type": "string"
         },
         "when": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/Resource"
+            },
+            {
+              "type": "null"
             }
           ],
-          "description": "The resource whose shortage runs the script."
+          "description": "The resource whose shortage runs the script; it runs only on its `every` when unset."
         }
       },
       "required": [
-        "run",
-        "when"
+        "run"
       ],
       "type": "object"
     },
@@ -913,7 +945,7 @@
         "after": {
           "default": null,
           "description": "How long the queue stays stalled after its scripts ran before the sweeper starts; 30 minutes\nwhen unset.",
-          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
           "type": "string"
         },
         "agent": {
@@ -926,7 +958,13 @@
         "every": {
           "default": null,
           "description": "How often the built-in worktree sweep runs; every 10 minutes when unset.",
-          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
+          "type": "string"
+        },
+        "reclaim": {
+          "default": null,
+          "description": "The free disk under which the sweep deletes idle tasks' build output; 20 % of the disk,\nat most 40 GB, when unset.",
+          "pattern": "^(?=[^KMGT]*[1-9])([0-9]+(\\.[0-9]*)?|\\.[0-9]+)(KB|MB|GB|TB)$",
           "type": "string"
         },
         "repo": {
@@ -966,7 +1004,8 @@
               "log",
               "runs",
               "intake",
-              "work"
+              "work",
+              "room"
             ]
           },
           "type": "array"
@@ -983,7 +1022,7 @@
         "metrics_every": {
           "default": null,
           "description": "How often a process samples its groups and sends one request, at least 10s; 60s when unset.",
-          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
           "type": "string"
         },
         "otlp": {
@@ -1133,7 +1172,7 @@
     "command_timeout": {
       "default": null,
       "description": "How long one git, gh or tmux command may run before Priory kills it.",
-      "pattern": "^0*[1-9][0-9]*[smh]$",
+      "pattern": "^0*[1-9][0-9]*[smhd]$",
       "type": "string"
     },
     "consult": {
@@ -1270,6 +1309,9 @@
         }
       ]
     },
+    "runs": {
+      "$ref": "#/definitions/Runs"
+    },
     "sandboxes": {
       "additionalProperties": {
         "$ref": "#/definitions/Sandbox"
@@ -1303,7 +1345,7 @@
     "stalled": {
       "default": null,
       "description": "How long a run goes without a hook event or a change on its pane before it counts as stalled.",
-      "pattern": "^0*[1-9][0-9]*[smh]$",
+      "pattern": "^0*[1-9][0-9]*[smhd]$",
       "type": "string"
     },
     "sweep": {
