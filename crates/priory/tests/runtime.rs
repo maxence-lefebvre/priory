@@ -1492,7 +1492,7 @@ fn a_codex_run_with_no_session_start_names_the_codex_command_whose_hooks_to_trus
     assert!(reason.starts_with(&prefix), "{reason}");
     assert!(
         reason.ends_with(
-            ", accept the folder, type /hooks and trust Priory's hooks, then exit. Its pane ended with: token [redacted] refused | Hooks need review | 3 hooks are new or changed | › 1. Review hooks"
+            ", accept the folder, type /hooks and trust Priory's hooks, then exit. Resume the task to try again. Its pane ended with: token [redacted] refused | Hooks need review | 3 hooks are new or changed | › 1. Review hooks"
         ),
         "{reason}"
     );
@@ -4359,7 +4359,7 @@ fn a_late_run_at_a_ready_prompt_gets_no_trust_advice() {
 
     assert!(
         reason.starts_with(
-            "claude showed no SessionStart within 60s; its prompt is ready and asks for no trust"
+            "claude showed no SessionStart within 60s; its prompt is ready and asks for no trust, so its SessionStart hook is late or never reached the daemon. Resume the task to try again. Its pane ended with: "
         ),
         "{reason}"
     );
@@ -4373,7 +4373,9 @@ fn a_late_run_at_a_ready_prompt_in_a_throttled_slice_names_the_throttling() {
 
     let reason = late(&mut setup, READY_PROMPT, Some("90000 100000\n"));
 
-    let prefix = format!("claude showed no SessionStart within 60s; {THROTTLING}");
+    let prefix = format!(
+        "claude showed no SessionStart within 60s; {THROTTLING}. Resume the task to try again. Its pane ended with: "
+    );
     assert!(reason.starts_with(&prefix), "{reason}");
     assert!(!reason.contains("trust the"), "{reason}");
 }
@@ -4400,7 +4402,7 @@ fn a_late_codex_run_in_a_throttled_slice_keeps_its_hooks_command() {
     );
 
     let tail = format!(
-        "type /hooks and trust Priory's hooks, then exit; {THROTTLING}. Its pane ended with: Hooks need review | 3 hooks are new or changed"
+        "type /hooks and trust Priory's hooks, then exit; {THROTTLING}. Resume the task to try again. Its pane ended with: Hooks need review | 3 hooks are new or changed"
     );
     assert!(reason.ends_with(&tail), "{reason}");
 }
@@ -4469,7 +4471,7 @@ fn a_run_with_no_session_start_within_60_seconds_ends_and_names_the_folders_to_t
     assert_eq!(
         tasks[0][7],
         format!(
-            "claude showed no SessionStart within 60s; trust the worktrees folder and the clone once: cd {} && claude, accept, exit, then cd {} && claude, accept, exit",
+            "claude showed no SessionStart within 60s; trust the worktrees folder and the clone once: cd {} && claude, accept, exit, then cd {} && claude, accept, exit. Resume the task to try again",
             setup.dir.join("home/worktrees").display(),
             clone.display()
         )
@@ -5096,6 +5098,219 @@ fn a_grant_claude_overwrote_restarts_the_run_once_then_fails_the_task() {
         "claude overwrote Priory's trust grant"
     );
     assert_eq!(repaired[0]["data"]["outcome"], "ready");
+}
+
+impl Setup {
+    /// Makes the live run look as if it started `seconds` ago.
+    fn started_ago(&self, seconds: u32) {
+        let db = rusqlite::Connection::open(self.dir.join("priory.db")).unwrap();
+        let changed = db
+            .execute(
+                &format!("UPDATE runs SET started = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-{seconds} seconds') WHERE ended IS NULL"),
+                [],
+            )
+            .unwrap();
+        assert_eq!(changed, 1);
+    }
+
+    /// Asserts that the daemon's next ticks leave task 1's live run alone.
+    fn stays_live(&self) {
+        std::thread::sleep(Duration::from_secs(3));
+        assert_eq!(self.rows("runs").last().unwrap()[7], "-");
+        assert_eq!(self.rows("tasks")[0][4], "running");
+    }
+
+    /// The reason task 1 blocks with.
+    fn blocked(&self) -> String {
+        let blocked = |rows: &[Vec<String>]| rows.first().is_some_and(|row| row[4] == "blocked");
+        self.until("tasks", blocked)[0][7].clone()
+    }
+}
+
+#[test]
+fn a_trusted_run_that_starts_slowly_gets_180_seconds_then_blocks_until_a_person_resumes_it() {
+    let mut setup = trusting("trust-slow");
+    setup.memory(12);
+    setup.publish(&requested(42));
+    setup.hold("silent");
+    start_trusting(&mut setup);
+    setup.written("fake/pid");
+    setup.publish(&requested(43));
+    setup.until("tasks", |rows| rows.len() == 2);
+    person(
+        &setup,
+        "hold",
+        &["2", "--reason", "needs it", "--after", "1"],
+    );
+
+    setup.started_ago(120);
+    setup.stays_live();
+    setup.started_ago(180);
+    let reason = setup.blocked();
+
+    assert_eq!(
+        reason,
+        "claude showed no SessionStart within 180s although Priory recorded its trust; it started too slowly. Resume the task to try again"
+    );
+    setup.gone("priory-1");
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(setup.rows("runs").len(), 1);
+    assert_eq!(held_as(&setup, "2")[0], "held");
+    assert!(traced(&setup, "factory.task.repaired").is_empty());
+
+    setup.release("silent");
+    assert!(setup.priory(&["resume", "1"]).status.success());
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+}
+
+#[test]
+fn a_resumed_run_that_starts_slowly_gets_the_same_180_seconds() {
+    let mut setup = trusting("trust-slow-resumed");
+    setup.hold("undecided");
+    setup.hold("hold-stop");
+    setup.calls(&[json!({ "name": "Bash", "arguments": { "command": "rm -rf /" } })]);
+    setup.publish(&requested(42));
+    start_trusting(&mut setup);
+    setup.blocked();
+    setup.gone("priory-1");
+    setup.hold("silent");
+    setup.release("pid");
+
+    assert!(setup.priory(&["resume", "1"]).status.success());
+    let runs = setup.until("runs", |rows| rows.len() == 2);
+    setup.written("fake/pid");
+    assert_eq!(runs[0][4], runs[1][4]);
+    assert!(has(&launched(&setup), ["--resume", &runs[0][4]]));
+    setup.started_ago(120);
+    setup.stays_live();
+    setup.started_ago(180);
+
+    let reason = setup.blocked();
+    assert!(
+        reason.starts_with("claude showed no SessionStart within 180s although Priory recorded its trust; it started too slowly"),
+        "{reason}"
+    );
+    assert_eq!(setup.rows("runs").len(), 2);
+}
+
+#[test]
+fn a_trusted_codex_run_whose_hooks_need_review_keeps_the_command_that_trusts_them() {
+    let mut setup = trusting("trust-codex-hooks");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    fs::create_dir_all(setup.dir.join("codex")).unwrap();
+    fs::write(setup.dir.join("fake/silent"), "  Hooks need review\n").unwrap();
+    setup.publish(&requested(42));
+    start_trusting(&mut setup);
+    setup.written("fake/codex-args.log");
+    assert_eq!(
+        until_traced(&setup, "factory.run.trusted")["data"]["outcome"],
+        "granted"
+    );
+
+    setup.started_ago(120);
+    setup.stays_live();
+    setup.started_ago(180);
+
+    let reason = setup.blocked();
+    assert!(
+        reason.starts_with(
+            "codex showed no SessionStart within 180s; trust the clone and Priory's hooks once: cd "
+        ),
+        "{reason}"
+    );
+    assert!(
+        reason.ends_with("type /hooks and trust Priory's hooks, then exit. Resume the task to try again. Its pane ended with: Hooks need review"),
+        "{reason}"
+    );
+}
+
+/// The reason a run with recorded trust that shows `screen` blocks its task with after 180 seconds,
+/// in a slice throttled under a 90% quota when `throttled`.
+fn late_trusted(setup: &mut Setup, screen: &str, throttled: bool) -> String {
+    setup.publish(&requested(42));
+    fs::write(setup.dir.join("fake/silent"), screen).unwrap();
+    slice_file(
+        setup,
+        "cpu.stat",
+        "usage_usec 1000000\nnr_throttled 500\nthrottled_usec 9000000\n",
+    );
+    start_trusting(setup);
+    setup.written("fake/pid");
+    if throttled {
+        throttle(setup, "90000 100000\n");
+    }
+    // The harness writes its pid before it draws the screen.
+    std::thread::sleep(Duration::from_secs(1));
+    setup.started_ago(180);
+    setup.blocked()
+}
+
+const TRUSTED_LATE: &str =
+    "claude showed no SessionStart within 180s although Priory recorded its trust; ";
+
+#[test]
+fn a_trusted_late_run_in_a_throttled_slice_names_the_throttling_not_a_slow_start() {
+    let mut setup = trusting("trust-late-throttled");
+
+    let reason = late_trusted(&mut setup, "", true);
+
+    assert_eq!(
+        reason,
+        format!("{TRUSTED_LATE}{THROTTLING}. Resume the task to try again")
+    );
+}
+
+#[test]
+fn a_trusted_late_run_at_a_ready_prompt_names_the_late_hook_not_a_slow_start() {
+    let mut setup = trusting("trust-late-ready");
+
+    let reason = late_trusted(&mut setup, READY_PROMPT, false);
+
+    let prefix = format!(
+        "{TRUSTED_LATE}its prompt is ready and asks for no trust, so its SessionStart hook is late or never reached the daemon. Resume the task to try again. Its pane ended with: "
+    );
+    assert!(reason.starts_with(&prefix), "{reason}");
+}
+
+#[test]
+fn a_trusted_late_codex_run_in_a_throttled_slice_keeps_its_hooks_command() {
+    let mut setup = trusting("trust-late-throttled-codex");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    fs::create_dir_all(setup.dir.join("codex")).unwrap();
+
+    let reason = late_trusted(&mut setup, "  Hooks need review\n", true);
+
+    assert!(
+        reason.starts_with(
+            "codex showed no SessionStart within 180s; trust the clone and Priory's hooks once: cd "
+        ),
+        "{reason}"
+    );
+    let tail = format!(
+        "type /hooks and trust Priory's hooks, then exit; {THROTTLING}. Resume the task to try again. Its pane ended with: Hooks need review"
+    );
+    assert!(reason.ends_with(&tail), "{reason}");
+}
+
+#[test]
+fn a_trusted_run_under_direnv_keeps_its_600_seconds() {
+    let mut setup = trusting("trust-slow-direnv");
+    envrc(&setup);
+    setup.publish(&requested(42));
+    setup.hold("silent");
+    start_direnv(&mut setup, true, "", &[]);
+    setup.written("fake/pid");
+
+    setup.started_ago(300);
+    setup.stays_live();
+    setup.started_ago(600);
+
+    let reason = setup.blocked();
+    assert!(
+        reason.starts_with("claude showed no SessionStart within 600s although Priory recorded its trust; it started too slowly"),
+        "{reason}"
+    );
 }
 
 fn codex_profile(setup: &Setup) -> PathBuf {
@@ -34391,6 +34606,98 @@ fn a_parked_task_ends_on_a_close_that_arrived_before_its_adopt_request() {
         all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == state);
         assert!(setup.rows("runs").is_empty());
     }
+}
+
+/// A review on alice's pull request 7 that saw it `open` at its poll.
+fn polled_review(open: bool, id: u64) -> Message {
+    on_alice_pull(
+        "github.pull_request_review.submitted",
+        json!({
+            "actor": "bob", "state": "commented", "body": "Late note", "github_id": id,
+            "open": open,
+            "url": format!("https://github.com/owner/repo/pull/7#pullrequestreview-{id}")
+        }),
+    )
+}
+
+#[test]
+fn a_parked_task_waits_for_the_close_after_a_review_that_saw_its_pull_request_closed() {
+    let setup = adopting("adopt-review-before-close", &[7]);
+    adopt(&setup, &["my-prs", "7"]);
+    all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == "held");
+
+    setup.publish(&polled_review(false, 801));
+
+    setup.until("inbox", |rows| rows.len() == 2);
+    assert_eq!(setup.listed(&["tasks", "--all"])[0][4], "held");
+
+    setup.publish(&on_alice_pull(
+        "github.pull_request.closed",
+        json!({ "merged": true, "github_id": 400 }),
+    ));
+
+    all_tasks_until(&setup, |rows| rows[0][4] == "done");
+    assert!(setup.rows("runs").is_empty());
+}
+
+#[test]
+fn a_parked_task_stays_parked_when_its_pull_request_reopened_before_its_adopt_request() {
+    let setup = adopting("adopt-reopened", &[7]);
+    setup.publish(&on_alice_pull(
+        "github.pull_request.closed",
+        json!({ "merged": false, "open": false, "github_id": 400 }),
+    ));
+    setup.publish(&polled_review(true, 801));
+    setup.until("inbox", |rows| rows.len() == 2);
+
+    adopt(&setup, &["my-prs", "7"]);
+
+    all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == "held");
+
+    setup.publish(&polled_review(false, 802));
+
+    setup.until("inbox", |rows| rows.len() == 4);
+    assert_eq!(setup.listed(&["tasks", "--all"])[0][4], "held");
+}
+
+#[test]
+fn a_parked_task_is_done_when_a_late_open_review_follows_the_merge_before_its_adopt_request() {
+    let setup = adopting("adopt-merged-then-open", &[7]);
+    setup.publish(&on_alice_pull(
+        "github.pull_request.closed",
+        json!({ "merged": true, "open": false, "github_id": 400 }),
+    ));
+    setup.publish(&polled_review(true, 801));
+    setup.until("inbox", |rows| rows.len() == 2);
+
+    adopt(&setup, &["my-prs", "7"]);
+
+    all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == "done");
+    assert!(setup.rows("runs").is_empty());
+}
+
+#[test]
+fn adopt_skips_a_pull_request_whose_head_branch_an_active_task_owns() {
+    let mut setup = Setup::new("adopt-branch-owner");
+    fs::write(setup.dir.join("factory/triggers/my-prs.toml"), MY_PRS).unwrap();
+    fs::write(
+        setup.dir.join("fake/prs"),
+        r#"[{"number":7,"title":"Own","url":"https://github.com/owner/repo/pull/7",
+             "headRefName":"priory/1","isCrossRepository":false},
+            {"number":8,"title":"Fork","url":"https://github.com/owner/repo/pull/8",
+             "headRefName":"priory/1","isCrossRepository":true}]"#,
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    let adopted = adopt(&setup, &["my-prs"]);
+
+    assert_eq!(
+        adopted,
+        "github:owner/repo#7: task 1 owns it\nadopted github:owner/repo#8\n"
+    );
 }
 
 #[test]

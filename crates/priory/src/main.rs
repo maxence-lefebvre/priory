@@ -1748,7 +1748,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
             .map(|at| args.remove(at))
             .is_some();
     // Without the factory folder, the queue knows no schedules or workflows, so up next lists none.
-    let (mut schedules, mut workflows, mut now) = (Vec::new(), Vec::new(), jiff::Timestamp::now());
+    let (mut schedules, mut offered, mut now) = (Vec::new(), None, jiff::Timestamp::now());
     if ["queue", "desk"].contains(&verb) || unrouted {
         now = match intake::now() {
             Ok(now) => now,
@@ -1766,7 +1766,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                 return ExitCode::FAILURE;
             };
             schedules = listing::schedule_triggers(&factory);
-            workflows = factory.workflows.into_keys().collect();
+            offered = Some((factory.requestable(), factory.not_requestable()));
         }
         args.clear();
     }
@@ -1814,7 +1814,10 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                 "tasks" => listing::tasks(db, lane, grade, all),
                 "asks" => listing::asks(db, &bands, &risks),
                 "desk" => listing::desk(db, &home, all, person.unwrap_or(listing::ME), now),
-                _ => listing::queue(db, &schedules, &workflows, now),
+                _ => {
+                    let offered = offered.as_ref().map(|(yes, no)| (&yes[..], &no[..]));
+                    listing::queue(db, &schedules, offered, now)
+                }
             }
             .map(Some)
         })
@@ -2353,7 +2356,12 @@ fn adopt(args: Vec<String>) -> ExitCode {
             continue;
         }
         let key = format!("github:{repo}#{number}");
-        match state::any_owner(&db, &key) {
+        // A fork's branch of the same name is someone else's.
+        let branch = pull["headRefName"]
+            .as_str()
+            .filter(|_| pull["isCrossRepository"] == false)
+            .map(|head| format!("github:{repo}@{head}"));
+        match state::any_owner(&db, &key, branch.as_deref()) {
             Ok(Some(task)) => {
                 println!("{key}: task {task} owns it");
                 continue;

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Priory on GitHub",
-  "version": "1.3.3",
+  "version": "1.3.4",
   "description": "Shows the Priory task that holds a pull request, its asks and a review guide, on GitHub's pull request page.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuJj2NI4Ez5W7gIbGmKLmCMhsd6+e0F5p1uskdAWsXnSUAH87KgPNGqEZdexa820v33rDKCEwWvUxT3awaDLk3K7GkaZgYbOnKZR9I/spezrChXK4EzA/vNQkLMx+mKlDE3FSamOotYlwxVdBuP9m+b1HnN1BYlJ6cnHdwncErZFjcPSGU6SC3Z199pGMNSImR9h5SaDbuoissoFA2DnwI3ZRRj0PQwuCBtcj/gdYSg17h0Pxm/loQD29Oqs77/z5LfD9a2oCAiuikEI97OQqU1+GORGN7n7DpSN0H+uI9PoD+0JQKg5bzvpHj3fZoISGQ0X/HDo0RqwPmARD1Q8NSwIDAQAB",
   "minimum_chrome_version": "116",

@@ -61,8 +61,8 @@ each runner's lease age over the hour, not one banner at the end. The PRD's succ
   `priory_log_cursors`, and herdr-bus its own.
 - A run's row has `started` and `ended`. `SessionStart` sets the run idle and records its
   transcript, but no time. The daemon reads the screen of each run with no `SessionStart` every
-  second: Claude's trust dialog blocks the task at once, and 60 seconds with no `SessionStart`
-  blocks it too ([sessions.md](../daemon/sessions.md#trusting-the-worktrees-and-the-clone),
+  second: Claude's trust dialog blocks the task at once, and no `SessionStart`
+  within the run's window blocks it too ([sessions.md](../daemon/sessions.md#trusting-the-worktrees-and-the-clone),
   [health.md](../daemon/health.md)). Whether a run resumes a session is known at its start
   ([runs.md](../daemon/runs.md)).
 - The `recipes` table holds each `setup`, `resume` and `teardown` with `started`, `ended` and
@@ -197,7 +197,7 @@ From the `runs` and `recipes` tables, and timers around the start's git commands
 
 | Metric | Type | Attributes | Source |
 | ------ | ---- | ---------- | ------ |
-| `priory.run.start.duration` | histogram, s | `priory.harness`, `priory.session` = `first`, `resume`; `outcome` = `ok`, `error` | from the run's `started` to its `SessionStart`. `error` is a run that ended before one: the trust dialog, 60 seconds with none, an exit |
+| `priory.run.start.duration` | histogram, s | `priory.harness`, `priory.session` = `first`, `resume`; `outcome` = `ok`, `error` | from the run's `started` to its `SessionStart`. `error` is a run that ended before one: the trust dialog, its window with none, an exit |
 | `priory.run.starts.active` | gauge, runs | `priory.harness` | live runs with no `SessionStart` yet |
 | `priory.run.start.oldest.age` | gauge, s | `priory.harness` | the oldest of those, since its `started`; 0 with none |
 | `priory.worktree.phase.duration` | histogram, s | `priory.phase` = `clone`, `fetch`, `checkout`, `setup`, `resume`, `teardown`; `outcome` = `ok`, `error`, `timeout` | clone, fetch and checkout timed around their `git` commands; setup, resume and teardown from the `recipes` row's `started`, `ended` and `status` |
@@ -205,7 +205,7 @@ From the `runs` and `recipes` tables, and timers around the start's git commands
 
 `priory.run.start.oldest.age` is the hung start. Claude's trust dialog blocks its task within a
 second, but a start that hangs on something the screen check does not know, such as a new dialog in
-a later Claude Code, climbs to 60 seconds every time. A start's duration needs the time of
+a later Claude Code, climbs to its window every time. A start's duration needs the time of
 `SessionStart`, which the run's row does not keep. The slice that builds this group adds a column,
 so it needs a migration, numbered after the ones open pull requests reserve.
 

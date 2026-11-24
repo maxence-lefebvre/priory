@@ -373,6 +373,11 @@
         "null"
       ]
     },
+    "requestable": {
+      "default": true,
+      "description": "Whether the web view's and Herdr's Add controls and the Slack shortcut offer it, and\n`POST /api/request` takes it. The `[request] workflow` is always requestable. `priory add`,\n`priory request`, the MCP `add` tool, batches and triggers start any workflow.",
+      "type": "boolean"
+    },
     "sandbox": {
       "description": "The sandbox of `factory.toml` that every model step of the workflow runs its agent in.\nNone runs agents with the person's whole user, as before.",
       "type": [
