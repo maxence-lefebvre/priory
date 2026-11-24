@@ -98,7 +98,9 @@ ask 14 waits for a person: step approve-pr approves irreversible step open-pr. A
 `ask` is the ask's number, or an outside ask's name. `revision` is required, as it is for `priory
 answer`: an ask at another revision is refused with `ask 14 is at revision 2, not 1`, and the
 session reads it again with `asks`. An answer applies as a person's does: it moves a step's task by
-its option, or wakes an agent with `Answer to ask 14 (revision 1): ...`. A dismissal wakes the agent
+its option, or wakes an agent with `Answer to ask 14 (revision 1): ...`. A human step's ask takes
+only its options from a session, with or without a note: text is
+refused with `ask 14 takes one of: ship, wait`. A dismissal wakes the agent
 with `Session <session> dismissed ask 14 without an answer. Continue your task.`
 
 Priory never records the decision as a person's. The ask's `answered_by` is `session:` and the
@@ -220,7 +222,9 @@ gate's exit code, or 1 when a signal killed the gate or the daemon did not recor
 `priory gate` runs nothing and exits 1 outside a run's pane, where `PRIORY_SESSION` is unset, in a
 factory with no `gate`, and in a worktree whose checked-out commit is not the head of its branch,
 since the gate would test another commit than the one it records. It records nothing either when
-the worktree moves to another commit while the gate runs.
+the worktree moves to another commit while the gate runs, or when the gate fails after a command in
+it gave up its wait for memory (see [memory-gate.md](memory-gate.md#giving-up)). It then exits with
+the gate's code, and an earlier run at the same commit still counts.
 
 A step with a proof ends its prompt with a line that names the outcomes to prove. When the agent
 sends a proved outcome, the daemon reads the task's gate runs in the trace and refuses the result,
@@ -401,7 +405,8 @@ lane. It starts ahead of its band's other tasks, and passes the pause, the revie
 `max_running` (see [runs.md](runs.md#work-already-running)). It starts the built-in workflow `priory/lead/<lead>`: one model step, `answer`, whose
 outcomes `answered` and `skipped` both lead to `done`. Its first prompt carries a
 `priory.ask.routed` event: the task, its key, the ask, its revision, question, options,
-recommendation, trade-off, title and text.
+recommendation, trade-off, title, text and, when it approves one, [the plan](asks.md#the-plan-an-ask-approves)
+as a list of files, each with `path`, `text` and `truncated`.
 
 The lead answers with `result`:
 
@@ -411,11 +416,12 @@ The lead answers with `result`:
 
 The summary, trimmed, is the answer. When the ask lists options, it must be one of them, or the
 result is refused with `ask <id> takes one of: <options>`. A person can still answer an agent's ask
-in free text. In the same
+in free text, and a human step's ask in writing (see [waits.md](waits.md#asks-and-answers)). A gate's
+ask takes only its options. In the same
 transaction the daemon applies it to the ask, as a person's answer would, and records it as
 answered by `agent:<lead>`. The asking task then wakes as after any answer. When the answer is
-refused, for example because the ask is no longer open, the result is refused with the reason, and
-the lead ends with `skipped` instead.
+refused, for example because the ask is no longer open or its plan changed, the refusal is kept on
+the ask, the result is refused with the reason, and the lead ends with `skipped` instead.
 
 The routed ask stays on the desk, marked `routed to <lead>` in the CLI and "with <lead>" in the web
 view and the Herdr panels, so a person can still answer it. Its detail says the lead is answering
@@ -560,6 +566,7 @@ branch's current commit:
 | ------------------------------ | ------------------------------------------------------------------- |
 | at the same commit             | the step runs                                                       |
 | at another commit              | the ask gets a new revision, with a line naming both commits, and the task sleeps at that human step. The step's queued prompt is taken back, so the next run never reads it |
+| voided by a written answer     | the same, with a line that says a person wrote an answer since      |
 | none                           | the task blocks: `step <id> is irreversible and no answer approved it` |
 
 A branch with no commit to compare also blocks the task. `priory check` refuses an irreversible step

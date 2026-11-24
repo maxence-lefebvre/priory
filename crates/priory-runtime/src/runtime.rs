@@ -171,20 +171,24 @@ pub fn run(command: &mut Command) -> Result<String, String> {
 }
 
 /// As `run`, with `input` on the command's stdin.
-fn fed(command: &mut Command, input: Option<Vec<u8>>) -> Result<String, String> {
+pub(crate) fn fed(command: &mut Command, input: Option<Vec<u8>>) -> Result<String, String> {
     fed_raw(command, input).map(|out| String::from_utf8_lossy(&out).into_owned())
 }
 
 /// As `fed`, returning the command's stdout as it wrote it.
-fn fed_raw(command: &mut Command, input: Option<Vec<u8>>) -> Result<Vec<u8>, String> {
-    let output = fed_within(command, input, command_timeout())
+pub(crate) fn fed_raw(command: &mut Command, input: Option<Vec<u8>>) -> Result<Vec<u8>, String> {
+    fed_raw_within(command, input, command_timeout())
+}
+
+/// As `fed_raw`, giving up after `timeout`.
+pub(crate) fn fed_raw_within(
+    command: &mut Command,
+    input: Option<Vec<u8>>,
+    timeout: Duration,
+) -> Result<Vec<u8>, String> {
+    let output = fed_within(command, input, timeout)
         .map_err(|error| format!("{command:?}: {error}"))?
-        .ok_or_else(|| {
-            format!(
-                "{command:?}: timed out after {}s",
-                command_timeout().as_secs()
-            )
-        })?;
+        .ok_or_else(|| format!("{command:?}: timed out after {}s", timeout.as_secs()))?;
     if !output.status.success() {
         return Err(format!(
             "{command:?}: {}",
@@ -243,14 +247,14 @@ pub enum Added {
     /// The branch was there and its folder was not, as after a retirement or a sweep.
     Restored,
     /// A new branch, from this commit.
-    New(Option<String>),
+    New(String),
 }
 
 impl Added {
     /// The commit a new branch starts from; `None` when the branch already existed.
     pub fn base(&self) -> Option<&str> {
         match self {
-            Added::New(base) => base.as_deref(),
+            Added::New(base) => Some(base),
             Added::Kept(_) | Added::Restored => None,
         }
     }
@@ -536,12 +540,14 @@ fn orphaned(path: &Path, clone: &Path) -> bool {
 /// The task's worktree folder `name` on `priory/<name>`, from the local branch `from` of Priory's
 /// own clone of `repo` (`owner/name`), else from its default branch. The clone has no checkout: a person trusts it and the worktrees
 /// folder once in Claude, which covers its worktrees. A worktree of that clone left on that branch by an interrupted
-/// start is reused. The third value says whether the folder was kept, added back, or new.
+/// start is reused. `vouch` reads the default branch's head from GitHub outside the clone, for a base
+/// that no agent chose. The third value says whether the folder was kept, added back, or new.
 pub fn worktree(
     home: &Path,
     repo: &str,
     name: &str,
     from: Option<&str>,
+    vouch: bool,
 ) -> Result<(PathBuf, String, Added), String> {
     check_repo(repo)?;
     let clone = home.join("repos").join(repo);
@@ -603,24 +609,65 @@ pub fn worktree(
         })?;
         return Ok((path, branch, Added::Restored));
     }
-    phased("fetch", || {
+    let trunk = phased("fetch", || {
+        // Before the fetch, which then brings the commit.
+        let trunk = (vouch && from.is_none())
+            .then(|| trunk(repo, command_timeout()))
+            .transpose()?;
         run(git(&clone).args(["fetch", "--quiet", "origin"]))?;
-        run(git(&clone).args(["remote", "set-head", "origin", "--auto"]))
+        run(git(&clone).args(["remote", "set-head", "origin", "--auto"]))?;
+        if let Some(trunk) = &trunk
+            && run(git(&clone).args(["cat-file", "-e", trunk])).is_err()
+        {
+            run(git(&clone).args(["fetch", "--quiet", "origin", trunk]))?;
+        }
+        Ok(trunk)
     })?;
-    let start = match from {
-        Some(from) if head(&clone, from).is_some() => format!("refs/heads/{from}"),
-        Some(from) => return Err(format!("branch {from} to start from is gone")),
-        None => "origin/HEAD".to_owned(),
+    let start = match (from, trunk) {
+        (Some(from), _) => {
+            head(&clone, from).ok_or_else(|| format!("branch {from} to start from is gone"))?
+        }
+        (None, Some(trunk)) => trunk,
+        (None, None) => run(git(&clone).args(["rev-parse", "--verify", "origin/HEAD"]))?
+            .trim()
+            .to_owned(),
     };
     phased("checkout", || {
         run(git(&clone)
+            // An agent can write the clone's replace refs, which would swap the commit's content.
+            .arg("--no-replace-objects")
             // Tracking the trunk would let a bare `git push` with `push.default=upstream` land on it.
             .args(["worktree", "add", "--quiet", "--no-track", "-b", &branch])
             .arg(&path)
-            .arg(start))
+            .arg(&start))
     })?;
-    let base = head(&path, &branch);
-    Ok((path, branch, Added::New(base)))
+    // Not the branch's head: every worktree shares the clone's refs, so an agent can have moved it.
+    Ok((path, branch, Added::New(start)))
+}
+
+/// The head of `repo`'s default branch as GitHub has it. It runs outside the clone, whose refs and
+/// config an agent can write.
+pub(crate) fn trunk(repo: &str, within: Duration) -> Result<String, String> {
+    let url = format!("https://github.com/{repo}.git");
+    let refs = fed_raw_within(
+        git(Path::new("/")).args(["ls-remote", &url, "HEAD"]),
+        None,
+        within,
+    )?;
+    head_of(&String::from_utf8_lossy(&refs))
+        .map(str::to_owned)
+        .ok_or_else(|| format!("{url} names no HEAD commit"))
+}
+
+/// The commit of HEAD in `refs`, the output of `git ls-remote`.
+fn head_of(refs: &str) -> Option<&str> {
+    refs.lines()
+        .filter_map(|line| line.split_once('\t'))
+        .find(|(_, name)| *name == "HEAD")
+        .map(|(commit, _)| commit)
+        .filter(|commit| {
+            matches!(commit.len(), 40 | 64) && commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
 }
 
 /// Runs `phase` of a worktree's start, and times it for the metrics by how it ended.
@@ -981,6 +1028,9 @@ pub struct Launch<'a> {
     pub env: &'a [String],
     /// The run takes a turn of a debate, so its MCP server serves `position`.
     pub debate: bool,
+    /// A command that waits on the memory gate gives up at a limit, so the run's agent learns what
+    /// to do then.
+    pub gives_up: bool,
     /// The MCP servers of the person's config the run gets, or turns off, beside Priory's own.
     pub servers: &'a Servers,
     /// Which of Priory's own tools its MCP server serves the run.
@@ -1445,7 +1495,7 @@ fn tmux_socket_fits(socket: &Path) -> Result<(), String> {
 }
 
 /// `stderr` as one line.
-pub(crate) fn one_line(stderr: &str) -> String {
+pub fn one_line(stderr: &str) -> String {
     let lines: Vec<_> = stderr
         .lines()
         .map(str::trim)
@@ -1457,8 +1507,14 @@ pub(crate) fn one_line(stderr: &str) -> String {
 /// Runs the rest under `direnv exec "$1"`, with direnv's stderr in `$0/direnv.error`. When direnv
 /// failed before the harness started, which no `$0/direnv.started` tells, it marks
 /// `$0/direnv.failed` and runs the rest without the `.envrc`.
-const DIRENV_EXEC: &str = r#"s=$0 d=$1; shift; rm -f "$s/direnv.started" "$s/direnv.failed"
-direnv exec "$d" sh -c ': > "$0"; exec 2>&3 3>&-; exec "$@"' "$s/direnv.started" "$@" 3>&2 2>"$s/direnv.error"
+/// direnv alone gets the run's private `XDG_DATA_HOME`. The harness gets the old one, or the one the
+/// `.envrc` exports.
+pub(crate) const DIRENV_EXEC: &str = r#"s=$0 d=$1; shift
+PRIORY_DATA_HOME=${XDG_DATA_HOME-} XDG_DATA_HOME=$DIRENV_CONFIG/data direnv exec "$d" sh -c ': > "$0"; exec 2>&3 3>&-
+if [ "${XDG_DATA_HOME-}" = "$1" ]; then
+  if [ -n "${PRIORY_DATA_HOME-}" ]; then XDG_DATA_HOME=$PRIORY_DATA_HOME; else unset XDG_DATA_HOME; fi
+fi
+unset PRIORY_DATA_HOME; shift; exec "$@"' "$s/direnv.started" "$DIRENV_CONFIG/data" "$@" 3>&2 2>"$s/direnv.error"
 c=$?; [ -e "$s/direnv.started" ] && exit $c; : > "$s/direnv.failed"; exec "$@""#;
 
 /// The folder where a run under direnv leaves `direnv.started` and `direnv.error`: its spool, which
@@ -1468,15 +1524,66 @@ pub fn direnv_spool(home: &Path, session: &str) -> PathBuf {
     crate::jail::spool_dir(&home, session)
 }
 
-/// What direnv wrote to stderr when it kept the run `session` from starting in its `.envrc`, as
-/// one line with its escape codes kept, if it did.
+/// What direnv wrote to stderr when it kept the run `session` from starting in its `.envrc`, if it
+/// did.
 pub fn direnv_failed(home: &Path, session: &str) -> Option<String> {
     let spool = direnv_spool(home, session);
     if !spool.join("direnv.failed").exists() {
         return None;
     }
-    let error = fs::read_to_string(spool.join("direnv.error")).unwrap_or_default();
-    Some(one_line(&error))
+    let error = read_regular(&spool.join("direnv.error"), 64 << 10).unwrap_or_default();
+    Some(String::from_utf8_lossy(&error).into_owned())
+}
+
+// Not libc's, which would be a new dependency for two numbers.
+#[cfg(all(
+    target_os = "linux",
+    any(
+        target_arch = "aarch64",
+        target_arch = "arm",
+        target_arch = "powerpc64"
+    )
+))]
+const O_NOFOLLOW: i32 = 0o100000;
+#[cfg(all(
+    target_os = "linux",
+    not(any(
+        target_arch = "aarch64",
+        target_arch = "arm",
+        target_arch = "powerpc64"
+    ))
+))]
+const O_NOFOLLOW: i32 = 0o400000;
+#[cfg(target_os = "macos")]
+const O_NOFOLLOW: i32 = 0x100;
+#[cfg(target_os = "linux")]
+const O_NONBLOCK: i32 = 0o4000;
+#[cfg(target_os = "macos")]
+const O_NONBLOCK: i32 = 0x4;
+
+/// The first `cap` bytes of the regular file at `path`, which an agent can write: no symlink is
+/// followed, and no FIFO blocks the daemon.
+pub(crate) fn read_regular(path: &Path, cap: u64) -> std::io::Result<Vec<u8>> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NOFOLLOW | O_NONBLOCK)
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::other("not a regular file"));
+    }
+    let mut bytes = Vec::new();
+    file.take(cap).read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// How long ago direnv handed the run `session` over to its harness, with or without the `.envrc`,
+/// if it did.
+pub fn direnv_handed(home: &Path, session: &str) -> Option<Duration> {
+    let spool = direnv_spool(home, session);
+    ["direnv.started", "direnv.failed"]
+        .iter()
+        .find_map(|name| fs::metadata(spool.join(name)).ok()?.modified().ok())
+        .map(|at| at.elapsed().unwrap_or_default())
 }
 
 /// Whether the run `session` started under direnv is still loading its `.envrc`.
@@ -1498,7 +1605,8 @@ pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), NotStarted> 
             .map_err(|error| format!("{}: {error}", file.display()))?;
     }
     if let Some((file, text)) = harness.private_file(&exe, launch) {
-        write_private(&file, &text).map_err(|error| format!("{}: {error}", file.display()))?;
+        write_private(&file, text.as_bytes())
+            .map_err(|error| format!("{}: {error}", file.display()))?;
     }
     let mut command = tmux();
     command
@@ -1562,6 +1670,10 @@ pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), NotStarted> 
     if launch.direnv.is_some() {
         let spool = direnv_spool(launch.home, launch.session);
         fs::create_dir_all(&spool).map_err(|error| format!("{}: {error}", spool.display()))?;
+        // A resumed session keeps its spool, and the daemon must not read its last run's markers.
+        for name in ["direnv.started", "direnv.failed", "direnv.error"] {
+            let _ = fs::remove_file(spool.join(name));
+        }
         // direnv's own failure exits 1 before the harness starts, as the harness's exit 1 might:
         // the marker tells them apart, and the harness then starts without the `.envrc`.
         command
@@ -2035,7 +2147,7 @@ fn mcp_config(exe: &Path, launch: &Launch) -> String {
 }
 
 /// Writes `text` to `file`, readable by its owner alone, even when an older file was not.
-pub(crate) fn write_private(file: &Path, text: &str) -> std::io::Result<()> {
+pub(crate) fn write_private(file: &Path, text: &[u8]) -> std::io::Result<()> {
     fs::create_dir_all(file.parent().expect("the file has a parent"))?;
     let mut written = OpenOptions::new()
         .write(true)
@@ -2044,15 +2156,18 @@ pub(crate) fn write_private(file: &Path, text: &str) -> std::io::Result<()> {
         .mode(0o600)
         .open(file)?;
     written.set_permissions(fs::Permissions::from_mode(0o600))?;
-    written.write_all(text.as_bytes())
+    written.write_all(text)
 }
 
-/// `priory mcp --session <id>`, with `--debate` for a debate turn and the flag of its tool set, if
-/// any.
+/// `priory mcp --session <id>`, with `--debate` for a debate turn, `--gives-up` when the memory gate has
+/// a limit and the flag of its tool set, if any.
 fn mcp_args<'a>(launch: &Launch<'a>) -> Vec<&'a str> {
     let mut args = vec!["mcp", "--session", launch.session];
     if launch.debate {
         args.push("--debate");
+    }
+    if launch.gives_up {
+        args.push("--gives-up");
     }
     args.extend(launch.tools.flag());
     args
@@ -2814,9 +2929,57 @@ mod tests {
         assert_eq!((code, starts), (Some(1), 1));
         assert_eq!(
             direnv_failed(&home, "s").as_deref(),
-            Some("direnv: error exit status 1")
+            Some("direnv: error exit status 1\n")
         );
         assert!(!direnv_loading(&home, "s"));
+    }
+
+    #[test]
+    fn direnvs_error_is_read_from_a_regular_file_alone_and_up_to_a_cap() {
+        let home = std::env::temp_dir().join(format!("priory-error-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        let spool = direnv_spool(&home, "s");
+        fs::create_dir_all(&spool).unwrap();
+        fs::write(spool.join("direnv.failed"), "").unwrap();
+        let error = spool.join("direnv.error");
+        let secret = home.join("secret");
+        fs::write(&secret, "secret").unwrap();
+
+        std::os::unix::fs::symlink(&secret, &error).unwrap();
+        assert_eq!(direnv_failed(&home, "s").as_deref(), Some(""));
+        fs::remove_file(&error).unwrap();
+
+        assert!(
+            Command::new("mkfifo")
+                .arg(&error)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert_eq!(direnv_failed(&home, "s").as_deref(), Some(""));
+        fs::remove_file(&error).unwrap();
+
+        fs::write(&error, vec![b'x'; 1 << 20]).unwrap();
+        assert_eq!(direnv_failed(&home, "s").unwrap().len(), 64 << 10);
+    }
+
+    proptest! {
+        #[test]
+        fn a_remotes_refs_name_a_full_commit_or_none(
+            refs in ".{0,200}", commit in "[0-9a-f]{0,64}", name in "HEAD|refs/heads/main",
+        ) {
+            prop_assert!(head_of(&refs).is_none_or(|commit| commit.len() >= 40));
+            let line = format!("{commit}\t{name}\n");
+            let full = matches!(commit.len(), 40 | 64) && name == "HEAD";
+            prop_assert_eq!(head_of(&line), full.then_some(commit.as_str()));
+        }
+    }
+
+    #[test]
+    fn a_remotes_head_is_found_among_its_refs() {
+        let commit = "0123456789".repeat(4);
+        let refs = format!("{commit}\tHEAD\nffff\trefs/remotes/origin/HEAD\n");
+        assert_eq!(head_of(&refs), Some(commit.as_str()));
     }
 
     #[test]
@@ -2924,6 +3087,7 @@ mod tests {
             scope: &[],
             env: &[],
             debate: false,
+            gives_up: false,
             servers,
             tools,
             jail: None,
@@ -3164,8 +3328,11 @@ mod tests {
                 ],
             );
             let home = Home { dir };
-            let (_, _, added) = worktree(&home.home(), "o/n", "1", None).unwrap();
-            assert!(matches!(added, Added::New(_)));
+            // By hand: `worktree` would read GitHub's `o/n` for a new one.
+            let tree = home.tree();
+            let start = ["worktree", "add", "--quiet", "--no-track", "-b", "priory/1"];
+            let path = [tree.to_str().unwrap(), "origin/HEAD"];
+            sh(&clone, &[&start[..], &path[..]].concat());
             home
         }
 
@@ -3178,7 +3345,7 @@ mod tests {
         }
 
         fn again(&self) -> Result<Added, String> {
-            worktree(&self.home(), "o/n", "1", None).map(|(_, _, added)| added)
+            worktree(&self.home(), "o/n", "1", None, true).map(|(_, _, added)| added)
         }
     }
 
@@ -3467,7 +3634,7 @@ mod tests {
             ],
         );
 
-        let reason = worktree(&home.home(), "o/n", "2", None).unwrap_err();
+        let reason = worktree(&home.home(), "o/n", "2", None, true).unwrap_err();
 
         assert_eq!(
             reason,

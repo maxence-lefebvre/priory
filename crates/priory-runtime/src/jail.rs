@@ -213,8 +213,8 @@ impl Jail {
         }
         if let Some(folder) = launch.direnv {
             binds.add(folder, Mode::Read, true);
-            // Its direnvrc and lib lead to the person's, which the jail empties with their home.
-            for name in ["direnvrc", "lib"] {
+            // Its links lead to the person's, which the jail empties with their home.
+            for name in [crate::trust::PERSONS_DIRENVRC, "lib"] {
                 if let Ok(target) = std::fs::canonicalize(folder.join(name)) {
                     binds.add(&target, Mode::Read, true);
                 }
@@ -248,6 +248,9 @@ impl Jail {
             Mode::Write,
             true,
         );
+        // A file in it becomes the daemon's binary.
+        crate::upgrade::private(&home)?;
+        binds.add(&crate::upgrade::dir(&home), Mode::Empty, true);
         let spool = spool_dir(&home, launch.session);
         std::fs::create_dir_all(&spool).map_err(|error| format!("{}: {error}", spool.display()))?;
         binds.add(&spool, Mode::Write, true);

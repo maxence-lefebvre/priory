@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 114;
+const VERSION: i64 = 118;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -2026,6 +2026,66 @@ ALTER TABLE tasks ADD COLUMN slot INTEGER;
 PRAGMA user_version = 114;
 ";
 
+// The plan an approval ask shows, as it was when the ask's revision was raised, and the latest run
+// each task had when a later generation of it began.
+const SCHEMA_115: &str = concat!(
+    "CREATE TABLE IF NOT EXISTS ask_plans (
+  ask       INTEGER PRIMARY KEY,
+  step      TEXT NOT NULL,
+  run       INTEGER NOT NULL,
+  files     TEXT NOT NULL,
+  contents  TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS generations (
+  task  INTEGER NOT NULL,
+  after INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS generations_of_task ON generations (task);
+",
+    bumps!("ask_plans"),
+    "PRAGMA user_version = 115;
+"
+);
+
+// Marks read each report of a red merge whose checks all completed and whose every failing one was
+// only cancelled.
+const SCHEMA_116: &str = "
+UPDATE inbox SET read = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+WHERE type = 'priory.report' AND subject = 'priory' AND read IS NULL
+AND instr(json_extract(data, '$.line'), ' is red on ') > 0
+AND (SELECT min(json_extract(run.data, '$.conclusion') IS 'cancelled')
+  FROM inbox AS closed JOIN inbox AS run ON run.type = 'github.check_run.completed'
+    AND json_extract(run.data, '$.repo') = json_extract(closed.data, '$.repo')
+    AND json_extract(run.data, '$.head_sha') = json_extract(closed.data, '$.merge_commit')
+    AND coalesce(json_extract(run.data, '$.conclusion'), '') NOT IN ('success', 'neutral', 'skipped')
+  WHERE closed.type = 'github.pull_request.closed' AND json_extract(closed.data, '$.merged') = 1
+  AND instr(json_extract(inbox.data, '$.line'), 'landed wrong: ' || json_extract(closed.data, '$.repo')
+    || '#' || json_extract(closed.data, '$.pull_request') || ' of task') = 1
+  AND EXISTS (SELECT 1 FROM inbox AS last WHERE last.type = 'github.check_run.completed'
+    AND json_extract(last.data, '$.repo') = json_extract(closed.data, '$.repo')
+    AND json_extract(last.data, '$.head_sha') = json_extract(closed.data, '$.merge_commit')
+    AND json_extract(last.data, '$.pending') = 0)) = 1;
+PRAGMA user_version = 116;
+";
+
+// A task's labels, as a JSON object, which runner filters match, and why a request no runner's
+// filters accept waits.
+const SCHEMA_117: &str = "
+ALTER TABLE tasks ADD COLUMN labels TEXT;
+ALTER TABLE inbox ADD COLUMN reason TEXT;
+CREATE INDEX inbox_unaccepted ON inbox (subject, seq) WHERE outcome = 'unaccepted';
+PRAGMA user_version = 117;
+";
+
+// The commit a task's `.envrc` is checked against, when the daemon read it outside the clone.
+const SCHEMA_118: &str = "
+CREATE TABLE IF NOT EXISTS envrc_bases (
+  task  INTEGER PRIMARY KEY,
+  sha   TEXT NOT NULL
+);
+PRAGMA user_version = 118;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -2042,7 +2102,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
     SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112, SCHEMA_113,
-    SCHEMA_114,
+    SCHEMA_114, SCHEMA_115, SCHEMA_116, SCHEMA_117, SCHEMA_118,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -2142,15 +2202,45 @@ pub(crate) fn replaying(db: &Connection) -> rusqlite::Result<bool> {
     db.query_row("SELECT EXISTS (SELECT 1 FROM replay)", [], |row| row.get(0))
 }
 
-/// Stores `base` as the commit the task started from, unless it already has one.
-pub(crate) fn set_base(db: &Connection, task: i64, base: Option<&str>) -> rusqlite::Result<()> {
+/// Stores `base` as the commit the task started from, unless it already has one. An `.envrc` is
+/// checked against it only when `vouched`: read with `trust_worktrees` on, outside the clone.
+pub(crate) fn set_base(
+    db: &Connection,
+    task: i64,
+    base: Option<&str>,
+    vouched: bool,
+) -> rusqlite::Result<()> {
     if let Some(base) = base {
+        if vouched {
+            db.execute(
+                "INSERT INTO envrc_bases (task, sha)
+                 SELECT id, ?2 FROM tasks WHERE id = ?1 AND base_sha IS NULL",
+                rusqlite::params![task, base],
+            )?;
+        }
         db.execute(
             "UPDATE tasks SET base_sha = ?2 WHERE id = ?1 AND base_sha IS NULL",
             rusqlite::params![task, base],
         )?;
     }
     Ok(())
+}
+
+/// The commit that the bottom of `task`'s stack started from, or `task` itself when it stacks on
+/// none, if it vouches for an `.envrc`. A stacked task's own base is another agent's branch.
+pub(crate) fn root_base(db: &Connection, task: i64) -> rusqlite::Result<Option<String>> {
+    db.query_row(
+        "WITH RECURSIVE below (id) AS (
+           SELECT ?1
+           UNION SELECT tasks.base_task FROM tasks JOIN below ON tasks.id = below.id
+             WHERE tasks.base_task IS NOT NULL)
+         SELECT sha FROM tasks JOIN below ON tasks.id = below.id
+           JOIN envrc_bases ON envrc_bases.task = tasks.id WHERE base_task IS NULL",
+        [task],
+        |row| row.get(0),
+    )
+    .optional()
+    .map(Option::flatten)
 }
 
 /// Bumps the revision when a task ended over a day ago left the queue's `ended` list since the
@@ -2176,6 +2266,7 @@ pub(crate) struct Task {
 
 /// Opens the state file `PRIORY_DB`, creating its schema on first use.
 pub fn open() -> Result<Connection, String> {
+    priory_runtime::upgrade::barrier()?;
     open_at(&path()?)
 }
 
@@ -2260,6 +2351,7 @@ fn path() -> Result<std::path::PathBuf, String> {
 /// Opens `PRIORY_DB` for reading only. It refuses a file whose schema this priory does not use,
 /// such as one no `open` has created yet.
 pub fn read_only() -> Result<Connection, String> {
+    priory_runtime::upgrade::barrier()?;
     let path = path()?;
     let at = |error: rusqlite::Error| format!("{}: {error}", path.display());
     let db = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
@@ -2323,8 +2415,13 @@ pub(crate) fn handle_in(
 }
 
 /// Moves what names a Linear issue moved to another team onto its new identifier `to`: the keys
-/// of its tasks and their batch entries, what they own and subscribe to, and open waits and holds.
-fn renamed(tx: &Transaction, message: &Message, to: Option<&String>) -> rusqlite::Result<()> {
+/// of its tasks and their batch entries, its requests that wait for a runner, what they own and
+/// subscribe to, and open waits and holds.
+pub(crate) fn renamed(
+    tx: &Transaction,
+    message: &Message,
+    to: Option<&String>,
+) -> rusqlite::Result<()> {
     let (Some(to), Some(previous)) = (to, message.data["previous_issue"].as_str()) else {
         return Ok(());
     };
@@ -2346,6 +2443,20 @@ fn renamed(tx: &Transaction, message: &Message, to: Option<&String>) -> rusqlite
             params![from, to],
         )?;
     }
+    // A hold published under the old key and not read yet names no claim now, so it is said again.
+    tx.execute(
+        "UPDATE claims SET published = NULL, published_generation = NULL
+         WHERE key = ?1 OR substr(key, 1, length(?1) + 1) = ?1 || '.'",
+        [to],
+    )?;
+    crate::runners::unclaim(tx, &from, true)?;
+    tx.execute(
+        "UPDATE inbox SET subject = ?2 || substr(subject, length(?1) + 1),
+           data = json_replace(data, '$.key', ?2 || substr(subject, length(?1) + 1))
+         WHERE outcome = 'unaccepted'
+           AND (subject = ?1 OR substr(subject, 1, length(?1) + 1) = ?1 || '.')",
+        params![from, to],
+    )?;
     for table in ["owns", "subscriptions", "closed_subscriptions"] {
         tx.execute(
             &format!("UPDATE OR IGNORE {table} SET resource = ?2 WHERE resource = ?1"),
@@ -2388,6 +2499,12 @@ pub(crate) fn route_in(
     }
     let resources = route::resources(message);
     renamed(tx, message, resources.first())?;
+    let settled = match trace.runner.as_deref() {
+        Some(me) if message.kind == "linear.issue.updated" => {
+            crate::runners::settle(tx, me, trace, counter)?
+        }
+        _ => Vec::new(),
+    };
     claim_pull_request(tx, message)?;
     // The intake publishes no reopen, so a later event of an open pull request or issue tells it,
     // and gives back the subscriptions its close ended.
@@ -2446,9 +2563,9 @@ pub(crate) fn route_in(
             tx.execute(
                 "INSERT INTO tasks
                    (key, workflow, step, state, band, lane, team, project, lane_derived, trigger, source, repo, entered, tldr, intervention, lead,
-                    pre_title, pre_text, pre_context, pre_script, added_by, auto_answer, intent, noop, issue_order)
+                    pre_title, pre_text, pre_context, pre_script, added_by, auto_answer, intent, noop, issue_order, labels)
                  VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?12, ?13, ?14,
-                   ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+                   ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
                 params![
                     new.key,
                     new.workflow,
@@ -2476,7 +2593,8 @@ pub(crate) fn route_in(
                     new.auto_answer.map(|level| level.as_str()),
                     new.intent,
                     (!new.noop.is_empty()).then(|| serde_json::json!(new.noop).to_string()),
-                    new.order.is_object().then(|| new.order.to_string())
+                    new.order.is_object().then(|| new.order.to_string()),
+                    (!new.labels.is_empty()).then(|| serde_json::json!(new.labels).to_string())
                 ],
             )?;
             let id = tx.last_insert_rowid();
@@ -2594,7 +2712,7 @@ pub(crate) fn route_in(
     }
     // The keyed task keeps the event; another task that shares the resource hears it through its
     // wait or its subscription. A merge that fires a gate may end a run a person's `say` started.
-    let mut kill = Vec::new();
+    let mut kill = settled;
     for other in owners.iter().filter(|other| Some(other.id) != task) {
         let (fired, ended) = crate::tools::event(tx, other.id, seq, factory)?;
         kill.extend(ended);
@@ -3468,10 +3586,11 @@ pub(crate) fn admissible<'r>(
                AND recipes.ended IS NULL
                AND (recipes.started IS NOT NULL OR recipes.moment = 'teardown'))
              -- With several runners, only a task whose key the log gives this one, and not one
-             -- whose `kept` it waits to read back. A lead task stays on its ask's runner.
+             -- whose `kept`, or `waiting` after one, it waits to read back. A lead task stays on its ask's runner.
              AND (?1 IS NULL OR tasks.trigger IN (?2, 'priory/consult') OR EXISTS (SELECT 1 FROM claims WHERE claims.key = tasks.key
                AND claims.runner = ?1
-               AND NOT (claims.hold != 'kept' AND claims.published IS 'kept')))
+               AND NOT (claims.hold != 'kept' AND claims.published IS 'kept')
+               AND NOT (claims.hold = 'kept' AND claims.published IS 'waiting')))
              ORDER BY {START_ORDER}"
     ))?;
     let queued = statement
@@ -3530,6 +3649,10 @@ pub(crate) fn admissible<'r>(
         let new_work = admission.fresh && !helper;
         // A pause holds only new tasks: a woken, resumed or revived one is `ready` and goes on.
         let busy = busy.or_else(|| paused.clone().filter(|_| new_work));
+        let busy = match busy {
+            Some(reason) => Some(reason),
+            None => filtered(db, factory, runner, admission.task)?,
+        };
         let busy = match busy {
             Some(reason) => Some(reason),
             None => crate::spend::waits(db, &book, admission.task)?,
@@ -3643,6 +3766,43 @@ pub(crate) fn admissible<'r>(
         promised,
         waiting,
     })
+}
+
+/// Why this runner's filters hold `task` now, if they do. They hold only a task that never ran a
+/// step, since one that started stays on its runner, and never a lead's, an investigator's or a sweeper's. A
+/// factory of one runner has no runner name, so its one runner file applies.
+pub(crate) fn filtered(
+    db: &Connection,
+    factory: &Factory,
+    runner: Option<&str>,
+    task: i64,
+) -> rusqlite::Result<Option<String>> {
+    let Some(runner) = runner.or_else(|| match factory.runners.keys().collect::<Vec<_>>()[..] {
+        [one] => Some(one.as_str()),
+        _ => None,
+    }) else {
+        return Ok(None);
+    };
+    let (labels, started): (Option<String>, bool) = db.query_row(
+        "SELECT labels, trigger IN (?2, ?3, ?4) OR EXISTS (SELECT 1 FROM runs WHERE runs.task = tasks.id)
+           OR EXISTS (SELECT 1 FROM actions WHERE actions.task = tasks.id)
+         FROM tasks WHERE id = ?1",
+        params![
+            task,
+            crate::tools::LEAD_TRIGGER,
+            crate::consult::TRIGGER,
+            crate::stall::TRIGGER
+        ],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if started {
+        return Ok(None);
+    }
+    let labels = labels
+        .and_then(|labels| serde_json::from_str(&labels).ok())
+        .unwrap_or_default();
+    let now = priory_intake::intake::now().unwrap_or_else(|_| jiff::Timestamp::now());
+    Ok(crate::runners::refusal(factory, runner, &labels, now))
 }
 
 /// Why a task waits for its lane's or trigger's `max_running`: `waits: lane core/intake has 2
@@ -4386,9 +4546,9 @@ pub(crate) fn block(
     // A run that started without its `.envrc` keeps saying so, since that may be why it stopped.
     tx.execute(
         "UPDATE tasks SET state = 'blocked', reason = ?2 || coalesce('; ' || CASE
-           WHEN (SELECT direnv FROM runs WHERE id = ?3) = 2 THEN reason END, '')
+           WHEN ?3 AND instr(reason, ?4) = 1 THEN reason END, '')
          WHERE id = ?1",
-        params![task, reason, live],
+        params![task, reason, live.is_some(), WITHOUT_ENVRC],
     )?;
     tx.commit()
 }
@@ -4413,7 +4573,7 @@ pub(crate) struct LiveRun {
     pub worktree: Option<String>,
     /// Its `SessionStart` arrived.
     pub ready: bool,
-    /// Seconds since its start while no `SessionStart` has arrived.
+    /// The seconds since it started, while no `SessionStart` arrived.
     pub waited: Option<i64>,
     /// 1 when it started under `direnv exec`, 2 once direnv failed and it started without, else 0.
     pub direnv: i64,
@@ -4423,14 +4583,45 @@ pub(crate) struct LiveRun {
     pub prompted: Option<String>,
 }
 
-/// How many seconds a run may take to send `SessionStart`. A run under direnv may build a cold nix
-/// shell first, and a run with recorded trust is slow, not stuck on the trust dialog.
-pub(crate) fn ready_within(direnv: i64, trusted: bool) -> i64 {
-    match (direnv, trusted) {
-        (0, false) => 60,
-        (0, true) => 180,
-        _ => 600,
-    }
+/// How many seconds a harness gets to reach `SessionStart`.
+pub(crate) const READY_WITHIN: i64 = 60;
+
+/// `READY_WITHIN` for a harness with recorded trust, which is slow, not stuck on the trust dialog.
+const TRUSTED_READY_WITHIN: i64 = 180;
+
+/// How many seconds direnv gets to load an `.envrc`, which may build a cold nix shell first.
+const DIRENV_READY_WITHIN: i64 = 600;
+
+/// The window that a run started `waited` seconds ago, without `SessionStart`, ran past, if any.
+/// Under direnv its harness's window counts from `handed`, the seconds since direnv handed over.
+pub(crate) fn late(waited: i64, direnv: bool, handed: Option<i64>, trusted: bool) -> Option<i64> {
+    let harness = if trusted {
+        TRUSTED_READY_WITHIN
+    } else {
+        READY_WITHIN
+    };
+    let (past, within) = match (direnv, handed) {
+        (false, _) => (waited >= harness, harness),
+        (true, None) => (waited >= DIRENV_READY_WITHIN, DIRENV_READY_WITHIN),
+        // The run can write the marker's time, so the whole start has a limit of its own.
+        (true, Some(handed)) => (
+            handed >= harness || waited >= DIRENV_READY_WITHIN + harness,
+            harness,
+        ),
+    };
+    past.then_some(within)
+}
+
+/// How the reason of a task whose run started without its `.envrc` begins.
+const WITHOUT_ENVRC: &str = "started without its .envrc: ";
+
+/// Says on `task` that its run started without its `.envrc`, and why.
+pub(crate) fn without_envrc(db: &Connection, task: i64, why: &str) -> rusqlite::Result<()> {
+    db.execute(
+        "UPDATE tasks SET reason = ?2 WHERE id = ?1",
+        params![task, format!("{WITHOUT_ENVRC}{why}")],
+    )?;
+    Ok(())
 }
 
 /// Marks run `run` as started under direnv (1), or as started without its `.envrc` after direnv
@@ -4714,6 +4905,19 @@ pub(crate) fn unsubmitted(db: &Connection, outbox: i64) -> rusqlite::Result<bool
         )
         .optional()?
         .unwrap_or(false))
+}
+
+/// Whether a person holds the keyboard of the run the prompt `outbox` was pasted into.
+pub(crate) fn keyboard_held(db: &Connection, outbox: i64) -> rusqlite::Result<bool> {
+    db.query_row(
+        &format!(
+            "SELECT EXISTS (SELECT 1 FROM outbox JOIN runs ON runs.id = outbox.run
+               WHERE outbox.id = ?1 AND {})",
+            crate::preempt::KEYBOARD_HELD
+        ),
+        [outbox],
+        |row| row.get(0),
+    )
 }
 
 /// Marks the attempted prompt `outbox` `uncertain`: Enter was pressed twice and no
@@ -5026,39 +5230,78 @@ mod ready_within {
     use super::*;
 
     #[test]
-    fn a_run_under_direnv_is_late_only_after_its_longer_window() {
-        let db = memory();
-        for (task, ago, direnv) in [(1, 120, None), (2, 120, Some(1)), (3, 700, Some(1))] {
-            db.execute(
-                "INSERT INTO tasks
-                   (key, workflow, step, state, band, lane, lane_derived, trigger, source, entered)
-                 VALUES ('cli:' || ?1, 'build', 'implement', 'running', 'now', 'cli', 0, 'cli', 'a',
-                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
-                [task],
-            )
-            .unwrap();
-            db.execute(
-                "INSERT INTO runs (task, step, agent, tmux, session, started, direnv)
-                 VALUES (?1, 'implement', 'implementer', 'priory-' || ?1, 's' || ?1,
-                   strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-' || ?2 || ' seconds'), ?3)",
-                params![task, ago, direnv],
-            )
-            .unwrap();
+    fn a_run_is_late_after_its_harnesss_window_or_600s_into_loading_its_envrc() {
+        for (waited, direnv, handed, trusted, within) in [
+            (59, false, None, false, None),
+            (60, false, None, false, Some(60)),
+            (179, false, None, true, None),
+            (180, false, None, true, Some(180)),
+            (120, true, None, false, None),
+            (599, true, None, true, None),
+            (600, true, None, true, Some(600)),
+            (590, true, Some(30), false, None),
+            (61, true, Some(60), false, Some(60)),
+            (181, true, Some(179), true, None),
+            (181, true, Some(180), true, Some(180)),
+            (630, true, Some(30), false, None),
+            (660, true, Some(0), false, Some(60)),
+            (779, true, Some(0), true, None),
+            (780, true, Some(0), true, Some(180)),
+        ] {
+            assert_eq!(
+                late(waited, direnv, handed, trusted),
+                within,
+                "{waited} {direnv} {handed:?} {trusted}"
+            );
         }
+    }
 
-        let late: Vec<(i64, bool, i64)> = live(&db)
-            .unwrap()
-            .into_iter()
-            .map(|run| {
-                let late = run.waited.unwrap() >= ready_within(run.direnv, false);
-                (run.task, late, run.direnv)
-            })
-            .collect();
+    fn task(db: &Connection, base: Option<&str>, base_task: Option<i64>, vouched: bool) -> i64 {
+        db.execute(
+            "INSERT INTO tasks (key, workflow, step, state, band, lane, lane_derived, trigger,
+               source, entered, base_task)
+             VALUES ('cli:' || (SELECT count(*) FROM tasks), 'build', 'implement', 'running', 'now',
+               'cli', 0, 'cli', 'a', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?1)",
+            params![base_task],
+        )
+        .unwrap();
+        let task = db.last_insert_rowid();
+        set_base(db, task, base, vouched).unwrap();
+        task
+    }
 
-        assert_eq!(late, [(1, true, 0), (2, false, 1), (3, true, 1)]);
+    #[test]
+    fn a_stacks_base_is_the_commit_its_bottom_task_started_from() {
+        let db = memory();
+        let root = task(&db, Some("trunk"), None, true);
+        let middle = task(&db, Some("agents"), Some(root), true);
+        let top = task(&db, Some("agents2"), Some(middle), true);
+        let orphan = task(&db, Some("agents3"), Some(99), true);
+        let new = task(&db, None, None, true);
+
+        let bases = [root, top, orphan, new].map(|task| root_base(&db, task).unwrap());
+
         assert_eq!(
-            [0, 1, 2].map(|direnv| ready_within(direnv, true)),
-            [180, 600, 600]
+            bases.each_ref().map(Option::as_deref),
+            [Some("trunk"), Some("trunk"), None, None]
         );
+    }
+
+    #[test]
+    fn a_base_read_while_trust_worktrees_is_off_never_vouches_for_an_envrc() {
+        let db = memory();
+        let off = task(&db, Some("clone"), None, false);
+        let above = task(&db, Some("agents"), Some(off), true);
+
+        set_base(&db, off, Some("later"), true).unwrap();
+
+        assert_eq!(root_base(&db, off).unwrap(), None);
+        assert_eq!(root_base(&db, above).unwrap(), None);
+        let base: String = db
+            .query_row("SELECT base_sha FROM tasks WHERE id = ?1", [off], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(base, "clone");
     }
 }

@@ -1,6 +1,6 @@
 // Priory's web view (DESIGN.md): the frame, the Desk and the Asks, with answering through the CLI's verbs.
 // Agent text is untrusted: every value goes through `html`, which escapes it.
-import { ARM_MS, ASK_VIEWS, answeredAsks, answeredBy, askBody, askGroups, askHeading, confidenceNote, openAsksOf, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, optionKey, press, runsCommand, submitted, takesText, writeNote } from "./asks.js";
+import { ARM_MS, ASK_VIEWS, answeredAsks, answeredBy, askBody, askGroups, askHeading, confidenceNote, openAsksOf, planCut, planParts, planUnread, planWait, plansFirst, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, optionKey, press, runsCommand, submitted, dismissable, writeNote, writeShown } from "./asks.js";
 import { SPLITS, attentionView, costTiles, dayBars, money, scoreTable, splitTable } from "./costs.js";
 import { addBody, addOutcome, swapLine, withDefaults } from "./add.js";
 import { linked } from "./links.js";
@@ -17,6 +17,8 @@ import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "
 import { PANELS, TYPED_FIELDS, backTo, pageTitle, taskRead } from "./pages.js";
 import { confirmPush, kindBoxes, saveKinds } from "./push.js";
 import { QUEUE_VIEWS, moveOptions, queueBands, waitReason } from "./queue.js";
+import { client, land, params, readAll, sameListings } from "./queries.js";
+import { go } from "./router.js";
 
 const ICONS = {
   check: '<path d="M20 6 9 17l-5-5"/>',
@@ -149,7 +151,8 @@ const state = {
   drawn: null,
   // The last list the person opened; a task or batch page opened next keeps it in its history entry.
   from: null,
-  snapshot: null,
+  // The listings drawn last, as the query cache holds them.
+  listings: null,
   rendered: 0,
   scrolls: new Map(),
   observers: [],
@@ -242,7 +245,14 @@ async function api(path) {
   return response.json();
 }
 
-async function refresh() {
+// The server data lives in one QueryClient; refresh() reads it again.
+export const cache = client();
+// What the long poll waits on: none while signed out or before the first read.
+export const revision = () => (state.token ? state.revision : undefined);
+export const revisionMoved = () => watch.revision();
+export { api, render };
+
+export async function refresh() {
   if (!state.token) return render();
   const failed = state.failed;
   const call = ++state.refreshes;
@@ -253,44 +263,14 @@ async function refresh() {
     runs: current() === "runs" && listView(RUN_VIEWS) === "recent",
   };
   for (const listing of ["asks", "tasks", "runs"]) state.all[listing] &&= history[listing];
+  const asked = params(state.all, state.reportShown);
   try {
-    // The server reads the views once, when it starts.
-    const views = (!state.cached && state.data?.views) || (await api("/api/views"));
-    const links = (!state.cached && state.data?.links) || (await api("/api/links")).links;
-    const full = (listing) => (state.all[listing] ? `/api/${listing}?all=1` : `/api/${listing}`);
     // Taken before the read, so an event between that read and the visit still shows next time.
     const read = new Date().toISOString().replace(/\.\d+Z$/, "Z");
-    // `report` is null until the first `priory report put`; a report the arrows reached may be gone.
-    const shown = api(state.reportShown == null ? "/api/reports/latest" : `/api/reports/${state.reportShown}`)
-      .then((found) => (found.report ? found : null))
-      .catch((error) => (error.status === 404 ? null : Promise.reject(error)));
-    const listed = api("/api/reports").then((read) => read.reports);
-    const [desk, asksList, queue, tasksList, runsList, report, reports] = await Promise.all([...["/api/desk", full("asks"), "/api/queue", full("tasks"), full("runs")].map(api), shown, listed]);
+    const listings = await readAll(cache, api, asked);
     // A later call, such as the one that loads older rows, supersedes this one.
     if (call !== state.refreshes) return true;
-    const [asks, tasks, runs] = [asksList.asks, tasksList.tasks, runsList.runs];
-    const older = { asks: asksList.older, tasks: tasksList.older, runs: runsList.older };
-    if (!state.since.opened) Object.assign(state.since, { opened: read, from: desk.last_visit });
-    state.since.events = mergeSince(state.since.events, desk.since_you_looked);
-    // The listings are read one after another; the oldest revision makes the next wait catch what they missed.
-    state.revision = Math.min(desk.revision, asksList.revision, queue.revision, tasksList.revision, runsList.revision, report?.revision ?? Infinity);
-    const snapshot = JSON.stringify([desk, asks, queue, tasks, runs, older, report, reports]);
-    state.updated = Date.now();
-    state.failed = null;
-    state.cached = false;
-    if (current() === "costs") loadCosts();
-    if (current() === "inbox") loadUnrouted();
-    // Ages read in minutes, so an unchanged state needs a new paint once a minute at most.
-    if (state.data && snapshot === state.snapshot && !failed && Date.now() - state.rendered < 60000) return keep(), true;
-    const before = state.data ? new Set(state.data.asks.filter((ask) => ask.state === "open").map((ask) => ask.id)) : null;
-    // The Costs panel reads its own reports; a refresh keeps the last ones.
-    state.data = { views, links, desk, asks, bands: asksList.bands, queue, tasks, runs, older, report, reports, spend: state.data?.spend ?? null, flows: state.data?.flows ?? null };
-    acceptReport();
-    if (state.task) state.task.stale = true;
-    if (state.batch) state.batch.stale = true;
-    state.snapshot = snapshot;
-    keep();
-    announce(before);
+    if (!accept(land(cache, listings, asked), { read, failed })) return true;
   } catch (error) {
     // A superseded call, such as one from before a sign-out, must not sign the new session out.
     if (call !== state.refreshes) return true;
@@ -300,6 +280,34 @@ async function refresh() {
     return false;
   }
   render();
+  return true;
+}
+
+// Takes a read's listings into state, and says whether to draw them. A listing that did not change
+// is the same object, so a read with nothing new only repaints the ages, once a minute at most.
+function accept(listings, { read, failed }) {
+  const { views, links, desk, asks: asksList, queue, tasks: tasksList, runs: runsList, report, reports } = listings;
+  if (!state.since.opened) Object.assign(state.since, { opened: read, from: desk.last_visit });
+  state.since.events = mergeSince(state.since.events, desk.since_you_looked);
+  // The listings are read one after another; the oldest revision makes the next wait catch what they missed.
+  state.revision = Math.min(desk.revision, asksList.revision, queue.revision, tasksList.revision, runsList.revision, report?.revision ?? Infinity);
+  state.updated = Date.now();
+  state.failed = null;
+  state.cached = false;
+  if (current() === "costs") loadCosts();
+  if (current() === "inbox") loadUnrouted();
+  if (state.data && sameListings(listings, state.listings) && !failed && Date.now() - state.rendered < 60000) return keep(), false;
+  const before = state.data ? new Set(state.data.asks.filter((ask) => ask.state === "open").map((ask) => ask.id)) : null;
+  const [asks, tasks, runs] = [asksList.asks, tasksList.tasks, runsList.runs];
+  const older = { asks: asksList.older, tasks: tasksList.older, runs: runsList.older };
+  // The Costs panel reads its own reports; a refresh keeps the last ones.
+  state.data = { views, links, desk, asks, bands: asksList.bands, queue, tasks, runs, older, report, reports, spend: state.data?.spend ?? null, flows: state.data?.flows ?? null };
+  acceptReport();
+  if (state.task) state.task.stale = true;
+  if (state.batch) state.batch.stale = true;
+  state.listings = listings;
+  keep();
+  announce(before);
   return true;
 }
 
@@ -339,16 +347,14 @@ function signOut(reason) {
   watch.stop();
   // Before the token goes: giving the keyboard back needs it.
   keyboard.leave();
-  Object.assign(state, { token: null, data: null, snapshot: null, revision: undefined, signInError: reason, drawn: null, flowsError: null, all: { asks: false, tasks: false, runs: false }, costs: { by: "workflow", loading: false, slow: false, error: null } });
+  cache.clear();
+  Object.assign(state, { token: null, data: null, listings: null, revision: undefined, signInError: reason, drawn: null, flowsError: null, all: { asks: false, tasks: false, runs: false }, costs: { by: "workflow", loading: false, slow: false, error: null } });
   render();
 }
 
 // Routes: /, /asks, /asks/42, /tasks, /more, /settings/appearance
+// go() moves the route main.jsx renders.
 const route = () => location.pathname.split("/").filter(Boolean);
-function go(path) {
-  history.pushState(null, "", path);
-  render();
-}
 
 const layout = () => (matchMedia("(min-width: 1024px)").matches ? "wide" : matchMedia("(min-width: 600px)").matches ? "medium" : "compact");
 
@@ -1161,14 +1167,13 @@ function askDetail(id, wide) {
   const bound = `${runnerOf(ask) ? `Runs on ${runnerOf(ask)}. ` : ""}Bound to revision ${ask.revision}.`;
   const optionButtons = optionList(ask, wide);
   const notice = state.notices.get(ask.id);
+  const planError = planErrorOf(ask);
   const lockedNote = locked === "offline" ? html`<p class="note" id="answer-locked">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>`
-    : locked ? html`<p class="note" id="answer-locked">${icon("layers", "s15")}<span>${state.batch?.error ? `Could not read the plan: ${state.batch.error}. It must load before you answer.` : `Reading the plan of revision ${ask.revision} before you answer.`}</span></p>` : "";
-  const writing = state.writing.has(ask.id) && !locked;
-  const write = !takesText(ask)
-    ? ""
-    : writing
+    : locked ? html`<p class="note" id="answer-locked">${icon("layers", "s15")}<span>${planWait(ask, planError)}</span></p>` : cutNote(ask);
+  const shown = writeShown(state.writing.has(ask.id), locked, Boolean(pending));
+  const write = shown === "form"
     ? html`<form class="writeform" data-action="send-text"><label class="sr" for="draft">Your answer</label><textarea id="draft" name="text" rows="3">${state.drafts.get(ask.id) || ""}</textarea><button class="btn primary" ${pending ? raw('aria-disabled="true"') : ""}>Send</button></form>`
-    : html`<button class="ghost write" data-action="write" aria-disabled="${locked || pending ? "true" : "false"}">${icon("pencil", "s15")}Write an answer</button>`;
+    : html`<button class="ghost write" data-action="write" aria-disabled="${shown === "disabled" ? "true" : "false"}">${icon("pencil", "s15")}Write an answer</button>`;
   const busy = pending ? "true" : "false";
   const snoozeButtons = !ask.task || runnerOf(ask) || locked === "offline"
     ? ""
@@ -1177,7 +1182,7 @@ function askDetail(id, wide) {
       : html`<button class="ghost" data-action="snooze" data-for="1h" aria-disabled="${busy}">Snooze 1 h</button><button class="ghost" data-action="snooze" data-tomorrow="9" aria-disabled="${busy}">Snooze until tomorrow 09:00</button>`;
   const editable = Boolean(batch) && ask.state === "open" && batch.state === "asked" && !locked;
   const editPlanLink = editable ? html`<a class="ghost" href="#batchplan">${icon("pencil", "s15")}Edit the plan</a>` : "";
-  const more = html`<div class="more">${editPlanLink}${write}${locked || !takesText(ask) ? "" : html`<button class="ghost" data-action="dismiss" aria-disabled="${busy}">Dismiss</button>`}${snoozeButtons}</div>`;
+  const more = html`<div class="more">${editPlanLink}${write}${locked || !dismissable(ask) ? "" : html`<button class="ghost" data-action="dismiss" aria-disabled="${busy}">Dismiss</button>`}${snoozeButtons}</div>`;
   const owner = runnerOf(ask);
   const away = seenAgo(ask, Date.now(), age);
   const sent = sentNote(ask);
@@ -1204,8 +1209,11 @@ function askDetail(id, wide) {
     ...(batch.closes?.length ? [["closes", "Closes", closesSection(batch)]] : []),
     ...(splitsOf(batch).length ? [["splits", "Splits", splitsSection(batch)]] : []),
   ] : [];
-  const read = taskSections(taskOf(ask)).filter(([key]) => !batch || key !== "plan");
-  const sections = [...planned.map(([key, label]) => [key, label]), ["why", "Why"], ...read.map(([key, label]) => [key, label]), ["history", "History"], ...(ask.command ? [["command", "Command"]] : [])];
+  const task = taskOf(ask);
+  const sectionsRead = taskSections(task).filter(([key]) => key !== "plan" || (!batch && !planUnread(ask, task)));
+  const lead = batch || !plansFirst(ask) ? [] : sectionsRead.filter(([key]) => key === "plan");
+  const read = sectionsRead.filter((section) => !lead.includes(section));
+  const sections = [...planned.map(([key, label]) => [key, label]), ...lead.map(([key, label]) => [key, label]), ["why", "Why"], ...read.map(([key, label]) => [key, label]), ["history", "History"], ...(ask.command ? [["command", "Command"]] : [])];
   const jump = html`<nav class="jump" aria-label="Sections">${sections.map(([key, label], i) => html`<a href="#${key}" aria-current="${i === 0 ? "true" : "false"}">${label}</a>`)}</nav>`;
   const why = html`<section class="sect" id="why"><div class="sh">${icon("message-text", "s15")}What the agent asks<span class="meta">${ask.run ? html`run <span class="mono">${ask.run}</span>` : ""}</span></div>
     ${body ? html`<p class="asked">${autolinked(body, ask.repo)}</p>` : ""}
@@ -1240,10 +1248,10 @@ function askDetail(id, wide) {
       <button id="bar-answer" class="btn primary ${barArmed ? "armed" : ""}" data-answer="${options.indexOf(recommended)}" aria-disabled="${locked ? "true" : "false"}">${barArmed
         ? armedLabel(recommended, runsCommand(ask, recommended))
         : html`<span>${recommended}</span><small>${[recommended === ask.recommendation ? "Recommended" : "First option", runsCommand(ask, recommended) && "Runs a command"].filter(Boolean).join(". ")}</small>`}</button>
-      ${locked === "offline" ? html`<p class="note">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>` : ""}</div>`
+      ${locked === "offline" ? html`<p class="note">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>` : locked ? html`<p class="note">${icon("layers", "s15")}<span>${planWait(ask, planError)}</span></p>` : cutNote(ask)}</div>`
     : "";
   const reading = read.map(([, , section]) => section);
-  const plan = planned.map(([, , section]) => section);
+  const plan = [...planned, ...lead].map(([, , section]) => section);
   if (wide) return html`<div class="pinned">${header}${top}${sending}</div><div class="scroll" data-sections>${jump}${plan}${why}${reading}${history}${command}</div>`;
   return html`${header}<div class="scroll" data-sections>${top}${jump}${plan}${why}${reading}${history}${command}</div>${bar}${sending}`;
 }
@@ -1290,11 +1298,19 @@ function batchOf(which, version = null) {
   return state.batch.body;
 }
 
-// Why the options of an ask are disabled: offline, or a batch's ask whose plan is not read yet for
-// this revision, so a Go never answers a plan the page did not show.
+const planErrorOf = (ask) => (ask.approves_plan ? taskRead(state.task, ask.task).task : state.batch)?.error;
+
+const cutNote = (ask) => {
+  const cut = planCut(ask, state.task?.id === ask.task ? state.task.body : null);
+  return cut ? html`<p class="note warn">${icon("file-text", "s15")}<span>${cut}</span></p>` : "";
+};
+
+// Why the options of an ask are disabled: offline, or an ask whose plan is not read yet for this
+// revision, so no answer approves a plan the page did not show.
 function lockOf(ask) {
   if (state.failed) return "offline";
   if (runnerOf(ask)) return null;
+  if (planUnread(ask, state.task?.id === ask.task ? state.task.body : null)) return "plan";
   const read = state.batch?.which === ask.key && state.batch.version === ask.revision && state.batch.body;
   return ask.state === "open" && ask.key?.startsWith("batch:") && !read ? "plan" : null;
 }
@@ -1581,7 +1597,14 @@ function taskSections(task) {
     const criteria = progress.criteria.length ? html`<p class="meta">Acceptance criteria</p><ol class="hist crit">${progress.criteria.map((criterion) => html`<li><span class="mono">${criterion.id}</span><span>${autolinked(criterion.description, task.repo)}</span><span class="tag">${criterion.state}</span></li>`)}</ol>` : "";
     sections.push(["progress", "Progress", sect("progress", "check", "Progress", "", html`${line("Goal", progress.goal)}${criteria}${line("Latest change", progress.latestChange)}${line("Next", progress.nextAction)}`)]);
   }
-  if (task.plan) sections.push(["plan", "Plan", sect("plan", "check", "Plan", `${task.plan.step}, run ${task.plan.run}`, md(task.plan.summary, task.repo))]);
+  const file = task.plan_file;
+  if (file) {
+    const [first, ...others] = planParts(file).map((part) => ({
+      meta: html`<span class="mono" title="${part.path || ""}">${part.from}</span>`,
+      body: html`${md(part.text, task.repo)}${part.truncated ? html`<p class="note">${icon("file-text", "s15")}<span>Showing the first 64 KB. Read the rest at ${part.path || part.from}.</span></p>` : ""}`,
+    }));
+    sections.push(["plan", "Plan", sect("plan", "check", "Plan", first.meta, html`${first.body}${others.map(({ meta, body }) => html`<div class="sh">${icon("check", "s15")}Plan<span class="meta">${meta}</span></div>${body}`)}`)]);
+  } else if (task.plan) sections.push(["plan", "Plan", sect("plan", "check", "Plan", `${task.plan.step}, run ${task.plan.run}`, md(task.plan.summary, task.repo))]);
   const pr = task.pull_request;
   if (pr) {
     sections.push(["pr", "PR", sect("pr", "workflow", `#${pr.number} ${pr.title || ""}`, stateWords(pr.review),
@@ -2434,7 +2457,7 @@ function renderSheet() {
   if (!ask || ask.state !== "open" || state.pending) return sheet.close();
   const focused = document.activeElement?.closest?.("#answer") ? focusKey(document.activeElement) : null;
   sheet.innerHTML = html`<div class="shead"><h2 id="answer-title">Answer ask #${ask.id}<small>revision ${ask.revision}</small></h2><button class="iconbtn" data-action="sheet-close" aria-label="Close">${icon("x", "s20")}</button></div>
-    <div class="opts" role="group" aria-label="Options">${optionList(ask, false)}</div>`.text;
+    <div class="opts" role="group" aria-label="Options">${optionList(ask, false)}</div>${cutNote(ask)}`.text;
   if (focused) sheet.querySelector(focused)?.focus();
 }
 
@@ -2994,6 +3017,7 @@ function focusKey(element) {
 
 function render() {
   const app = document.getElementById("app");
+  if (!app) return;
   if (state.reportPending && !state.reportPending.sending && (!state.token || current() !== "reports")) {
     clearTimeout(state.reportPending.timer);
     state.reportPending = null;
@@ -3319,7 +3343,7 @@ document.addEventListener("submit", (event) => {
     event.preventDefault();
     const ask = askOnScreen();
     const text = (state.drafts.get(ask?.id) || "").trim();
-    if (ask && text) answer(ask, text, true);
+    if (ask && text && writeShown(state.writing.has(ask.id), lockOf(ask), Boolean(state.pending)) === "form") answer(ask, text, true);
     return;
   }
   if (event.target.dataset.action === "remark") {
@@ -3402,32 +3426,12 @@ addEventListener("pagehide", () => keyboard.leave());
 keyboardSheet().addEventListener("click", (event) => { if (event.target === keyboardSheet()) keyboardSheet().close(); });
 keyboardSheet().addEventListener("close", () => document.querySelector("#app [data-action='term-menu']")?.focus());
 addSheet().addEventListener("close", () => document.querySelector("#app [data-action='add-open']")?.focus());
-addEventListener("popstate", render);
 for (const query of ["(min-width: 600px)", "(min-width: 1024px)"]) matchMedia(query).addEventListener("change", render);
 addEventListener("resize", () => { if (terminal.fit) paintTerminal(document.getElementById("app")); });
 document.addEventListener("visibilitychange", () => {
   syncTerminal(document.getElementById("app"));
   if (!document.hidden && state.token) refresh();
 });
-// Waits on the state's revision; the server answers once it moves, or after 25 s.
-async function follow() {
-  for (;;) {
-    if (!state.token || state.revision === undefined || document.hidden) {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      continue;
-    }
-    let ok;
-    try {
-      const { revision } = await api(`/api/events?since=${state.revision}`);
-      if (revision !== state.revision) watch.revision();
-      ok = revision === state.revision || (await refresh());
-    } catch {
-      await refresh();
-      ok = false;
-    }
-    if (!ok) await new Promise((resolve) => setTimeout(resolve, 5000));
-  }
-}
 // Ages read in minutes, so repaint them once a minute even when nothing changes.
 setInterval(() => { if (!document.hidden && state.token) refresh(); }, 60000);
 // The browser offers to install only once the page handles this; the Notifications screen shows it.
@@ -3437,7 +3441,3 @@ addEventListener("beforeinstallprompt", (event) => {
   render();
 });
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
-// The desk can take seconds: the kept listing or the loading line shows until it arrives.
-render();
-follow();
-refresh();

@@ -39,8 +39,8 @@ Before you call a change done, run these from the repository root and fix every 
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-node --test adapters/herdr/test/*.test.js adapters/github/test/*.test.js adapters/claude-plugin/test/*.test.js crates/priory-core/web/*.test.js
 corepack pnpm install --frozen-lockfile && corepack pnpm web:check
+node --test adapters/herdr/test/*.test.js adapters/github/test/*.test.js adapters/claude-plugin/test/*.test.js crates/priory-core/web/*.test.js
 ```
 
 CI runs the same five commands on every push to `main` and every pull request.

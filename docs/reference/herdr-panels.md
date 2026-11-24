@@ -142,9 +142,9 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
   A press on another option moves the arm, and a new revision of the ask drops it. An option that
   runs the ask's command shows the command word by word under it while armed, and its answer adds
   `--run`. A press within 250 ms of the arm does nothing, so a double-click cannot send by
-  accident. "Write an answer…" sends free text at once. Dismiss runs `priory dismiss` at once. A
-  step's ask and a hold's ask take only their options, so they offer neither "Write an answer…",
-  its `w` key, nor Dismiss.
+  accident. "Write an answer…" sends free text at once. Dismiss runs `priory dismiss` at once. Every
+  open ask offers "Write an answer…" and its `w` key. A step's ask and a hold's ask need an
+  answer, so they offer no Dismiss.
 - **Refused answers.** When a verb fails, the panel reads the asks again and says why on the ask:
   the question changed to another revision, someone else answered, the ask was withdrawn, or the
   CLI's error. When the ask has left the view, the reason shows in a strip under the header
@@ -165,13 +165,17 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
   draw with their [links](#links).
 
 The detail shows the sections Why, Brief, Plan, PR, Trace, History and Command. Brief shows the
-request and the `groom` step's result, Plan the `plan` step's result, or else the latest result of a step
+request and the `groom` step's result, Plan the plan its latest approval ask shows (`plan_file`, see
+[the task endpoint](serve.md)) with the path of each file, or else the `plan` step's result, or else the latest result of a step
 whose name starts with `plan-`, or else the task's `progress`, PR the pull request's title, branches, state, review and checks, then the task's stack when it
 has two or more pull requests (see [Stacks](#stacks)), and Trace each run with its
 span, outcome and tokens. A check shows a check, a cross, a clock while it has no conclusion, or a
 dash when skipped or neutral; review and check states read in plain words, such as "changes
 requested" and "passed", as `checkState` and `stateWords` in `lib/priory.js` say them for the web too.
 A section the task lacks is left out with its chip, as DESIGN.md says.
+An open ask that approves a plan puts Plan first, and its detail opens on Plan rather than Why. Its
+options wait until the plan of its revision is read, and the panel and its answer bar say why while
+they wait or when the read fails. A cut plan says so beside the options.
 History lists every revision and refused answer of the ask, and its answer, newest first. A refused
 answer shows on a warn tile. Briefs, plans and results draw as plain text, like the agent's text.
 
@@ -547,7 +551,7 @@ waiting: snoozing changes what a person sees, never what the daemon does. `prior
   `withdrawn_why`, the reason in words that the view shows, and `withdrawn_at`.
 - The detail adds the agent's text and the run that asked, `what_waits` and `next_action`, and
   the ask's `revisions` and `refused`, and another runner's ask's `submissions`, for its history. `priory task ID --json` adds the task's
-  `brief`, `plan`, `pull_request` and `runs`.
+  `brief`, `plan`, `plan_file`, `pull_request` and `runs`.
 
 ### Queue
 

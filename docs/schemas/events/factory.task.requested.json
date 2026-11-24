@@ -481,6 +481,20 @@
           "description": "Which events are the same work, such as `github:owner/name#42` or `linear:ENG-7`.",
           "type": "string"
         },
+        "labels": {
+          "additionalProperties": {
+            "pattern": "^[A-Za-z0-9_.:/-]+$",
+            "type": "string"
+          },
+          "description": "The task's labels, which runner filters match: the trigger's `labels`, or `priory request`\nor `priory add --label`.",
+          "propertyNames": {
+            "pattern": "^[a-z0-9][a-z0-9_.-]*$"
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
         "lane": {
           "description": "The trigger's or the request's lane; null when `lanes.toml` derives it.",
           "type": [

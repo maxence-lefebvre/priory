@@ -237,7 +237,9 @@ Each inbox entry gets one of these outcomes:
 | A GitHub comment or review whose `association` is not `OWNER`, `MEMBER` or `COLLABORATOR` | `outsider` | none: it wakes, reopens, claims and reaches no task |
 | A task request whose key no runner holds, with several runners | `claiming` | none until this runner's claim wins (see [runners.md](runners.md)) |
 | A task request whose key another runner holds | `elsewhere` | none                                    |
-| Any task request, on a [view-only machine](runners.md#a-machine-that-only-views) | `elsewhere` | none: it claims nothing |
+| A task request whose key no runner holds and this runner's filters refuse, or on a [view-only machine](runners.md#a-machine-that-only-views) | `unaccepted`, then `elsewhere` once another runner's claim wins | none until a claim wins |
+| An `unaccepted` task request, or a `claiming` one whose claim this runner has not published, that a person, a close or a withdrawal dropped | `dropped` | none |
+| `priory.task.dropped` | `noted`, or `refused` when it drops nothing | none |
 | `priory.task.claimed` that wins its key   | `claimed` | the task this runner creates, when it is the new owner |
 | `priory.task.claimed` that loses          | `refused` | none; this runner's own losing claim drops its copy of the task, `owned by runner <name>` |
 | `priory.task.held` or `priory.runner.alive` | `noted` | none                                         |

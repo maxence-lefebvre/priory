@@ -57,7 +57,10 @@ but they wait for a restart:
 | [`[kit]`](../reference/factory.md#kit), [`[memories]`](../reference/factory.md#memories) | The repositories each runner fetches |
 | `command_timeout` | The bound on every git, gh and tmux command |
 | [`[sweep]`](../reference/factory.md#sweep) `every` | How often the sweep runs |
-| `runners/` | This machine's runner and its share |
+| `runners/`, except `[memory]` | This machine's runner and its share |
+
+A runner file's [`[memory]`](../reference/runners.md) is live from the next poll of a waiting
+command, though the daemon prints `runners/ changed` for it too.
 
 When an edit changes one of them, the daemon prints `priory daemon: <key> changed: restart priory
 daemon to apply it`. The rest of the edit is live.

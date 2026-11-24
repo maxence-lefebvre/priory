@@ -1,6 +1,6 @@
 // The Asks panel's view model: `priory asks --all --json` in, rows and states out. No drawing, no IO.
 
-import { age, ago, answeredBy, askBody, askHeading, autolink, checkState, plural, stateWords, prStack, routedMark, routedNote, runnerOf, seenAgo, sentNote, submitted } from "./priory.js";
+import { age, ago, answeredBy, askBody, askHeading, autolink, checkState, planCut, planParts, planUnread, planWait, plansFirst, plural, stateWords, prStack, routedMark, routedNote, runnerOf, seenAgo, sentNote, submitted } from "./priory.js";
 
 /** @typedef {{ pattern: string, url: string }[]} Links the rules `priory links` lists */
 
@@ -171,9 +171,11 @@ function history(ask) {
 
 const minutes = (/** @type {string} */ from, /** @type {string} */ to) => Math.round((Date.parse(to) - Date.parse(from)) / 60_000);
 
-/** The plan step's latest result, else the progress the agent last published. @param {any} task */
+/** The parts of the plan: what its latest approval ask shows, else the plan step's latest result, else the progress the agent last published. @param {any} task */
 function plan(task) {
-  if (task.plan) return { text: task.plan.summary, from: `${task.plan.step}, run ${task.plan.run}` };
+  const file = task.plan_file;
+  if (file) return planParts(file).map((/** @type {any} */ part) => ({ text: part.truncated ? `${part.text}\n\nShowing the first 64 KB. Read the rest at ${part.path ?? part.from}.` : part.text, from: part.from }));
+  if (task.plan) return [{ text: task.plan.summary, from: `${task.plan.step}, run ${task.plan.run}` }];
   const progress = task.progress;
   if (!progress) return null;
   const lines = [
@@ -182,7 +184,7 @@ function plan(task) {
     progress.latestChange && `Latest change: ${progress.latestChange}`,
     progress.nextAction && `Next: ${progress.nextAction}`,
   ];
-  return { text: lines.filter(Boolean).join("\n"), from: "progress" };
+  return [{ text: lines.filter(Boolean).join("\n"), from: "progress" }];
 }
 
 /** The task's latest pull request, then its whole stack when it has two or more. @param {any} pull @param {any[]} stack */
@@ -220,7 +222,7 @@ function trace(runs, now) {
  * @param {any} ask
  * @param {{ now: number, armed: Armed | null, task?: any, links?: Links }} options
  */
-export function askDetail(ask, { now, armed, task = null, links = [] }) {
+export function askDetail(ask, { now, armed, task = null, taskError = null, links = [] }) {
   const open = ask.state === "open";
   /** @type {string[]} */
   const options = open ? ask.options ?? [] : [];
@@ -229,7 +231,10 @@ export function askDetail(ask, { now, armed, task = null, links = [] }) {
   const request = task?.brief?.request;
   const groomed = task?.brief?.result;
   const brief = request || groomed ? { request, text: groomed?.summary ?? null, from: groomed ? `${groomed.step}, run ${groomed.run}` : null } : null;
-  const planned = task ? plan(task) : null;
+  // An ask that approves a plan shows only the one its revision approves, first and by default.
+  const locked = planUnread(ask, task);
+  const planned = task && !locked ? plan(task) : null;
+  const first = plansFirst(ask) ? "plan" : "why";
   const pr = pullRequest(task?.pull_request, task?.stack);
   const runs = trace(task?.runs ?? [], now);
   // A long untitled question heads the detail with a short title and reads whole in Why.
@@ -255,9 +260,13 @@ export function askDetail(ask, { now, armed, task = null, links = [] }) {
       dimmed: arming !== null && arming !== index,
     })),
     chips: /** @type {[string, string][]} */ ([
-      ["why", "Why"], brief && ["brief", "Brief"], planned && ["plan", "Plan"], pr && ["pr", "PR"],
+      first === "plan" && planned && ["plan", "Plan"], ["why", "Why"], brief && ["brief", "Brief"], first === "why" && planned && ["plan", "Plan"], pr && ["pr", "PR"],
       runs.length > 0 && ["trace", "Trace"], ["history", "History"], ask.command && ["command", "Command"],
     ].filter(Boolean)),
+    first,
+    locked,
+    wait: locked ? planWait(ask, taskError) : null,
+    cut: planCut(ask, task),
     brief,
     plan: planned,
     pr,
@@ -276,8 +285,9 @@ export function askDetail(ask, { now, armed, task = null, links = [] }) {
     command: command(ask),
     bar: options.length ? { count: plural(options.length, "option"), option: recommended } : null,
     canSnooze: open && ask.task != null && !owner,
-    // A step's or a hold's ask takes only its options: no free text and no dismissal.
-    takesText: open && ask.free_text !== false,
+    takesText: open,
+    // A step's or a hold's ask needs an answer: no dismissal.
+    dismissable: open && ask.dismissable !== false,
   };
 }
 

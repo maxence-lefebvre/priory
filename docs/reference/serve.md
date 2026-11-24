@@ -193,7 +193,7 @@ application/json` and a JSON body of at most 16 KiB with exactly the fields belo
 
 | Endpoint | Body |
 | -------- | ---- |
-| `POST /api/asks/{id}/answer` | `revision`, an integer, and one of `option` or `text`, a string. Both become the answer: a step's ask takes only one of its options, or `OPTION: NOTE` (see [waits.md](../daemon/waits.md#asks-and-answers)). `run`, a boolean, default `false`: `true` confirms an answer that runs the ask's command, as `priory answer --run` does. Without it, that answer gets `422` |
+| `POST /api/asks/{id}/answer` | `revision`, an integer, and one of `option` or `text`, a string. Both become the answer: a human step's ask takes one of its options, `OPTION: NOTE` or a written answer (see [waits.md](../daemon/waits.md#asks-and-answers)). `run`, a boolean, default `false`: `true` confirms an answer that runs the ask's command, as `priory answer --run` does. Without it, that answer gets `422` |
 | `POST /api/asks/{id}/dismiss` | `revision`, an integer |
 | `POST /api/snooze` | `kind` (`ask`, `blocked`, `failed` or `prompt`) and `id`, an integer, then one of: `for`, a duration such as `1h`; `until`, an RFC 3339 time; or `"clear": true` |
 | `POST /api/request` | `text`, a string, then optionally `workflow`, `band`, `lane` and `repo`, strings, `intervention`, `plan` or `hands-off`, and `auto_answer`, `high` or `medium`. What it leaves unset comes from `[request]` and the URLs in `text`, as for [`priory add`](../intake/cli.md#priory-add) |
@@ -406,7 +406,7 @@ Each item:
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
 | `kind` | string | `ask`, `delivery`, `blocked`, `failed`, `prompt`, `command`, `held`, `batch`, `sweep`, `memory`, `report`, `retired`, `queue` or `worktree`. See [desk.md](../daemon/desk.md) |
-| `id` | integer or string | The ask, task, prompt, answer's action, hold, batch, sweep, grant, report's inbox sequence number or queue place; a worktree's path |
+| `id` | integer or string | The ask, task, prompt, answer's action, hold, batch, sweep, grant, report's inbox sequence number or queue place; a worktree's path; the key of a `queue` item that no runner accepts |
 | `task` | integer or null | The task; for a `batch`, its planning task |
 | `key` | string or null | The task's key |
 | `step` | string or null | The task's step |
@@ -518,7 +518,8 @@ an object: `answered` and `withdrawn`, the number of each left out, within `band
 | `revision` | integer | The question's revision. `priory answer` and `priory dismiss` take it |
 | `question` | string | The question |
 | `options` | array of strings | The options |
-| `free_text` | boolean | Whether the ask takes free text and a dismissal. False for a step's ask and a hold's ask, which take only their options |
+| `dismissable` | boolean | Whether a person may dismiss the ask. False for a step's ask and a hold's ask, which need an answer. Which asks take a written answer is in [waits.md](../daemon/waits.md#asks-and-answers) |
+| `approves_plan` | boolean | Whether the ask approves a plan, which `plan_file` of [the task](#task-in-detail) holds. See [The plan an ask approves](../daemon/asks.md#the-plan-an-ask-approves) |
 | `recommendation`, `tradeoff` | string or null | What the agent recommends, and the trade-off |
 | `title`, `text` | string or null | The ask's title and its Markdown body. A human step's ask has the task's [merge risk](tools.md#merge-risk) as its body, when it has one |
 | `what_waits`, `next_action` | string or null | What waits on the answer, and what the agent does next |
@@ -565,7 +566,8 @@ the queue from 1, or null), `generation`, `retired`, `tldr`, `since`
 (when the task last changed state), `grade` (`red`, `yellow`, `green` or null), `grade_reason`,
 `progress`, `conditions`, a held task's [conditions](#conditions) or null, `title` (its TL;DR, else
 the first line of its request, cut to 120 characters), `batch` (the id of the batch it is an entry
-or the planning task of, or null), `added_by` (the outside session that added it through
+or the planning task of, or null), `labels` (its labels as an object, which
+[runner filters](runners.md#filters) match), `added_by` (the outside session that added it through
 [`priory mcp --outside`](../daemon/tools.md#the-outside-server), or null), `stack` and `relations`. See Grades in [tools.md](tools.md#grades).
 
 In a factory of several runners, each task also has `runner`, this runner's name, `hold`, the
@@ -584,8 +586,15 @@ The list then adds, after this runner's tasks, each task another runner holds wh
 | `since` | string | When the claim that gave it the key was published |
 | `workflow`, `band`, `lane` | string or null | From the task's request |
 | `title` | string or null | The request's TL;DR, else its subject |
+| `labels` | object | The request's labels |
 | `generation` | integer or null | The task's generation, as that runner last published it. Null until it does |
 | `submissions` | array | Every resume, revive, cancel, release and say sent to it from any machine, oldest first: `submission`, `act`, `generation`, `text`, `step`, `sent`, then `outcome` (`applied` or `refused`), `why` and `applied`, null until its runner applied it |
+
+Last comes the first request of each key that [no runner's filters
+accept](../daemon/runners.md#placing-tasks-with-filters). Its `runner`, `hold` and `id` are null, and
+so are `state`, `step` and `generation`. Its `reason` says why it waits, such as
+`no runner accepts it until 18:00`, `since` is the request's time, `submissions` is empty, and
+`workflow`, `band`, `lane`, `title` and `labels` come from the request.
 
 `priory tasks` without `--json` prints them too, with three more columns, `runner`, `hold` and
 `last_seen`. `--lane` and `--grade` keep this runner's tasks only.
@@ -689,6 +698,7 @@ And these objects:
 | ----- | ---- | ------- |
 | `brief` | object | `title` and `request`, the request's title and text, each null when it has none, `result`, the latest result of a step named `groom`, or null, `intent`, its trigger's [`intent`](triggers.md#intent-and-noop) or null, and `noop`, its trigger's no-op cases, `[]` with none |
 | `plan` | object or null | The latest result of a step named `plan`, or else of a step whose name starts with `plan-`, such as `plan-implementation`. A result has `run`, `step`, `outcome`, `summary`, `evidence`, `commit_sha` and `created`. When it is null, `progress` holds the plan the agent published |
+| `plan_file` | object or null | The plan the task's latest approval ask shows, as Priory stored it when that ask's revision was raised. It has `ask`, `revision`, `step`, `run` and `files`, one entry per document shown, each with `path`, `text` and `truncated`. `path` is the file it was read from, or null when `text` is the summary of `run`'s result. `text` holds at most the first 64 KB, and `truncated` is true when the file is longer. Null when no ask approved a plan, when a later `plan` result replaced an answered ask's plan, and when another runner holds the task |
 | `pull_request` | object or null | The latest pull request the task owns that has stored GitHub events: `repo`, `number`, `title`, `url`, `branch`, `base`, `head_sha` (each from the newest event that carries it), `state` (`open`, `closed` or `merged`; a reopened pull request stays `closed`, since the intake publishes no reopen event), `review` (the latest review's state, or null) and `checks`, the latest conclusion of each check run on the head: `name`, `conclusion` and `at` |
 
 ## Evidence

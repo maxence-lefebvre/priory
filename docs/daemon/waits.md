@@ -17,8 +17,7 @@ The drawing follows one ask, from the agent's `ask` call to the prompt that carr
 `priory answer <ask> <option-or-text> --revision <n>` sends the answer to the daemon. `--expected`
 is the same flag, and `--` ends the flags, as in `priory answer --expected 2 -- cache.ship ship`.
 The first answer to the ask's revision stands. Refused: an answer to another revision, a second
-answer, or, for a step's ask, a text that is neither one of its options nor `OPTION: NOTE` (see
-below). In a factory of several
+answer, or a text the ask does not take (see below). In a factory of several
 runners, `priory answer <runner>:<ask>` answers another runner's ask through the log (see
 [runners.md](runners.md#answering-another-runners-ask)).
 
@@ -26,7 +25,7 @@ runners, `priory answer <runner>:<ask>` answers another runner's ask through the
 changed question refuses it, as it refuses an answer. A dismissed ask is withdrawn: an answer to
 it is refused with `ask <id> was dismissed`. An agent's ask wakes its task with one prompt:
 `A person dismissed ask <id> without an answer. Continue your task.` A step's ask and a hold's
-ask are refused, since only one of their options moves the task on.
+ask are refused, since they need an answer.
 `priory dismiss --revision <n> [DIR] <runner>:<ask>` dismisses another runner's ask through the log
 (see [runners.md](runners.md#answering-another-runners-ask)).
 
@@ -40,8 +39,28 @@ ask are refused, since only one of their options moves the task on.
   dropped task's reason, both with tabs as spaces. At a step with `approves`, a note on an option
   that stops the task or leads to a model step also proposes a lesson for that step (see
   [score.md](score.md#pre-review)). An option
-  that leads anywhere else, such as `done` or a code step, or that runs a command, refuses a note:
+  that leads anywhere else, such as `done`, a code step or a debate, or that runs a command, refuses a note:
   `ask 12 answered approved leads to done, which reads no note: answer approved alone`.
+- A human step's ask also takes a written answer: text that is neither one of its options nor
+  `OPTION: NOTE`. The ask keeps the text as its answer, and the task goes back to the
+  model step it ran last in its current generation that is neither irreversible nor a debate, with `A person answered step <step> in writing: <text>` queued as that step's prompt.
+  Its next run resumes that agent's session. The step's trace record has the outcome `written`.
+  When the task ran no such step, the answer is refused:
+  `ask 12 takes one of: approved, rejected; no earlier model step reads a written answer`.
+  A written answer voids every approval of the task's current generation, so each irreversible step
+  that is not `autonomous` asks again before it runs (see [tools.md](tools.md#approvals)).
+- Every ask refuses a blank answer and one over 16 KiB. A human step's ask and a hold's
+  ask also refuse text that looks like a mistyped option: the text, or its part before a colon,
+  differs from an option only by case or whitespace, or is one word a letter or two away from an
+  option of 5 letters or more.
+  The error says which: `ask 12 takes one of: approved, rejected; did you mean approved?`. A plan's
+  approval and a debate's pick take only their options.
+- A hold's ask takes a written answer too. The hold and its ask stay open, and the text waits as
+  the task's next prompt, `A person wrote on ask <id>: <text>`, which its first run after the
+  release types. At a debate step, the step after the debate reads it. The text also voids the
+  task's approvals, as a written answer to a step does, so a task held at an approved irreversible
+  step asks again after the release. Release or drop the hold with one of its options. A dropped task never gets the
+  text.
 - An agent's ask queues the answer as the task's next prompt, after fixed words such as
   `Answer to ask 12 (revision 2): `, so an answer starting with `/` never runs as a slash command.
   An asleep task becomes `ready`. A task whose run has not stopped yet stays `running`, and the

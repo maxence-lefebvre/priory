@@ -58,7 +58,7 @@ The outcomes of a step come from:
 | `decides` | Its outcome is |
 | --------- | -------------- |
 | `model` | the `outcome` field of the run's `result`, or a debate's shared verdict |
-| `human` | the option the person picks; every option needs a `next` |
+| `human` | the option the person picks; every option needs a `next`. A written answer instead, text that is no option, has the outcome `written` and sends the task back to the model step it ran last that is neither irreversible nor a debate, with the text as that step's prompt. See [waits.md](../daemon/waits.md#asks-and-answers) |
 | `code` | the action's status, such as `opened` or `failed`. A `run` action's is the last line of its stdout when `next` names it, else `ok` on exit 0 and `failed` otherwise |
 
 Each edge, an outcome and its target, has a `by`: who decides that the task follows it. It defaults

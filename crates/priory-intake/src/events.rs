@@ -898,6 +898,14 @@ pub struct TaskRequested {
     /// the trigger's when unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_answer: Option<priory_factory::factory::Confidence>,
+    /// The task's labels, which runner filters match: the trigger's `labels`, or `priory request`
+    /// or `priory add --label`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(extend(
+        "propertyNames" = { "pattern": "^[a-z0-9][a-z0-9_.-]*$" },
+        "additionalProperties" = { "type": "string", "pattern": "^[A-Za-z0-9_.:/-]+$" }
+    ))]
+    pub labels: Option<std::collections::BTreeMap<String, String>>,
     /// The batch a planning task plans, from `priory batch add`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub batch: Option<BatchRequest>,
@@ -1171,6 +1179,17 @@ pub struct TaskApplied {
     /// Why it was refused.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
+}
+
+/// A person drops the requests of a key that no runner claimed, with `priory cancel KEY`. Every
+/// machine drops the ones it holds as `unaccepted`. A claim on its way still wins.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TaskDropped {
+    /// The key.
+    pub key: String,
+    /// Where the drop came from: `cli`.
+    pub by: String,
 }
 
 /// An agent saves a memory with the `remember` tool, or removes one with `forget`. Each message is

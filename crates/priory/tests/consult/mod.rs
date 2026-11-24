@@ -135,6 +135,23 @@ fn replying(setup: &Setup) {
     }
 }
 
+/// Waits for the prompts that `typed_with` finds.
+fn until_typed(setup: &Setup, part: &str) -> Vec<String> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let found = typed_with(setup, part);
+        if !found.is_empty() {
+            return found;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{part:?} was never typed: {:?}",
+            setup.typed()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// The prompts the fake `claude` received that hold `part`.
 fn typed_with(setup: &Setup, part: &str) -> Vec<String> {
     setup
@@ -404,7 +421,10 @@ fn mcp_with(setup: &Setup, flag: &str, lines: &[serde_json::Value]) -> Vec<serde
 #[test]
 fn an_investigators_server_lists_result_and_the_read_tools_and_knows_no_other() {
     let setup = Setup::new("consult-tools");
-    let mut lines = vec![json!({"jsonrpc": "2.0", "id": 0, "method": "tools/list"})];
+    let mut lines = vec![
+        json!({"jsonrpc": "2.0", "id": 0, "method": "tools/list"}),
+        json!({"jsonrpc": "2.0", "id": 100, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}}),
+    ];
     let refused = ["consult", "ask", "wait", "finding", "remember", "add"];
     for (id, tool) in refused.iter().enumerate() {
         lines.push(
@@ -422,7 +442,10 @@ fn an_investigators_server_lists_result_and_the_read_tools_and_knows_no_other() 
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
     assert_eq!(names, ["result", "memory", "search"]);
-    for (tool, reply) in refused.iter().zip(&replies[1..]) {
+    let instructions = replies[1]["result"]["instructions"].as_str().unwrap();
+    assert!(instructions.contains("memory acquire"), "{instructions}");
+    assert!(!instructions.contains("push"), "{instructions}");
+    for (tool, reply) in refused.iter().zip(&replies[2..]) {
         assert_eq!(
             super::reply(reply),
             (format!("unknown tool {tool}"), true),
@@ -489,13 +512,7 @@ fn a_consult_still_queued_at_its_deadline_never_starts_and_wakes_the_worker() {
         "{tasks:?}"
     );
     let woken = setup.until("outbox", |rows| rows.len() >= 2);
-    let typed = loop {
-        let typed = typed_with(&setup, "consult 1 got no report");
-        if !typed.is_empty() {
-            break typed;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    };
+    let typed = until_typed(&setup, "consult 1 got no report");
     assert!(
         typed[0].starts_with("consult 1 got no report: no report 2s after the question\n"),
         "{typed:?} {woken:?}"
@@ -549,13 +566,7 @@ fn an_investigator_whose_transcript_passes_the_cap_is_ended_and_no_more_consults
     setup.gone("priory-2");
     fs::remove_file(setup.dir.join("fake/hold-call")).unwrap();
 
-    let woken = loop {
-        let woken = typed_with(&setup, "consult 1 got no report");
-        if !woken.is_empty() {
-            break woken;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    };
+    let woken = until_typed(&setup, "consult 1 got no report");
     assert!(
         woken[0].starts_with("consult 1 got no report: sentry passed its cap of $0.50\n"),
         "{woken:?}"
@@ -810,13 +821,7 @@ fn a_consult_starts_ahead_of_its_bands_backlog_and_past_a_full_review_limit() {
     setup.until("tasks", |rows| task_row(rows, "2")[4] == "done");
     let runs = setup.rows("runs");
     assert_eq!(runs[1][1], "2", "the consult ran second: {runs:?}");
-    let woken = loop {
-        let woken = typed_with(&setup, "consult 1 reported by sentry:");
-        if !woken.is_empty() {
-            break woken;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    };
+    let woken = until_typed(&setup, "consult 1 reported by sentry:");
     assert!(woken[0].contains("> Release 4.2."), "{woken:?}");
 }
 
@@ -930,6 +935,7 @@ fn touch_with_real_claude(home: &Path, project: &Path, investigator: bool) -> bo
         scope: &[],
         env: &[],
         debate: false,
+        gives_up: false,
         servers: &servers,
         tools: priory_runtime::mcp::Tools::Investigator,
         jail: None,
