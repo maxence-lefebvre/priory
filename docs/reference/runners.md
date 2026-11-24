@@ -22,6 +22,8 @@ Schema: [`config/runner.json`](../schemas/config/runner.json).
 | `filters.when.days` | list of `mon` to `sun` | no | every day | The weekdays it applies on. With `hours` that pass midnight, the day they start on | `["mon", "tue", "wed", "thu", "fri"]` |
 | `filters.when.hours` | string | no | the whole day | `HH:MM-HH:MM`, from the first time to before the second. It may pass midnight | `"08:00-18:00"` |
 | `filters.when.timezone` | string | with two or more runner files | the machine's | The IANA zone the days and hours are read in | `"Europe/Paris"` |
+| `memory` | table | no | the factory's `[memory]` | The memory gate on this machine | `{ give_up_after = "20m" }` |
+| `memory.give_up_after` | duration, below `"1h"` | no | the factory's | Replaces the factory's [`[memory] give_up_after`](factory.md#memory) on this machine | `"20m"` |
 
 A share is a number followed by `%`, above 0 and at most 100, such as `"60%"`.
 
@@ -80,6 +82,8 @@ A machine with no runner file serves every runner's asks and tasks with
 | `` missing field `os` `` | `platform` without `os` |
 | `` unknown variant `<os>`, expected one of `linux`, `macos`, `windows` `` | An operating system not listed above |
 | `` unknown field `<key>`, expected one of ... `` | A key the table above does not list |
+| `"<text>" is not a duration such as 90s, 15m or 2h` | A bad `memory.give_up_after` |
+| `` `[memory] give_up_after` is below 1h, the default timeout of a gated command `` | A limit of 1h or more |
 | `"<text>" is not a share such as 60% or 90%` | A share without `%`, or outside 0 to 100 |
 | `"<text>" is not a match such as "project=oss" or "!project=oss"` | A `match` that is not a label, with or without `!` |
 | `"<text>" is not hours such as "08:00-18:00"` | `hours` that are not two `HH:MM` times joined by `-` |

@@ -29,6 +29,19 @@
       ],
       "type": "object"
     },
+    "MemoryGate": {
+      "additionalProperties": false,
+      "description": "`[memory]`: how long a command waits in the memory gate.",
+      "properties": {
+        "give_up_after": {
+          "default": null,
+          "description": "How long `priory memory acquire` without `--timeout` waits for its grant before it exits 75\nand says to run the command on CI, below 1 hour; it never does when unset.",
+          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "Os": {
       "enum": [
         "linux",
@@ -129,6 +142,9 @@
         "$ref": "#/definitions/Filter"
       },
       "type": "array"
+    },
+    "memory": {
+      "$ref": "#/definitions/MemoryGate"
     },
     "platform": {
       "$ref": "#/definitions/Platform"

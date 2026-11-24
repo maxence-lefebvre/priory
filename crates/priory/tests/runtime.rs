@@ -8871,6 +8871,73 @@ fn a_lost_run_that_asked_since_the_last_loss_resumes_again() {
     assert_eq!(setup.rows("tasks")[0][4], "running");
 }
 
+/// The instructions of `priory mcp --session s` with `flags`.
+fn mcp_instructions(setup: &Setup, flags: &[&str]) -> String {
+    let initialize = json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}});
+    let mut mcp = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args(["mcp", "--session", "s"])
+        .args(flags)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::io::Write::write_all(
+        &mut mcp.stdin.take().unwrap(),
+        format!("{initialize}\n").as_bytes(),
+    )
+    .unwrap();
+    let out = mcp.wait_with_output().unwrap().stdout;
+    let reply: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    reply["result"]["instructions"].as_str().unwrap().to_owned()
+}
+
+#[test]
+fn the_mcp_server_tells_an_agent_to_push_only_when_the_gate_gives_up() {
+    let setup = Setup::new("gives-up-rule");
+
+    let told = mcp_instructions(&setup, &["--gives-up", "--consult"]);
+
+    assert!(
+        told.contains("If it exits 75 and prints `the command did not run`"),
+        "{told}"
+    );
+    for flags in [&[][..], &["--gives-up", "--investigator"]] {
+        let told = mcp_instructions(&setup, flags);
+        assert!(!told.contains("75") && !told.contains("push"), "{told}");
+    }
+}
+
+#[test]
+fn a_run_learns_to_push_only_when_its_factory_or_runner_file_sets_a_limit() {
+    let limit = "[memory]\ngive_up_after = \"10m\"\n";
+    for (name, factory, runner, told) in [
+        ("rule-none", "", "", false),
+        ("rule-factory", limit, "", true),
+        ("rule-runner", "", limit, true),
+    ] {
+        let mut setup = Setup::new(name);
+        let write = |file: &str, text: String| {
+            let file = setup.dir.join("factory").join(file);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, text).unwrap();
+        };
+        write("factory.toml", format!("name = \"demo\"\n\n{factory}"));
+        write(
+            "runners/runner.toml",
+            format!("platform = {{ os = \"linux\" }}\n{runner}"),
+        );
+        setup.calls(&[result("passed")]);
+        setup.publish(&requested(42));
+        setup.start();
+        let runs = setup.until("runs", |rows| !rows.is_empty());
+        let file = format!("home/prompts/{}.mcp.json", runs[0][4]);
+        setup.written(&file);
+        let config = fs::read_to_string(setup.dir.join(file)).unwrap();
+        assert_eq!(config.contains("--gives-up"), told, "{name}: {config}");
+    }
+}
+
 #[test]
 fn the_mcp_server_lists_its_tools() {
     let setup = Setup::new("list");
@@ -8894,6 +8961,7 @@ fn the_mcp_server_lists_its_tools() {
         )),
         "{instructions}"
     );
+    assert!(!instructions.contains("75"), "{instructions}");
     assert_eq!(
         replies[1]["result"]["tools"][0]["inputSchema"]["properties"]["feedback"]["type"],
         "object"
@@ -16017,7 +16085,11 @@ fn acquires_that_do_not_fit_together_run_one_after_the_other_in_fifo_order() {
         .rows("desk")
         .into_iter()
         .filter(|row| row[1] == "memory")
-        .map(|row| [row[3].clone(), row[5].clone()])
+        .map(|row| {
+            let (what, holder) = row[5].split_once("; grant ").unwrap();
+            assert!(holder.starts_with("1 holds 40.0 GB for "), "{holder}");
+            [row[3].clone(), what.to_owned()]
+        })
         .collect();
     assert_eq!(
         desk,
@@ -16306,6 +16378,34 @@ fn a_gated_command_runs_once_after_the_daemon_drops_any_message() {
 }
 
 #[test]
+fn an_acquire_that_loses_the_give_up_reply_gives_up_at_the_next_poll_and_sends_no_release() {
+    let setup = Setup::new("gate-dropped-give-up");
+    let daemon = scripted(
+        &setup,
+        &[Some("7 waiting"), None, Some("7 gave up: waited 10m")],
+    );
+
+    let done = acquire(&setup, "8", "echo ran").wait_with_output().unwrap();
+
+    let stderr = String::from_utf8_lossy(&done.stderr);
+    assert_eq!(done.status.code(), Some(75), "{stderr}");
+    assert_eq!(
+        stderr.lines().last(),
+        Some("priory memory: waited 10m; the command did not run: let CI run it")
+    );
+    assert!(done.stdout.is_empty());
+    let sent = daemon.join().unwrap();
+    assert_eq!(
+        sent,
+        [
+            [json!("acquire"), json!(null)],
+            [json!("poll"), json!(7)],
+            [json!("poll"), json!(7)]
+        ]
+    );
+}
+
+#[test]
 fn a_stale_socket_fails_the_command_fast_and_it_never_runs() {
     let setup = Setup::new("gate-stale-socket");
     fs::create_dir_all(setup.socket().parent().unwrap()).unwrap();
@@ -16378,6 +16478,149 @@ fn an_acquire_that_waits_past_its_timeout_gives_up_and_leaves_no_grant() {
     assert_eq!(late.status.code(), Some(125));
     assert!(a.wait_with_output().unwrap().status.success());
     assert!(setup.rows("memory").is_empty());
+}
+
+/// A daemon whose factory gives up after `factory`, with its machine's runner file `runner`, and
+/// grant 1 that holds 40 GB until `hold-a` is released.
+fn gives_up(name: &str, factory: &str, runner: &str) -> (Setup, Child) {
+    let mut setup = Setup::new(name);
+    let write = |file: &str, text: String| {
+        let file = setup.dir.join("factory").join(file);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, text).unwrap();
+    };
+    write(
+        "factory.toml",
+        format!("name = \"demo\"\n\n[memory]\ngive_up_after = \"{factory}\"\n"),
+    );
+    write(
+        "runners/runner.toml",
+        format!("platform = {{ os = \"linux\" }}\n{runner}"),
+    );
+    setup.start();
+    listening(&setup);
+    setup.hold("hold-a");
+    let a = acquire(&setup, "40", &held("a"));
+    setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
+    (setup, a)
+}
+
+/// Runs `priory memory <verb> --gb 40 <flags> -- touch ran` to its end, then ends grant 1.
+fn waits_out(setup: Setup, a: Child, verb: &str, flags: &[&str]) -> (Option<i32>, String) {
+    let done = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args(["memory", verb, "--gb", "40"])
+        .args(flags)
+        .args(["--", "touch", "ran"])
+        .current_dir(setup.dir.join("fake"))
+        .output()
+        .unwrap();
+    setup.release("hold-a");
+    assert!(a.wait_with_output().unwrap().status.success());
+    assert!(!setup.dir.join("fake/ran").exists());
+    assert!(setup.rows("memory").is_empty());
+    let stderr = String::from_utf8(done.stderr).unwrap();
+    let last = stderr.lines().last().unwrap_or_default().to_owned();
+    (done.status.code(), last)
+}
+
+#[test]
+fn an_acquire_that_waits_past_give_up_after_exits_75_and_says_to_run_it_on_ci() {
+    let (setup, a) = gives_up("gate-give-up", "1s", "");
+
+    let done = waits_out(setup, a, "acquire", &[]);
+
+    let why =
+        "priory memory: waited 1s for 40 GB behind 1 grant; the command did not run: let CI run it";
+    assert_eq!(done, (Some(75), why.to_owned()));
+}
+
+#[test]
+fn a_runner_files_give_up_after_wins_over_the_factorys() {
+    let runner = "[memory]\ngive_up_after = \"1s\"\n";
+    let (setup, a) = gives_up("gate-give-up-runner", "59m", runner);
+
+    assert_eq!(waits_out(setup, a, "acquire", &[]).0, Some(75));
+}
+
+#[test]
+fn a_timeout_wins_over_give_up_after() {
+    let (setup, a) = gives_up("gate-give-up-timeout", "1s", "");
+
+    let began = Instant::now();
+    let done = waits_out(setup, a, "acquire", &["--timeout", "3s"]);
+
+    assert!(began.elapsed() >= Duration::from_secs(3));
+    let why = "priory memory: grant 2 still waits after 3s; the command did not run";
+    assert_eq!(done, (Some(125), why.to_owned()));
+}
+
+#[test]
+fn a_lease_never_gives_up() {
+    let (setup, a) = gives_up("gate-give-up-lease", "1s", "");
+    let lease = lease(&setup, "40", "true");
+    setup.until("memory", |rows| rows.len() == 2);
+
+    std::thread::sleep(Duration::from_secs(3));
+
+    assert_eq!(setup.rows("memory")[1][2], "waiting");
+    setup.release("hold-a");
+    assert!(a.wait_with_output().unwrap().status.success());
+    assert!(lease.wait_with_output().unwrap().status.success());
+}
+
+#[test]
+fn a_grant_held_past_an_hour_is_flagged_while_another_waits() {
+    let (setup, a) = gives_up("gate-long-hold", "59m", "");
+    let held_for = |seconds: u32| {
+        rusqlite::Connection::open(setup.dir.join("priory.db"))
+            .unwrap()
+            .execute(
+                "UPDATE grants SET granted = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?1)
+                 WHERE id = 1",
+                [format!("-{seconds} seconds")],
+            )
+            .unwrap();
+    };
+    let flags = || -> Vec<_> {
+        let rows = setup.rows("memory");
+        rows.iter()
+            .map(|row| [row[0].clone(), row[7].clone()])
+            .collect()
+    };
+    let held_command = format!("sh -c {}", held("a"));
+    let memory = || -> Vec<_> {
+        let rows = setup.rows("desk").into_iter();
+        rows.filter(|row| row[1] == "memory")
+            .map(|row| row[5].clone())
+            .collect()
+    };
+    held_for(6690);
+    assert_eq!(flags(), [["1", "-"]]);
+    assert!(memory().is_empty());
+
+    let mut b = acquire(&setup, "40", "true");
+    setup.until("memory", |rows| rows.len() == 2);
+
+    assert_eq!(flags(), [["1", "long"], ["2", "-"]]);
+    assert_eq!(setup.rows("memory")[0][5], "1h 51m");
+    assert_eq!(
+        memory(),
+        [
+            format!("holds 40.0 GB for 1h 51m while 1 grant waits: {held_command}"),
+            "waits for 40.0 GB: sh -c true; grant 1 holds 40.0 GB for 1h 51m".to_owned(),
+        ]
+    );
+    held_for(1800);
+    assert_eq!(flags(), [["1", "-"], ["2", "-"]]);
+    assert_eq!(
+        memory(),
+        ["waits for 40.0 GB: sh -c true; grant 1 holds 40.0 GB for 30m"]
+    );
+
+    setup.release("hold-a");
+    assert!(a.wait_with_output().unwrap().status.success());
+    assert!(b.wait().unwrap().success());
 }
 
 /// Starts `priory memory lease --gb <gb> -- sh -c <script>` in the test's `fake` directory.
@@ -22776,6 +23019,77 @@ fn an_outcome_whose_last_gate_run_failed_is_refused_with_its_exit() {
             "outcome passed needs a gate that passed at the head {}, and the last gate run at it exited 3: run `priory gate` in the worktree, then send the result again",
             setup.head()
         )
+    );
+}
+
+/// A gate whose `acquire` gives up after 1s behind a grant of 40 GB, once `wait` exists in the
+/// worktree, and passes before that. It exits 2, as `make` does for any failed command.
+fn giving_up(name: &str) -> (Setup, Child) {
+    let gate = format!(
+        "test ! -e ../wait || {} memory acquire --gb 40 -- true || exit 2",
+        env!("CARGO_BIN_EXE_priory")
+    );
+    let mut setup = Setup::with_workflow(name, PROVED);
+    let factory = format!("name = \"demo\"\ngate = {gate:?}\n\n[memory]\ngive_up_after = \"1s\"\n");
+    fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
+    setup.calls(&[result("passed")]);
+    setup.hold("hold-call");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/submitted");
+    setup.hold("hold-a");
+    let a = acquire(&setup, "40", &held("a"));
+    setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
+    (setup, a)
+}
+
+/// Runs the gate until its `acquire` gives up, then ends the grant before it.
+fn gate_gives_up(setup: &Setup, a: Child) {
+    fs::write(setup.dir.join("home/worktrees/owner/repo/wait"), "").unwrap();
+
+    let gate = setup.gate();
+
+    setup.release("hold-a");
+    assert!(a.wait_with_output().unwrap().status.success());
+    let stderr = String::from_utf8_lossy(&gate.stderr);
+    assert_eq!(gate.status.code(), Some(2), "{stderr}");
+    assert_eq!(
+        stderr.lines().last(),
+        Some("priory gate: not recorded: a command in the gate gave up its wait for memory")
+    );
+}
+
+#[test]
+fn a_gate_that_gives_up_after_one_that_passed_keeps_the_pass() {
+    let (setup, a) = giving_up("proof-gave-up-later");
+    assert!(setup.gate().status.success());
+
+    gate_gives_up(&setup, a);
+
+    let (text, error) = setup.proved();
+    assert!(!error, "{text}");
+}
+
+#[test]
+fn a_gate_that_gives_up_is_no_gate_run() {
+    let (setup, a) = giving_up("proof-gave-up");
+
+    gate_gives_up(&setup, a);
+
+    let (text, error) = setup.proved();
+    assert!(error && text.contains("no gate ran for task 1"), "{text}");
+}
+
+#[test]
+fn a_gate_that_exits_75_by_itself_is_a_failed_run() {
+    let setup = Setup::proving("proof-own-75", "exit 75", "passed");
+
+    assert_eq!(setup.gate().status.code(), Some(75));
+
+    let (text, error) = setup.proved();
+    assert!(
+        error && text.contains("the last gate run at it exited 75"),
+        "{text}"
     );
 }
 

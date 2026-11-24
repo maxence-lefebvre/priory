@@ -1,4 +1,4 @@
-use priory_core::memory::Gate;
+use priory_core::memory::{GAVE_UP, Gate};
 use priory_core::{
     daemon, deliver, embed, evidence, grades, label, listing, post, progress, proof, relate,
     reload, report, risk, runners, search, sections, serve, snooze, state, subscribe, todo, tools,
@@ -219,16 +219,19 @@ fn main() -> ExitCode {
             (Some(flag), None, None) if flag == "--outside" => outside_mcp(),
             (Some(flag), Some(session), first) if flag == "--session" => {
                 let mut debate = false;
+                let mut gives_up = false;
                 let mut set = mcp::Tools::Worker;
                 for flag in first.into_iter().chain(args.by_ref()) {
                     let flag = flag.to_string_lossy();
                     match mcp::Tools::of_flag(&flag) {
                         _ if flag == "--debate" && !debate => debate = true,
+                        _ if flag == "--gives-up" && !gives_up => gives_up = true,
                         Some(picked) if set == mcp::Tools::Worker => set = picked,
                         _ => return usage(),
                     }
                 }
-                exit("mcp", mcp::serve(&session.to_string_lossy(), set, debate))
+                let session = session.to_string_lossy();
+                exit("mcp", mcp::serve(&session, set, debate, gives_up))
             }
             (Some(flag), Some(log), describe) if flag == "--eval" => {
                 let rest: Vec<String> = describe
@@ -259,7 +262,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory --version\n       priory check [DIR] [--explain [--json]]\n       priory check [DIR] --repo PATH [--json]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory intake pre [DIR] TRIGGER < EVENT.json    runs the trigger's pre script on one event, publishes nothing\n       priory daemon [DIR] [--once]    --once routes pending events, starts no task and exits\n       priory daemon --view-only [DIR]    mirrors every runner's asks and tasks and serves them, runs nothing\n       priory batch add [DIR] ISSUE... [--repo <owner/name>] [--entries <workflow>] [--band <band>] [--lane <lane>]\n       priory batch show [BATCH] [--json]\n       priory batch edit BATCH --expected REVISION (--drop ENTRY [--with-successors] | --move ENTRY (--top | --before OTHER | --after OTHER) | --moment ENTRY OTHER MOMENT)\n       priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... [--label KEY=VALUE]... <text>\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... [--label KEY=VALUE]... [--hold <reason> [CONDITION]...] <text>\n       priory adopt [DIR] TRIGGER [PR...]\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--unrouted] [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--all] [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory tasks --graph [TASK] [--mermaid]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory links [DIR] [--json]\n       priory flows [DIR] --json\n       priory views [DIR] --json\n       priory runs [--json]\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory screen [DIR] (TASK | --run RUN) [--history N] [--json]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory todo add TEXT [--band B] [--due TIME]\n       priory todo done ID\n       priory todo list [--json]\n       priory trace\n       priory recap [--since <instant-or-duration>] [--max-bytes N]\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report list [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report comment ROW --expected REVISION TEXT\n       priory report (reply COMMENT TEXT | resolve COMMENT | reopen COMMENT)\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory report risk [DIR] [--workflow <name>] [--since <instant-or-duration>] [--by lane] [--json]\n       priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]\n       priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo|lane] [--json]\n       priory grades [--since <instant-or-duration>] [--by lane] [--json]\n       priory score [DIR] TASK [--scorer NAME] [--budget USD] [--json]\n       priory score [DIR] --calibrate SCORER --budget USD [--json]\n       priory calibrate triage [DIR] [--json]\n       priory bench capture [DIR] TASK --into FOLDER\n       priory bench replay [DIR] CASE --budget USD [--turn-timeout DURATION]\n       priory bench FILE --base REF --head REF --budget USD [--runs N] [--case NAME] [--turn-timeout DURATION] [--post OWNER/NAME#N]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--now] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory (resume | cancel | release | revive [--step STEP]) [--generation N] [DIR] RUNNER:KEY\n       priory cancel [DIR] KEY\n       priory say [--generation N] [DIR] RUNNER:KEY TEXT\n       priory task TASK [--json]\n       priory label [DIR] TASK wrong (--evidence URL [--happened DATE] | --clear)\n       priory patterns [--all] [--json]\n       priory patterns find [DIR] [--since <instant-or-duration>]\n       priory patterns show ID [--json]\n       priory patterns (close | dismiss) [DIR] ID\n       priory patterns capture [DIR] ID --into FOLDER\n       priory relate TASK builds-on|fixes|takes-up|relates OTHER [--remove]\n       priory subscribe TASK RESOURCE [--expected REVISION]\n       priory unsubscribe TASK RESOURCE\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory gate\n       priory evidence add FILE --caption TEXT\n       priory evidence TASK [--json]\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory memories [DIR] [--all] [--json]\n       priory memories (accept | drop) [DIR] CANDIDATE\n       priory answer [--revision N | --expected N] [--run] [--] [DIR] [RUNNER:]ASK OPTION-OR-TEXT\n       priory give [DIR] KEY RUNNER [--force]\n       priory ask ID JSON\n       priory dismiss [--revision N | --expected N] [DIR] [RUNNER:]ASK\n       priory deliver ASK (--retry | --clear)\n       priory mcp --session ID [--debate] [--consult | --investigator]\n       priory mcp --outside\n       priory mcp --eval LOG [--describe TOOL TEXT]\n       priory eval FILE --budget USD [--case NAME] [--runs N] [--model MODEL]\n       priory hook EVENT\n       priory hook PreToolUse --outside"
+        "usage: priory --version\n       priory check [DIR] [--explain [--json]]\n       priory check [DIR] --repo PATH [--json]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory intake pre [DIR] TRIGGER < EVENT.json    runs the trigger's pre script on one event, publishes nothing\n       priory daemon [DIR] [--once]    --once routes pending events, starts no task and exits\n       priory daemon --view-only [DIR]    mirrors every runner's asks and tasks and serves them, runs nothing\n       priory batch add [DIR] ISSUE... [--repo <owner/name>] [--entries <workflow>] [--band <band>] [--lane <lane>]\n       priory batch show [BATCH] [--json]\n       priory batch edit BATCH --expected REVISION (--drop ENTRY [--with-successors] | --move ENTRY (--top | --before OTHER | --after OTHER) | --moment ENTRY OTHER MOMENT)\n       priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... [--label KEY=VALUE]... <text>\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... [--label KEY=VALUE]... [--hold <reason> [CONDITION]...] <text>\n       priory adopt [DIR] TRIGGER [PR...]\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--unrouted] [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--all] [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory tasks --graph [TASK] [--mermaid]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory links [DIR] [--json]\n       priory flows [DIR] --json\n       priory views [DIR] --json\n       priory runs [--json]\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory screen [DIR] (TASK | --run RUN) [--history N] [--json]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory todo add TEXT [--band B] [--due TIME]\n       priory todo done ID\n       priory todo list [--json]\n       priory trace\n       priory recap [--since <instant-or-duration>] [--max-bytes N]\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report list [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report comment ROW --expected REVISION TEXT\n       priory report (reply COMMENT TEXT | resolve COMMENT | reopen COMMENT)\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory report risk [DIR] [--workflow <name>] [--since <instant-or-duration>] [--by lane] [--json]\n       priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]\n       priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo|lane] [--json]\n       priory grades [--since <instant-or-duration>] [--by lane] [--json]\n       priory score [DIR] TASK [--scorer NAME] [--budget USD] [--json]\n       priory score [DIR] --calibrate SCORER --budget USD [--json]\n       priory calibrate triage [DIR] [--json]\n       priory bench capture [DIR] TASK --into FOLDER\n       priory bench replay [DIR] CASE --budget USD [--turn-timeout DURATION]\n       priory bench FILE --base REF --head REF --budget USD [--runs N] [--case NAME] [--turn-timeout DURATION] [--post OWNER/NAME#N]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--now] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory (resume | cancel | release | revive [--step STEP]) [--generation N] [DIR] RUNNER:KEY\n       priory cancel [DIR] KEY\n       priory say [--generation N] [DIR] RUNNER:KEY TEXT\n       priory task TASK [--json]\n       priory label [DIR] TASK wrong (--evidence URL [--happened DATE] | --clear)\n       priory patterns [--all] [--json]\n       priory patterns find [DIR] [--since <instant-or-duration>]\n       priory patterns show ID [--json]\n       priory patterns (close | dismiss) [DIR] ID\n       priory patterns capture [DIR] ID --into FOLDER\n       priory relate TASK builds-on|fixes|takes-up|relates OTHER [--remove]\n       priory subscribe TASK RESOURCE [--expected REVISION]\n       priory unsubscribe TASK RESOURCE\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory gate\n       priory evidence add FILE --caption TEXT\n       priory evidence TASK [--json]\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory memories [DIR] [--all] [--json]\n       priory memories (accept | drop) [DIR] CANDIDATE\n       priory answer [--revision N | --expected N] [--run] [--] [DIR] [RUNNER:]ASK OPTION-OR-TEXT\n       priory give [DIR] KEY RUNNER [--force]\n       priory ask ID JSON\n       priory dismiss [--revision N | --expected N] [DIR] [RUNNER:]ASK\n       priory deliver ASK (--retry | --clear)\n       priory mcp --session ID [--debate] [--gives-up] [--consult | --investigator]\n       priory mcp --outside\n       priory mcp --eval LOG [--describe TOOL TEXT]\n       priory eval FILE --budget USD [--case NAME] [--runs N] [--model MODEL]\n       priory hook EVENT\n       priory hook PreToolUse --outside"
     );
     ExitCode::from(2)
 }
@@ -2603,11 +2606,8 @@ fn prompt_eval(args: Vec<String>) -> ExitCode {
 fn memory(args: Vec<OsString>) -> ExitCode {
     match args.split_first() {
         None => list(
-            "id\ttask\tstate\tgb\tcommand\tage\tpid",
-            "SELECT id, task, state, printf('%.1f', bytes / 1073741824.0),
-             replace(command, char(10), '\\n'),
-             (strftime('%s', 'now') - strftime('%s', coalesce(granted, created))) || 's', pid
-             FROM grants ORDER BY created, id",
+            "id\ttask\tstate\tgb\tcommand\tage\tpid\tflag",
+            priory_core::memory::LIST,
         ),
         Some((verb, args)) if verb == "acquire" => acquire(args, false),
         Some((verb, args)) if verb == "lease" => acquire(args, true),
@@ -2617,8 +2617,13 @@ fn memory(args: Vec<OsString>) -> ExitCode {
 
 /// The exit code of `priory memory acquire` when the gate itself fails, as `env` and `timeout` use.
 const GATE_FAILED: u8 = 125;
+/// The exit code when the wait passes the factory's `[memory] give_up_after`: `EX_TEMPFAIL`.
+const GATE_GAVE_UP: u8 = 75;
 /// How long a grant waits without `--timeout`: two runs' grants can wait on each other's promises.
 const GATE_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+/// Names the file that tells `priory gate` that a command it ran gave up its wait: a gate can exit 75
+/// by itself, and a wrapper such as `make` turns 75 into another code.
+const GATE_MARKER: &str = "PRIORY_GATE_GAVE_UP";
 /// The GB a grant asks for without `--gb`, as Fleet's gate did and agents' instructions assume.
 const GATE_GB: f64 = 10.0;
 
@@ -2681,14 +2686,23 @@ fn acquire(args: &[OsString], lease: bool) -> ExitCode {
         session: std::env::var("PRIORY_SESSION").ok(),
         command: command.join(" ".as_ref()).to_string_lossy().into_owned(),
     };
+    // CI cannot replace a leased server, and `--timeout` wins over the factory's limit.
+    let gives_up = !lease && timeout.is_none();
     let timeout = timeout.unwrap_or(GATE_TIMEOUT);
-    let deadline = Instant::now() + timeout;
+    let began = Instant::now();
+    let deadline = began + timeout;
     let (mut grant, mut said, mut sent) = (None, String::new(), false);
     // The daemon keeps a waiting grant while this process lives, so a lost reply or a daemon
     // restart only delays the next poll of the same grant.
     let grant = loop {
         let asked = match grant {
-            Some(grant) => call(&Gate::Poll { grant }, runtime::call_through_restart),
+            Some(grant) => call(
+                &Gate::Poll {
+                    grant,
+                    waited: gives_up.then(|| began.elapsed().as_secs()),
+                },
+                runtime::call_through_restart,
+            ),
             // Until a daemon took the request, none may be coming back: fail at once.
             None if !sent => call(&acquire, runtime::call),
             None => call(&acquire, runtime::call_through_restart),
@@ -2713,6 +2727,13 @@ fn acquire(args: &[OsString], lease: bool) -> ExitCode {
         };
         if let (Some(grant), true) = (grant, reply.ends_with(" held")) {
             break grant;
+        }
+        if let Some((_, why)) = reply.split_once(GAVE_UP) {
+            eprintln!("priory memory: {why}; the command did not run: let CI run it");
+            if let Some(marker) = std::env::var_os(GATE_MARKER) {
+                let _ = std::fs::File::create_new(marker);
+            }
+            return ExitCode::from(GATE_GAVE_UP);
         }
         if said != reply {
             eprintln!("priory memory: grant {reply} for {gb} GB");
@@ -2862,7 +2883,7 @@ fn call(
 }
 
 /// `priory gate`, from a run's pane: runs the factory's gate in the run's task worktree at its head,
-/// records the run with the daemon, and exits with the gate's code, or 1 when a signal killed it.
+/// records the run with the daemon unless a command in it gave up its wait for memory, and exits with the gate's code, or 1 when a signal killed it.
 fn project_gate() -> ExitCode {
     let Some(session) = std::env::var("PRIORY_SESSION")
         .ok()
@@ -2912,11 +2933,15 @@ fn project_gate() -> ExitCode {
     if at != started.commit {
         return away(at);
     }
+    let nanos = jiff::Timestamp::now().as_nanosecond();
+    let marker = std::env::temp_dir().join(format!("priory-gate-{}-{nanos}", std::process::id()));
     let clock = Instant::now();
     let status = Command::new("sh")
         .args(["-c", &started.command])
+        .env(GATE_MARKER, &marker)
         .current_dir(&started.worktree)
         .status();
+    let gave_up = std::fs::remove_file(&marker).is_ok();
     let exit = match status {
         // shortcut: a gate killed by a signal records -1, the way a shell would not; fine for a proof.
         Ok(status) => status.code().unwrap_or(-1),
@@ -2928,6 +2953,10 @@ fn project_gate() -> ExitCode {
     let at = checked_out();
     if at != started.commit {
         return away(at);
+    }
+    if gave_up && exit != 0 {
+        eprintln!("priory gate: not recorded: a command in the gate gave up its wait for memory");
+        return ExitCode::from(u8::try_from(exit).unwrap_or(1));
     }
     let recorded = call(&proof::Line::Ran {
         session,
