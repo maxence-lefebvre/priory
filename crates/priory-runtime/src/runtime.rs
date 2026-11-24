@@ -533,6 +533,16 @@ fn orphaned(path: &Path, clone: &Path) -> bool {
     gitdir.parent() == Some(registry.as_path()) && !gitdir.exists()
 }
 
+/// Why the folder `worktree` would replace must stay for now: it has no gitdir, and a mount is at or
+/// under it.
+pub fn mounted_orphan(home: &Path, repo: &str, name: &str) -> Option<String> {
+    let path = home.join("worktrees").join(repo).join(name);
+    if !orphaned(&path, &home.join("repos").join(repo)) {
+        return None;
+    }
+    crate::worktrees::unmounted(&path, &crate::worktrees::mountinfo).err()
+}
+
 /// The task's worktree folder `name` on `priory/<name>`, from the local branch `from` of Priory's
 /// own clone of `repo` (`owner/name`), else from its default branch. The clone has no checkout: a person trusts it and the worktrees
 /// folder once in Claude, which covers its worktrees. A worktree of that clone left on that branch by an interrupted
@@ -564,8 +574,13 @@ pub fn worktree(
         })?;
         fs::rename(&partial, &clone).map_err(|error| error.to_string())?;
     }
+    if let Some(reason) = mounted_orphan(home, repo, name) {
+        return Err(reason);
+    }
     if orphaned(&path, &clone) {
-        remove_sealed(&path);
+        if crate::worktrees::orphan_without_repository(&path).is_ok() {
+            remove_sealed(&path);
+        }
         if path.exists() {
             move_aside(home, &path)?;
         }
@@ -3529,6 +3544,22 @@ mod tests {
         assert!(!sealed.exists());
         assert!(home.tree().join("README.md").is_file());
         assert_eq!(sh(&home.tree(), &["branch", "--show-current"]), "priory/1");
+    }
+
+    #[test]
+    fn a_folder_whose_gitdir_is_gone_and_that_holds_a_repository_moves_into_the_trash() {
+        let home = Home::new("orphaned-repository");
+        sealed(&home);
+        sh(&home.tree(), &["init", "-q", "--bare", "target/o.git"]);
+        fs::remove_dir_all(home.home().join("repos/o/n/.git/worktrees/1")).unwrap();
+
+        assert_eq!(home.again(), Ok(Added::Restored));
+
+        let trash = home.home().join("trash");
+        let moved = fs::read_dir(trash).unwrap().next().unwrap().unwrap().path();
+        assert!(moved.join("target/o.git/HEAD").is_file());
+        assert!(!home.tree().join("target").exists());
+        remove_sealed(&moved);
     }
 
     #[test]
