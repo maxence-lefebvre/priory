@@ -173,6 +173,12 @@ pub(crate) fn dispatch(
     let source = crate::state::source(&tx, task)?;
     tx.commit()?;
     let queued = unended(&queued.join("\n"), step);
+    // A cloud session cannot send the classes the rule asks for.
+    let queued: Vec<_> = queued
+        .lines()
+        .filter(|line| *line != crate::triage::RULE)
+        .collect();
+    let queued = queued.join("\n");
     let queued = without(&without(&queued, &entry), source.trim());
     start.prompt = [
         start.prompt.trim(),

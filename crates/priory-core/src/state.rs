@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 111;
+const VERSION: i64 = 112;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1964,10 +1964,22 @@ ALTER TABLE runs ADD COLUMN direnv INTEGER;
 PRAGMA user_version = 110;
 ";
 
-// The commit a cloud run's session started from, which its push must descend from.
+// A memory grant that timed out, whose request time a retry of its task's command keeps.
 const SCHEMA_111: &str = "
-ALTER TABLE runs ADD COLUMN cloud_head TEXT;
+CREATE TABLE lapses (
+  task    INTEGER NOT NULL REFERENCES tasks (id),
+  command TEXT NOT NULL,
+  bytes   INTEGER NOT NULL,
+  created TEXT NOT NULL,
+  lapsed  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
 PRAGMA user_version = 111;
+";
+
+// The commit a cloud run's session started from, which its push must descend from.
+const SCHEMA_112: &str = "
+ALTER TABLE runs ADD COLUMN cloud_head TEXT;
+PRAGMA user_version = 112;
 ";
 
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
@@ -1985,7 +1997,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
-    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111,
+    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.

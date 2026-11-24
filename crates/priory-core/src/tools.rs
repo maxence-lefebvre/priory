@@ -360,6 +360,8 @@ fn result(
     };
     let triage = match crate::triage::sorted(tx, run.task, &arguments["feedback"])? {
         Ok(triage) => triage,
+        // A cloud session has no `result` tool to class its feedback with.
+        Err(_) if crate::cloud::is_cloud_run(tx, run.id)? => Vec::new(),
         Err(error) => return Ok(Err(error)),
     };
     let Some(step) = step(workflows, &run.workflow, &run.step) else {

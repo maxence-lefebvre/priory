@@ -55,7 +55,7 @@ key = "issue.number"
 
 const OUTPUT: &str = "factory.intake";
 
-/// Undoes migrations 110, a run under direnv, 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
+/// Undoes migrations 112, a cloud run's start commit, 111, memory lapses, 110, a run under direnv, 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
 /// `auto_answer` level, 97, the task's `added_by`, and 93: the `pre` script's task columns and the
 /// pending requests.
 macro_rules! undo_pre {
@@ -72,7 +72,7 @@ macro_rules! undo_pre {
   ALTER TABLE tasks DROP COLUMN pre_context; ALTER TABLE tasks DROP COLUMN pre_script; DROP TABLE pending_requests;
   ALTER TABLE memory_candidates DROP COLUMN step; ALTER TABLE gates DROP COLUMN lessons; ALTER TABLE gates DROP COLUMN ask; ALTER TABLE gates DROP COLUMN judges;
   ALTER TABLE runs DROP COLUMN session_started; ALTER TABLE runs DROP COLUMN harness;
-  ALTER TABLE runs DROP COLUMN resumes; ALTER TABLE runs DROP COLUMN sandbox; ALTER TABLE runs DROP COLUMN direnv;
+  ALTER TABLE runs DROP COLUMN resumes; ALTER TABLE runs DROP COLUMN sandbox; ALTER TABLE runs DROP COLUMN direnv; DROP TABLE lapses;
   ALTER TABLE runs DROP COLUMN cloud_head;
   "
     };
@@ -15172,6 +15172,140 @@ fn without_a_daemon_the_command_fails_fast_and_never_runs() {
         "{stderr}"
     );
     assert!(!setup.dir.join("fake/ran").exists());
+}
+
+/// A daemon that answers each gate message in turn, or closes the connection with no reply, and
+/// returns the messages and grants it got.
+fn scripted(
+    setup: &Setup,
+    replies: &'static [Option<&'static str>],
+) -> std::thread::JoinHandle<Vec<[serde_json::Value; 2]>> {
+    use std::io::{BufRead, Write};
+    fs::create_dir_all(setup.dir.join("home")).unwrap();
+    fs::create_dir_all(setup.socket().parent().unwrap()).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(setup.socket()).unwrap();
+    std::thread::spawn(move || {
+        let mut lines = Vec::new();
+        for reply in replies {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            std::io::BufReader::new(&stream)
+                .read_line(&mut line)
+                .unwrap();
+            let line: serde_json::Value = serde_json::from_str(&line).unwrap();
+            lines.push([line["memory"].clone(), line["grant"].clone()]);
+            if let Some(reply) = reply {
+                writeln!(stream, "{}", json!({ "Ok": reply })).unwrap();
+            }
+        }
+        lines
+    })
+}
+
+#[test]
+fn a_gated_command_runs_once_after_the_daemon_drops_any_message() {
+    for (name, replies, messages) in [
+        (
+            "gate-dropped-poll",
+            &[
+                Some("7 waiting"),
+                None,
+                Some("7 held"),
+                Some("7 held"),
+                Some("7 released"),
+            ][..],
+            ["acquire", "poll", "poll", "run", "release"],
+        ),
+        (
+            "gate-dropped-acquire",
+            &[
+                None,
+                Some("7 waiting"),
+                Some("7 held"),
+                Some("7 held"),
+                Some("7 released"),
+            ],
+            ["acquire", "acquire", "poll", "run", "release"],
+        ),
+        (
+            "gate-dropped-run",
+            &[
+                Some("7 held"),
+                None,
+                None,
+                Some("7 held"),
+                Some("7 released"),
+            ],
+            ["acquire", "run", "run", "run", "release"],
+        ),
+    ] {
+        let setup = Setup::new(name);
+        let daemon = scripted(&setup, replies);
+
+        let done = acquire(&setup, "8", "echo ran").wait_with_output().unwrap();
+
+        assert_eq!(
+            done.status.code(),
+            Some(0),
+            "{name}: {}",
+            String::from_utf8_lossy(&done.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&done.stdout), "ran\n");
+        let expected = messages.map(|message| {
+            let grant = if message == "acquire" {
+                json!(null)
+            } else {
+                json!(7)
+            };
+            [json!(message), grant]
+        });
+        assert_eq!(daemon.join().unwrap(), expected);
+    }
+}
+
+#[test]
+fn a_stale_socket_fails_the_command_fast_and_it_never_runs() {
+    let setup = Setup::new("gate-stale-socket");
+    fs::create_dir_all(setup.socket().parent().unwrap()).unwrap();
+    drop(std::os::unix::net::UnixListener::bind(setup.socket()).unwrap());
+    let start = Instant::now();
+
+    let done = acquire(&setup, "1", "echo ran > ran")
+        .wait_with_output()
+        .unwrap();
+
+    assert_eq!(done.status.code(), Some(125));
+    assert!(start.elapsed() < Duration::from_secs(10));
+    assert!(!setup.dir.join("fake/ran").exists());
+}
+
+#[test]
+fn a_daemon_restart_keeps_a_waiting_grant_with_its_id() {
+    let mut setup = Setup::new("gate-restart");
+    setup.start();
+    listening(&setup);
+    setup.hold("hold-a");
+    setup.hold("hold-b");
+    let a = acquire(&setup, "40", &held("a"));
+    setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
+    let b = acquire(&setup, "40", &held("b"));
+    let waiting = setup.until("memory", |rows| rows.len() == 2)[1][0].clone();
+
+    setup.crash();
+    setup.start();
+    once_listening(&setup, &["memory"]);
+    setup.release("hold-a");
+
+    assert!(a.wait_with_output().unwrap().status.success());
+    let rows = setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
+    assert_eq!(rows[0][0], waiting);
+    setup.release("hold-b");
+    let b = b.wait_with_output().unwrap();
+    assert!(
+        b.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&b.stderr)
+    );
 }
 
 #[test]

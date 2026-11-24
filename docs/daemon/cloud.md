@@ -114,7 +114,8 @@ answers inside it. A session that needs a decision writes it in its last commit 
 becomes the result's evidence, for the human step after it. A session that waits for an answer
 instead pushes nothing, and the deadline ends the step `failed` with the session's link.
 
-Feedback that comes before the start is in the prompt. Feedback that comes during the run does not
+Feedback that comes before the start is in the prompt. The session sorts none of it into the classes
+a local run's result gives, so the human step after it is where a person reads what it did. Feedback that comes during the run does not
 hold up its push: the next model step's prompt has it, and an ask that opens next shows it.
 
 ## What still applies, and what a cloud run gives up
