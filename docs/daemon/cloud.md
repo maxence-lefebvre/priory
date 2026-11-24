@@ -122,6 +122,9 @@ A daemon restart keeps a live cloud run: it has no tmux pane to lose, so it is n
 next poll looks for its branch. A run stays what it started as when a person changes its agent's
 `harness`.
 
+`priory hold --now` refuses a live cloud run, since Priory cannot stop its session. A plain hold takes
+effect once the run ends.
+
 `priory cancel`, a review request's removal and a move to another runner drop the task, and its
 reason names the session's page, which `priory cancel` prints too. During a start it says that a session
 may still start, and the dropped task's reason then names the session that did. The session itself goes on until a

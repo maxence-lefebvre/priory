@@ -400,7 +400,7 @@ What `priory add` and `POST /api/request` use when a request names no workflow o
 
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
-| `workflow` | string | yes | | The workflow a request starts when it names none, by file name | `"groom"` |
+| `workflow` | string | yes | | The workflow a request starts when it names none, by file name. It is always [requestable](workflows.md#top-level-keys) | `"groom"` |
 | `band` | string | no | none, as `priory request` without `--band` | The band of a request that names none | `"today"` |
 
 ## `[batch]`

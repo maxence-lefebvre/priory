@@ -1575,6 +1575,11 @@ fn tend(
         metrics::sample_room(db, share, &room, promised.memory, waiting);
     }
     // A marked run idle between turns has no turn end to wait for.
+    for session in crate::hold::idle(db)? {
+        if let Some(tmux) = tools::hold_idle(db, trace, &session)? {
+            runtime::kill(&tmux);
+        }
+    }
     for session in crate::preempt::idle(db)? {
         if let Some(tmux) = tools::preempt_idle(db, trace, &session, &watched)? {
             runtime::kill(&tmux);

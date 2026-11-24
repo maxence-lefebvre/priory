@@ -107,7 +107,8 @@ pub(crate) fn plan(
     let mut statement = db.prepare(&format!(
         "SELECT runs.id, runs.task, runs.step, coalesce(runs.agent, ''), runs.tmux, tasks.band,
            tasks.workflow, tasks.trigger, tasks.preempted IS NOT NULL, {KEYBOARD_HELD},
-           tasks.position, runs.session
+           tasks.position, runs.session,
+           EXISTS (SELECT 1 FROM holds WHERE holds.task = tasks.id AND holds.released IS NULL)
          FROM runs JOIN tasks ON tasks.id = runs.task
          WHERE runs.ended IS NULL AND runs.harness IS NOT 'claude-cloud'"
     ))?;
@@ -126,11 +127,14 @@ pub(crate) fn plan(
         let (stopped, held, position): (bool, bool, Option<i64>) =
             (row.get(8)?, row.get(9)?, row.get(10)?);
         let session: String = row.get(11)?;
+        let marked: bool = row.get(12)?;
         let defined = factory.agents.get(&agent).map(|agent| &agent.value);
         let own_rank = rank(&bands, own_band.as_deref());
         let own_band = own_band.unwrap_or_else(|| bands.last().copied().unwrap_or_default().into());
         let protected = if let Some(why) = guarded(factory, task, &workflow, &step, &agent, held) {
             Some(why)
+        } else if marked {
+            Some(format!("task {task} holds after its turn"))
         } else if trigger == crate::stall::TRIGGER {
             Some(format!("task {task} is the sweeper"))
         } else if own_rank <= head_rank {
