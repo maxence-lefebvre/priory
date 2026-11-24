@@ -56,12 +56,13 @@ shows the folder dialog blocks its task at once, as a Claude run does. With `tru
 Priory records the folder trust in its own profile instead (see
 [Trusting the worktrees and the clone](sessions.md#with-trust_worktrees)). Hooks are
 identical in every run, since each run's session reaches them as `PRIORY_SESSION`, so a person
-trusts them once, with the clone. A Codex run that sends no `SessionStart` within 60 seconds, and
-whose trust Priory did not record, blocks its task with `codex showed no SessionStart within 60s; trust the clone and Priory's hooks once: cd
+trusts them once, with the clone. A Codex run that sends no `SessionStart` within its window
+blocks its task with `codex showed no SessionStart within 60s; trust the clone and Priory's hooks once: cd
 <clone path> && codex -c 'hooks.SessionStart=...' ..., accept the folder, type /hooks and trust
 Priory's hooks, then exit`, then the pane's last lines as under [Trusting the worktrees and the clone](sessions.md#trusting-the-worktrees-and-the-clone). The command
 carries Priory's hooks exactly as runs get them. A hook nobody trusted shows Codex's `Hooks need
-review` dialog, which those lines show.
+review` dialog, which those lines show. The folder trust Priory records does not cover hooks, so a
+run with it keeps this reason, after 180 seconds.
 
 The hooks and the MCP server name Priory by `PRIORY_EXE` if set, else by the absolute path it was
 invoked by, else by its resolved binary. Codex keys hook trust on that command, so the path must

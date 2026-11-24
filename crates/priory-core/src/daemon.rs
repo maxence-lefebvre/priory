@@ -1344,9 +1344,6 @@ fn tend(
     attaching: &mut Vec<crate::attach::Attaching>,
 ) -> Result<(), Error> {
     let factory = trace.factory;
-    let measured = OnceCell::new();
-    let load =
-        || *measured.get_or_init(|| room::measure(home).ok().map(|room| (room.load, room.cpus)));
     for mut run in state::live(db)? {
         if run.direnv == 1
             && let Some(error) = runtime::direnv_failed(home, &run.session)
@@ -1377,10 +1374,9 @@ fn tend(
                 Some(diagnose(db, factory, share, home, &run.agent)?)
             };
             tools::fail(db, trace, run.task, run.id, &reason, repair.as_ref())?;
-        } else if let Some((ended_as, reason, after)) = verdict(&run, factory, home, &load, &|| {
-            crate::trace::granted(db, run.id)
-        }) {
-            let missed = matches!(after, After::Missed);
+        } else if let Some((ended_as, reason, missed)) =
+            verdict(&run, factory, home, &|| crate::trace::granted(db, run.id))
+        {
             let worktree = run.worktree.as_deref().unwrap_or_default();
             let harness = harness_of(factory, &run.agent);
             // The harness may have rewritten its config from an older copy, dropping the grant.
@@ -1424,18 +1420,10 @@ fn tend(
             // Committed first, so a crash before the kill leaves an ended run, not a lost one.
             state::block(db, trace, run.task, ended_as, &reason)?;
             runtime::kill(&run.tmux);
-            // The next start writes the grant again or waits longer; a second failure fails the task.
-            let restart = match after {
-                After::Slow(cause) => Some(cause),
-                _ if overwritten => Some(format!(
-                    "{} overwrote Priory's trust grant",
-                    harness.program()
-                )),
-                _ => None,
-            };
-            if let Some(cause) = restart {
-                let repair = (!tools::spent(db, run.id)?).then_some(Repair {
-                    cause,
+            if overwritten {
+                // The next start writes the grant again; a second loss fails the task.
+                let repair = (!tools::spent(db, run.id)?).then(|| Repair {
+                    cause: format!("{} overwrote Priory's trust grant", harness.program()),
                     action: "restart",
                     gone: true,
                 });
@@ -1618,32 +1606,15 @@ fn direnv_failed(
     Ok(())
 }
 
-/// What follows a run's end besides the block.
-enum After {
-    Block,
-    /// The trust dialog asked for trust that the run's own grant had recorded.
-    Missed,
-    /// A trusted run started too slowly: restart it once, for this cause.
-    Slow(String),
-}
-
-/// ` under a load of L on C cores` when the load exceeds the cores, or nothing.
-fn under(load: Option<(f64, usize)>) -> String {
-    load.filter(|(load, cpus)| *load > *cpus as f64)
-        .map(|(load, cpus)| format!(" under a load of {load:.0} on {cpus} cores"))
-        .unwrap_or_default()
-}
-
 /// Why a live run must end: its harness's trust dialog, no `SessionStart`, a permission prompt, or
-/// a turn past its step's timeout, and what follows. `load` is the 1-minute load and the cores,
-/// and `granted` whether the run's own grant recorded its trust.
+/// a turn past its step's timeout. The flag says the dialog asked for trust that `granted`, the
+/// run's own grant, had recorded.
 fn verdict(
     run: &state::LiveRun,
     factory: &Factory,
     home: &Path,
-    load: &dyn Fn() -> Option<(f64, usize)>,
     granted: &dyn Fn() -> bool,
-) -> Option<(&'static str, String, After)> {
+) -> Option<(&'static str, String, bool)> {
     // Claude and Codex ask whether to trust a folder, and Codex its hooks, before any hook; Priory
     // never answers.
     let harness = harness_of(factory, &run.agent);
@@ -1657,10 +1628,7 @@ fn verdict(
         let worktrees = home.join("worktrees").display().to_string();
         harness.trust(&exe, &clone, &worktrees)
     };
-    let rows = run
-        .waited
-        .is_some()
-        .then(|| runtime::screen(&run.tmux).join("\n"));
+    let rows = (!run.ready).then(|| runtime::screen(&run.tmux).join("\n"));
     if let Some(rows) = &rows
         && harness.asks_trust(rows)
     {
@@ -1672,7 +1640,7 @@ fn verdict(
                 harness.program(),
                 run.worktree.as_deref().unwrap_or("its folder"),
             );
-            return Some(("exited", reason, After::Missed));
+            return Some(("exited", reason, true));
         }
         let trust = trust();
         let reason = format!(
@@ -1682,40 +1650,32 @@ fn verdict(
             trust[..1].to_uppercase(),
             &trust[1..]
         );
-        return Some(("exited", reason, After::Block));
+        return Some(("exited", reason, false));
     }
-    let late = run
-        .waited
-        .filter(|waited| *waited >= state::ready_within(run.direnv, None))
-        .and_then(|waited| {
-            let load = load();
-            let within = state::ready_within(run.direnv, load);
-            (waited >= within).then_some((within, load))
-        });
-    if let Some((within, load)) = late {
+    let late = run.waited.and_then(|waited| {
+        // Read only past the shortest window, since each read is a query.
+        let trusted = waited >= state::ready_within(0, false) && granted();
+        let within = state::ready_within(run.direnv, trusted);
+        (waited >= within).then_some((within, trusted))
+    });
+    if let Some((within, trusted)) = late {
         let program = harness.program();
-        let (mut reason, after) = if run.direnv == 1 && runtime::direnv_loading(home, &run.session)
-        {
-            let reason = format!(
+        let mut reason = if run.direnv == 1 && runtime::direnv_loading(home, &run.session) {
+            format!(
                 "direnv did not finish loading {}/.envrc within {within}s, so {program} never \
                  started; warm it with `direnv exec <worktree> true`, or fix the .envrc",
                 run.worktree.as_deref().unwrap_or("its folder"),
-            );
-            (reason, After::Block)
-        } else if granted() {
-            let under = under(load);
-            let reason = format!(
+            )
+        } else if trusted && !harness.reviews_hooks() {
+            format!(
                 "{program} showed no SessionStart within {within}s although Priory recorded its \
-                 trust; it started too slowly{under}"
-            );
-            let cause = format!("{program} started slowly{under}");
-            (reason, After::Slow(cause))
+                 trust; it started too slowly. Resume the task to try again"
+            )
         } else {
-            let reason = format!(
+            format!(
                 "{program} showed no SessionStart within {within}s; {}",
                 trust()
-            );
-            (reason, After::Block)
+            )
         };
         let rows = rows.unwrap_or_default();
         let secrets = crate::screen::secrets(&factory.secret_envs());
@@ -1734,11 +1694,11 @@ fn verdict(
         if !tail.is_empty() {
             reason.push_str(&format!(". Its pane ended with: {}", tail.join(" | ")));
         }
-        return Some(("exited", reason, after));
+        return Some(("exited", reason, false));
     }
     if let Some(message) = &run.prompted {
         let reason = format!("run {} stopped on a permission prompt: {message}", run.id);
-        return Some(("permission", reason, After::Block));
+        return Some(("permission", reason, false));
     }
     let limit = factory
         .workflows
@@ -1749,7 +1709,7 @@ fn verdict(
         .as_secs();
     run.turn.filter(|turn| *turn >= limit as i64).map(|_| {
         let reason = format!("run {} timed out: its turn ran past {limit}s", run.id);
-        ("timeout", reason, After::Block)
+        ("timeout", reason, false)
     })
 }
 
@@ -3085,19 +3045,6 @@ mod tests {
     use super::*;
     use std::fs;
 
-    #[test]
-    fn a_start_waits_three_times_longer_only_while_the_load_exceeds_the_cores() {
-        assert_eq!(state::ready_within(0, Some((4.0, 22))), 60);
-        assert_eq!(state::ready_within(0, Some((22.0, 22))), 60);
-        assert_eq!(state::ready_within(0, Some((78.0, 22))), 180);
-        assert_eq!(state::ready_within(0, None), 60);
-        assert_eq!(state::ready_within(1, Some((78.0, 22))), 600);
-        assert_eq!(state::ready_within(2, None), 600);
-        assert_eq!(under(Some((4.0, 22))), "");
-        assert_eq!(under(Some((77.6, 22))), " under a load of 78 on 22 cores");
-        assert_eq!(under(None), "");
-    }
-
     /// A workflow of human steps, each one going to the next.
     fn workflow(steps: &[&str]) -> String {
         let mut text = format!("start = \"{}\"\n", steps[0]);
@@ -3134,8 +3081,7 @@ mod tests {
             prompted: None,
         };
 
-        let (ended_as, reason, _) =
-            verdict(&run, &Factory::default(), &home, &|| None, &|| true).unwrap();
+        let (ended_as, reason, _) = verdict(&run, &Factory::default(), &home, &|| true).unwrap();
 
         assert_eq!(ended_as, "exited");
         assert!(

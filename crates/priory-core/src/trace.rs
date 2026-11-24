@@ -417,13 +417,14 @@ pub(crate) fn summarized(
     append(tx, trace, "factory.summarizer.called", &time, data)
 }
 
-/// Whether Priory recorded a harness's trust for `run` before it started, granted or present.
+/// Whether Priory recorded a harness's trust for `run` before it started: each of its paths granted
+/// or present. direnv's grants do not count.
 pub(crate) fn granted(db: &Connection, run: i64) -> bool {
     db.query_row(
-        "SELECT EXISTS (SELECT 1 FROM trace WHERE type = 'factory.run.trusted'
+        "SELECT coalesce(min(json_extract(event, '$.data.outcome') IN ('granted', 'present')), 0)
+         FROM trace WHERE type = 'factory.run.trusted'
            AND json_extract(event, '$.data.run') = ?1
-           AND json_extract(event, '$.data.harness') <> 'direnv'
-           AND json_extract(event, '$.data.outcome') IN ('granted', 'present'))",
+           AND json_extract(event, '$.data.harness') <> 'direnv'",
         [run.to_string()],
         |row| row.get(0),
     )
@@ -1361,4 +1362,36 @@ struct Ended {
     model: Option<String>,
     generation: i64,
     lane: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_run_is_trusted_only_when_each_grant_of_its_harness_holds() {
+        let db = state::memory();
+        for (run, harness, outcome) in [
+            (1, "claude-code", "granted"),
+            (1, "claude-code", "present"),
+            (1, "direnv", "refused"),
+            (2, "claude-code", "granted"),
+            (2, "claude-code", "refused"),
+            (3, "direnv", "granted"),
+        ] {
+            let event =
+                json!({"data": {"run": run.to_string(), "harness": harness, "outcome": outcome}});
+            db.execute(
+                "INSERT INTO trace (id, type, time, event)
+                 VALUES (hex(randomblob(8)), 'factory.run.trusted', '2026-11-24T00:00:00Z', ?1)",
+                [event.to_string()],
+            )
+            .unwrap();
+        }
+
+        assert_eq!(
+            [1, 2, 3, 4].map(|run| granted(&db, run)),
+            [true, false, false, false]
+        );
+    }
 }

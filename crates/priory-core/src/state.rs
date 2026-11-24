@@ -4344,13 +4344,13 @@ pub(crate) struct LiveRun {
     pub prompted: Option<String>,
 }
 
-/// How many seconds a run may take to send `SessionStart`: longer under direnv, whose `.envrc` may
-/// build a cold nix shell first, and while the 1-minute load exceeds the machine's cores.
-pub(crate) fn ready_within(direnv: i64, load: Option<(f64, usize)>) -> i64 {
-    match load {
-        _ if direnv != 0 => 600,
-        Some((load, cpus)) if load > cpus as f64 => 180,
-        _ => 60,
+/// How many seconds a run may take to send `SessionStart`. A run under direnv may build a cold nix
+/// shell first, and a run with recorded trust is slow, not stuck on the trust dialog.
+pub(crate) fn ready_within(direnv: i64, trusted: bool) -> i64 {
+    match (direnv, trusted) {
+        (0, false) => 60,
+        (0, true) => 180,
+        _ => 600,
     }
 }
 
@@ -4930,11 +4930,15 @@ mod ready_within {
             .unwrap()
             .into_iter()
             .map(|run| {
-                let late = run.waited.unwrap() >= ready_within(run.direnv, None);
+                let late = run.waited.unwrap() >= ready_within(run.direnv, false);
                 (run.task, late, run.direnv)
             })
             .collect();
 
         assert_eq!(late, [(1, true, 0), (2, false, 1), (3, true, 1)]);
+        assert_eq!(
+            [0, 1, 2].map(|direnv| ready_within(direnv, true)),
+            [180, 600, 600]
+        );
     }
 }

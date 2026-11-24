@@ -975,6 +975,10 @@ pub trait Harness {
     fn asks_trust(&self, _screen: &str) -> bool {
         false
     }
+    /// Whether a person must trust Priory's hooks too, which a folder grant does not cover.
+    fn reviews_hooks(&self) -> bool {
+        false
+    }
     /// Records the harness's trust in `worktree` and its `clone`, each a real path Priory owns.
     fn grant_trust(&self, worktree: &Path, clone: &Path) -> Vec<crate::trust::Grant>;
     /// Whether the harness's config still holds the trust `grant_trust` recorded.
@@ -1279,6 +1283,10 @@ impl Harness for Codex {
 
     fn asks_trust(&self, screen: &str) -> bool {
         screen.contains("Trust this folder?") && screen.contains("Trust and continue")
+    }
+
+    fn reviews_hooks(&self) -> bool {
+        true
     }
 
     /// Codex runs only hooks a person trusted in its `/hooks` review, by their hash, so Priory's

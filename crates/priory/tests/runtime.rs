@@ -4426,51 +4426,146 @@ fn a_grant_claude_overwrote_restarts_the_run_once_then_fails_the_task() {
     assert_eq!(repaired[0]["data"]["outcome"], "ready");
 }
 
-#[test]
-fn a_trusted_run_that_starts_slowly_restarts_once_without_trust_advice() {
-    let mut setup = trusting("trust-slow-once");
-    setup.publish(&requested(42));
-    setup.hold("silent-once");
-    start_trusting(&mut setup);
+impl Setup {
+    /// Makes the live run look as if it started `seconds` ago.
+    fn started_ago(&self, seconds: u32) {
+        let db = rusqlite::Connection::open(self.dir.join("priory.db")).unwrap();
+        let changed = db
+            .execute(
+                &format!("UPDATE runs SET started = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-{seconds} seconds') WHERE ended IS NULL"),
+                [],
+            )
+            .unwrap();
+        assert_eq!(changed, 1);
+    }
 
-    setup.within(150, "outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    /// Asserts that the daemon's next ticks leave task 1's live run alone.
+    fn stays_live(&self) {
+        std::thread::sleep(Duration::from_secs(3));
+        assert_eq!(self.rows("runs").last().unwrap()[7], "-");
+        assert_eq!(self.rows("tasks")[0][4], "running");
+    }
 
-    let runs = setup.rows("runs");
-    assert_eq!(runs.len(), 2);
-    assert_eq!(runs[0][7], "exited");
-    let repaired = traced(&setup, "factory.task.repaired");
-    assert_eq!(repaired.len(), 1);
-    assert_eq!(repaired[0]["data"]["cause"], "claude started slowly");
-    assert_eq!(repaired[0]["data"]["action"], "restart");
-    assert_eq!(repaired[0]["data"]["outcome"], "ready");
-    let typed = setup.typed();
-    assert!(
-        typed[0].starts_with(
-            "Priory repaired this task after: claude showed no SessionStart within 60s although Priory recorded its trust; it started too slowly. Cause: claude started slowly. Action: restart."
-        ),
-        "{}",
-        typed[0]
-    );
-    assert!(!typed[0].contains("trust the worktrees folder"));
+    /// The reason task 1 blocks with.
+    fn blocked(&self) -> String {
+        self.until("tasks", |rows| rows[0][4] == "blocked")[0][7].clone()
+    }
 }
 
 #[test]
-fn a_trusted_run_that_starts_slowly_twice_fails_its_task_with_the_slow_start() {
-    let mut setup = trusting("trust-slow-twice");
+fn a_trusted_run_that_starts_slowly_gets_180_seconds_then_blocks_until_a_person_resumes_it() {
+    let mut setup = trusting("trust-slow");
+    setup.memory(12);
     setup.publish(&requested(42));
     setup.hold("silent");
     start_trusting(&mut setup);
+    setup.written("fake/pid");
+    setup.publish(&requested(43));
+    setup.until("tasks", |rows| rows.len() == 2);
+    person(
+        &setup,
+        "hold",
+        &["2", "--reason", "needs it", "--after", "1"],
+    );
 
-    let tasks = setup.within(150, "tasks", |rows| {
-        rows.first().is_some_and(|row| row[4] == "failed")
-    });
+    setup.started_ago(120);
+    setup.stays_live();
+    setup.started_ago(180);
+    let reason = setup.blocked();
 
     assert_eq!(
-        tasks[0][7],
-        "claude showed no SessionStart within 60s although Priory recorded its trust; it started too slowly; it failed again after its repair, so Priory did not restart the agent"
+        reason,
+        "claude showed no SessionStart within 180s although Priory recorded its trust; it started too slowly. Resume the task to try again"
+    );
+    setup.gone("priory-1");
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(setup.rows("runs").len(), 1);
+    assert_eq!(held_as(&setup, "2")[0], "held");
+    assert!(traced(&setup, "factory.task.repaired").is_empty());
+
+    setup.release("silent");
+    assert!(setup.priory(&["resume", "1"]).status.success());
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+}
+
+#[test]
+fn a_resumed_run_that_starts_slowly_gets_the_same_180_seconds() {
+    let mut setup = trusting("trust-slow-resumed");
+    setup.hold("undecided");
+    setup.hold("hold-stop");
+    setup.calls(&[json!({ "name": "Bash", "arguments": { "command": "rm -rf /" } })]);
+    setup.publish(&requested(42));
+    start_trusting(&mut setup);
+    setup.blocked();
+    setup.gone("priory-1");
+    setup.hold("silent");
+
+    assert!(setup.priory(&["resume", "1"]).status.success());
+    let runs = setup.until("runs", |rows| rows.len() == 2);
+    assert_eq!(runs[0][4], runs[1][4]);
+    assert!(has(&launched(&setup), ["--resume", &runs[0][4]]));
+    setup.started_ago(120);
+    setup.stays_live();
+    setup.started_ago(180);
+
+    let reason = setup.blocked();
+    assert!(
+        reason.starts_with("claude showed no SessionStart within 180s although Priory recorded its trust; it started too slowly"),
+        "{reason}"
     );
     assert_eq!(setup.rows("runs").len(), 2);
-    assert_eq!(traced(&setup, "factory.task.repaired").len(), 1);
+}
+
+#[test]
+fn a_trusted_codex_run_whose_hooks_need_review_keeps_the_command_that_trusts_them() {
+    let mut setup = trusting("trust-codex-hooks");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    fs::create_dir_all(setup.dir.join("codex")).unwrap();
+    fs::write(setup.dir.join("fake/silent"), "  Hooks need review\n").unwrap();
+    setup.publish(&requested(42));
+    start_trusting(&mut setup);
+    setup.written("fake/codex-args.log");
+    assert_eq!(
+        until_traced(&setup, "factory.run.trusted")["data"]["outcome"],
+        "granted"
+    );
+
+    setup.started_ago(120);
+    setup.stays_live();
+    setup.started_ago(180);
+
+    let reason = setup.blocked();
+    assert!(
+        reason.starts_with(
+            "codex showed no SessionStart within 180s; trust the clone and Priory's hooks once: cd "
+        ),
+        "{reason}"
+    );
+    assert!(
+        reason.ends_with("type /hooks and trust Priory's hooks, then exit. Its pane ended with: Hooks need review"),
+        "{reason}"
+    );
+}
+
+#[test]
+fn a_trusted_run_under_direnv_keeps_its_600_seconds() {
+    let mut setup = trusting("trust-slow-direnv");
+    envrc(&setup);
+    setup.publish(&requested(42));
+    setup.hold("silent");
+    start_direnv(&mut setup, true, "", &[]);
+    setup.written("fake/pid");
+
+    setup.started_ago(300);
+    setup.stays_live();
+    setup.started_ago(600);
+
+    let reason = setup.blocked();
+    assert!(
+        reason.starts_with("claude showed no SessionStart within 600s although Priory recorded its trust; it started too slowly"),
+        "{reason}"
+    );
 }
 
 fn codex_profile(setup: &Setup) -> PathBuf {
