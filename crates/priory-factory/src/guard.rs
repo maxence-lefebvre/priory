@@ -388,9 +388,9 @@ pub(crate) fn positional(words: &[String]) -> Vec<&str> {
 /// A `gh api` call that writes: a method other than GET, or a field or body, which makes it a POST.
 pub(crate) struct Request {
     method: Option<String>,
-    fields: Vec<String>,
+    pub fields: Vec<String>,
     /// Its body, or a field, comes from a file or stdin.
-    opaque: bool,
+    pub opaque: bool,
     /// The endpoint argument as written.
     pub raw: String,
     /// The endpoint's path, with no host, query or leading slash.
@@ -801,7 +801,7 @@ pub(crate) const PRINTED: &str = "\0printed";
 pub(crate) const WRITES: &str = "\0writes";
 pub(crate) const LITERAL: &str = "literal";
 
-const NOTES: &[&str] = &[TEXT, SCOPE, OPAQUE, VARIABLE, PRINTED, WRITES];
+pub(crate) const NOTES: &[&str] = &[TEXT, SCOPE, OPAQUE, VARIABLE, PRINTED, WRITES];
 
 /// The command the splitter records for a script nested past `DEPTH`: no program has this name.
 const TOO_DEEP: &str = "\0too deeply nested for the guard to read";
@@ -1424,7 +1424,15 @@ fn unwrap(words: &[String], depth: usize, found: &mut Vec<Vec<String>>) {
     }
     let mut at = 0;
     while let Some(word) = words.get(at) {
-        if assignment(word) || KEYWORDS.contains(&word.as_str()) {
+        if assignment(word) {
+            // `end_command` notes the ones that come first.
+            if !words[..at].iter().all(|word| assignment(word)) {
+                found.push(vec![TEXT.to_owned(), word.clone()]);
+            }
+            at += 1;
+            continue;
+        }
+        if KEYWORDS.contains(&word.as_str()) {
             at += 1;
             continue;
         }
@@ -1484,9 +1492,22 @@ fn unwrap(words: &[String], depth: usize, found: &mut Vec<Vec<String>>) {
                             .collect();
                         return unwrap(&words, depth + 1, found);
                     }
+                    let dir = match arg.as_str() {
+                        "-C" | "--chdir" => rest.get(index + 1).map(String::as_str),
+                        _ => arg
+                            .strip_prefix("--chdir=")
+                            .or_else(|| arg.strip_prefix("-C").filter(|dir| !dir.is_empty())),
+                    };
+                    if let Some(dir) = dir {
+                        found.push(vec![SCOPE.to_owned()]);
+                        found.push(vec!["cd".to_owned(), dir.to_owned()]);
+                    }
                     if ["-u", "-C", "--unset", "--chdir"].contains(&arg.as_str()) {
                         index += 2;
-                    } else if arg.starts_with('-') || assignment(arg) {
+                    } else if assignment(arg) {
+                        found.push(vec![TEXT.to_owned(), arg.clone()]);
+                        index += 1;
+                    } else if arg.starts_with('-') {
                         index += 1;
                     } else {
                         break;

@@ -2231,7 +2231,9 @@ fn open_pr(
             factory
                 .private()
                 .map_or(Ok(()), |private| {
-                    crate::private::screen_stack(private, worktree, repo, commit, title, &body)
+                    crate::private::screen_stack(
+                        private, worktree, repo, commit, stack.base, title, &body,
+                    )
                 })
                 .and_then(|()| open_stack(worktree, repo, &stack, commit, title, &body))
         }

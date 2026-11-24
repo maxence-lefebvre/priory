@@ -98,8 +98,8 @@ repositories it lists. The hook screens each call that publishes to one:
   as a heredoc or a file `cat` prints, and, for `create`, the branch's commits;
 - `gh api` writes to a repository's pull requests, issues, contents, merges and git data, or
   to `graphql`;
-- MCP tools named `create_pull_request`, `update_pull_request`, `push_files` or
-  `create_or_update_file`.
+- MCP tools named `create_pull_request`, `update_pull_request`, `push_files`,
+  `create_or_update_file`, `merge_pull_request` or `delete_file`, whose path is not read.
 
 A hit denies the call with each rule's label and location, such as
 `rule ticket-id: commit 1a2b3c4 src/x.rs:40`, and tells the agent to rewrite it. The denial never
@@ -107,15 +107,27 @@ holds the term. Nothing grants the call. It is on the trace as `factory.tool.den
 `private-terms` and the call's name without its arguments. An `open-pr` step screens the same way
 before it pushes any branch, and fails on a hit.
 
+A `gh api graphql` call whose `query` is literal text without the word `mutation` writes nothing, so it
+is not screened. `gh pr create` and `open-pr` leave out what the stated base already holds on the
+remote.
+
 The destination is the push's remote, `-R`, the endpoint, the MCP tool's arguments, or the folder's
-remotes. One Priory cannot read counts as listed. A `cd` that opens the call moves the folder. A `cd`
-later in the call, or in a subshell, a pipe or `bash -c`, may not last, so the hook checks the folder
-before it too. When it cannot tell the folder, and no `-R` names the repository, it denies the call.
+remotes. One Priory cannot read counts as listed, as does one that a `GH_REPO`, `GH_HOST`, `GIT_DIR`,
+`GIT_WORK_TREE` or `GIT_CONFIG*` assignment in the call, or `git -c` with a `remote`, `branch`, `url` or
+`include` key, may change. In the endpoint, `cd` and `git -C`, a variable that the call sets once, to
+literal text, earlier in the call, is read. That holds even when the assignment may not run.
+
+A `cd` that opens the call moves the folder. A `cd` later in the call, or in a subshell, a pipe or `bash -c`, may not last, so the hook checks the folder
+before it too, and drops a folder that is not a repository when another is one, unless the call may
+create one, as `git clone` or `cp` does. A script that creates a repository is not seen. When the hook
+cannot tell the folder, and no `-R` names the repository, it denies the call.
 
 On a listed repository, the hook also denies what it cannot read:
 
-- a push in the call that makes the commit, a push to a URL that no remote has, and a revision that
-  does not resolve or that holds a variable or a command's output;
+- a push or a `gh pr create` after a command in the same call that moves what it sends. In a call with
+  a loop or a function, the order does not count;
+- a push to a URL that no remote has, and a revision that does not resolve or
+  that holds a variable or a command's output;
 - a title, a body or a `gh api` argument that holds a command's output, or a variable the call does
   not set to literal text. `$(cat FILE)` and a literal heredoc are read;
 - a body from stdin, a missing body file, and one that the same call writes other than with a literal

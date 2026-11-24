@@ -47,11 +47,18 @@ pub fn screen(rules: &Private, cwd: &Path, publish: &Publish) -> Result<(), Stri
     if publish.lost && publish.repo.is_none() {
         return Err(unread(NO_DIR));
     }
-    let places: Vec<(PathBuf, Vec<Remote>)> = publish
+    let mut dirs: Vec<PathBuf> = publish
         .folders
         .iter()
-        .map(|dirs| {
-            let dir = folder(cwd, dirs);
+        .map(|dirs| folder(cwd, dirs))
+        .collect();
+    let is_repo = |dir: &PathBuf| read(dir, &["rev-parse", "--git-dir"]).is_some();
+    if dirs.len() > 1 && !publish.creates && dirs.iter().any(is_repo) {
+        dirs.retain(is_repo);
+    }
+    let places: Vec<(PathBuf, Vec<Remote>)> = dirs
+        .into_iter()
+        .map(|dir| {
             let remotes = remotes(&dir);
             (dir, remotes)
         })
@@ -99,6 +106,7 @@ pub(crate) fn screen_stack(
     worktree: &Path,
     repo: &str,
     commit: &str,
+    base: Option<&str>,
     title: &str,
     body: &str,
 ) -> Result<(), String> {
@@ -109,7 +117,10 @@ pub(crate) fn screen_stack(
     let mut hits = Vec::new();
     note(&mut hits, &terms, "PR title", title);
     note(&mut hits, &terms, "PR body", body);
-    let range = [commit, "--not", "refs/remotes/origin/HEAD"].map(str::to_owned);
+    let mut range = [commit, "--not", "refs/remotes/origin/HEAD"]
+        .map(str::to_owned)
+        .to_vec();
+    range.extend(base.and_then(|base| tracked(worktree, "origin", base)));
     commits(worktree, &range, &terms, &mut hits)
         .map_err(|_| "git could not list the commits the pull request publishes".to_owned())?;
     refused("the pull request", hits)
@@ -265,6 +276,12 @@ fn default_remote(dir: &Path) -> String {
     .unwrap_or_else(|| "origin".to_owned())
 }
 
+/// The commit of `branch` that `remote` is known to hold.
+fn tracked(dir: &Path, remote: &str, branch: &str) -> Option<String> {
+    let name = format!("refs/remotes/{remote}/{branch}");
+    read(dir, &["show-ref", "--verify", "--hash", &name])
+}
+
 /// The `git log` arguments that list the commits `publish` would make public, if any.
 fn revisions(
     rules: &Private,
@@ -322,23 +339,28 @@ fn revisions(
             );
             Ok(Some(args))
         }
-        Commits::Head(head) => {
-            let base = remotes
+        Commits::Head { branch, base } => {
+            let remote = remotes
                 .iter()
                 .find(|remote| remote.listed(rules))
                 .or(remotes.first())
                 .ok_or("Priory cannot read its commits: run it in the repository's clone")?;
-            let branch = head.as_deref().unwrap_or("HEAD");
+            let branch = branch.as_deref().unwrap_or("HEAD");
             let branch = branch.rsplit(':').next().unwrap_or(branch);
             let commit = known(branch)
-                .or_else(|| known(&format!("refs/remotes/{}/{branch}", base.name)))
+                .or_else(|| known(&format!("refs/remotes/{}/{branch}", remote.name)))
                 .ok_or("its head branch does not resolve in this folder")?;
-            let trunk = format!("refs/remotes/{}/HEAD", base.name);
+            let trunk = format!("refs/remotes/{}/HEAD", remote.name);
             let without = match known(&trunk) {
                 Some(_) => trunk,
-                None => format!("--remotes={}", base.name),
+                None => format!("--remotes={}", remote.name),
             };
-            Ok(Some(vec![commit, "--not".to_owned(), without]))
+            let mut args = vec![commit, "--not".to_owned(), without];
+            if remote.surely_listed(rules) {
+                let base = base.as_deref();
+                args.extend(base.and_then(|base| tracked(dir, &remote.name, base)));
+            }
+            Ok(Some(args))
         }
     }
 }
@@ -424,7 +446,7 @@ fn commits(
 
 /// Notes each term in the paths and added lines of `patch`, as `commits` has git print it.
 fn added(patch: &str, terms: &Terms, hits: &mut Vec<String>) {
-    let (mut commit, mut path) = ("", String::new());
+    let (mut commit, mut path, mut header) = ("", String::new(), "");
     let (mut old, mut new, mut at) = (0, 0, 0);
     for line in patch.split('\n') {
         if old > 0 || new > 0 {
@@ -440,6 +462,11 @@ fn added(patch: &str, terms: &Terms, hits: &mut Vec<String>) {
         }
         if let Some(next) = line.strip_prefix('\0') {
             commit = next;
+        } else if let Some(names) = line.strip_prefix("diff --git ") {
+            // Git prints one path twice, as `a/x b/x`.
+            header = names.get(names.len() / 2 + 1..).unwrap_or_default();
+        } else if line.starts_with("new file mode ") {
+            added_path(header, commit, terms, hits);
         } else if let Some(hunk) = line.strip_prefix("@@ ") {
             let mut ranges = hunk.split(' ').map(|range| {
                 let range = range.get(1..).unwrap_or_default();
@@ -452,14 +479,22 @@ fn added(patch: &str, terms: &Terms, hits: &mut Vec<String>) {
             .strip_prefix("+++ ")
             .filter(|name| *name != "/dev/null")
         {
-            let name = name.trim_end_matches('\t').trim_matches('"');
-            let name = name.strip_prefix("b/").unwrap_or(name);
-            path = shown(terms, name);
-            for (_, label) in screen::labels(name, terms) {
-                hits.push(format!("rule {label}: commit {commit} a file path"));
-            }
+            path = shown(terms, added_path(name, commit, terms, hits));
         }
     }
+}
+
+/// Notes each term in the path `name`, once a commit, and returns it without git's marks.
+fn added_path<'n>(name: &'n str, commit: &str, terms: &Terms, hits: &mut Vec<String>) -> &'n str {
+    let name = name.trim_end_matches('\t').trim_matches('"');
+    let name = name.strip_prefix("b/").unwrap_or(name);
+    for (_, label) in screen::labels(name, terms) {
+        let hit = format!("rule {label}: commit {commit} a file path");
+        if !hits.contains(&hit) {
+            hits.push(hit);
+        }
+    }
+    name
 }
 
 #[cfg(test)]
@@ -498,14 +533,7 @@ mod tests {
 
     #[test]
     fn an_issue_a_merge_and_a_link_in_a_field_hide_no_term() {
-        let rules = Private {
-            repos: vec!["o/r".to_owned()],
-            terms: vec![priory_factory::private::Term {
-                label: "host".to_owned(),
-                text: vec!["vault9".to_owned()],
-                regex: Vec::new(),
-            }],
-        };
+        let rules = rules();
         let denied = |command: &str| {
             let none = serde_json::Value::Null;
             let found = priory_factory::publish::calls("Bash", Some(command), &none);
@@ -526,6 +554,295 @@ mod tests {
         let unread = "gh api -X PATCH repos/o/r/issues/3 -f body=\"$(notes)\"";
         assert!(denied(unread).is_some());
         assert_eq!(denied(&unread.replace("o/r", "o/x")), None);
+    }
+
+    /// Two clones under one folder, `o/r` and `o/x`, each on `child`, whose base `parent` the
+    /// remote holds with a term.
+    struct Clones(PathBuf);
+
+    impl Clones {
+        fn new(name: &str) -> Self {
+            let id = format!("priory-private-{name}-{}", std::process::id());
+            let clones = Self(std::env::temp_dir().join(id));
+            for repo in ["r", "x"] {
+                std::fs::create_dir_all(clones.0.join(repo)).unwrap();
+                let url = format!("https://github.com/o/{repo}");
+                clones.git(repo, "init -q -b main");
+                clones.git(repo, &format!("remote add origin {url}"));
+                clones.git(repo, "commit -q --allow-empty -m a");
+                clones.git(repo, "branch other");
+                clones.git(repo, "update-ref refs/remotes/origin/main HEAD");
+                let trunk = "refs/remotes/origin/HEAD refs/remotes/origin/main";
+                clones.git(repo, &format!("symbolic-ref {trunk}"));
+                clones.git(repo, "checkout -q -b parent");
+                clones.add(repo, "p", "vault9");
+                clones.git(repo, "update-ref refs/remotes/origin/parent HEAD");
+                clones.git(repo, "checkout -q -b child");
+                clones.add(repo, "b.md", "fine");
+            }
+            std::fs::create_dir(clones.0.join("plain")).unwrap();
+            clones
+        }
+
+        fn git(&self, repo: &str, args: &str) {
+            let mut command = git(&self.0.join(repo));
+            command.args(["-c", "user.name=t", "-c", "user.email=t@t"]);
+            runtime::run(command.args(args.split(' '))).unwrap();
+        }
+
+        fn add(&self, repo: &str, file: &str, text: &str) {
+            std::fs::write(self.0.join(repo).join(file), text).unwrap();
+            self.git(repo, &format!("add {file}"));
+            self.git(repo, "commit -q -m x");
+        }
+
+        /// Why `command`, where `{}` is the folder of both clones, is denied in `repo`.
+        fn denial(&self, repo: &str, command: &str) -> Option<String> {
+            let command = command.replace("{}", &self.0.display().to_string());
+            let none = serde_json::Value::Null;
+            let found = priory_factory::publish::calls("Bash", Some(&command), &none);
+            found
+                .iter()
+                .find_map(|call| screen(&rules(), &self.0.join(repo), call).err())
+        }
+    }
+
+    impl Drop for Clones {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn rules() -> Private {
+        Private {
+            repos: vec!["o/r".to_owned()],
+            terms: vec![priory_factory::private::Term {
+                label: "host".to_owned(),
+                text: vec!["vault9".to_owned()],
+                regex: Vec::new(),
+            }],
+        }
+    }
+
+    #[test]
+    fn a_call_is_denied_where_it_goes_to_a_listed_repository_and_only_there() {
+        let clones = Clones::new("calls");
+        // Each call, then whether a listed and an unlisted clone deny it.
+        for (command, listed, unlisted) in [
+            (
+                "REPO=o/r; gh api -X PATCH repos/$REPO/pulls/3 -f body=vault9",
+                true,
+                true,
+            ),
+            (
+                "REPO=o/x; gh api -X PATCH repos/$REPO/pulls/3 -f body=vault9",
+                false,
+                false,
+            ),
+            (
+                "R=o/x; R=o/r; gh api repos/$R/pulls/3 -f body=vault9",
+                true,
+                true,
+            ),
+            ("gh api repos/$R/pulls/3 -f body=vault9; R=o/x", true, true),
+            (
+                "E=repos/o/r/pulls/3; gh api -X PATCH $E -f body=vault9",
+                true,
+                true,
+            ),
+            (
+                "gh api -X PATCH repos/$(cat f)/pulls/3 -f body=vault9",
+                true,
+                true,
+            ),
+            (
+                "gh api graphql -f query='query($o:ID!){n}' -F o=\"$O\"",
+                false,
+                false,
+            ),
+            (
+                "gh api graphql -f query='{s(query:\"vault9\"){n}}'",
+                false,
+                false,
+            ),
+            (
+                "gh api graphql -f query='mutation{x(b:\"vault9\")}'",
+                true,
+                true,
+            ),
+            (
+                "Q='mutation{x}'; gh api graphql -f query=\"$Q\" -f b=vault9",
+                true,
+                true,
+            ),
+            (
+                "gh api graphql -f query='{n}' -F \"$X\" -f b=vault9",
+                true,
+                true,
+            ),
+            (
+                "gh api graphql -f query=\"$(cat q)\" -f b=vault9",
+                true,
+                true,
+            ),
+            ("gh api graphql -F query=@q -f b=vault9", true, true),
+            ("git -c user.name=x push origin nosuch", true, false),
+            (
+                "git -c push.autoSetupRemote=true push origin nosuch",
+                true,
+                false,
+            ),
+            ("git -c url.a.insteadOf=b push origin nosuch", true, true),
+            (
+                "git -c remote.origin.pushurl=b push origin nosuch",
+                true,
+                true,
+            ),
+            ("git -c \"$K\" push origin nosuch", true, true),
+            ("(cd {}/plain && ls); git push origin HEAD", false, false),
+            (
+                "(cd {}/plain && ls); gh pr edit 3 -b \"$(notes)\"",
+                true,
+                false,
+            ),
+            (
+                "git clone -q u d && cd d && git commit -am x && git push",
+                true,
+                true,
+            ),
+            ("D={}/x; git -C $D push origin nosuch", false, false),
+            ("D={}/r; git -C $D push origin nosuch", true, true),
+            ("git -C $D push origin nosuch", true, true),
+            ("env -C {}/r git push origin nosuch", true, true),
+            ("gh pr create -B parent -t x -b y", false, false),
+            ("gh pr create --base=other -t x -b y", true, false),
+            ("gh pr create -t x -b y", true, false),
+            (
+                "git commit -qm x && gh pr create -B parent --fill",
+                true,
+                false,
+            ),
+            (
+                "gh pr create -B parent --fill && git commit -qm x",
+                false,
+                false,
+            ),
+            (
+                "gh pr edit 3 --add-project https://github.com/o/x -b vault9",
+                true,
+                false,
+            ),
+            (
+                "gh pr edit --add-project=https://github.com/o/x/pull/1 -b vault9",
+                true,
+                false,
+            ),
+            (
+                "gh pr edit https://github.com/o/r/pull/3 -b vault9",
+                true,
+                true,
+            ),
+            (
+                "gh pr edit 3 -b 'the GH_REPO variable, vault9'",
+                true,
+                false,
+            ),
+            ("GH_REPO=o/r gh pr edit 3 -b vault9", true, true),
+            ("export GH_REPO=o/r; gh pr edit 3 -b vault9", true, true),
+            ("env GH_REPO=o/r gh pr edit 3 -b vault9", true, true),
+            ("git push origin HEAD && git commit -m x", false, false),
+            ("git commit -m x && git push origin HEAD", true, false),
+            (
+                "for i in 1 2; do git push; git commit -m x; done",
+                true,
+                false,
+            ),
+            ("git stash && git push origin HEAD", false, false),
+            ("git checkout -b new && git push origin HEAD", false, false),
+            ("git checkout -- b.md && git push origin HEAD", false, false),
+            ("git checkout other && git push origin child", false, false),
+            ("git checkout other && git push origin HEAD", true, false),
+            (
+                "git switch -c new other && git push origin HEAD",
+                true,
+                false,
+            ),
+            (
+                "git checkout -B child other && git push origin child",
+                true,
+                false,
+            ),
+            ("git add b.md && gh pr edit 3 -F b.md", false, false),
+            ("sed -i s/a/b/ b.md && gh pr edit 3 -F b.md", true, false),
+            ("echo \"$(date)\"; gh pr edit 3 --body \"\"", false, false),
+            ("gh pr edit 3 --body \"$(notes)\"", true, false),
+        ] {
+            let denied = |repo| clones.denial(repo, command);
+            assert_eq!(
+                denied("r").is_some(),
+                listed,
+                "{command}: {:?}",
+                denied("r")
+            );
+            assert_eq!(
+                denied("x").is_some(),
+                unlisted,
+                "{command}: {:?}",
+                denied("x")
+            );
+        }
+    }
+
+    #[test]
+    fn a_private_base_and_push_settings_hide_no_commit_and_a_public_base_is_left_out() {
+        let clones = Clones::new("base");
+        let create = "gh pr create -R o/r -B parent -t x -b y";
+        assert_eq!(clones.denial("r", create), None);
+        assert!(clones.denial("x", create).is_some());
+        for repo in ["r", "x"] {
+            clones.git(repo, "checkout -q -b hidden other");
+            clones.add(repo, "h", "vault9");
+            clones.git(repo, "checkout -q child");
+            let matching = "git -c push.default=matching push";
+            assert_eq!(clones.denial(repo, matching).is_some(), repo == "r");
+            assert_eq!(clones.denial(repo, "git push"), None);
+        }
+        let stack = |base| {
+            let dir = clones.0.join("r");
+            screen_stack(&rules(), &dir, "o/r", "child", base, "x", "y").err()
+        };
+        assert_eq!(stack(Some("parent")), None);
+        assert!(stack(None).is_some());
+        assert!(stack(Some("gone")).is_some());
+    }
+
+    #[test]
+    fn an_empty_new_files_path_is_screened_and_a_deleted_ones_is_not() {
+        for (repo, denied) in [("r", true), ("x", false)] {
+            let clones = Clones::new(&format!("empty-{repo}"));
+            let push = "git push origin HEAD";
+            clones.add(repo, "a-vault9", "");
+            assert_eq!(clones.denial(repo, push).is_some(), denied);
+            clones.git(repo, "update-ref refs/remotes/origin/child HEAD");
+            clones.git(repo, "rm -q -r .");
+            clones.git(repo, "commit -q -m x");
+            assert_eq!(clones.denial(repo, push), None);
+        }
+    }
+
+    #[test]
+    fn an_mcp_merge_and_a_deletion_are_screened_by_their_message() {
+        let denied = |tool: &str, repo: &str, message: &str| {
+            let input = serde_json::json!({ "owner": "o", "repo": repo, "path": "vault9", "message": message });
+            let found = priory_factory::publish::calls(tool, None, &input);
+            screen(&rules(), &std::env::temp_dir(), &found[0]).is_err()
+        };
+        let (merge, delete) = ("mcp__g__merge_pull_request", "mcp__g__delete_file");
+        for tool in [merge, delete] {
+            assert!(denied(tool, "r", "vault9"));
+            assert!(!denied(tool, "x", "vault9"));
+        }
+        assert!(!denied(delete, "r", "fine"));
     }
 
     proptest! {

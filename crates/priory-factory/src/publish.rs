@@ -1,8 +1,8 @@
 //! Which tool calls publish to a git remote or a pull request, and what text they hold.
 
 use crate::guard::{
-    LITERAL, OPAQUE, PRINTED, SCOPE, SET, TEXT, VARIABLE, WRITES, dry_run, gh_request, help,
-    moves_head, positional, read, starts,
+    LITERAL, NOTES, OPAQUE, PRINTED, Request, SCOPE, SET, TEXT, VARIABLE, WRITES, dry_run,
+    gh_request, help, positional, read, starts,
 };
 use serde_json::Value;
 
@@ -15,6 +15,8 @@ pub struct Publish {
     pub folders: Vec<Vec<String>>,
     /// Priory cannot tell which folder it runs in.
     pub lost: bool,
+    /// The call may create a repository in one of its folders.
+    pub creates: bool,
     /// The repository it names, if any.
     pub repo: Option<String>,
     /// Its repository cannot be read, so it counts as a listed one.
@@ -47,8 +49,11 @@ pub enum Commits {
         revisions: Vec<String>,
         every: bool,
     },
-    /// What a pull request from this branch, or the current one, shows.
-    Head(Option<String>),
+    /// What a pull request from this branch, or the current one, shows on top of its base.
+    Head {
+        branch: Option<String>,
+        base: Option<String>,
+    },
 }
 
 /// Programs that print the files they are given, as in `--body "$(cat body.md)"`.
@@ -70,60 +75,122 @@ const READS: &[&str] = &[
 ];
 
 /// The words of a call whose text Priory cannot read.
-struct Unresolved {
-    words: Vec<String>,
+struct Unresolved<'a> {
+    commands: &'a [Vec<String>],
+    opaque: Vec<&'a str>,
+    variables: Vec<&'a str>,
+    words: Vec<&'a str>,
     /// A shell may run a script that expands, so no word of the call can be read.
     script: bool,
+    /// The call holds text a substitution prints, which the words around it lack.
+    printed: bool,
+    /// The place of the command being read.
+    at: usize,
 }
 
-impl Unresolved {
-    fn of(commands: &[Vec<String>]) -> Self {
-        let noted = |note: &str| -> Vec<String> {
+impl<'a> Unresolved<'a> {
+    fn of(commands: &'a [Vec<String>]) -> Self {
+        let noted = |note: &str| -> Vec<&'a str> {
             commands
                 .iter()
                 .filter(|words| words[0] == note)
-                .map(|words| words[1].clone())
+                .map(|words| words[1].as_str())
                 .collect()
         };
-        let opaque = noted(OPAQUE);
-        let variables = noted(VARIABLE);
+        let (opaque, variables) = (noted(OPAQUE), noted(VARIABLE));
         let script = opaque
             .iter()
             .chain(&variables)
             .any(|word| word.contains("gh ") && (word.contains("pr ") || word.contains("api ")));
-        let literal = |name: &str| {
-            let mut set = false;
-            for words in commands {
-                let named = |word: &String| {
-                    word.strip_prefix(name)
-                        .is_some_and(|rest| rest.is_empty() || rest.starts_with(['=', '+']))
-                };
-                if words[0] == TEXT {
-                    if !named(&words[1]) {
-                        continue;
-                    }
-                    let lasts = words.get(2).is_some_and(|word| word == SET);
-                    if !lasts || opaque.contains(&words[1]) || variables.contains(&words[1]) {
-                        return false;
-                    }
-                    set = true;
-                } else if !words[0].starts_with('\0') && words.iter().any(named) {
-                    return false;
-                }
-            }
-            set
-        };
-        let unset = variables.iter().filter(|word| {
-            !names(word).is_some_and(|names| names.iter().all(|name| literal(name)))
-        });
-        Self {
-            words: unset.chain(&opaque).cloned().collect(),
+        let mut unresolved = Self {
+            commands,
+            opaque,
+            variables,
+            words: Vec::new(),
             script,
+            printed: commands.iter().any(|words| words[0] == PRINTED),
+            at: 0,
+        };
+        let literal = |word: &str| {
+            names(word).is_some_and(|names| {
+                names
+                    .iter()
+                    .all(|name| !unresolved.assigned(name).is_empty())
+            })
+        };
+        let unset = unresolved.variables.iter().filter(|word| !literal(word));
+        unresolved.words = unset.chain(&unresolved.opaque).copied().collect();
+        unresolved
+    }
+
+    /// Each place that sets the variable `name` and what it assigns, or none when one of them is
+    /// not literal text.
+    fn assigned(&self, name: &str) -> Vec<(usize, &'a str)> {
+        let mut set = Vec::new();
+        for (at, words) in self.commands.iter().enumerate() {
+            let named = |word: &String| {
+                word.strip_prefix(name)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with(['=', '+']))
+            };
+            if words[0] == TEXT {
+                if !named(&words[1]) {
+                    continue;
+                }
+                let lasts = words.get(2).is_some_and(|word| word == SET);
+                if !lasts || self.expands(&words[1]) {
+                    return Vec::new();
+                }
+                set.push((at, &words[1][name.len()..]));
+            } else if !words[0].starts_with('\0') && words.iter().any(named) {
+                return Vec::new();
+            }
         }
+        set
+    }
+
+    /// `word` with its variables replaced, when the call sets each once, before this command.
+    fn resolve(&self, word: &str) -> Option<String> {
+        if !self.expands(word) {
+            return Some(word.to_owned());
+        }
+        if self.opaque.contains(&word) {
+            return None;
+        }
+        let mut parts = word.split('$');
+        let mut resolved = parts.next()?.to_owned();
+        for (name, part) in names(word)?.into_iter().zip(parts) {
+            let [(at, value)] = self.assigned(name)[..] else {
+                return None;
+            };
+            let value = value.strip_prefix('=').filter(|_| at < self.at)?;
+            if value.contains(['~', '*']) {
+                return None;
+            }
+            resolved.push_str(value);
+            let part = part.strip_prefix('{').unwrap_or(part);
+            let rest = &part[name.len()..];
+            resolved.push_str(rest.strip_prefix('}').unwrap_or(rest));
+        }
+        Some(resolved)
+    }
+
+    fn expands(&self, word: &str) -> bool {
+        self.opaque.contains(&word) || self.variables.contains(&word)
     }
 
     fn holds(&self, word: &str) -> bool {
-        self.script || self.words.iter().any(|unresolved| unresolved == word)
+        if self.script {
+            return true;
+        }
+        if !word.is_empty() {
+            return self.words.contains(&word);
+        }
+        // An empty word is also what a lone substitution leaves, which its command's notes tell.
+        self.commands[..self.at]
+            .iter()
+            .rev()
+            .take_while(|words| NOTES.contains(&words[0].as_str()) || words[0] == "cd")
+            .any(|words| words[0] == OPAQUE && words[1].is_empty())
     }
 }
 
@@ -164,26 +231,26 @@ pub fn calls(tool: &str, command: Option<&str>, input: &Value) -> Vec<Publish> {
         return Vec::new();
     };
     let commands = read(command);
-    let unresolved = Unresolved::of(&commands);
+    let mut unresolved = Unresolved::of(&commands);
     let mut folders: Vec<Vec<String>> = vec![Vec::new()];
     let mut leading = true;
     let mut lost = false;
     let mut files = Vec::new();
     let mut found: Vec<(usize, Publish)> = Vec::new();
     for (at, words) in commands.iter().enumerate() {
+        unresolved.at = at;
         match words[0].as_str() {
             SCOPE => leading = false,
             "cd" | "pushd" => match positional(words)[..] {
                 [dir]
                     if dir != "-"
-                        && !dir.contains(['$', '~', '*'])
                         && !dir.is_empty()
-                        && !unresolved.holds(dir) =>
+                        && !unresolved.holds(dir)
+                        && let Some(dir) = unresolved.resolve(dir)
+                        && !dir.contains(['$', '~', '*']) =>
                 {
                     let mut moved = folders.clone();
-                    moved
-                        .iter_mut()
-                        .for_each(|folder| folder.push(dir.to_owned()));
+                    moved.iter_mut().for_each(|folder| folder.push(dir.clone()));
                     if leading {
                         folders = moved;
                     } else {
@@ -232,24 +299,40 @@ pub fn calls(tool: &str, command: Option<&str>, input: &Value) -> Vec<Publish> {
             _ => Vec::new(),
         })
         .collect();
-    let redirected = [
-        "GH_REPO",
-        "GH_HOST",
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-        "GIT_CONFIG",
-    ]
-    .iter()
-    .any(|name| command.contains(name));
+    let redirected = commands.iter().any(|words| redirects(words));
+    let creates = commands.iter().any(|words| creates(words));
+    // A loop or a function can run a later command first.
+    let reordered = ["done", "()", "function "]
+        .iter()
+        .any(|word| command.contains(word));
     let heredoc_expands = commands
         .iter()
         .any(|words| words[0] == TEXT && unresolved.holds(&words[1]));
     for (at, publish) in &mut found {
         publish.anywhere |= redirected;
+        publish.creates = creates;
+        let before = if reordered { commands.len() } else { *at };
+        let sends_head = match &publish.commits {
+            Commits::None => None,
+            Commits::Push {
+                revisions, every, ..
+            } => Some(
+                !every
+                    && (revisions.is_empty()
+                        || revisions.iter().any(|revision| {
+                            revision.starts_with("HEAD") || revision.starts_with('@')
+                        })),
+            ),
+            Commits::Head { branch, .. } => Some(branch.is_none()),
+        };
+        if let Some(sends_head) = sends_head
+            && commands[..before]
+                .iter()
+                .any(|words| moves(words, sends_head))
+        {
+            publish.unread = Some(MOVED);
+        }
         if matches!(publish.commits, Commits::Push { .. }) {
-            if moves_head(command) {
-                publish.unread = Some(MOVED);
-            }
             continue;
         }
         publish.texts.extend(around.iter().cloned());
@@ -260,9 +343,15 @@ pub fn calls(tool: &str, command: Option<&str>, input: &Value) -> Vec<Publish> {
                 let writes =
                     words[0] == WRITES && (words[1].is_empty() || file_name(&words[1]) == name);
                 let literal = words.get(2).is_some_and(|word| word == LITERAL);
+                let reads = READS.contains(&words[0].as_str())
+                    || words[0] == "git"
+                        && matches!(
+                            positional(words).first(),
+                            Some(&("add" | "commit" | "diff" | "log" | "status"))
+                        );
                 let mentions = place < *at
                     && !words[0].starts_with('\0')
-                    && !READS.contains(&words[0].as_str())
+                    && !reads
                     && words[1..].iter().any(|word| file_name(word) == name);
                 if writes && literal && !heredoc_expands {
                     file.needed = false;
@@ -275,6 +364,69 @@ pub fn calls(tool: &str, command: Option<&str>, input: &Value) -> Vec<Publish> {
     found.into_iter().map(|(_, publish)| publish).collect()
 }
 
+/// Whether `words` sets a variable that picks the repository `gh` or git writes to.
+fn redirects(words: &[String]) -> bool {
+    const SETS: &[&str] = &[
+        "export", "declare", "typeset", "readonly", "local", "read", "for", "printf",
+    ];
+    let sets = words[0] == TEXT || SETS.contains(&words[0].as_str());
+    sets && words[1..].iter().any(|word| {
+        let name = word.split(['=', '+']).next().unwrap_or_default();
+        ["GH_REPO", "GH_HOST", "GIT_DIR", "GIT_WORK_TREE"].contains(&name)
+            || name.starts_with("GIT_CONFIG")
+    })
+}
+
+/// Whether `words` may make a folder a repository.
+fn creates(words: &[String]) -> bool {
+    match words[0].as_str() {
+        "git" => matches!(
+            positional(words).first(),
+            Some(&("clone" | "init" | "worktree" | "submodule"))
+        ),
+        "gh" => positional(words).first() == Some(&"repo"),
+        program => ["cp", "mv", "ln", "tar", "rsync", "unzip"].contains(&program),
+    }
+}
+
+/// Whether `words` changes the commits a later publish sends: of the current branch, when it
+/// `sends_head`.
+fn moves(words: &[String], sends_head: bool) -> bool {
+    if words[0] != "git" {
+        return false;
+    }
+    let positional = positional(words);
+    let Some(sub) = positional.first() else {
+        return false;
+    };
+    match *sub {
+        "commit" | "merge" | "rebase" | "cherry-pick" | "am" | "reset" | "pull" | "revert"
+        | "update-ref" => true,
+        "stash" => positional.get(1) == Some(&"branch"),
+        "checkout" | "switch" => {
+            let rest: Vec<&str> = words
+                .iter()
+                .map(String::as_str)
+                .skip_while(|word| word != sub)
+                .skip(1)
+                .collect();
+            if rest.iter().any(|arg| {
+                arg.starts_with("-B") || arg.starts_with("-C") || *arg == "--force-create"
+            }) {
+                return true;
+            }
+            let paths = rest.iter().position(|arg| *arg == "--");
+            let restores = paths.is_some_and(|at| at + 1 < rest.len());
+            let creates = rest
+                .iter()
+                .any(|arg| ["-b", "-c", "--create"].contains(arg));
+            let named = rest.iter().filter(|arg| !arg.starts_with('-')).count();
+            sends_head && !restores && !(creates && named == 1 && !rest.contains(&"-"))
+        }
+        _ => false,
+    }
+}
+
 fn mcp(name: &str, input: &Value) -> Option<Publish> {
     let (_, short) = name.rsplit_once("__")?;
     let call = match short {
@@ -282,6 +434,8 @@ fn mcp(name: &str, input: &Value) -> Option<Publish> {
         "update_pull_request" => "update_pull_request",
         "push_files" => "push_files",
         "create_or_update_file" => "create_or_update_file",
+        "merge_pull_request" => "merge_pull_request",
+        "delete_file" => "delete_file",
         _ => return None,
     };
     let repo = input["owner"].as_str().zip(input["repo"].as_str());
@@ -290,7 +444,9 @@ fn mcp(name: &str, input: &Value) -> Option<Publish> {
         return None;
     };
     for (key, value) in fields {
-        if key != "owner" && key != "repo" {
+        // The path of a file to delete is public already.
+        let public = call == "delete_file" && key == "path";
+        if key != "owner" && key != "repo" && !public {
             strings(value, &mut texts);
         }
     }
@@ -323,18 +479,31 @@ fn push(words: &[String], unresolved: &Unresolved) -> Option<Publish> {
         ..Publish::default()
     };
     let mut own = Vec::new();
+    let mut widened = false;
+    let mut setting = |setting: &str, read: bool, publish: &mut Publish| {
+        let (key, value) = setting.split_once('=').unwrap_or((setting, ""));
+        let key = key.to_ascii_lowercase();
+        let section = key.split('.').next().unwrap_or_default();
+        publish.anywhere |= ["remote", "branch", "url", "include", "includeif"].contains(&section)
+            || key.contains('$')
+            || key.is_empty();
+        widened |= (key == "push.default" && (!read || value == "matching" || value.contains('$')))
+            || (section == "remote" && (key.ends_with(".push") || key.ends_with(".mirror")));
+    };
     let mut args = words[1..].iter();
     while let Some(arg) = args.next().filter(|arg| *arg != "push") {
         match arg.as_str() {
             "-C" => {
-                let dir = args.next();
-                publish.lost |= dir.is_some_and(|dir| unresolved.holds(dir));
-                own.extend(dir.cloned());
+                let Some(dir) = args.next() else { break };
+                let resolved = unresolved.resolve(dir).filter(|_| !unresolved.holds(dir));
+                publish.lost |= resolved.is_none();
+                own.extend(resolved);
             }
-            "-c" | "--config-env" | "--namespace" => {
-                args.next();
-                publish.anywhere = true;
+            "-c" | "--config-env" => {
+                let value = args.next().map_or("", String::as_str);
+                setting(value, arg == "-c", &mut publish);
             }
+            "--namespace" => drop(args.next()),
             "--git-dir" | "--work-tree" => {
                 args.next();
                 publish.lost = true;
@@ -342,7 +511,9 @@ fn push(words: &[String], unresolved: &Unresolved) -> Option<Publish> {
             _ if arg.starts_with("--git-dir=") || arg.starts_with("--work-tree=") => {
                 publish.lost = true;
             }
-            _ if arg.starts_with("--config-env=") => publish.anywhere = true,
+            _ if arg.starts_with("--config-env=") => {
+                setting(&arg["--config-env=".len()..], false, &mut publish);
+            }
             _ => {}
         }
     }
@@ -354,7 +525,7 @@ fn push(words: &[String], unresolved: &Unresolved) -> Option<Publish> {
         publish.unread = Some(REVISION);
     }
     let (mut remote, mut specs) = (None, Vec::new());
-    let (mut every, mut deletes) = (false, false);
+    let (mut every, mut deletes) = (widened, false);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--all" | "--branches" | "--mirror" | "--tags" => every = true,
@@ -435,7 +606,7 @@ fn pull(words: &[String], unresolved: &Unresolved) -> Option<Publish> {
         call,
         ..Publish::default()
     };
-    let mut head = None;
+    let (mut head, mut base) = (None, None);
     let mut args = words[1..].iter();
     while let Some(arg) = args.next() {
         let (name, attached) = option(arg, switches);
@@ -459,12 +630,19 @@ fn pull(words: &[String], unresolved: &Unresolved) -> Option<Publish> {
             "-R" | "--repo" => publish.repo = value(),
             "-F" | "--body-file" | "-T" | "--template" => file(&mut publish, value()),
             "-H" | "--head" => head = value(),
+            "-B" | "--base" if create => {
+                base = value();
+                publish
+                    .texts
+                    .extend(base.clone().map(|text| ("argument", text)));
+            }
             "-t" | "--title" | "--subject" => {
                 publish.texts.extend(value().map(|text| ("PR title", text)))
             }
             "-b" | "--body" => publish.texts.extend(value().map(|text| ("PR body", text))),
             _ => {
-                if !create && arg.contains("github.com/") && publish.repo.is_none() {
+                let url = arg.contains("github.com/") && arg.contains("/pull/");
+                if !create && url && !arg.starts_with('-') && publish.repo.is_none() {
                     publish.repo = Some(arg.clone());
                 }
                 publish.texts.push(("argument", arg.clone()));
@@ -472,7 +650,7 @@ fn pull(words: &[String], unresolved: &Unresolved) -> Option<Publish> {
         }
     }
     if create {
-        publish.commits = Commits::Head(head);
+        publish.commits = Commits::Head { branch: head, base };
     }
     Some(publish)
 }
@@ -491,7 +669,7 @@ fn option(arg: &str, switches: &[char]) -> (String, Option<String>) {
     };
     let rest = cluster.trim_start_matches(switches);
     match rest.chars().next() {
-        Some(flag) if "RFTHtb".contains(flag) => {
+        Some(flag) if "RFTHtbB".contains(flag) => {
             let value = rest[1..].strip_prefix('=').unwrap_or(&rest[1..]);
             (
                 format!("-{flag}"),
@@ -519,7 +697,18 @@ fn api(words: &[String], unresolved: &Unresolved) -> Option<Publish> {
     if words[0] != "gh" {
         return None;
     }
-    let request = gh_request(words)?;
+    let raw = gh_request(words)?.raw;
+    let resolved = unresolved.resolve(&raw);
+    let mut sent = words.to_vec();
+    if let Some(resolved) = &resolved {
+        for word in sent.iter_mut().filter(|word| **word == raw) {
+            word.clone_from(resolved);
+        }
+    }
+    let request = gh_request(&sent)?;
+    if request.endpoint == "graphql" && reads(words, &request, unresolved) {
+        return None;
+    }
     let mut publish = Publish {
         call: "gh api",
         ..Publish::default()
@@ -535,14 +724,15 @@ fn api(words: &[String], unresolved: &Unresolved) -> Option<Publish> {
         ] => Some(format!("{owner}/{repo}")),
         ["graphql"] | ["repositories", _, _, ..] => None,
         // The repository may be what expands.
-        _ if unresolved.holds(&request.raw) => None,
+        _ if resolved.is_none() || unresolved.printed || unresolved.holds(&raw) => None,
         _ => return None,
     };
-    publish.anywhere = holder.is_none();
-    publish.repo = holder.filter(|repo| !repo.contains('{'));
+    let unknown = holder.as_ref().is_none_or(|repo| repo.contains('$'));
+    publish.anywhere = unknown;
+    publish.repo = holder.filter(|repo| !unknown && !repo.contains('{'));
     if words[1..]
         .iter()
-        .any(|word| *word != request.raw && unresolved.holds(word))
+        .any(|word| *word != raw && unresolved.holds(word))
     {
         publish.unread = Some(OUTPUT);
     }
@@ -559,6 +749,30 @@ fn api(words: &[String], unresolved: &Unresolved) -> Option<Publish> {
         }
     }
     Some(publish)
+}
+
+/// Whether a GraphQL call is sure to send no mutation: each `query` is text the call holds.
+fn reads(words: &[String], request: &Request, unresolved: &Unresolved) -> bool {
+    if request.opaque || unresolved.script || unresolved.printed {
+        return false;
+    }
+    // An expansion may hold a `query` of its own, unless it is another field's value.
+    let known = words[1..]
+        .iter()
+        .filter(|word| unresolved.expands(word))
+        .all(|word| {
+            word.split_once('=').is_some_and(|(name, _)| {
+                !name.contains('$') && !name.starts_with("--") && !name.ends_with("query")
+            })
+        });
+    let mut queries = request
+        .fields
+        .iter()
+        .filter_map(|field| field.strip_prefix("query="))
+        .peekable();
+    known
+        && queries.peek().is_some()
+        && queries.all(|query| !query.is_empty() && !query.contains("mutation"))
 }
 
 #[cfg(test)]
@@ -730,7 +944,7 @@ mod tests {
         #[test]
         fn reading_a_call_never_panics(
             words in prop::collection::vec(
-                "git|gh|pr|api|create|edit|merge|push|cd|\\(|\\)|\\$\\(|\\$[A-Z]|[;|&>`]|-[a-zA-Z]{0,3}|--[a-z-]{0,8}=?|repos/o/r/pulls|\\PC{0,6}",
+                "git|gh|pr|api|graphql|env|-C|-B|checkout|query=|A=|\\$\\{?A\\}?|create|edit|merge|push|cd|\\(|\\)|\\$\\(|\\$[A-Z]|[;|&>`]|-[a-zA-Z]{0,3}|--[a-z-]{0,8}=?|repos/o/r/pulls|\\PC{0,6}",
                 0..14,
             ),
         ) {
