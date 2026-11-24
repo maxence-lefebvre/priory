@@ -442,8 +442,8 @@ already sent still counts. While a gate grades the result, the turn is over, so 
 after the verdict instead. A prompt typed but not confirmed when the run ends stays on the desk as
 `uncertain`. On a queued or ready task, `--now` changes nothing.
 
-A run at an `irreversible` step, in a shared session, or with a keyboard a person holds is not
-stopped. `--now` refuses it, with the reason. A hold without `--now` keeps its mark and applies at
+A run at an `irreversible` step, in a shared session, in a debate turn, or with a keyboard a person
+holds is not stopped. A debate turn settles as usual, and the task is held before the next one. `--now` refuses it, with the reason. A hold without `--now` keeps its mark and applies at
 the next turn end, or as soon as the run is idle and none of those is true. A tmux client attached
 to the run does not keep it from being held.
 

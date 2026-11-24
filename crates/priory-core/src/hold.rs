@@ -88,7 +88,7 @@ fn open(tx: &Transaction, task: i64) -> rusqlite::Result<(Vec<i64>, String)> {
 }
 
 /// Holds the queued or ready `task` with its open hold, and returns its new reason.
-fn park(tx: &Transaction, task: i64) -> rusqlite::Result<String> {
+pub(crate) fn park(tx: &Transaction, task: i64) -> rusqlite::Result<String> {
     let (ids, why) = open(tx, task)?;
     let reason = format!("held: {why}");
     tx.execute(
@@ -128,11 +128,6 @@ fn close(tx: &Transaction, task: i64, how: &str) -> rusqlite::Result<()> {
     .map(drop)
 }
 
-/// Holds the task of a run that just ended for its hold, ready with its prompt queued.
-pub(crate) fn stopped(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
-    park(tx, task).map(drop)
-}
-
 /// Why `task` is held at its turn end, or interrupted `now`, as its next run's prompt.
 pub(crate) fn prompt(tx: &Transaction, task: i64, now: bool) -> rusqlite::Result<String> {
     let (_, why) = open(tx, task)?;
@@ -147,7 +142,8 @@ pub(crate) fn prompt(tx: &Transaction, task: i64, now: bool) -> rusqlite::Result
     })
 }
 
-/// Why no hold may stop the live run `run` now, as `preempt::guarded` says.
+/// Why no hold may stop the live run `run` now, as `preempt::guarded` says. A debate turn settles
+/// itself and its task is ready between turns, so a hold waits for that.
 pub(crate) fn guarded(
     tx: &Connection,
     run: i64,
@@ -155,7 +151,8 @@ pub(crate) fn guarded(
 ) -> rusqlite::Result<Option<String>> {
     tx.query_row(
         &format!(
-            "SELECT runs.task, tasks.workflow, runs.step, coalesce(runs.agent, ''), {}
+            "SELECT runs.task, tasks.workflow, runs.step, coalesce(runs.agent, ''), {},
+               runs.debate IS NOT NULL
              FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.id = ?1",
             crate::preempt::KEYBOARD_HELD
         ),
@@ -163,9 +160,13 @@ pub(crate) fn guarded(
         |row| {
             let (workflow, step, agent): (String, String, String) =
                 (row.get(1)?, row.get(2)?, row.get(3)?);
+            let task: i64 = row.get(0)?;
+            if row.get(5)? {
+                return Ok(Some(format!("task {task} is in a debate turn")));
+            }
             Ok(crate::preempt::guarded(
                 factory,
-                row.get(0)?,
+                task,
                 &workflow,
                 &step,
                 &agent,

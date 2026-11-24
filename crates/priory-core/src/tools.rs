@@ -2541,6 +2541,15 @@ pub(crate) fn stop(
     Ok(None)
 }
 
+/// Whether the run sent its result.
+fn sent(tx: &Transaction, run: i64) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT count(*) > 0 FROM results WHERE run = ?1",
+        [run],
+        |row| row.get(0),
+    )
+}
+
 /// Fails the run's task when its step went over its budget, before its result moves it. Returns
 /// the tmux session to kill when it did.
 fn over_spent(
@@ -2552,13 +2561,9 @@ fn over_spent(
     let Some((over, reason)) = over_budget(tx, run, trace)? else {
         return Ok(None);
     };
-    let sent = tx
-        .query_row("SELECT 1 FROM results WHERE run = ?1", [run.id], |_| Ok(()))
-        .optional()?
-        .is_some();
     // The money of a turn that sent its result is spent: the result stands, and its step's
     // trace record carries the overrun.
-    if over && sent {
+    if over && sent(tx, run.id)? {
         return Ok(None);
     }
     end(tx, run.id, "budget")?;
@@ -2797,6 +2802,8 @@ pub(crate) enum Stopped {
     For(i64),
     /// For its task's hold, at its turn end.
     Held,
+    /// For its task's hold, idle between turns.
+    Idle,
     /// For its task's hold, inside its turn.
     Interrupted,
 }
@@ -2813,8 +2820,10 @@ pub(crate) fn stop_marked(
     let Some(mut run) = run(tx, session)? else {
         return Ok(None);
     };
-    // A step over its budget fails, marked or not.
-    if let Some(kill) = over_spent(tx, &run, trace)? {
+    // A step over its budget fails, marked or not. A turn that has not ended may have no tokens
+    // to price yet: with no result sent, a later turn end prices it.
+    let unpriced = matches!(why, Stopped::Idle | Stopped::Interrupted) && !sent(tx, run.id)?;
+    if !unpriced && let Some(kill) = over_spent(tx, &run, trace)? {
         return Ok(kill);
     }
     // No process carries on, so a next step of the same agent gets a new run.
@@ -2841,7 +2850,7 @@ pub(crate) fn stop_marked(
     }
     match why {
         Stopped::For(head) => stop_for(tx, trace, run.id, head)?,
-        Stopped::Held => stop_held(tx, &run, false)?,
+        Stopped::Held | Stopped::Idle => stop_held(tx, &run, false)?,
         Stopped::Interrupted => stop_held(tx, &run, true)?,
     }
     Ok(Some(run.tmux))
@@ -2857,7 +2866,7 @@ fn stop_held(tx: &Transaction, run: &Run, now: bool) -> rusqlite::Result<()> {
     let text = crate::hold::prompt(tx, run.task, now)?;
     wake(tx, run.task, &text)?;
     set(tx, run.task, "ready", None, None)?;
-    crate::hold::stopped(tx, run.task)
+    crate::hold::park(tx, run.task).map(drop)
 }
 
 /// Ends the idle live run of `session` for its task's hold, unless its mark no longer stops it.
@@ -2875,7 +2884,7 @@ pub(crate) fn hold_idle(
         return Ok(None);
     }
     trace::account(&tx, trace, run.id, None)?;
-    let kill = stop_marked(&tx, session, trace, Stopped::Held)?;
+    let kill = stop_marked(&tx, session, trace, Stopped::Idle)?;
     tx.commit()?;
     Ok(kill)
 }
