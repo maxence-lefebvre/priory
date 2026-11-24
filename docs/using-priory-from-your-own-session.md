@@ -58,6 +58,16 @@ model may answer.
 
    The model replies with the new task's key and id. The task records that your session added it.
 
+7. Compact a long session:
+
+   ```text
+   /priory:compact keep the plan and the open failures
+   ```
+
+   The model calls the `compact` tool and ends its turn. Priory types `/compact` here, then what the
+   model does next. It needs an hc terminal and a factory with
+   [`[asks] type`](reference/factory.md#asks); elsewhere the model says why, and you type `/compact`.
+
 When the model is blocked on your decision, it uses the `ask` skill on its own. Its reply says
 whether the answer will come back as a message, which needs an hc terminal and a factory with
 [`[asks] deliver`](daemon/asks.md), or whether the model reads it with the `asks` tool once you

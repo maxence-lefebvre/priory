@@ -245,13 +245,16 @@ An agent's settings and its shell call these. A person rarely does.
 - `priory hook EVENT`: sends one of the harness's hook signals to the daemon. See
   [signals.md](../daemon/signals.md).
 - `priory mcp --outside`: the MCP server of a person's own session, which Priory did not start, on
-  stdio. It serves `desk`, `asks`, `task`, `ask`, `add`, `answer` and `dismiss`. `answer` and
+  stdio. It serves `desk`, `asks`, `task`, `ask`, `add`, `answer`, `dismiss` and `compact`. `answer` and
   `dismiss` decide only an ask a lead could answer, recorded as the session's decision. It exits 2
   when `PRIORY_SESSION` is set, or when `PRIORY_HOME` or `PRIORY_DB` is unset. See
   [tools.md](../daemon/tools.md#the-outside-server).
 - `priory hook PreToolUse --outside`: the `PreToolUse` hook of a person's own session. It denies a
   shell call that runs a verb only a person runs, and asks no daemon. See
   [tools.md](../daemon/tools.md#the-outside-hook).
+- `priory hook EVENT --outside`, for `Stop`, `SessionStart` and `UserPromptSubmit`: tells the daemon
+  when a person's own session goes idle, for its `compact` request. It prints nothing and exits 0,
+  also with no daemon. See [tools.md](../daemon/tools.md#compact-from-the-session).
 - `priory gate`: runs the factory's `gate` in the run's worktree and records its exit code for the
   branch's head.
   See [tools.md](../daemon/tools.md#proofs).

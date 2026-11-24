@@ -31,7 +31,7 @@ been applied. Hooks and verbs do not retry: with no daemon listening, they fail 
 
 `priory mcp --outside` is a stdio MCP server for a session Priory did not start, such as a person's
 own Claude Code session. The [Claude Code plugin](../adapters/claude-plugin.md) starts it. It
-serves seven tools, and none that ends a step or acts on a task:
+serves eight tools, and none that ends a step or acts on a task:
 
 | Tool | Does | Same as |
 | ---- | ---- | ------- |
@@ -42,6 +42,7 @@ serves seven tools, and none that ends a step or acts on a task:
 | `add(text, workflow?, band?, lane?, repo?)` | asks for a task | `priory add` |
 | `answer(ask, revision, answer)` | answers an ask a lead could answer, as this session | `priory answer --expected REVISION ASK ANSWER` |
 | `dismiss(ask, revision)` | dismisses an ask a lead could answer, as this session | `priory dismiss --expected REVISION ASK` |
+| `compact(then, focus?)` | types `/compact` into this session once it is idle, then `then` | a person's `/compact` |
 
 A call to any other tool, such as `result` or `cancel`, is a JSON-RPC error, `unknown tool
 result`, and stores nothing. The server sends each call to the daemon as `{"outside": {"tool": ..., "session": ...,
@@ -112,6 +113,51 @@ session t9 8f3c2a10 decided it, not a person`.
 
 The guard is unchanged: the [outside hook](#the-outside-hook) still denies `priory answer` typed by
 the model, and a run still cannot start the server, since `PRIORY_SESSION` is set in its pane.
+
+### Compact from the session
+
+A run's `compact` types into a tmux pane Priory owns. A person's session runs in the person's
+terminal, so the factory names the command that reaches it, `[asks] type`. The daemon runs it in
+the factory folder with each value as one argument, never parsed by a shell:
+
+| Call | Does |
+| ---- | ---- |
+| `type check SESSION` | exits 0 when it can type into SESSION. It has 5 seconds |
+| `type send SESSION TEXT` | types TEXT and presses Enter |
+| `type enter SESSION` | presses Enter |
+
+Exit 0 is done. Exit 75 says nothing was typed, so the daemon tries again a second later. Any other
+exit fails the request. The command must prove before each act that the terminal runs SESSION, and
+never open another one. [The Herdr adapter's](../adapters/herdr.md#typing-a-compaction) does, through hc.
+
+1. The session calls `compact`. The daemon checks the texts, then runs `check`. A failure is the
+   tool's error, and nothing is stored.
+2. The plugin's `Stop` hook says that the turn ended. The daemon sends `/compact <focus>` a second
+   later. A prompt before that waits for the next `Stop`.
+3. `SessionStart` with source `compact` ends the compaction. The daemon sends the follow-up a second
+   later. Claude's own compaction before the `/compact` was sent changes nothing.
+4. The follow-up's `UserPromptSubmit` ends the request. Without one in 5 seconds, the daemon presses
+   Enter once more, as for a run's prompt, and fails the request 10 seconds later.
+
+The follow-up starts with a fixed text, so a `then` that starts with `!`, `/` or `#` runs nothing,
+and the model does not read it as the person's words:
+
+```text
+Priory compacted this session, as it asked. The session's own note, not a person's words: <then>
+```
+
+A request fails, and types nothing more, when a person prompts between the `/compact` and the
+follow-up, with no idle session in 1 hour, with no compaction in 10 minutes, or when the daemon
+restarts while the command types: a text is never typed twice. The trace holds each request,
+delivery and failure (see
+[trace-schema.md](../trace-schema.md#factorysessioncompact_requested-and-the-records-that-follow)).
+
+`priory hook Stop --outside`, `SessionStart` and `UserPromptSubmit` send the event, the session and
+the source. A prompt's text leaves the session only when it starts with the fixed text above.
+Without a daemon they do nothing.
+
+Known limit: the check of the terminal and the typing are two steps, so a session that changes
+between them can receive the text.
 
 ### The outside hook
 

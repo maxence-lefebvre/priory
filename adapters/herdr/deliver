@@ -6,6 +6,10 @@ terminal that asked, optionally followed by a space and its Claude session id. T
 into that terminal while it runs claude in that session, as `~/.claude/sessions/PID.json` names it;
 otherwise `claude --resume` starts in a new hc tab with the answer as its prompt. Exit 0 means hc
 took the text.
+
+Priory also runs it as `[asks] type`: `deliver check SESSION`, `deliver send SESSION TEXT` or
+`deliver enter SESSION`. SESSION needs its Claude session id, and the terminal must run claude in
+that session: these never resume one. Exit 75 means that nothing was typed and to try again.
 """
 
 import glob
@@ -15,8 +19,28 @@ import subprocess
 import sys
 
 
+BUSY = 75
+
+
 def hc(*args):
     return subprocess.run(["hc", *args], capture_output=True, text=True)
+
+
+def found(terminal):
+    """What hc shows of `terminal`, or nothing."""
+    shown = hc("get", terminal, "--json")
+    try:
+        return json.loads(shown.stdout) if shown.returncode == 0 else {}
+    except ValueError:
+        return {}
+
+
+def runs(live, claude):
+    """Whether the live terminal's foreground is claude, in session `claude` when one is named."""
+    foreground = live.get("foreground") or {}
+    # A kept terminal whose claude exited runs a shell, which would run the text as a command.
+    return (live.get("state") == "live" and foreground.get("name") == "claude"
+            and (not claude or running_session(foreground.get("pid")) == claude))
 
 
 def transcript_cwd(claude):
@@ -50,17 +74,8 @@ def main(ask, revision, session, state, answer):
     else:
         message = f"A person answered ask {ask} (revision {revision}): {answer}"
     terminal, _, claude = session.partition(" ")
-    found = hc("get", terminal, "--json")
-    live = {}
-    if found.returncode == 0:
-        try:
-            live = json.loads(found.stdout)
-        except ValueError:
-            live = {}
-    foreground = live.get("foreground") or {}
-    # A kept terminal whose claude exited runs a shell, which would run the text as a command.
-    if (live.get("state") == "live" and foreground.get("name") == "claude"
-            and (not claude or running_session(foreground.get("pid")) == claude)):
+    live = found(terminal)
+    if runs(live, claude):
         sent = hc("send", terminal, message)
         sys.stderr.write(sent.stderr)
         return sent.returncode
@@ -82,7 +97,40 @@ def main(ask, revision, session, state, answer):
     return started.returncode
 
 
+def type_into(verb, session, text=None):
+    # hc signs a text from one of its terminals, and a signed /compact is no command.
+    os.environ.pop("HC_TERMINAL_ID", None)
+    terminal, _, claude = session.partition(" ")
+    live = found(terminal)
+    if not claude or not runs(live, claude):
+        print(f"{terminal} does not run claude in session {claude or '(none)'}", file=sys.stderr)
+        return 1
+    if verb == "check":
+        return 0
+    if verb == "enter":
+        sent = hc("keys", terminal, "enter")
+    else:
+        status = live.get("status")
+        # hc reports an agent whose turn ended as idle or done, and --if takes only idle.
+        if status not in ("idle", "done"):
+            print(f"{terminal} is {status}", file=sys.stderr)
+            return BUSY
+        sent = hc("send", terminal, text, *(["--if", "idle"] if status == "idle" else []))
+        try:
+            kind = json.loads(sent.stderr)["error"]["kind"]
+        except (ValueError, KeyError, TypeError):
+            kind = None
+        if sent.returncode != 0 and kind in ("status_mismatch", "blocked"):
+            sys.stderr.write(sent.stderr)
+            return BUSY
+    sys.stderr.write(sent.stderr)
+    return sent.returncode
+
+
 if __name__ == "__main__":
+    verbs = {"check": 3, "send": 4, "enter": 3}
+    if len(sys.argv) >= 2 and verbs.get(sys.argv[1]) == len(sys.argv):
+        sys.exit(type_into(*sys.argv[1:]))
     if len(sys.argv) != 6:
         print("usage: deliver ASK REVISION SESSION (answered|dismissed) ANSWER", file=sys.stderr)
         sys.exit(2)

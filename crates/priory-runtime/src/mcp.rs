@@ -176,7 +176,9 @@ fn call(session: &str, params: &Value) -> Value {
 }
 
 /// The tools of `priory mcp --outside`, in the order `tools/list` gives them.
-const OUTSIDE_TOOLS: [&str; 7] = ["desk", "asks", "task", "ask", "add", "answer", "dismiss"];
+const OUTSIDE_TOOLS: [&str; 8] = [
+    "desk", "asks", "task", "ask", "add", "answer", "dismiss", "compact",
+];
 
 /// The read tools, whose text is a task's or an agent's words.
 const READS: [&str; 3] = ["desk", "asks", "task"];
@@ -304,6 +306,19 @@ pub fn outside_tools() -> Value {
                     "revision": { "type": "integer", "description": "The ask's revision you read with asks." },
                 },
                 "required": ["ask", "revision"],
+                "additionalProperties": false,
+            },
+        },
+        {
+            "name": "compact",
+            "description": "Compact this session's conversation, then end your turn. Priory types /compact into this terminal once you are idle, then your note, so you carry on without a person. It refuses when it cannot reach this terminal.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "focus": text("What the summary must keep, such as the current plan and open failures. At most 1000 characters."),
+                    "then": text("What to do after the compaction, which comes back to you as your own note. At most 4000 characters."),
+                },
+                "required": ["then"],
                 "additionalProperties": false,
             },
         },

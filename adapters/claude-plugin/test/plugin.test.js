@@ -32,17 +32,23 @@ test("the manifest names the plugin priory, so its skills and commands are /prio
   assert.equal(typeof manifest.description, "string");
 });
 
-test("the plugin starts priory mcp --outside and runs the outside hook before each Bash call", () => {
+test("the plugin starts priory mcp --outside and runs the outside hooks", () => {
   assert.deepEqual(json(".mcp.json"), { mcpServers: { priory: { command: "priory", args: ["mcp", "--outside"] } } });
   assert.deepEqual(json("hooks/hooks.json"), {
     hooks: {
       PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "priory hook PreToolUse --outside" }] }],
+      ...Object.fromEntries(
+        ["SessionStart", "UserPromptSubmit", "Stop"].map((event) => [
+          event,
+          [{ hooks: [{ type: "command", command: `priory hook ${event} --outside` }] }],
+        ]),
+      ),
     },
   });
 });
 
-test("the plugin has the desk, ask and add skills and the answer command, each with its frontmatter", () => {
-  assert.deepEqual(skills.sort(), ["skills/add/SKILL.md", "skills/ask/SKILL.md", "skills/desk/SKILL.md"]);
+test("the plugin has the desk, ask, add and compact skills and the answer command, each with its frontmatter", () => {
+  assert.deepEqual(skills.sort(), ["skills/add/SKILL.md", "skills/ask/SKILL.md", "skills/compact/SKILL.md", "skills/desk/SKILL.md"]);
   assert.deepEqual(commands, ["commands/answer.md"]);
   for (const path of [...skills, ...commands]) {
     const { fields, body } = frontmatter(path);
@@ -78,7 +84,7 @@ test("no skill or command tells the model to run a verb only a person runs", () 
 });
 
 test("each skill calls only the tools the outside server serves", () => {
-  const served = ["desk", "asks", "task", "ask", "add", "answer", "dismiss"];
+  const served = ["desk", "asks", "task", "ask", "add", "answer", "dismiss", "compact"];
   for (const path of [...skills, ...commands]) {
     for (const match of read(path).matchAll(/the `([a-z]+)` tool/g)) {
       assert.ok(served.includes(match[1]), `${path} names the \`${match[1]}\` tool`);

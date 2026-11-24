@@ -673,6 +673,40 @@ pub(crate) fn session_decided(
     append(tx, trace, kind, &time, data)
 }
 
+/// Appends a `factory.session.compact_<kind>` record of a compaction a person's own session asked
+/// for, with the sizes of its texts in characters and never the texts.
+pub(crate) fn compaction(
+    tx: &Transaction,
+    trace: &Trace,
+    kind: &str,
+    session: &str,
+    sizes: Option<(usize, usize)>,
+    reason: Option<&str>,
+) -> rusqlite::Result<()> {
+    let time: String = tx.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", [], |row| {
+        row.get(0)
+    })?;
+    let mut data = json!({
+        "factory": trace.factory.name,
+        "factory_revision": trace.revision,
+        "machine": trace.machine,
+        "session": session,
+        "focus_chars": sizes.map(|(focus, _)| focus),
+        "then_chars": sizes.map(|(_, then)| then),
+        "reason": reason,
+    });
+    if let Value::Object(fields) = &mut data {
+        fields.retain(|_, value| !value.is_null());
+    }
+    append(
+        tx,
+        trace,
+        &format!("factory.session.compact_{kind}"),
+        &time,
+        data,
+    )
+}
+
 /// Appends a `factory.task.repaired` record for the repair of `task` after `run` failed.
 pub(crate) fn repaired(
     tx: &Transaction,

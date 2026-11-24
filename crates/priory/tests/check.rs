@@ -2124,6 +2124,20 @@ fn a_log_url_env_names_a_variable_never_the_url() {
 }
 
 #[test]
+fn the_type_command_is_an_executable_file_in_the_factory() {
+    let toml = "name = \"demo\"\n\n[asks]\ntype = \"bin/type\"\n";
+    let missing = check(&factory("type-missing", &with("factory.toml", toml)));
+
+    assert_eq!(
+        (missing.code, missing.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: `[asks] type`: bin/type is not a file in the factory folder\n"
+        )
+    );
+}
+
+#[test]
 fn the_deliver_command_is_an_executable_file_in_the_factory() {
     use std::os::unix::fs::PermissionsExt;
     let toml = "name = \"demo\"\n\n[asks]\ndeliver = \"bin/deliver\"\n";

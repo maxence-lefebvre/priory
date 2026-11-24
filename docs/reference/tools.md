@@ -352,6 +352,25 @@ not an agent`, `it approves a graded plan`, `it picks a debate's answer`, `it ca
 and `this session asked it` (an outside ask), and `its workflow <workflow> is no longer in the factory`. Any other refusal is the
 one `priory answer` or `priory dismiss` gives, such as `ask 14 is already answered: ship`.
 
+### `compact(then, focus?)`
+
+A tool of `priory mcp --outside`. It asks Priory to type `/compact` into the person's own session
+once the session is idle, then `then` (see
+[Compact from the session](../daemon/tools.md#compact-from-the-session)). A run's `compact` is
+another tool.
+
+| Argument | Type | Meaning |
+| -------- | ---- | ------- |
+| `then` | string, required | What the session does after the compaction, at most 4000 characters |
+| `focus` | string | What the summary keeps, at most 1000 characters. Line breaks become spaces |
+
+| Reply | When |
+| ----- | ---- |
+| `Queued /compact <focus>. End your turn now: Priory types it once this session is idle, then your note. It gives up after 1 hour without the plugin's Stop hook.` | the request is stored |
+| `Priory cannot type into this session: <reason>` | error: no hc terminal, no Claude session, no `[asks] type` command, or the command's `check` failed |
+| `a compact is already queued for this session; end your turn` | error: an earlier request has not ended |
+| `<argument> is longer than <n> characters`, `<argument> holds a control character`, `<argument> holds a secret: call compact again without it` | error: the text is not safe to type |
+
 ## `wait(on?, any?)`
 
 `wait` stores a wait on one condition, `on`, or on a list of them, `any`. A call takes one of the

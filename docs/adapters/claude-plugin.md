@@ -18,6 +18,7 @@ the session's and never as the person's:
 | Act | Who may do it | How |
 | --- | ------------- | --- |
 | Read the desk, the asks, a task | the model and the person | the `desk`, `asks` and `task` tools, `/priory:desk` |
+| Ask Priory to compact this session | the model and the person | the `compact` tool, `/priory:compact` |
 | Add a task | the model and the person | the `add` tool, `/priory:add` |
 | Ask the person a question that outlives the session | the model | the `ask` tool, `/priory:ask` |
 | Answer or dismiss an ask a lead could answer | the model, as the session, and the person | the `answer` and `dismiss` tools; the desk, or a line the person runs |
@@ -28,15 +29,16 @@ the session's and never as the person's:
 | File | What it does |
 | ---- | ------------ |
 | `.claude-plugin/plugin.json` | The manifest. The plugin is named `priory`, so its skills and command are `/priory:...` |
-| `.mcp.json` | Starts [`priory mcp --outside`](../daemon/tools.md#the-outside-server), which serves `desk`, `asks`, `task`, `ask`, `add`, `answer` and `dismiss` |
-| `hooks/hooks.json` | Runs [`priory hook PreToolUse --outside`](../daemon/tools.md#the-outside-hook) before each Bash call |
+| `.mcp.json` | Starts [`priory mcp --outside`](../daemon/tools.md#the-outside-server), which serves `desk`, `asks`, `task`, `ask`, `add`, `answer`, `dismiss` and `compact` |
+| `hooks/hooks.json` | Runs [`priory hook PreToolUse --outside`](../daemon/tools.md#the-outside-hook) before each Bash call, and [`Stop`, `SessionStart` and `UserPromptSubmit`](../daemon/tools.md#compact-from-the-session) for `compact` |
 | `skills/desk/SKILL.md` | Reads the desk and says what needs the person, most urgent first |
 | `skills/ask/SKILL.md` | When the work is blocked on the person's decision, calls `ask` with a question, options, a recommendation and a trade-off, then goes on |
 | `skills/add/SKILL.md` | Turns a follow-up from the conversation into a task with one line of text |
+| `skills/compact/SKILL.md` | Calls `compact` with what the summary keeps and what to do next, then ends the turn |
 | `commands/answer.md` | `/priory:answer ASK`: shows the ask and prints the line that answers it |
 
-A skill is also a slash command, so the three skills are `/priory:desk`, `/priory:ask` and
-`/priory:add`. Claude Code's docs say a command or skill takes the same frontmatter, and that
+A skill is also a slash command, so the four skills are `/priory:desk`, `/priory:ask`,
+`/priory:add` and `/priory:compact`. Claude Code's docs say a command or skill takes the same frontmatter, and that
 `disable-model-invocation: true` keeps Claude from invoking it on its own. `/priory:answer` sets
 it, and grants no tool permission.
 
@@ -86,6 +88,15 @@ names whether the answer will reach the session:
 
 The `ask` tool never blocks. Where delivery is set up it wakes the session; elsewhere the skill
 says to check once when the person comes back, never in a loop.
+
+## Compacting the session
+
+A long session runs out of context, and only a line typed into it compacts it. With `compact`, the
+model asks Priory to type that line once the turn ends, and then its own note, so the work goes on
+without a person. Priory types it into the hc terminal the answers reach, through the factory's
+`[asks] type` command, and refuses the call when it cannot. The note starts with a fixed text: what
+Priory types would otherwise be the person's own line, and a `! priory answer` in it an approval.
+See [Compact from the session](../daemon/tools.md#compact-from-the-session).
 
 ## Tasks a session added
 

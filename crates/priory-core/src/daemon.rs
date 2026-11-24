@@ -249,6 +249,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut probed = factory.sandboxed();
     let mut jailing = if probed { probe() } else { Ok(()) };
     state::uncertain(&db)?;
+    crate::compact::adopt(&mut db, &trace)?;
     crate::keyboard::adopt(&mut db, &trace)?;
     // No one watches a compaction a stopped daemon started, so it never types its `/compact`.
     for tmux in idle::tmux_sessions(&db)? {
@@ -374,6 +375,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut link = Link::default();
     let mut redispatch: Option<Instant> = None;
     let mut entering = Entering::default();
+    let mut typing = crate::compact::Typing::default();
     let mut live = Live::new(factory, watch, trace.revision.clone(), server);
     loop {
         let tick = Instant::now();
@@ -421,6 +423,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
                 counting.get(&home),
                 kit.current(),
                 &searching,
+                &mut typing,
             )?;
         }
         start_answers(&mut db, &trace, &home, &mut commands)?;
@@ -458,6 +461,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             send_spans(&db, &trace, &home, export)?;
         }
         deliver::tick(&db, factory, &home, &mut deliveries)?;
+        crate::compact::tick(&mut db, &trace, &home, &mut typing, &mut entering)?;
         crate::attach::tick(&mut db, &trace, &mut attaching)?;
         push::tick(&db, &home, &mut pushing)?;
         if let Some(desktop) = &mut desktop {
@@ -501,6 +505,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
                 counting.get(&home),
                 kit.current(),
                 &searching,
+                &mut typing,
             )?,
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
@@ -944,7 +949,15 @@ fn apply(
     counter: Option<&embed::Counter>,
     kit: crate::kit::Current<'_>,
     searching: &Sender<search::Asked>,
+    typing: &mut crate::compact::Typing,
 ) -> Result<(), Error> {
+    if let Ok(asked) = serde_json::from_str::<crate::outside::Line>(&line.text)
+        && asked.outside.tool == "compact"
+    {
+        let home = runtime::home();
+        crate::compact::call(db, &asked.outside, trace, &home, typing, line.applied)?;
+        return Ok(());
+    }
     if let Ok(call) = serde_json::from_str::<Call>(&line.text)
         && call.tool == "search"
     {
@@ -974,6 +987,7 @@ enum Input {
     Deliver(deliver::Line),
     Add(AddLine),
     Outside(crate::outside::Line),
+    OutsideSignal(crate::compact::Line),
     Signal(Signal),
     Call(Call),
     Answer(Answer),
@@ -1224,6 +1238,10 @@ fn take(
                 _ => crate::outside::apply(db, call, trace.factory, &runtime::home())?,
             };
             Ok((replied(reply), None))
+        }
+        Ok(Input::OutsideSignal(line)) => {
+            crate::compact::signal(db, &line.outside_signal, trace)?;
+            Ok(("ok".to_owned(), None))
         }
         Ok(Input::Signal(signal)) => Ok((
             "ok".to_owned(),

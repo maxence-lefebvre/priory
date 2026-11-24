@@ -9,6 +9,7 @@ mod debate;
 mod evidence;
 mod metrics;
 mod outside_answer;
+mod outside_compact;
 #[cfg(feature = "postgres")]
 mod partition;
 mod preempt;
@@ -6652,7 +6653,9 @@ fn the_outside_server_lists_its_tools_only_and_a_person_verb_is_an_unknown_tool(
         .collect();
     assert_eq!(
         names,
-        ["desk", "asks", "task", "ask", "add", "answer", "dismiss"]
+        [
+            "desk", "asks", "task", "ask", "add", "answer", "dismiss", "compact"
+        ]
     );
     for (reply, tool) in replies[1..]
         .iter()

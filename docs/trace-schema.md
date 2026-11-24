@@ -887,6 +887,21 @@ record has no `workflow`, `task`, `generation` or `step`.
 | `session`  | yes      | The session: its hc terminal, then a space and its Claude session, or `outside` |
 | `option`   | answered | The answer. A `factory.ask.session_dismissed` record has none                   |
 
+## `factory.session.compact_requested` and the records that follow
+
+A person's own session asked for a compaction through the `compact` tool of
+[`priory mcp --outside`](daemon/tools.md#compact-from-the-session). `factory.session.compact_requested`
+says Priory stored it, `_typed` that `/compact` was typed, `_compacted` that the compaction ended,
+`_prompted` that the session took the follow-up, and `_failed` that a call was refused or a request
+ended early. A refused call that names no session has no record. The texts are never in a record.
+
+| Field | Required | Meaning |
+| ----- | -------- | ------- |
+| `factory`, `factory_revision`, `machine` | as in `factory.step.ended` | Where the request was made |
+| `session` | yes | The session: its hc terminal, then a space and its Claude session |
+| `focus_chars`, `then_chars` | but for a refused call | The sizes of the two texts, in characters |
+| `reason` | `_failed` only | Why, such as `a person typed first` |
+
 ## `factory.bench.compared`
 
 A comparison of two commits of the factory on a benchmark ended (see

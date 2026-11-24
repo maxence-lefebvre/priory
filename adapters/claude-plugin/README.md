@@ -11,7 +11,9 @@ To install it, follow
 
 - `.claude-plugin/plugin.json`: the manifest. The plugin is named `priory`.
 - `.mcp.json`: starts `priory mcp --outside`.
-- `hooks/hooks.json`: runs `priory hook PreToolUse --outside` before each Bash call.
-- `skills/`: the `desk`, `ask` and `add` skills, also `/priory:desk`, `/priory:ask` and `/priory:add`.
+- `hooks/hooks.json`: runs `priory hook PreToolUse --outside` before each Bash call, and
+  the `Stop`, `SessionStart` and `UserPromptSubmit` hooks the `compact` tool waits for.
+- `skills/`: the `desk`, `ask`, `add` and `compact` skills, also `/priory:desk`, `/priory:ask`,
+  `/priory:add` and `/priory:compact`.
 - `commands/answer.md`: `/priory:answer ASK`, which only you can run.
 - `test/`: `node --test` tests for the files above.

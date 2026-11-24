@@ -3,6 +3,7 @@ pub mod batch;
 pub mod bench;
 pub mod capture;
 mod command;
+pub mod compact;
 mod connectors;
 pub mod consult;
 pub mod daemon;

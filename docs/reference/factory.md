@@ -337,6 +337,7 @@ and [tools.md](tools.md#commands-an-answer-runs) for the commands an answer runs
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `deliver` | string | no | none: an answer is only stored | The command that delivers an outside ask's answer or dismissal to the session that asked, relative to the factory folder. `priory check` refuses one that is not an executable file | `"adapters/herdr/deliver"` |
+| `type` | string | no | none: the outside [`compact`](tools.md#compactthen-focus) tool is refused | The command that types into a person's own session that asked for a compaction, relative to the factory folder. `priory check` refuses one that is not an executable file. See [tools.md](../daemon/tools.md#compact-from-the-session) for its arguments and exits | `"adapters/herdr/deliver"` |
 | `targets` | table of strings | no | none: only `worktree` | The folders, by name, where an answer can run an agent's ask command besides the task's worktree, relative to the factory folder or absolute | `{ ops = "../ops" }` |
 
 ## `[runs]`
@@ -607,6 +608,7 @@ workspace = "a86dr8yl"                         # the one workspace whose notific
 
 [asks]
 deliver = "bin/deliver"                        # delivers outside answers, from the factory folder
+type = "bin/type"                              # types a person's own session's compaction
 targets = { ops = "../ops" }                   # where an answer can run an ask's command
 
 [runs]
@@ -661,6 +663,8 @@ day = 10.0                                     # dollars the lane may spend in a
 | `` the sweeper agent `<name>` does not exist `` | `[sweep] agent` names no folder under `agents/` |
 | `` `[asks] deliver`: <path> is not a file in the factory folder `` | `deliver` names no file under the factory folder |
 | `` `[asks] deliver`: <path> is not executable: chmod +x it `` | The `deliver` file has no execute bit |
+| `` `[asks] type`: <path> is not a file in the factory folder `` | `type` names no file under the factory folder |
+| `` `[asks] type`: <path> is not executable: chmod +x it `` | The `type` file has no execute bit |
 | `` `[runs] attach`: <path> is not a file in the factory folder `` | `attach` names no file under the factory folder |
 | `` `[runs] attach`: <path> is not executable: chmod +x it `` | The `attach` file has no execute bit |
 | `` [log] backend = "postgres" needs a priory built with `--features postgres` `` | `[log] backend = "postgres"` in a build without the Postgres adapter |

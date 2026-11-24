@@ -151,6 +151,7 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
         }
         let commands = [
             ("asks", "deliver", &settings.value.asks.deliver),
+            ("asks", "type", &settings.value.asks.typing),
             ("runs", "attach", &settings.value.runs.attach),
         ];
         for (table, key, named) in commands {

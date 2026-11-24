@@ -160,6 +160,17 @@ would run the answer as a command. Nor does it type into a `claude` that runs an
 such as a new conversation started in the same kept terminal. The check and the send are two
 `hc` calls, so a `claude` that exits between them can still receive the text in its shell.
 
+## Typing a compaction
+
+The same script is the factory's `[asks] type` command, for a person's own session that asks for a
+compaction (see [Compact from the session](../daemon/tools.md#compact-from-the-session)). A factory
+names it with `type = "adapters/herdr/deliver"` under `[asks]`.
+
+Each of `check`, `send` and `enter` reads the terminal with `hc get`, as above, but needs the Claude
+session id, and never starts a session. `send` types only when hc shows the terminal `idle` or
+`done`, and exits 75 for any other status. `hc send` itself waits up to a minute for a person's
+unfinished draft.
+
 ## Opening runs in Herdr
 
 `adapters/herdr/attach` opens a run in a kept hc terminal when the run starts, as

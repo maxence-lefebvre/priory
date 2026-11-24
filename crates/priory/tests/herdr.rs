@@ -166,6 +166,88 @@ fn deliver_resumes_the_asking_session_when_its_terminal_runs_another_claude_sess
     );
 }
 
+/// Runs `adapters/herdr/deliver` as `[asks] type`, in a daemon that itself runs in an hc terminal.
+fn type_into(dir: &Path, args: &[&str]) -> (Option<i32>, Vec<Vec<String>>) {
+    let log = dir.join("fake/hc.log");
+    let _ = fs::remove_file(&log);
+    let path = std::env::join_paths(
+        std::iter::once(dir.join("fake"))
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let status = harness::command(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../adapters/herdr/deliver"),
+    )
+    .args(args)
+    .env("PATH", path)
+    .env("HOME", dir.join("home"))
+    .env("FAKE_DIR", dir.join("fake"))
+    .status()
+    .unwrap();
+    let calls = fs::read_to_string(&log)
+        .unwrap_or_default()
+        .split_terminator('\x1e')
+        .map(|call| call.split_terminator('\0').map(str::to_owned).collect())
+        .collect();
+    (status.code(), calls)
+}
+
+#[test]
+fn the_type_verbs_touch_only_the_terminal_that_runs_the_asking_claude_session() {
+    let dir = setup("type");
+    let session = "8f3c2a10-0000-4000-8000-000000000001";
+    let asking = format!("t9 {session}");
+    let terminal = |state: &str, name: &str, status: &str| {
+        let shown = format!(
+            r#"{{"state": "{state}", "status": "{status}", "foreground": {{"name": "{name}", "pid": 4242}}}}"#
+        );
+        fs::write(dir.join("fake/get.json"), shown).unwrap();
+    };
+    claude_runs(&dir, 4242, session);
+    let last = |args: &[&str]| {
+        let (code, calls) = type_into(&dir, args);
+        (code, calls.last().unwrap().join(" "))
+    };
+
+    terminal("live", "claude", "idle");
+    assert_eq!(last(&["check", &asking]), (Some(0), "get t9 --json".into()));
+    assert_eq!(
+        last(&["send", &asking, "/compact"]),
+        (Some(0), "send t9 /compact --if idle".into())
+    );
+    assert_eq!(last(&["enter", &asking]), (Some(0), "keys t9 enter".into()));
+    terminal("live", "claude", "done");
+    assert_eq!(
+        last(&["send", &asking, "/compact"]),
+        (Some(0), "send t9 /compact".into())
+    );
+    terminal("live", "claude", "working");
+    assert_eq!(
+        last(&["send", &asking, "/compact"]),
+        (Some(75), "get t9 --json".into())
+    );
+
+    let refused = || {
+        for args in [
+            &["check", &asking][..],
+            &["send", &asking, "/compact"],
+            &["enter", &asking],
+        ] {
+            assert_eq!(last(args), (Some(1), "get t9 --json".into()), "{args:?}");
+        }
+    };
+    terminal("live", "zsh", "idle");
+    refused();
+    terminal("finished", "claude", "idle");
+    refused();
+    terminal("live", "claude", "idle");
+    claude_runs(&dir, 4242, "8f3c2a10-0000-4000-8000-000000000002");
+    refused();
+    fs::remove_file(dir.join("fake/get.json")).unwrap();
+    refused();
+    assert_eq!(last(&["check", "t9"]).0, Some(1));
+}
+
 /// Runs `adapters/herdr/attach 7 12` with `path` as its PATH, space `main` and `exe` as the daemon's
 /// `PRIORY_EXE`. Returns its exit code, its stderr and each `hc` call's arguments.
 fn attach(

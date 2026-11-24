@@ -10,6 +10,15 @@
           }
         ]
       }
+    ],
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "priory hook SessionStart --outside" }] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "priory hook UserPromptSubmit --outside" }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "priory hook Stop --outside" }] }
     ]
   }
 }

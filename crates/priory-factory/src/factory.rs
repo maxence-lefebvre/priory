@@ -643,6 +643,11 @@ pub struct Asks {
     /// folder. It gets the ask's id, revision, session, `answered` or `dismissed`, and the answer
     /// as its arguments. Without it, the answer is only stored.
     pub deliver: Option<PathBuf>,
+    /// The command that types a `/compact` and its follow-up into the session that asked, relative
+    /// to the factory folder. It gets `check SESSION`, `send SESSION TEXT` or `enter SESSION`.
+    /// Without it, the outside `compact` tool is refused.
+    #[serde(rename = "type")]
+    pub typing: Option<PathBuf>,
 }
 
 /// What happens when a run starts.
@@ -2721,6 +2726,12 @@ impl Factory {
     pub fn deliver(&self) -> Option<PathBuf> {
         let deliver = self.settings.as_ref()?.value.asks.deliver.as_ref()?;
         Some(self.dir.join(deliver))
+    }
+
+    /// The command that types into the session that asked for a compaction; none refuses it.
+    pub fn typing(&self) -> Option<PathBuf> {
+        let typing = self.settings.as_ref()?.value.asks.typing.as_ref()?;
+        Some(self.dir.join(typing))
     }
 
     /// The command that opens a new run of a step with `attach = true`, under the factory folder.

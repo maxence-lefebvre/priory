@@ -21,10 +21,18 @@ enum Stage {
     Again,
 }
 
+enum Target {
+    Run {
+        outbox: i64,
+        pane: String,
+        compact: bool,
+    },
+    /// A follow-up the factory's `type` command sent to a person's own session, Enter included.
+    Outside(i64),
+}
+
 struct Pasted {
-    outbox: i64,
-    pane: String,
-    compact: bool,
+    target: Target,
     stage: Stage,
     at: Instant,
 }
@@ -41,23 +49,48 @@ impl Pasted {
 
 /// The pasted prompts that wait for an Enter or for their `UserPromptSubmit`.
 #[derive(Default)]
-pub(crate) struct Entering(Vec<Pasted>);
+pub(crate) struct Entering {
+    pasted: Vec<Pasted>,
+    enters: Vec<i64>,
+    unconfirmed: Vec<i64>,
+}
 
 impl Entering {
     /// Notes that the text of the attempted prompt `outbox` was pasted into `pane`.
     pub(crate) fn pasted(&mut self, outbox: i64, pane: String, compact: bool) {
-        self.0.push(Pasted {
-            outbox,
-            pane,
-            compact,
+        self.pasted.push(Pasted {
+            target: Target::Run {
+                outbox,
+                pane,
+                compact,
+            },
             stage: Stage::Pasted,
             at: Instant::now(),
         });
     }
 
+    /// Notes that the follow-up of compaction `id` was sent with its first Enter.
+    pub(crate) fn sent(&mut self, id: i64) {
+        self.pasted.push(Pasted {
+            target: Target::Outside(id),
+            stage: Stage::Entered,
+            at: Instant::now(),
+        });
+    }
+
+    /// Takes the compactions whose follow-up needs its second Enter.
+    pub(crate) fn enters(&mut self) -> Vec<i64> {
+        std::mem::take(&mut self.enters)
+    }
+
+    /// Takes the compactions whose follow-up got no `UserPromptSubmit`.
+    pub(crate) fn unconfirmed(&mut self) -> Vec<i64> {
+        std::mem::take(&mut self.unconfirmed)
+    }
+
     /// How long until the next Enter or verdict is due, if any prompt waits.
     pub(crate) fn due(&self) -> Option<Duration> {
-        self.0
+        self.pasted
             .iter()
             .map(|pasted| pasted.wait().saturating_sub(pasted.at.elapsed()))
             .min()
@@ -68,47 +101,61 @@ impl Entering {
     /// `UNCONFIRMED` later. A `/compact` gets one Enter: its end is a `SessionStart`, which can take
     /// minutes.
     pub(crate) fn tick(&mut self, db: &Connection) -> rusqlite::Result<()> {
-        let mut kept = Vec::with_capacity(self.0.len());
-        for mut pasted in std::mem::take(&mut self.0) {
+        let mut kept = Vec::with_capacity(self.pasted.len());
+        for mut pasted in std::mem::take(&mut self.pasted) {
             if pasted.at.elapsed() < pasted.wait() {
                 kept.push(pasted);
                 continue;
             }
-            let waits = state::unsubmitted(db, pasted.outbox)?;
+            let (waits, compact) = match &pasted.target {
+                Target::Run {
+                    outbox, compact, ..
+                } => (state::unsubmitted(db, *outbox)?, *compact),
+                Target::Outside(id) => (crate::compact::unsubmitted(db, *id)?, false),
+            };
             match pasted.stage {
-                Stage::Pasted if pasted.compact || waits => {
-                    if press(&pasted) && !pasted.compact {
+                Stage::Pasted if compact || waits => {
+                    if self.press(&pasted) && !compact {
                         pasted.stage = Stage::Entered;
                         pasted.at = Instant::now();
                         kept.push(pasted);
                     }
                 }
                 Stage::Entered if waits => {
-                    if press(&pasted) {
+                    if self.press(&pasted) {
                         pasted.stage = Stage::Again;
                         pasted.at = Instant::now();
                         kept.push(pasted);
                     }
                 }
-                Stage::Again if waits => state::unconfirmed(db, pasted.outbox)?,
+                Stage::Again if waits => match pasted.target {
+                    Target::Run { outbox, .. } => state::unconfirmed(db, outbox)?,
+                    Target::Outside(id) => self.unconfirmed.push(id),
+                },
                 _ => {}
             }
         }
-        self.0 = kept;
+        self.pasted = kept;
         Ok(())
     }
-}
 
-/// Presses Enter in the prompt's pane. A pane that is gone is the health check's to handle.
-fn press(pasted: &Pasted) -> bool {
-    match runtime::press(&pasted.pane, "Enter") {
-        Ok(()) => true,
-        Err(error) => {
-            eprintln!(
-                "priory daemon: pressing Enter in {} for prompt {}: {error}",
-                pasted.pane, pasted.outbox
-            );
-            false
+    /// Presses Enter in the prompt's pane, or leaves it to the `type` command. A pane that is gone
+    /// is the health check's to handle.
+    fn press(&mut self, pasted: &Pasted) -> bool {
+        match &pasted.target {
+            Target::Run { outbox, pane, .. } => match runtime::press(pane, "Enter") {
+                Ok(()) => true,
+                Err(error) => {
+                    eprintln!(
+                        "priory daemon: pressing Enter in {pane} for prompt {outbox}: {error}"
+                    );
+                    false
+                }
+            },
+            Target::Outside(id) => {
+                self.enters.push(*id);
+                true
+            }
         }
     }
 }

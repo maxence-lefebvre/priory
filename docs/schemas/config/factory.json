@@ -21,6 +21,13 @@
           "default": {},
           "description": "The folders, besides the task's worktree, where an answer can run an ask's command, by\nname. A relative folder is under the factory folder.",
           "type": "object"
+        },
+        "type": {
+          "description": "The command that types a `/compact` and its follow-up into the session that asked, relative\nto the factory folder. It gets `check SESSION`, `send SESSION TEXT` or `enter SESSION`.\nWithout it, the outside `compact` tool is refused.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "type": "object"
