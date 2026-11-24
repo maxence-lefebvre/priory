@@ -1370,7 +1370,7 @@ mod tests {
 
     #[test]
     fn a_run_is_trusted_only_when_each_grant_of_its_harness_holds() {
-        let db = state::memory();
+        let db = crate::state::memory();
         for (run, harness, outcome) in [
             (1, "claude-code", "granted"),
             (1, "claude-code", "present"),
