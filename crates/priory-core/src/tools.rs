@@ -222,6 +222,7 @@ pub(crate) fn call(
             None,
         ));
     }
+    let cloud = crate::cloud::is_cloud_run(&tx, run.id)?;
     let refused = match (call.tool.as_str(), open_ask, open_wait) {
         ("result" | "ask" | "wait" | "consult", ..) if run.debate.is_some() => {
             Some(crate::debate::ENDS_WITH_POSITION.to_owned())
@@ -236,7 +237,8 @@ pub(crate) fn call(
             Some("an answer or event for this run is queued: end your turn to read it".to_owned())
         }
         // A result, ask or wait would end or sleep the task over feedback it has not read yet.
-        ("result" | "ask" | "wait" | "consult", ..) if kept(&tx, run.task)? => {
+        // A cloud run reads nothing after its start: its next step does.
+        ("result" | "ask" | "wait" | "consult", ..) if !cloud && kept(&tx, run.task)? => {
             Some("feedback for this run is queued: end your turn to read it".to_owned())
         }
         // Its end would wake the task at whatever step the result moved it to.
@@ -263,7 +265,7 @@ pub(crate) fn call(
     let mut kill = None;
     let stored = match call.tool.as_str() {
         // A result moves the task, maybe to another agent's conversation, before the compact is typed.
-        "result" if compact_queued(&tx, run.task)? => Err(
+        "result" if !cloud && compact_queued(&tx, run.task)? => Err(
             "a compact is queued for this run; end your turn and call result after the compaction"
                 .to_owned(),
         ),
@@ -566,7 +568,7 @@ fn plan_text(tx: &Transaction, task: i64) -> rusqlite::Result<Option<String>> {
 }
 
 /// The prompt that entering `step` queues: the step's own, then the verification the plan promised.
-fn entry_prompt(tx: &Transaction, task: i64, step: &Step) -> rusqlite::Result<String> {
+pub(crate) fn entry_prompt(tx: &Transaction, task: i64, step: &Step) -> rusqlite::Result<String> {
     let verification: Option<String> = tx.query_row(
         "SELECT verification FROM tasks WHERE id = ?1",
         [task],
@@ -3735,7 +3737,12 @@ fn step_in(
                     && step.effect != Effect::Irreversible
                     && run.debate.is_none()
             };
-            let Some(run) = from.filter(carry) else {
+            // A cloud run has no process to carry on: each step starts its own session.
+            let cloud = match from {
+                Some(run) => crate::cloud::is_cloud_run(tx, run.id)?,
+                None => false,
+            };
+            let Some(run) = from.filter(carry).filter(|_| !cloud) else {
                 set(tx, task, "ready", Some(target), None)?;
                 return finish("moved");
             };
@@ -4445,8 +4452,12 @@ pub(crate) fn act_in_tx(
             Ok((Err(format!("task {} is already {state}", act.task)), None))
         }
         "cancel" => {
+            let page = crate::cloud::page(tx, act.task)?;
             let tmux = cancel(tx, act.task, "cancelled from the desk")?;
-            Ok((Ok(format!("task {} dropped", act.task)), tmux))
+            let still = page.map_or_else(String::new, |page| {
+                format!("; its cloud session still runs: {page}")
+            });
+            Ok((Ok(format!("task {} dropped{still}", act.task)), tmux))
         }
         "revive" => Ok((revive(tx, act, factory)?, None)),
         other => Ok((Err(format!("unknown action {other}")), None)),

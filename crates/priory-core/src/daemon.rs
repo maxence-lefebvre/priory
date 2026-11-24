@@ -273,7 +273,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     })?;
     // A reboot or a killed tmux server takes the agents with it; that is the host's doing, not theirs.
     for run in state::live(&db)? {
-        if runtime::pane(&run.tmux, &run.session).is_some() || cloud_run(factory, &run.agent) {
+        if run.harness.as_deref() == Some(crate::cloud::HARNESS)
+            || runtime::pane(&run.tmux, &run.session).is_some()
+        {
             continue;
         }
         runtime::kill(&run.tmux);
@@ -1345,7 +1347,8 @@ fn tend(
 ) -> Result<(), Error> {
     let factory = trace.factory;
     for mut run in state::live(db)? {
-        if cloud_run(factory, &run.agent) {
+        // A cloud run has no local process: its branch or its deadline ends it.
+        if run.harness.as_deref() == Some(crate::cloud::HARNESS) {
             continue;
         }
         if run.direnv == 1
@@ -2487,9 +2490,17 @@ fn start(
         )));
     }
     if crate::cloud::is_cloud(&agent.value) {
+        if let Some((sandbox, _)) = sandbox {
+            return Ok(Err(format!(
+                "workflow {jailed_by} needs sandbox {sandbox}, and a cloud run cannot be jailed"
+            )));
+        }
+        let head = match priory_runtime::cloud::clean_head(&worktree, &branch) {
+            Ok(head) => head,
+            Err(reason) => return Ok(Err(reason)),
+        };
         let session = uuid::Uuid::new_v4().to_string();
         let definition = definition(factory, &agent.value, &sources).to_string();
-        let prompt = tools::step_prompt(step);
         let run = state::start(
             db,
             &NewRun {
@@ -2501,7 +2512,7 @@ fn start(
                 repo,
                 branch: &branch,
                 worktree: &worktree.to_string_lossy(),
-                prompt: admission.fresh.then_some(prompt.as_str()),
+                prompt: None,
                 ending: &tools::ending(step),
                 shared: false,
                 definition: &definition,
@@ -2518,25 +2529,23 @@ fn start(
         )?;
         // `claude --cloud` shows Claude's trust dialog in a folder it does not trust.
         if factory.trust_worktrees() && factory.names_repo(repo) {
-            let grants = priory_runtime::trust::grant(&runtime::ClaudeCode, home, repo, &worktree);
+            let grants = priory_runtime::trust::grant_cloud(home, repo);
             let tx = db.transaction()?;
             for grant in &grants {
-                crate::trace::trusted(&tx, trace, run, agent.value.harness.name(), grant, None)?;
+                crate::trace::trusted(&tx, trace, run, crate::cloud::HARNESS, grant, None)?;
             }
             tx.commit()?;
         }
-        crate::cloud::dispatch(
-            db,
-            trace,
-            kit,
-            home,
-            step,
-            run,
-            admission.task,
-            &session,
-            &worktree,
-            &factory.prompt(&agent.value),
-        )?;
+        let start = priory_runtime::cloud::Start {
+            tmux: crate::cloud::tmux(admission.task),
+            home: home.to_path_buf(),
+            repo: repo.to_owned(),
+            worktree,
+            branch,
+            head,
+            prompt: factory.prompt(&agent.value),
+        };
+        crate::cloud::dispatch(db, step, run, admission.task, &session, start)?;
         return Ok(Ok(()));
     }
     let turn = match &step.debate {
@@ -3015,15 +3024,6 @@ pub(crate) fn repo_of<'f>(
     repo.or_else(|| factory.triggers.get(trigger)?.value.repo.as_deref())
 }
 
-/// Whether `agent` runs in a cloud session, which has no local process: its branch or its deadline
-/// ends the run, never its tmux pane.
-fn cloud_run(factory: &Factory, agent: &str) -> bool {
-    factory
-        .agents
-        .get(agent)
-        .is_some_and(|agent| crate::cloud::is_cloud(&agent.value))
-}
-
 /// The harness that runs `agent`; Claude Code for an agent the factory lost.
 fn harness_of(factory: &Factory, agent: &str) -> &'static dyn runtime::Harness {
     factory
@@ -3138,6 +3138,7 @@ mod tests {
             worktree: Some("/w/1".into()),
             ready: false,
             late: true,
+            harness: None,
             direnv: 1,
             turn: None,
             prompted: None,

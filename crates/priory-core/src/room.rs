@@ -54,9 +54,6 @@ impl Need {
 
 /// The memory and disk `agent` declares, in bytes.
 pub(crate) fn need(agent: Option<&Agent>) -> Need {
-    if agent.is_some_and(crate::cloud::is_cloud) {
-        return Need::default();
-    }
     Need {
         memory: agent.and_then(|agent| agent.memory).unwrap_or(MEMORY),
         disk: agent.and_then(|agent| agent.disk).unwrap_or(0),

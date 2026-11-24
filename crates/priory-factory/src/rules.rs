@@ -1342,6 +1342,16 @@ fn check_cloud(agent: &Loaded<Agent>, problems: &mut Vec<Problem>) {
     }
     let refused = [
         (
+            "model",
+            value.model.is_some(),
+            "the cloud environment picks it",
+        ),
+        (
+            "effort",
+            value.effort.is_some(),
+            "the cloud environment picks it",
+        ),
+        (
             "session",
             matches!(value.session, Session::Shared),
             "a cloud session serves one task",
@@ -1390,7 +1400,7 @@ fn check_cloud(agent: &Loaded<Agent>, problems: &mut Vec<Problem>) {
 
 /// What a step whose agent runs in the cloud cannot have: the daemon stores its result from the
 /// branch the session pushes, so nothing checks a proof, a guard or a plan field.
-fn cloud_step_problems(factory: &Factory, step: &Step) -> Vec<String> {
+fn cloud_step_problems(factory: &Factory, step: &Step, sandboxed: bool) -> Vec<String> {
     let cloud = |name: &String| {
         factory
             .agents
@@ -1414,10 +1424,17 @@ fn cloud_step_problems(factory: &Factory, step: &Step) -> Vec<String> {
         (!step.guard.allow.is_empty(), "a `guard`"),
         (!step.plan_requires.is_empty(), "`plan_requires`"),
         (!step.gate.is_empty(), "a `gate`"),
+        (step.budget.is_some(), "a `budget`"),
+        (step.attach, "`attach`"),
     ];
     for (_, field) in fields.iter().filter(|(set, _)| *set) {
         problems.push(format!(
             "agent `{agent}` runs in the cloud, so the step cannot have {field}: Priory never sees the session's work"
+        ));
+    }
+    if sandboxed {
+        problems.push(format!(
+            "agent `{agent}` runs in the cloud, so the workflow cannot have `sandbox`: Priory cannot jail a cloud session"
         ));
     }
     for outcome in step
@@ -2310,7 +2327,7 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
         if step.debate.is_some() && step.decides != Decider::Model {
             report("only a model step has a `debate`".into());
         }
-        for message in cloud_step_problems(factory, step) {
+        for message in cloud_step_problems(factory, step, workflow.value.sandbox.is_some()) {
             report(message);
         }
         match step.decides {

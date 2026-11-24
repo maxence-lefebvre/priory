@@ -90,6 +90,8 @@ pub struct Settings {
     pub memories: Option<MemoriesRepo>,
     /// Spend caps in dollars for every task, and for each lane by its name.
     pub caps: Option<Caps>,
+    #[serde(default)]
+    pub cloud: Cloud,
     /// Recipes by repository, each key a GitHub `owner/name`: the commands the daemon runs in a
     /// task's worktree of that repository.
     #[serde(default)]
@@ -1034,6 +1036,14 @@ pub struct IntakeSettings {
     #[serde(default, deserialize_with = "duration")]
     #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
     pub alarm_after: Option<Duration>,
+}
+
+/// `[cloud]`: the bounds of cloud runs, which take no room and whose cost Priory cannot read.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Cloud {
+    /// How many cloud runs a runner has at once, 4 when unset. Past it, a task waits to start one.
+    pub max: Option<std::num::NonZeroU32>,
 }
 
 /// How the queue orders tasks.
@@ -2948,6 +2958,14 @@ impl Factory {
         self.settings
             .as_ref()
             .and_then(|settings| settings.value.queue.review_limit)
+    }
+
+    /// How many cloud runs a runner has at once.
+    pub fn cloud_max(&self) -> u32 {
+        self.settings
+            .as_ref()
+            .and_then(|settings| settings.value.cloud.max)
+            .map_or(4, std::num::NonZeroU32::get)
     }
 
     /// The agent's own prompt, then the factory's writing guide.
