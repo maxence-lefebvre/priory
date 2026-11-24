@@ -275,7 +275,8 @@ The first four are final: a task with one of them has an outcome its grade can b
 report from `priory`, which the desk ranks as an alarm (see [desk.md](desk.md#the-next-thing)):
 `landed wrong: <repo>#<n> of task <id> is red on <base>: <check> <conclusion> <url>`, once per merge
 commit however many of its checks fail, or `landed wrong: <repo>#<n> of task <id> was reverted by
-#<m>: <url>`. A notification's title for it is `a merge landed wrong`. Events count by when
+#<m>: <url>`. A red one is [marked read](../intake/pull-requests.md#when-the-base-branch-recovers)
+when the base branch recovers; its label stays. A notification's title for it is `a merge landed wrong`. Events count by when
 they happened, not when they arrived. A review's commit comes from its event's `commit`, or its
 `head_sha` for a review stored before `commit` existed. A task with both `approved-clean` and
 `changes-requested`, because a review requesting changes arrived after the merge, counts only as
