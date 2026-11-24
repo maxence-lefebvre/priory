@@ -295,10 +295,10 @@ pub struct RedCheck {
     pub name: String,
     /// The slug of the GitHub App that ran it.
     pub app: Option<String>,
-    /// The check run's id.
+    /// The latest failing check run's id.
     pub id: u64,
-    /// The check run's page.
-    pub url: String,
+    /// Every failing check run's page, since two workflows can name a job alike.
+    pub urls: Vec<String>,
     /// The other merge commits where every later run of that name and app succeeded, newest first.
     pub passed: Vec<Passed>,
 }

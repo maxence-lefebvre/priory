@@ -533,8 +533,8 @@ fn passed_tip(red: &Red, check: &RedCheck) -> Result<Option<Passed>, String> {
     }))
 }
 
-/// Whether one of the runs at `urls`, of `check`'s name and app, is a run of the same check. Two
-/// workflows can name a job alike, so a GitHub Actions run must be of the same workflow.
+/// Whether the runs at `urls`, of `check`'s name and app, include one for each of its failing runs. Two
+/// workflows can name a job alike, so each failing GitHub Actions run needs one of its own workflow.
 fn same_check(
     red: &Red,
     check: &RedCheck,
@@ -546,15 +546,17 @@ fn same_check(
         Some("github-actions") => {}
         Some(_) => return Ok(true),
     }
-    let Some(workflow) = workflow(&red.repo, &check.url, known)? else {
-        return Ok(false);
-    };
+    let mut passing = Vec::new();
     for url in urls {
-        if self::workflow(&red.repo, url, known)? == Some(workflow) {
-            return Ok(true);
+        passing.extend(workflow(&red.repo, url, known)?);
+    }
+    for url in &check.urls {
+        match workflow(&red.repo, url, known)? {
+            Some(failed) if passing.contains(&failed) => {}
+            _ => return Ok(false),
         }
     }
-    Ok(false)
+    Ok(!check.urls.is_empty())
 }
 
 #[derive(Deserialize)]
@@ -574,11 +576,12 @@ fn workflow(repo: &str, url: &str, known: &mut Known) -> Result<Option<u64>, Str
     if let Some(workflow) = known.workflows.get(&key) {
         return Ok(Some(*workflow));
     }
-    let Some(answer) = found(gh::<ActionsRun>(
-        &format!("repos/{repo}/actions/runs/{run}"),
-        &[],
-    ))?
-    else {
+    let answer = match gh::<ActionsRun>(&format!("repos/{repo}/actions/runs/{run}"), &[]) {
+        // The token may read checks and not Actions. A rate limit's 403 says something else.
+        Err(error) if error.contains("Resource not accessible") => return Ok(None),
+        answer => found(answer)?,
+    };
+    let Some(answer) = answer else {
         return Ok(None);
     };
     known.workflows.insert(key, answer.workflow_id);

@@ -109,8 +109,11 @@ On each poll, the intake marks an unread `landed wrong` report of a red merge re
 that failed on the merge commit passed on a commit of the base branch that contains the merge.
 
 - A check is a run of the same name and app. Two workflows can name a job alike, so a GitHub Actions run
-  must also be of the same workflow, which `repos/{repo}/actions/runs/{run}` names. An Actions run whose
-  URL holds no run id, and a check with no app, clear nothing.
+  must also be of the same workflow, which `repos/{repo}/actions/runs/{run}` names. When several workflows
+  failed under one name, each of them must pass on the same commit. An Actions run whose URL holds no run
+  id, and a check with no app, clear nothing.
+- A fine-grained token needs the `Actions` repository permission (read) for `actions/runs/{run}`. Without it,
+  GitHub's 403 keeps the report and does not count as a failed poll.
 - A pass is `success`: `skipped` and `neutral` are none. It is a run with a higher id than the red one.
 - The intake looks at the tip of the base branch, where every run of that name and app must be a later
   success. Then it looks at the 5 newest other task merges into that branch whose checks all completed,
@@ -121,8 +124,8 @@ that failed on the merge commit passed on a commit of the base branch that conta
 - It waits until the merge commit's own checks all completed, since the one report stands for all of them.
 - It reads the merges of the last 7 days. An older report stays until a person marks it read, and so does
   one with a failing run that has no id. A poll that could not read the merges clears nothing.
-- GitHub's 404 or 422, as for a deleted base branch, keeps the report. Any other failed read keeps it too,
-  and counts as a failed poll in the intake's health.
+- GitHub's 404 or 422, as for a deleted base branch, keeps the report. Any other failed read, such as a rate
+  limit, keeps it too and counts as a failed poll in the intake's health.
 - It makes one call per failed check and poll while the report is unread. It makes one call per Actions run
   and one per commit compared, and keeps their answers until the next start.
 - The report of a revert stays. The [`red-after-merge`](../daemon/trace.md#outcome-labels) label stays too.

@@ -372,7 +372,8 @@ impl Setup {
     /// Makes `owner/repo` polled and installs a `gh` that logs its calls to `gh.log`, answers the
     /// check runs of commit `sha` from `checks-<sha>.json` (`heads/main` from `checks-heads-main.json`),
     /// or a 404, 422 or 403 when `404-<sha>`, `422-<sha>` or `403-<sha>` exists, a compare from `compare.json`,
-    /// workflow 1 for an Actions run unless `workflow-<run>.json` exists, and reads `[]` elsewhere.
+    /// workflow 1 for an Actions run unless `workflow-<run>.json` exists, or the 403 of a token without the
+    /// permission when `403-run-<run>` exists, and reads `[]` elsewhere.
     fn polled_repo(&self) {
         let trigger = "source = \"github\"\nrepo = \"owner/repo\"\non = \"issues.labeled\"\n\
                        filter = { label = \"agent\" }\nworkflow = \"plan\"\nkey = \"issue.number\"\nband = \"today\"\n";
@@ -388,7 +389,9 @@ impl Setup {
              cat \"{dir}/checks-$sha.json\" 2>/dev/null || \
              echo '{{\"total_count\":0,\"check_runs\":[]}}' ;;\n  repos/owner/repo/compare/*)\n    \
              cat \"{dir}/compare.json\" 2>/dev/null || echo '{{\"status\":\"diverged\"}}' ;;\n  \
-             repos/owner/repo/actions/runs/*)\n    cat \"{dir}/workflow-${{2##*/}}.json\" 2>/dev/null || \
+             repos/owner/repo/actions/runs/*)\n    \
+             [ -f \"{dir}/403-run-${{2##*/}}\" ] && {{ echo 'gh: Resource not accessible by personal access token (HTTP 403)' >&2; exit 1; }}\n    \
+             cat \"{dir}/workflow-${{2##*/}}.json\" 2>/dev/null || \
              echo '{{\"workflow_id\":1}}' ;;\n  \
              *) echo '[]' ;;\nesac\n",
             dir = self.dir.display()
@@ -947,6 +950,86 @@ fn a_run_of_another_workflow_keeps_the_alarm_on_the_tip_and_on_a_later_merge() {
     setup.poll();
     setup.poll();
     assert_eq!(setup.alarms().len(), 1);
+}
+
+/// A merge at `m10` where the job `ci` of workflow 1, run 10, and of workflow 2, run 11, both failed.
+fn red_in_two_workflows(name: &str) -> Setup {
+    let setup = Setup::new(name);
+    setup.polled_repo();
+    for (run, workflow) in [(10, 1), (11, 2), (12, 2), (13, 1)] {
+        setup.workflow(run, workflow);
+    }
+    setup.task(1, "green");
+    setup.handle(&[merged_on(10, 1, "aaa", "m10", "2026-11-20T10:00:00Z")]);
+    setup.checks_at(
+        "m10",
+        &[(10, "completed", "failure"), (11, "completed", "failure")],
+    );
+    setup.poll();
+    assert_eq!(setup.alarms().len(), 1);
+    setup
+}
+
+#[test]
+fn a_tip_where_one_of_two_red_workflows_passed_keeps_the_alarm_until_both_did() {
+    let setup = red_in_two_workflows("red-two-workflows-tip");
+    fs::write(setup.dir.join("compare.json"), r#"{"status":"ahead"}"#).unwrap();
+    let tip = |runs: &[u64]| {
+        let runs: Vec<Value> = runs
+            .iter()
+            .map(|id| {
+                json!({ "id": id, "name": "ci", "head_sha": "m12", "status": "completed",
+                        "conclusion": "success", "completed_at": "2026-11-20T10:30:00Z",
+                        "html_url": format!("https://github.com/owner/repo/actions/runs/{id}/job/{id}"),
+                        "app": { "slug": "github-actions" } })
+            })
+            .collect();
+        let answer = json!({ "total_count": runs.len(), "check_runs": runs });
+        fs::write(setup.dir.join("checks-heads-main.json"), answer.to_string()).unwrap();
+    };
+
+    for alone in [12, 13] {
+        tip(&[alone]);
+        setup.poll();
+        assert_eq!(setup.alarms().len(), 1, "only run {alone} passed");
+    }
+
+    tip(&[12, 13]);
+    setup.poll();
+    assert_eq!(setup.alarms(), Vec::<String>::new());
+}
+
+#[test]
+fn a_later_merge_where_one_of_two_red_workflows_passed_keeps_the_alarm_until_both_did() {
+    for (name, runs, red) in [
+        ("one", &[(12, "completed", "success")][..], true),
+        (
+            "both",
+            &[(12, "completed", "success"), (13, "completed", "success")][..],
+            false,
+        ),
+    ] {
+        let setup = red_in_two_workflows(&format!("red-two-workflows-merge-{name}"));
+        setup.tip_run("ci", "m12", "in_progress", "", "ahead");
+        setup.task(2, "green");
+        setup.handle(&[merged_on(11, 2, "bbb", "m11", "2026-11-20T11:00:00Z")]);
+        setup.checks_at("m11", runs);
+        setup.poll();
+        setup.poll();
+        assert_eq!(still_red(&setup), red, "{name}");
+    }
+}
+
+#[test]
+fn a_token_that_cannot_read_actions_runs_keeps_the_alarm_and_the_source_does_not_fail() {
+    let setup = red_at_merge("red-no-actions-permission");
+    setup.tip_run("ci", "m11", "completed", "success", "ahead");
+    fs::write(setup.dir.join("403-run-1"), "").unwrap();
+
+    setup.poll();
+
+    assert_eq!(setup.alarms().len(), 1);
+    assert_eq!(setup.github_error(), None);
 }
 
 #[test]

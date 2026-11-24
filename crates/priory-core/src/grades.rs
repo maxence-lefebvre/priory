@@ -352,7 +352,7 @@ pub fn red(db: &Connection, since: &str) -> rusqlite::Result<Vec<Red>> {
     Ok(complete)
 }
 
-/// The checks of `repo` that failed at `commit`, each with its latest failing run. None when a
+/// The checks of `repo` that failed at `commit`, each with its failing runs. None when a
 /// failing run has no id, since no run can then be later than it.
 fn red_checks(
     db: &Connection,
@@ -361,7 +361,8 @@ fn red_checks(
 ) -> rusqlite::Result<Option<Vec<RedCheck>>> {
     db.prepare(
         "SELECT coalesce(json_extract(data, '$.name'), ''), json_extract(data, '$.app'),
-           max(json_extract(data, '$.github_id')), coalesce(json_extract(data, '$.url'), ''),
+           max(json_extract(data, '$.github_id')),
+           json_group_array(DISTINCT coalesce(json_extract(data, '$.url'), '')),
            count(*) = count(json_extract(data, '$.github_id'))
          FROM inbox WHERE type = ?1 AND json_extract(data, '$.repo') = ?2
          AND json_extract(data, '$.head_sha') = ?3
@@ -373,11 +374,12 @@ fn red_checks(
         if !row.get::<_, bool>(4)? {
             return Ok(None);
         }
+        let urls: String = row.get(3)?;
         Ok(Some(RedCheck {
             name: row.get(0)?,
             app: row.get(1)?,
             id: row.get::<_, i64>(2)? as u64,
-            url: row.get(3)?,
+            urls: serde_json::from_str(&urls).unwrap_or_default(),
             passed: Vec::new(),
         }))
     })?
