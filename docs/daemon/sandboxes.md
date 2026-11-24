@@ -75,6 +75,8 @@ Claude Code runs the hooks, plugins, MCP servers and scripts that its settings a
 `~/.claude.json` name. Its shell sources the scripts in `session-env` and `shell-snapshots`, so a
 run writes its own in memory. The daemon's git also runs with `core.hooksPath=/dev/null` and
 `core.fsmonitor=false` in the clones under `repos/` and their worktrees, jailed or not.
+Outside a jail an agent can write the clone's `config`, and its `core.sshCommand`, filters and
+credential helpers can then run commands as the daemon.
 
 The pane's command is the [agents slice's](agents-slice.md) scope, then `bwrap` with these binds
 and `--die-with-parent`, `--new-session` and `--unshare-pid`, then a shell that clears the

@@ -135,6 +135,23 @@ fn replying(setup: &Setup) {
     }
 }
 
+/// Waits for the prompts that `typed_with` finds.
+fn until_typed(setup: &Setup, part: &str) -> Vec<String> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let found = typed_with(setup, part);
+        if !found.is_empty() {
+            return found;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{part:?} was never typed: {:?}",
+            setup.typed()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// The prompts the fake `claude` received that hold `part`.
 fn typed_with(setup: &Setup, part: &str) -> Vec<String> {
     setup
@@ -495,13 +512,7 @@ fn a_consult_still_queued_at_its_deadline_never_starts_and_wakes_the_worker() {
         "{tasks:?}"
     );
     let woken = setup.until("outbox", |rows| rows.len() >= 2);
-    let typed = loop {
-        let typed = typed_with(&setup, "consult 1 got no report");
-        if !typed.is_empty() {
-            break typed;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    };
+    let typed = until_typed(&setup, "consult 1 got no report");
     assert!(
         typed[0].starts_with("consult 1 got no report: no report 2s after the question\n"),
         "{typed:?} {woken:?}"
@@ -555,13 +566,7 @@ fn an_investigator_whose_transcript_passes_the_cap_is_ended_and_no_more_consults
     setup.gone("priory-2");
     fs::remove_file(setup.dir.join("fake/hold-call")).unwrap();
 
-    let woken = loop {
-        let woken = typed_with(&setup, "consult 1 got no report");
-        if !woken.is_empty() {
-            break woken;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    };
+    let woken = until_typed(&setup, "consult 1 got no report");
     assert!(
         woken[0].starts_with("consult 1 got no report: sentry passed its cap of $0.50\n"),
         "{woken:?}"
@@ -816,13 +821,7 @@ fn a_consult_starts_ahead_of_its_bands_backlog_and_past_a_full_review_limit() {
     setup.until("tasks", |rows| task_row(rows, "2")[4] == "done");
     let runs = setup.rows("runs");
     assert_eq!(runs[1][1], "2", "the consult ran second: {runs:?}");
-    let woken = loop {
-        let woken = typed_with(&setup, "consult 1 reported by sentry:");
-        if !woken.is_empty() {
-            break woken;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    };
+    let woken = until_typed(&setup, "consult 1 reported by sentry:");
     assert!(woken[0].contains("> Release 4.2."), "{woken:?}");
 }
 

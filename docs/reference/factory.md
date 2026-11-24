@@ -43,7 +43,7 @@ one: [reload.md](../daemon/reload.md#what-a-reload-changes) lists them.
 | `guard` | table | no | the built-in guards alone | Irreversible commands and MCP tools the tool guard denies on top of the built-in ones. See [`[guard]`](#guard) | |
 | `private` | table | no | no term is private | Terms no run may publish to the repositories it lists. See [`[private]`](#private) | |
 | `sandboxes` | table of tables | no | no sandbox | The jails a workflow can start its agents in, by name. See [`[sandboxes.<name>]`](#sandboxesname) | |
-| `trust_worktrees` | bool | no | `false`: a person trusts each folder by hand | The daemon records Claude Code's, Codex's and direnv's folder trust for each run's worktree and clone, for the repositories the factory names. When the worktree has an `.envrc` and `direnv` is installed, the run starts in its environment. See [sessions.md](../daemon/sessions.md#trusting-the-worktrees-and-the-clone) | `true` |
+| `trust_worktrees` | bool | no | `false`: a person trusts each folder by hand | The daemon records Claude Code's, Codex's and direnv's folder trust for each run's worktree and clone, for the repositories the factory names. When the worktree has an `.envrc` that passes the check against the commit the task started from or the default branch, and `direnv` is installed, the run starts in its environment. See [sessions.md](../daemon/sessions.md#trusting-the-worktrees-and-the-clone) | `true` |
 | `upgrade` | table | no | nothing is looked up or installed | Which releases the daemon installs by itself. See [`[upgrade]`](#upgrade) | |
 | `repos` | table of tables | no | no recipe runs | The setup, resume and teardown recipes of each repository. See [`[repos]`](#repos) | |
 

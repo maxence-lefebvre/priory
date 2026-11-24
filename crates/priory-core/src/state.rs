@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 117;
+const VERSION: i64 = 118;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -2077,6 +2077,15 @@ CREATE INDEX inbox_unaccepted ON inbox (subject, seq) WHERE outcome = 'unaccepte
 PRAGMA user_version = 117;
 ";
 
+// The commit a task's `.envrc` is checked against, when the daemon read it outside the clone.
+const SCHEMA_118: &str = "
+CREATE TABLE IF NOT EXISTS envrc_bases (
+  task  INTEGER PRIMARY KEY,
+  sha   TEXT NOT NULL
+);
+PRAGMA user_version = 118;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -2093,7 +2102,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
     SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112, SCHEMA_113,
-    SCHEMA_114, SCHEMA_115, SCHEMA_116, SCHEMA_117,
+    SCHEMA_114, SCHEMA_115, SCHEMA_116, SCHEMA_117, SCHEMA_118,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -2193,15 +2202,45 @@ pub(crate) fn replaying(db: &Connection) -> rusqlite::Result<bool> {
     db.query_row("SELECT EXISTS (SELECT 1 FROM replay)", [], |row| row.get(0))
 }
 
-/// Stores `base` as the commit the task started from, unless it already has one.
-pub(crate) fn set_base(db: &Connection, task: i64, base: Option<&str>) -> rusqlite::Result<()> {
+/// Stores `base` as the commit the task started from, unless it already has one. An `.envrc` is
+/// checked against it only when `vouched`: read with `trust_worktrees` on, outside the clone.
+pub(crate) fn set_base(
+    db: &Connection,
+    task: i64,
+    base: Option<&str>,
+    vouched: bool,
+) -> rusqlite::Result<()> {
     if let Some(base) = base {
+        if vouched {
+            db.execute(
+                "INSERT INTO envrc_bases (task, sha)
+                 SELECT id, ?2 FROM tasks WHERE id = ?1 AND base_sha IS NULL",
+                rusqlite::params![task, base],
+            )?;
+        }
         db.execute(
             "UPDATE tasks SET base_sha = ?2 WHERE id = ?1 AND base_sha IS NULL",
             rusqlite::params![task, base],
         )?;
     }
     Ok(())
+}
+
+/// The commit that the bottom of `task`'s stack started from, or `task` itself when it stacks on
+/// none, if it vouches for an `.envrc`. A stacked task's own base is another agent's branch.
+pub(crate) fn root_base(db: &Connection, task: i64) -> rusqlite::Result<Option<String>> {
+    db.query_row(
+        "WITH RECURSIVE below (id) AS (
+           SELECT ?1
+           UNION SELECT tasks.base_task FROM tasks JOIN below ON tasks.id = below.id
+             WHERE tasks.base_task IS NOT NULL)
+         SELECT sha FROM tasks JOIN below ON tasks.id = below.id
+           JOIN envrc_bases ON envrc_bases.task = tasks.id WHERE base_task IS NULL",
+        [task],
+        |row| row.get(0),
+    )
+    .optional()
+    .map(Option::flatten)
 }
 
 /// Bumps the revision when a task ended over a day ago left the queue's `ended` list since the
@@ -4507,9 +4546,9 @@ pub(crate) fn block(
     // A run that started without its `.envrc` keeps saying so, since that may be why it stopped.
     tx.execute(
         "UPDATE tasks SET state = 'blocked', reason = ?2 || coalesce('; ' || CASE
-           WHEN (SELECT direnv FROM runs WHERE id = ?3) = 2 THEN reason END, '')
+           WHEN ?3 AND instr(reason, ?4) = 1 THEN reason END, '')
          WHERE id = ?1",
-        params![task, reason, live],
+        params![task, reason, live.is_some(), WITHOUT_ENVRC],
     )?;
     tx.commit()
 }
@@ -4534,7 +4573,7 @@ pub(crate) struct LiveRun {
     pub worktree: Option<String>,
     /// Its `SessionStart` arrived.
     pub ready: bool,
-    /// Seconds since its start while no `SessionStart` has arrived.
+    /// The seconds since it started, while no `SessionStart` arrived.
     pub waited: Option<i64>,
     /// 1 when it started under `direnv exec`, 2 once direnv failed and it started without, else 0.
     pub direnv: i64,
@@ -4544,14 +4583,45 @@ pub(crate) struct LiveRun {
     pub prompted: Option<String>,
 }
 
-/// How many seconds a run may take to send `SessionStart`. A run under direnv may build a cold nix
-/// shell first, and a run with recorded trust is slow, not stuck on the trust dialog.
-pub(crate) fn ready_within(direnv: i64, trusted: bool) -> i64 {
-    match (direnv, trusted) {
-        (0, false) => 60,
-        (0, true) => 180,
-        _ => 600,
-    }
+/// How many seconds a harness gets to reach `SessionStart`.
+pub(crate) const READY_WITHIN: i64 = 60;
+
+/// `READY_WITHIN` for a harness with recorded trust, which is slow, not stuck on the trust dialog.
+const TRUSTED_READY_WITHIN: i64 = 180;
+
+/// How many seconds direnv gets to load an `.envrc`, which may build a cold nix shell first.
+const DIRENV_READY_WITHIN: i64 = 600;
+
+/// The window that a run started `waited` seconds ago, without `SessionStart`, ran past, if any.
+/// Under direnv its harness's window counts from `handed`, the seconds since direnv handed over.
+pub(crate) fn late(waited: i64, direnv: bool, handed: Option<i64>, trusted: bool) -> Option<i64> {
+    let harness = if trusted {
+        TRUSTED_READY_WITHIN
+    } else {
+        READY_WITHIN
+    };
+    let (past, within) = match (direnv, handed) {
+        (false, _) => (waited >= harness, harness),
+        (true, None) => (waited >= DIRENV_READY_WITHIN, DIRENV_READY_WITHIN),
+        // The run can write the marker's time, so the whole start has a limit of its own.
+        (true, Some(handed)) => (
+            handed >= harness || waited >= DIRENV_READY_WITHIN + harness,
+            harness,
+        ),
+    };
+    past.then_some(within)
+}
+
+/// How the reason of a task whose run started without its `.envrc` begins.
+const WITHOUT_ENVRC: &str = "started without its .envrc: ";
+
+/// Says on `task` that its run started without its `.envrc`, and why.
+pub(crate) fn without_envrc(db: &Connection, task: i64, why: &str) -> rusqlite::Result<()> {
+    db.execute(
+        "UPDATE tasks SET reason = ?2 WHERE id = ?1",
+        params![task, format!("{WITHOUT_ENVRC}{why}")],
+    )?;
+    Ok(())
 }
 
 /// Marks run `run` as started under direnv (1), or as started without its `.envrc` after direnv
@@ -5160,39 +5230,78 @@ mod ready_within {
     use super::*;
 
     #[test]
-    fn a_run_under_direnv_is_late_only_after_its_longer_window() {
-        let db = memory();
-        for (task, ago, direnv) in [(1, 120, None), (2, 120, Some(1)), (3, 700, Some(1))] {
-            db.execute(
-                "INSERT INTO tasks
-                   (key, workflow, step, state, band, lane, lane_derived, trigger, source, entered)
-                 VALUES ('cli:' || ?1, 'build', 'implement', 'running', 'now', 'cli', 0, 'cli', 'a',
-                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
-                [task],
-            )
-            .unwrap();
-            db.execute(
-                "INSERT INTO runs (task, step, agent, tmux, session, started, direnv)
-                 VALUES (?1, 'implement', 'implementer', 'priory-' || ?1, 's' || ?1,
-                   strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-' || ?2 || ' seconds'), ?3)",
-                params![task, ago, direnv],
-            )
-            .unwrap();
+    fn a_run_is_late_after_its_harnesss_window_or_600s_into_loading_its_envrc() {
+        for (waited, direnv, handed, trusted, within) in [
+            (59, false, None, false, None),
+            (60, false, None, false, Some(60)),
+            (179, false, None, true, None),
+            (180, false, None, true, Some(180)),
+            (120, true, None, false, None),
+            (599, true, None, true, None),
+            (600, true, None, true, Some(600)),
+            (590, true, Some(30), false, None),
+            (61, true, Some(60), false, Some(60)),
+            (181, true, Some(179), true, None),
+            (181, true, Some(180), true, Some(180)),
+            (630, true, Some(30), false, None),
+            (660, true, Some(0), false, Some(60)),
+            (779, true, Some(0), true, None),
+            (780, true, Some(0), true, Some(180)),
+        ] {
+            assert_eq!(
+                late(waited, direnv, handed, trusted),
+                within,
+                "{waited} {direnv} {handed:?} {trusted}"
+            );
         }
+    }
 
-        let late: Vec<(i64, bool, i64)> = live(&db)
-            .unwrap()
-            .into_iter()
-            .map(|run| {
-                let late = run.waited.unwrap() >= ready_within(run.direnv, false);
-                (run.task, late, run.direnv)
-            })
-            .collect();
+    fn task(db: &Connection, base: Option<&str>, base_task: Option<i64>, vouched: bool) -> i64 {
+        db.execute(
+            "INSERT INTO tasks (key, workflow, step, state, band, lane, lane_derived, trigger,
+               source, entered, base_task)
+             VALUES ('cli:' || (SELECT count(*) FROM tasks), 'build', 'implement', 'running', 'now',
+               'cli', 0, 'cli', 'a', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?1)",
+            params![base_task],
+        )
+        .unwrap();
+        let task = db.last_insert_rowid();
+        set_base(db, task, base, vouched).unwrap();
+        task
+    }
 
-        assert_eq!(late, [(1, true, 0), (2, false, 1), (3, true, 1)]);
+    #[test]
+    fn a_stacks_base_is_the_commit_its_bottom_task_started_from() {
+        let db = memory();
+        let root = task(&db, Some("trunk"), None, true);
+        let middle = task(&db, Some("agents"), Some(root), true);
+        let top = task(&db, Some("agents2"), Some(middle), true);
+        let orphan = task(&db, Some("agents3"), Some(99), true);
+        let new = task(&db, None, None, true);
+
+        let bases = [root, top, orphan, new].map(|task| root_base(&db, task).unwrap());
+
         assert_eq!(
-            [0, 1, 2].map(|direnv| ready_within(direnv, true)),
-            [180, 600, 600]
+            bases.each_ref().map(Option::as_deref),
+            [Some("trunk"), Some("trunk"), None, None]
         );
+    }
+
+    #[test]
+    fn a_base_read_while_trust_worktrees_is_off_never_vouches_for_an_envrc() {
+        let db = memory();
+        let off = task(&db, Some("clone"), None, false);
+        let above = task(&db, Some("agents"), Some(off), true);
+
+        set_base(&db, off, Some("later"), true).unwrap();
+
+        assert_eq!(root_base(&db, off).unwrap(), None);
+        assert_eq!(root_base(&db, above).unwrap(), None);
+        let base: String = db
+            .query_row("SELECT base_sha FROM tasks WHERE id = ?1", [off], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(base, "clone");
     }
 }

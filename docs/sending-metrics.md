@@ -161,7 +161,7 @@ before the limit acts, or as it does.
 | ------ | ---------- | ------------------ |
 | `priory.log.probe.duration`, `outcome = timeout` | its count rises over 5 minutes | Each `timeout` is a read that waited the whole [`[log] timeout`](reference/factory.md#log), 10 seconds by default, for no answer |
 | `priory.runner.lease.age` | above 900 seconds | At 1800 seconds the other runners may move the cut-off runner's waiting tasks ([runners.md](daemon/runners.md#holds-and-leases)) |
-| `priory.run.start.oldest.age` | above 30 seconds | At 60 seconds with no `SessionStart` the daemon blocks the task, at 180 with recorded trust or 600 under direnv ([health.md](daemon/health.md)) |
+| `priory.run.start.oldest.age` | above 30 seconds | At 60 seconds with no `SessionStart` the daemon blocks the task, at 180 with recorded trust or 600 while direnv loads ([health.md](daemon/health.md)) |
 | `priory.intake.poll.age` | above 300 seconds | The intake polls every 60 seconds, and the desk's [intake banner](daemon/desk.md#intake-banner) shows an intake that has not polled for 5 minutes |
 | `priory.process.tick.duration`, `stat = p95` | above 1 second for 5 minutes, on `priory.service = daemon` | The daemon ticks every second, so a longer tick means it falls behind. `stat = max` names the one slow clone or fetch |
 | `priory.spend.headroom` | below a tenth of the cap's limit | At 0 the daemon holds or stops starting the tasks under the cap ([spend.md](daemon/spend.md#past-a-cap)) |
