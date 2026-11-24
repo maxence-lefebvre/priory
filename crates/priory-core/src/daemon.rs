@@ -358,6 +358,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut probes = crate::connectors::Probes::default();
     let mut records = crate::evidence::Records::default();
     let mut deliveries = deliver::adopt(&db)?;
+    let mut attaching = Vec::new();
     let mut pushing = push::Sending::default();
     let mut desktop = factory
         .desktop_notifications()
@@ -443,6 +444,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             &mut probes,
             fetched,
             &mut entering,
+            &mut attaching,
         )?;
         // Committed first, so a crash before the kill leaves an ended run, not a lost one.
         for tmux in tools::over_budget_in_turn(&mut db, &trace, &mut peeked, &watched)? {
@@ -456,6 +458,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             send_spans(&db, &trace, &home, export)?;
         }
         deliver::tick(&db, factory, &home, &mut deliveries)?;
+        crate::attach::tick(&mut db, &trace, &mut attaching)?;
         push::tick(&db, &home, &mut pushing)?;
         if let Some(desktop) = &mut desktop {
             notify::tick(&db, desktop)?;
@@ -483,6 +486,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         if swept.is_none_or(|at| at.elapsed() >= every) {
             swept = Some(Instant::now());
             sweep::run(&db, factory, &home)?;
+            sweep::measure(&home);
             let short = || room::measure(&home).is_ok_and(|room| crate::room::short_of_disk(&room));
             sweep::retire(&db, factory, &home, short)?;
         }
@@ -1337,9 +1341,16 @@ fn tend(
     probes: &mut crate::connectors::Probes,
     kit: crate::kit::Current<'_>,
     entering: &mut Entering,
+    attaching: &mut Vec<crate::attach::Attaching>,
 ) -> Result<(), Error> {
     let factory = trace.factory;
-    for run in state::live(db)? {
+    for mut run in state::live(db)? {
+        if run.direnv == 1
+            && let Some(error) = runtime::direnv_failed(home, &run.session)
+        {
+            direnv_failed(db, trace, &run, &error)?;
+            run.direnv = 2;
+        }
         if runtime::pane(&run.tmux, &run.session).is_none() {
             // A dead pane that remain-on-exit keeps holds the session open.
             runtime::kill(&run.tmux);
@@ -1443,12 +1454,14 @@ fn tend(
     }
     // Before admission, so a run's slow start never delays another run's Enter.
     entering.tick(db)?;
-    loop {
+    // The last measurement of this tick, for the metrics.
+    let mut last = None;
+    let (promised, waiting) = loop {
         // Measured again after each start, since its clone and worktree take disk.
         let measured = OnceCell::new();
         let room = || measured.get_or_init(|| room::measure(home));
         let checking = |task| probes.checking(task);
-        let Some(admission) = state::admissible(
+        let pass = state::admissible(
             db,
             factory,
             trace.runner.as_deref(),
@@ -1456,16 +1469,18 @@ fn tend(
             room,
             &watched,
             &checking,
-        )?
-        else {
-            break;
+        )?;
+        last = measured.into_inner().or(last);
+        let Some(admission) = pass.admission else {
+            break (pass.promised, Some(pass.waiting));
         };
         if let Some(me) = &trace.runner {
             match runners::cleared(db, me, admission.task)? {
                 Some(true) => {}
                 Some(false) => continue,
-                // Its claim is not on the log yet: the next tick tries again.
-                None => break,
+                // Its claim is not on the log yet: the next tick tries again. The pass stopped
+                // short of the tasks behind it, so it counts no waiting task.
+                None => break (pass.promised, None),
             }
         }
         if let Err(reason) = start(
@@ -1479,9 +1494,14 @@ fn tend(
             recipes,
             probes,
             kit,
+            attaching,
         )? {
             state::block(db, trace, admission.task, "failed", &reason)?;
         }
+    };
+    if metrics::wants_room(last.is_some()) {
+        let room = last.unwrap_or_else(|| room::measure(home));
+        metrics::sample_room(db, share, &room, promised.memory, waiting);
     }
     // A marked run idle between turns has no turn end to wait for.
     for session in crate::preempt::idle(db)? {
@@ -1502,8 +1522,8 @@ fn tend(
     Ok(())
 }
 
-/// Whether a person may be watching the tmux session `name`: a client is attached, or tmux
-/// cannot tell.
+/// Whether a person may be typing in the tmux session `name`: a client that can type is attached,
+/// or tmux cannot tell. A read-only view, as Herdr opens by itself, protects nothing.
 fn watched(name: &str) -> bool {
     runtime::clients(name).is_none_or(|clients| clients > 0)
 }
@@ -1550,6 +1570,40 @@ fn diagnose(
             gone: true,
         }),
     }
+}
+
+/// Records that direnv failed with `error` before run `run`'s harness started, which then started
+/// without the `.envrc`: in the trace and as its task's reason.
+fn direnv_failed(
+    db: &mut Connection,
+    trace: &Trace,
+    run: &state::LiveRun,
+    error: &str,
+) -> Result<(), Error> {
+    let error = crate::screen::plain(error);
+    let secrets = crate::screen::secrets(&trace.factory.secret_envs());
+    let error = crate::screen::redact(&error, &secrets, None)
+        .map_or_else(|| "[redacted]".to_owned(), |(shown, _)| shown);
+    let why = if error.is_empty() {
+        "direnv exited before the harness started".to_owned()
+    } else {
+        error
+    };
+    let grant = priory_runtime::trust::Grant {
+        path: run.worktree.as_deref().unwrap_or_default().into(),
+        file: std::path::PathBuf::new(),
+        outcome: priory_runtime::trust::Outcome::Failed,
+        why: Some(why.clone()),
+    };
+    let tx = db.transaction()?;
+    crate::trace::trusted(&tx, trace, run.id, "direnv", &grant, None)?;
+    state::direnv(&tx, run.id, 2)?;
+    tx.execute(
+        "UPDATE tasks SET reason = ?2 WHERE id = ?1",
+        rusqlite::params![run.task, format!("started without its .envrc: {why}")],
+    )?;
+    tx.commit()?;
+    Ok(())
 }
 
 /// Why a live run must end: its harness's trust dialog, no `SessionStart`, a permission prompt, or
@@ -1599,12 +1653,26 @@ fn verdict(
         return Some(("exited", reason, false));
     }
     if run.late {
-        let mut reason = format!(
-            "{} showed no SessionStart within {}; {}",
-            harness.program(),
-            state::READY_WITHIN.replace(" seconds", "s"),
-            trust()
-        );
+        let mut reason = if run.direnv == 1 && runtime::direnv_loading(home, &run.session) {
+            format!(
+                "direnv did not finish loading {}/.envrc within {}, so {} never started; warm it \
+                 with `direnv exec <worktree> true`, or fix the .envrc",
+                run.worktree.as_deref().unwrap_or("its folder"),
+                state::DIRENV_READY_WITHIN.replace(" seconds", "s"),
+                harness.program(),
+            )
+        } else {
+            let within = match run.direnv {
+                0 => state::READY_WITHIN,
+                _ => state::DIRENV_READY_WITHIN,
+            };
+            format!(
+                "{} showed no SessionStart within {}; {}",
+                harness.program(),
+                within.replace(" seconds", "s"),
+                trust()
+            )
+        };
         let rows = rows.unwrap_or_default();
         let secrets = crate::screen::secrets(&factory.secret_envs());
         // When a secret still shows after redaction, no row of the pane is kept.
@@ -1858,10 +1926,11 @@ fn restore_worktree(
 ) -> Result<Restored, Error> {
     // A resurrected task goes through the room check, which a code step otherwise skips.
     let waits = match room::measure(home) {
-        Err(error) => Some(format!("waits for room: {error}")),
-        Ok(room) if crate::room::short_of_disk(&room) => {
-            Some("waits for room to add back its worktree".to_owned())
-        }
+        Err(error) => Some(format!(
+            "{}: cannot measure it: {error}",
+            crate::room::RESTORES
+        )),
+        Ok(room) if crate::room::short_of_disk(&room) => Some(crate::room::RESTORES.to_owned()),
         Ok(_) => None,
     };
     if let Some(reason) = waits {
@@ -1874,6 +1943,10 @@ fn restore_worktree(
     match runtime::worktree(home, repo, &worktree_name(db, runner, task)?, None) {
         Ok((worktree, _, added)) => {
             state::set_base(db, task, added.base())?;
+            db.execute(
+                "UPDATE tasks SET reason = NULL WHERE id = ?1 AND substr(reason, 1, length(?2)) = ?2",
+                rusqlite::params![task, crate::room::RESTORES],
+            )?;
             // The code step needs no resume; the task's next run starts it first.
             let resume = factory.recipe(repo, factory::Moment::Resume);
             if let (runtime::Added::Restored, Some(recipe)) = (&added, resume) {
@@ -2322,6 +2395,7 @@ fn start(
     recipes: &mut crate::recipe::Running,
     probes: &mut crate::connectors::Probes,
     kit: crate::kit::Current<'_>,
+    attaching: &mut Vec<crate::attach::Attaching>,
 ) -> Result<Result<(), String>, Error> {
     let factory = trace.factory;
     let step = factory.workflows[&admission.workflow]
@@ -2522,6 +2596,7 @@ fn start(
         .chain(servers_env(&agent.value, &servers))
         .collect();
     let mut trust = false;
+    let mut direnv = None;
     if factory.trust_worktrees() {
         let grants = if factory.names_repo(repo) {
             priory_runtime::trust::grant(harness(&agent.value.harness), home, repo, &worktree)
@@ -2542,6 +2617,22 @@ fn start(
             use priory_runtime::trust::Outcome;
             matches!(grant.outcome, Outcome::Granted | Outcome::Present)
         });
+        if factory.names_repo(repo) {
+            let folder = priory_runtime::trust::direnv_folder(home, &session);
+            let grants = priory_runtime::trust::direnv(home, repo, &worktree, &folder);
+            let tx = db.transaction()?;
+            for grant in &grants {
+                crate::trace::trusted(&tx, trace, run, "direnv", grant, None)?;
+            }
+            tx.commit()?;
+            if grants
+                .iter()
+                .any(|grant| grant.outcome == priory_runtime::trust::Outcome::Granted)
+            {
+                state::direnv(db, run, 1)?;
+                direnv = Some(folder);
+            }
+        }
     }
     let started = Started {
         name,
@@ -2554,16 +2645,13 @@ fn start(
         servers: &servers,
         jail: jail.as_ref(),
         trust,
+        direnv: direnv.as_deref(),
     };
-    Ok(launch(
-        factory,
-        &agent.value,
-        &sources,
-        home,
-        scope,
-        &env,
-        &started,
-    ))
+    let launched = launch(factory, &agent.value, &sources, home, scope, &env, &started);
+    if launched.is_ok() && step.attach {
+        crate::attach::start(db, trace, home, admission.task, run, &tmux, attaching)?;
+    }
+    Ok(launched)
 }
 
 /// What a shared session starts with: digests of its agent's prompt, tools, model and flags.
@@ -2637,6 +2725,8 @@ struct Started<'a> {
     jail: Option<&'a priory_runtime::jail::Jail>,
     /// Priory recorded the harness's trust in the run's folders, so a Codex run takes its profile.
     trust: bool,
+    /// The direnv config folder that trusts the run's folders, so the harness starts in `.envrc`.
+    direnv: Option<&'a Path>,
 }
 
 /// The MCP servers `agent` names, found in the person's own config of its harness when its run
@@ -2736,6 +2826,7 @@ fn launch(
             tools,
             jail: started.jail,
             trust: started.trust,
+            direnv: started.direnv,
         },
     )
     .map_err(|failed| {
@@ -2834,6 +2925,7 @@ fn compact_idle(
             servers: &servers,
             jail: None,
             trust: false,
+            direnv: None,
         };
         let env: Vec<String> = guard_env(trace.factory).into_iter().collect();
         if let Err(error) = launch(
@@ -2968,6 +3060,41 @@ mod tests {
             ));
         }
         text
+    }
+
+    #[test]
+    fn a_late_run_whose_envrc_still_loads_names_direnv_rather_than_folder_trust() {
+        let home = std::env::temp_dir().join(format!("priory-late-direnv-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        let spool = runtime::direnv_spool(&home, "s");
+        fs::create_dir_all(&spool).unwrap();
+        fs::write(spool.join("direnv.error"), "direnv: loading .envrc\n").unwrap();
+        let run = state::LiveRun {
+            id: 1,
+            task: 1,
+            step: "implement".into(),
+            agent: "implementer".into(),
+            workflow: "w".into(),
+            tmux: format!("priory-late-direnv-{}", std::process::id()),
+            session: "s".into(),
+            worktree: Some("/w/1".into()),
+            ready: false,
+            late: true,
+            direnv: 1,
+            turn: None,
+            prompted: None,
+        };
+
+        let (ended_as, reason, _) = verdict(&run, &Factory::default(), &home, &|| false).unwrap();
+
+        assert_eq!(ended_as, "exited");
+        assert!(
+            reason.starts_with(
+                "direnv did not finish loading /w/1/.envrc within 600s, so claude never started"
+            ),
+            "{reason}"
+        );
+        assert!(!reason.contains("trust the"), "{reason}");
     }
 
     /// Writes the factory's file once `reload::EVERY` passed, then polls.
