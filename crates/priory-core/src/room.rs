@@ -9,6 +9,9 @@ const SHARE: f64 = 0.9;
 const GB: f64 = (1u64 << 30) as f64;
 /// The most disk the room keeps free, so a large disk with tens of GB free still admits runs.
 const DISK: f64 = 20.0 * GB;
+/// The most free disk under which the sweep deletes idle tasks' build output, when the factory sets
+/// none.
+const RECLAIM: f64 = 40.0 * GB;
 
 /// The share of this machine's memory and CPUs that its agents may take together.
 pub(crate) struct Share {
@@ -97,6 +100,16 @@ pub(crate) fn short_of_disk(room: &Room) -> bool {
     room.disk_free as f64 <= disk_floor(room)
 }
 
+/// Whether free disk is under `[sweep] reclaim`, 20 % of the disk and at most 40 GB when unset, or
+/// under the floor.
+pub(crate) fn under_reclaim(room: &Room, reclaim: Option<u64>) -> bool {
+    let threshold = reclaim.map_or(
+        (room.disk_total as f64 * 2.0 * (1.0 - SHARE)).min(RECLAIM),
+        |bytes| bytes as f64,
+    );
+    (room.disk_free as f64) < threshold.max(disk_floor(room))
+}
+
 /// The free disk the room keeps: 10 % of the disk, at most 20 GB.
 pub(crate) fn disk_floor(room: &Room) -> f64 {
     // `agents` has no disk part, and R4.10's slice caps only CPU and memory.
@@ -171,4 +184,31 @@ pub(crate) fn wait(room: &Room, share: &Share, promised: Need, need: Need) -> Op
             room.load, room.cpus
         ),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_reclaim_threshold_scales_with_the_disk_unless_the_factory_sets_it() {
+        const GIB: u64 = 1 << 30;
+        let under = |total: u64, free: u64, reclaim: Option<u64>| {
+            let room = Room {
+                memory_total: 0,
+                memory_free: 0,
+                disk_total: total * GIB,
+                disk_free: free * GIB,
+                load: 0.0,
+                cpus: 1,
+            };
+            under_reclaim(&room, reclaim.map(|size| size * GIB))
+        };
+        for (total, threshold) in [(50, 10), (200, 40), (1000, 40)] {
+            assert!(under(total, threshold - 1, None), "{total}");
+            assert!(!under(total, threshold + 1, None), "{total}");
+        }
+        assert!(under(50, 29, Some(30)));
+        assert!(!under(1000, 31, Some(30)));
+    }
 }
