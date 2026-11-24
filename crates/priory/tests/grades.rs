@@ -423,7 +423,8 @@ impl Setup {
     fn tip_run(&self, name: &str, sha: &str, status: &str, conclusion: &str, compare: &str) {
         let run = json!({ "id": 500, "name": name, "head_sha": sha, "status": status,
                           "conclusion": conclusion, "completed_at": "2026-11-20T10:30:00Z",
-                          "html_url": "https://github.com/owner/repo/runs/500" });
+                          "html_url": "https://github.com/owner/repo/runs/500",
+                          "app": { "slug": "github-actions" } });
         let answer = json!({ "total_count": 1, "check_runs": [run] });
         fs::write(self.dir.join("checks-heads-main.json"), answer.to_string()).unwrap();
         let compare = json!({ "status": compare });
@@ -693,6 +694,202 @@ fn a_cancelled_run_with_no_later_run_on_a_descendant_is_red() {
 
     assert_eq!(setup.red_after_merge(), 1);
     assert_eq!(setup.alarms().len(), 1);
+}
+
+/// A merge of task 1 at `m10` whose `ci` run failed, with its alarm on the desk.
+fn red_at_merge(name: &str) -> Setup {
+    let setup = Setup::new(name);
+    setup.polled_repo();
+    setup.task(1, "green");
+    setup.handle(&[merged_on(10, 1, "aaa", "m10", "2026-11-20T10:00:00Z")]);
+    setup.checks_at("m10", &[(1, "completed", "failure")]);
+    setup.poll();
+    assert_eq!(setup.alarms().len(), 1);
+    setup
+}
+
+#[test]
+fn a_later_run_that_passes_on_a_commit_with_the_merge_clears_the_alarm_and_keeps_the_label() {
+    let setup = red_at_merge("red-recovers");
+    setup.tip_run("ci", "m11", "completed", "success", "ahead");
+
+    setup.poll();
+
+    assert_eq!(setup.alarms(), Vec::<String>::new());
+    assert_eq!(setup.red_after_merge(), 1);
+}
+
+#[test]
+fn a_run_that_passes_on_a_commit_without_the_merge_keeps_the_alarm() {
+    let setup = red_at_merge("red-not-contained");
+    for compare in ["diverged", "behind"] {
+        setup.tip_run("ci", "m11", "completed", "success", compare);
+
+        setup.poll();
+
+        assert_eq!(setup.alarms().len(), 1, "{compare}");
+    }
+}
+
+#[test]
+fn a_later_run_that_does_not_succeed_keeps_the_alarm() {
+    let setup = red_at_merge("red-still");
+    for (status, conclusion) in [
+        ("in_progress", ""),
+        ("completed", "failure"),
+        ("completed", "cancelled"),
+        ("completed", "skipped"),
+    ] {
+        setup.tip_run("ci", "m11", status, conclusion, "ahead");
+
+        setup.poll();
+
+        assert_eq!(setup.alarms().len(), 1, "{status} {conclusion}");
+    }
+}
+
+#[test]
+fn a_rerun_that_passes_on_the_merge_commit_clears_the_alarm() {
+    let setup = red_at_merge("red-rerun");
+    setup.tip_run("ci", "m10", "completed", "success", "identical");
+
+    setup.poll();
+
+    assert_eq!(setup.alarms(), Vec::<String>::new());
+}
+
+#[test]
+fn a_later_merge_that_passed_clears_the_alarm_while_the_tip_still_runs() {
+    let setup = red_at_merge("red-recovers-at-a-merge");
+    setup.tip_run("ci", "m12", "in_progress", "", "ahead");
+    setup.task(2, "green");
+    setup.handle(&[merged_on(11, 2, "bbb", "m11", "2026-11-20T11:00:00Z")]);
+    setup.checks_at("m11", &[(2, "completed", "success")]);
+    setup.poll();
+    assert_eq!(setup.alarms().len(), 1);
+
+    setup.poll();
+
+    assert_eq!(setup.alarms(), Vec::<String>::new());
+}
+
+#[test]
+fn a_gone_base_branch_keeps_the_alarm_and_the_poll_goes_on() {
+    let setup = red_at_merge("red-base-gone");
+    fs::write(setup.dir.join("404-heads-main"), "").unwrap();
+
+    setup.poll();
+
+    assert_eq!(setup.alarms().len(), 1);
+}
+
+#[test]
+fn an_alarm_clears_only_once_every_check_that_failed_there_passed() {
+    let setup = red_at_merge("red-two-checks");
+    setup.handle(&[on_pull(
+        "github.check_run.completed",
+        10,
+        1,
+        "m10",
+        json!({ "conclusion": "failure", "name": "lint", "app": "other", "github_id": 2,
+                "url": "https://github.com/owner/repo/runs/2", "pending": 0, "failing": 2 }),
+    )]);
+    setup.tip_run("ci", "m11", "completed", "success", "ahead");
+    setup.poll();
+    assert_eq!(setup.alarms().len(), 1, "only ci passed");
+
+    // A later merge is where `lint` passed.
+    setup.task(2, "green");
+    setup.handle(&[
+        merged_on(11, 2, "bbb", "m11", "2026-11-20T11:00:00Z"),
+        on_pull(
+            "github.check_run.completed",
+            11,
+            2,
+            "m11",
+            json!({ "conclusion": "success", "name": "lint", "app": "other", "github_id": 3,
+                    "pending": 0, "failing": 0 }),
+        ),
+    ]);
+    setup.poll();
+
+    assert_eq!(setup.alarms(), Vec::<String>::new());
+}
+
+#[test]
+fn a_reverts_alarm_stays_when_the_base_branch_passes_again() {
+    let setup = red_at_merge("red-reverted");
+    setup.handle(&[on_pull(
+        "github.pull_request.closed",
+        40,
+        9,
+        "fff",
+        json!({ "merged": true, "merge_commit": "m40", "actor": "max",
+                "title": "Revert \"Fix 1\"", "body": "Reverts owner/repo#10", "github_id": 940 }),
+    )
+    .time("2026-11-20T11:00:00Z".parse().unwrap())]);
+    assert_eq!(setup.alarms().len(), 2);
+    setup.tip_run("ci", "m40", "completed", "success", "ahead");
+
+    setup.poll();
+
+    assert_eq!(
+        setup.alarms(),
+        [
+            "priory: landed wrong: owner/repo#10 of task 1 was reverted by #40: https://github.com/owner/repo/pull/40"
+        ]
+    );
+}
+
+#[test]
+fn the_upgrade_marks_read_the_alarms_of_merges_whose_only_red_checks_were_cancelled() {
+    let setup = Setup::new("red-upgrade");
+    let check = |number: u64, conclusion: &str, id: u64| {
+        on_pull(
+            "github.check_run.completed",
+            number,
+            number / 10,
+            &format!("m{number}"),
+            json!({ "conclusion": conclusion, "name": format!("check {id}"), "github_id": id,
+                    "url": format!("https://github.com/owner/repo/runs/{id}"),
+                    "pending": 0, "failing": 1 }),
+        )
+    };
+    for task in [1, 2, 3] {
+        setup.task(task, "green");
+    }
+    setup.handle(&[
+        merged(10, 1, "aaa", "m10"),
+        merged(20, 2, "bbb", "m20"),
+        merged(30, 3, "ccc", "m30"),
+        check(10, "cancelled", 1),
+        check(10, "success", 2),
+        check(20, "cancelled", 3),
+        check(20, "failure", 4),
+        check(30, "cancelled", 5),
+        on_pull(
+            "github.pull_request.closed",
+            40,
+            9,
+            "fff",
+            json!({ "merged": true, "merge_commit": "m40", "actor": "max",
+                    "title": "Revert \"Fix 3\"", "body": "Reverts owner/repo#30", "github_id": 940 }),
+        ),
+    ]);
+    assert_eq!(setup.alarms().len(), 4);
+
+    setup
+        .db()
+        .execute_batch("PRAGMA user_version = 110;")
+        .unwrap();
+
+    assert_eq!(
+        setup.alarms(),
+        [
+            "priory: landed wrong: owner/repo#20 of task 2 is red on main: check 3 cancelled https://github.com/owner/repo/runs/3",
+            "priory: landed wrong: owner/repo#30 of task 3 was reverted by #40: https://github.com/owner/repo/pull/40",
+        ]
+    );
 }
 
 #[test]

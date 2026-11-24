@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 110;
+const VERSION: i64 = 111;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1964,6 +1964,22 @@ ALTER TABLE runs ADD COLUMN direnv INTEGER;
 PRAGMA user_version = 110;
 ";
 
+// Marks read each report of a red merge whose every failing check was only cancelled.
+const SCHEMA_111: &str = "
+UPDATE inbox SET read = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+WHERE type = 'priory.report' AND subject = 'priory' AND read IS NULL
+AND instr(json_extract(data, '$.line'), ' is red on ') > 0
+AND (SELECT min(json_extract(run.data, '$.conclusion') IS 'cancelled')
+  FROM inbox AS closed JOIN inbox AS run ON run.type = 'github.check_run.completed'
+    AND json_extract(run.data, '$.repo') = json_extract(closed.data, '$.repo')
+    AND json_extract(run.data, '$.head_sha') = json_extract(closed.data, '$.merge_commit')
+    AND coalesce(json_extract(run.data, '$.conclusion'), '') NOT IN ('success', 'neutral', 'skipped')
+  WHERE closed.type = 'github.pull_request.closed' AND json_extract(closed.data, '$.merged') = 1
+  AND instr(json_extract(inbox.data, '$.line'), 'landed wrong: ' || json_extract(closed.data, '$.repo')
+    || '#' || json_extract(closed.data, '$.pull_request') || ' of task') = 1) = 1;
+PRAGMA user_version = 111;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1979,7 +1995,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
-    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110,
+    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
