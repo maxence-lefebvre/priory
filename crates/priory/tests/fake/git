@@ -1,7 +1,21 @@
 #!/usr/bin/env bash
 # Runs the real git, found on PATH after this directory. FAKE_DIR/git-hang makes `fetch` hang in a
-# helper that ignores TERM and keeps stdout open, as a stuck network fetch can.
+# helper that ignores TERM and keeps stdout open, as a stuck network fetch can. git-hang-ls makes
+# `ls-remote` hang, after it logs to git-ls.log what may prompt. git-no-commit makes a fetch of a
+# commit by its SHA fail, as a dropped connection does.
 case " $* " in
-  *" fetch "*) if [ -e "$FAKE_DIR/git-hang" ]; then (trap '' TERM; sleep 60) & sleep 60; fi ;;
+  *" fetch "*)
+    if [ -e "$FAKE_DIR/git-hang" ]; then (trap '' TERM; sleep 60) & sleep 60; fi
+    if [ -e "$FAKE_DIR/git-no-commit" ] && [[ "$*" =~ [0-9a-f]{40} ]]; then
+      echo 'fatal: the connection dropped' >&2
+      exit 128
+    fi
+    ;;
+  *" ls-remote "*)
+    if [ -e "$FAKE_DIR/git-hang-ls" ]; then
+      echo "${GIT_TERMINAL_PROMPT-unset} ${GIT_SSH_COMMAND-unset}" >> "$FAKE_DIR/git-ls.log"
+      exec sleep 60
+    fi
+    ;;
 esac
 PATH=${PATH#*:} exec git "$@"

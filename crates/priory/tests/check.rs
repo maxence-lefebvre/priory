@@ -4806,6 +4806,49 @@ fn a_cloud_agent_refuses_what_a_cloud_session_cannot_take_each_at_its_line() {
 }
 
 #[test]
+fn a_cloud_agent_with_a_model_or_an_effort_fails_the_check() {
+    let agent = CLOUD_AGENT.replace(
+        "harness = \"claude-cloud\"\n",
+        "harness = \"claude-cloud\"\nmodel = \"sonnet\"\neffort = \"high\"\n",
+    );
+
+    let outcome = cloud_factory("cloud-model", &agent, "");
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "agents/implementer/agent.md:4: harness = \"claude-cloud\" cannot take `model`: the cloud environment picks it\n\
+         agents/implementer/agent.md:5: harness = \"claude-cloud\" cannot take `effort`: the cloud environment picks it\n"
+    );
+}
+
+#[test]
+fn a_cloud_agent_in_a_sandboxed_workflow_fails_the_check() {
+    let workflow = format!(
+        "sandbox = \"jail\"\n{}",
+        WORKFLOW.replace("passed = \"approve-pr\"", "pushed = \"approve-pr\"")
+    );
+    let mut files = with("agents/implementer/agent.md", CLOUD_AGENT);
+    files.retain(|(file, _)| !["workflows/implement.toml", "factory.toml"].contains(file));
+    files.push(("workflows/implement.toml", &workflow));
+    files.push((
+        "factory.toml",
+        "name = \"demo\"\n\n[sandboxes.jail]\nkind = \"bwrap\"\n",
+    ));
+
+    let outcome = check(&factory("cloud-sandboxed", &files));
+
+    assert_eq!(outcome.code, 1);
+    assert!(
+        outcome.stderr.contains(
+            "step `implement`: agent `implementer` runs in the cloud, so the workflow cannot have `sandbox`: Priory cannot jail a cloud session\n"
+        ),
+        "{}",
+        outcome.stderr
+    );
+}
+
+#[test]
 fn a_cloud_agent_with_a_shared_session_or_room_fails_the_check() {
     let agent = CLOUD_AGENT.replace(
         "harness = \"claude-cloud\"\n",
@@ -4841,6 +4884,8 @@ fn a_cloud_step_with_a_proof_a_guard_a_plan_field_or_another_outcome_fails_the_c
             "plan_requires = [\"goal\"]\n",
             "`plan_requires`",
         ),
+        ("cloud-budget", "budget = \"1.00\"\n", "a `budget`"),
+        ("cloud-attach", "attach = true\n", "`attach`"),
     ];
     for (name, step, field) in cases {
         let outcome = cloud_factory(name, CLOUD_AGENT, step);
