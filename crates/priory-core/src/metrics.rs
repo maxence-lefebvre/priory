@@ -170,8 +170,8 @@ pub(crate) fn sample_room(
     }
     if let Ok(room) = room {
         let limit = room.cpus as f64 * share.cpu;
-        let ceiling = crate::room::ceiling(room, share) as u64;
-        let floor = crate::room::disk_floor(room) as u64;
+        let ceiling = crate::room::ceiling(room, share).round() as u64;
+        let floor = crate::room::disk_floor(room).round() as u64;
         for (name, unit, value) in [
             ("priory.room.load", "1", Number::Double(room.load)),
             ("priory.room.load.limit", "1", Number::Double(limit)),

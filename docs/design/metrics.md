@@ -7,7 +7,7 @@ the slices after it, what stays out, and the open questions with a recommendatio
 
 Every slice is built. [metrics.md](../daemon/metrics.md) describes the first one: the exporter,
 the keys, `PRIORY_METRICS`, the cap and the `process` group. Its tests use a fake collector on
-127.0.0.1 rather than a fake `curl`. The `log`, `runs`, `intake` and `work` groups follow in
+127.0.0.1 rather than a fake `curl`. The `log`, `runs`, `intake`, `work` and `room` groups follow in
 [metrics.md](../daemon/metrics.md#the-log-group), and [the metrics reference](../reference/metrics.md)
 lists every metric. The how-to is [How to send metrics to an OpenTelemetry backend](../sending-metrics.md).
 

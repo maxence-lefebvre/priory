@@ -107,7 +107,7 @@ A counter has no point until it counts once, so a process that took no delivery 
 | `priory.room.disk.floor` | gauge | `By` | | the free disk the room keeps |
 | `priory.room.grants` | gauge | `{grant}` | `priory.grant.state` = `waiting`, `held` | the memory gate's grants. Each state has a point, 0 with none |
 | `priory.room.grants.memory` | gauge | `By` | `priory.grant.state` | the bytes those grants ask for or hold |
-| `priory.room.tasks.waiting` | gauge | `{task}` | `priory.room.cause` = `load`, `memory`, `disk`, `unmeasured` | the tasks waiting for room. A task behind the queue's head counts under the cause of the head. `unmeasured` is a room that cannot be measured. Each cause has a point, 0 with none. Absent while the head to start waits for its claim to reach the log |
+| `priory.room.tasks.waiting` | gauge | `{task}` | `priory.room.cause` = `load`, `memory`, `disk`, `unmeasured` | the tasks waiting for room. A task behind the queue's head counts under the cause of the head. The head counts under the first it lacks of memory, disk and load. `unmeasured` is a room that cannot be measured. Each cause has a point, 0 with none. Absent while the head to start waits for its claim to reach the log |
 
 The daemon's thread fills the group, so a daemon's first request may hold none of it. While the room
 cannot be measured, the group sends only the grants, the promised memory and the tasks waiting.
