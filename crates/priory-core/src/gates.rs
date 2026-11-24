@@ -150,6 +150,15 @@ pub(crate) fn stopped(tx: &Transaction, run: i64) -> rusqlite::Result<bool> {
     Ok(marked > 0)
 }
 
+/// Whether the turn of a run whose gate grades has ended.
+pub(crate) fn turn_over(tx: &Transaction, run: i64) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT count(*) > 0 FROM gates WHERE run = ?1 AND state = 'grading' AND stopped",
+        [run],
+        |row| row.get(0),
+    )
+}
+
 /// A gate's scores, each with whether it counts: a judge counts only while its latest calibration
 /// passes.
 type Graded = Vec<(Score, bool)>;

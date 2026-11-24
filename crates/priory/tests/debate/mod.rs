@@ -663,3 +663,31 @@ fn an_event_and_a_say_during_a_debate_turn_reach_the_step_after_the_debate_and_n
         typed[2]
     );
 }
+
+#[test]
+fn a_hold_during_a_debate_turn_holds_the_task_before_the_next_turn() {
+    let mut setup = debating("debate-hold", &debate_workflow(2, "$5.00", "15m"));
+    setup.calls(&[
+        position("process", "Isolate."),
+        position("process", "Agreed."),
+    ]);
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/submitted");
+    let refused = setup.priory(&["hold", "1", "--reason", "room", "--now"]);
+    assert_eq!(
+        String::from_utf8_lossy(&refused.stderr),
+        "priory hold: task 1 is in a debate turn: leave out --now to hold it after its turn\n"
+    );
+    person(&setup, "hold", &["1", "--reason", "room"]);
+
+    setup.release("hold-stop");
+
+    until_state(&setup, "held");
+    assert_eq!(speakers(&setup), ["architect"]);
+    person(&setup, "release", &["1"]);
+    until_state(&setup, "dropped");
+    assert_eq!(speakers(&setup), ["architect", "skeptic"]);
+    assert_eq!(results(&setup)[0]["outcome"], "process");
+}

@@ -3441,6 +3441,9 @@ pub(crate) fn admissible<'r>(
     let mut statement = db.prepare(&format!(
         "SELECT id, workflow, step, trigger, state = 'queued', repo, preempted, lane FROM tasks
              WHERE state IN ('queued', 'ready')
+             -- A task marked to be held while it ran is held on the next tick.
+             AND NOT EXISTS (SELECT 1 FROM holds WHERE holds.task = tasks.id
+               AND holds.released IS NULL)
              -- A task waits while a recipe runs in its worktree, or a teardown is owed there.
              AND NOT EXISTS (SELECT 1 FROM recipes WHERE recipes.task = tasks.id
                AND recipes.ended IS NULL
@@ -4329,6 +4332,17 @@ fn share(tx: &Transaction, run: &NewRun) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Queues again the prompt `run` was launched with when it never reached `SessionStart`, so it never
+/// took it.
+pub(crate) fn requeue_unready(tx: &Transaction, run: i64) -> rusqlite::Result<()> {
+    tx.execute(
+        "UPDATE outbox SET state = 'queued', run = NULL, attempted = NULL
+         WHERE run = ?1 AND state IN ('attempted', 'uncertain') AND (SELECT NOT ready FROM runs WHERE id = ?1)",
+        [run],
+    )
+    .map(drop)
+}
+
 /// Blocks `task` with `reason`, ending its live run first as `ended_as`, if it has one, after reading
 /// its transcript.
 pub(crate) fn block(
@@ -4349,12 +4363,7 @@ pub(crate) fn block(
     if let Some(run) = live {
         // The step goes on after a resume, so the turn cut short still counts toward it.
         crate::trace::account(&tx, trace, run, None)?;
-        // A run that never reached SessionStart never took the prompt it was launched with.
-        tx.execute(
-            "UPDATE outbox SET state = 'queued', run = NULL, attempted = NULL
-             WHERE run = ?1 AND state IN ('attempted', 'uncertain') AND (SELECT NOT ready FROM runs WHERE id = ?1)",
-            [run],
-        )?;
+        requeue_unready(&tx, run)?;
     }
     tx.execute(
         &format!("UPDATE runs SET ended = {NOW}, ended_as = ?2 WHERE task = ?1 AND ended IS NULL"),
@@ -4517,9 +4526,21 @@ pub(crate) fn signal(
         "Stop" => {
             tx.execute("UPDATE runs SET idle = 1, turn = NULL WHERE id = ?1", [run])?;
             let context = crate::trace::account(&tx, trace, run, signal.transcript.as_deref())?;
-            // A run marked for an urgent wake ends here; its resumed session compacts instead.
-            if let Some(head) = crate::preempt::due(&tx, run, watched)? {
-                kill = crate::tools::preempt(&tx, &signal.session, trace, head)?;
+            // A run marked for a hold or an urgent wake ends here; its resumed session compacts instead.
+            if crate::hold::stops(&tx, run, trace.factory)? {
+                kill = crate::tools::stop_marked(
+                    &tx,
+                    &signal.session,
+                    trace,
+                    crate::tools::Stopped::Held,
+                )?;
+            } else if let Some(head) = crate::preempt::due(&tx, run, watched)? {
+                kill = crate::tools::stop_marked(
+                    &tx,
+                    &signal.session,
+                    trace,
+                    crate::tools::Stopped::For(head),
+                )?;
             // The run settles its ask or wait once its compact is typed, so it never sleeps past it.
             // A result carried into the next step on this process compacts there. A run whose gate
             // grades waits, idle, for the verdict, which settles it.
