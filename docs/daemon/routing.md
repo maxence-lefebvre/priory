@@ -405,17 +405,21 @@ these events, kept by the task itself or through a subscription:
 
 The daemon records the news for the task's live run and writes a marker file, `news`, in the run's
 spool folder, `<home>/spools/<session>/`. The run's [tool guard hook](guard.md#news-before-a-pull-request)
-checks for that file on every call, and asks the daemon for the news only when it exists. The run
-reads each piece of news once, as a line such as:
+checks for that file on every call, and asks the daemon for the news only when it exists. Each
+piece of news is one line, such as:
 
 ```text
 Ana moved ENG-7 to Duplicate (canceled), as a duplicate of ENG-9. https://linear.app/acme/issue/ENG-7
 ```
 
-The hook adds that line to the next call the agent makes. When that call opens a pull request,
-pushes, or ends or sleeps the run, the hook refuses it once with the news as its reason instead. The
-`result`, `ask`, `wait` and `consult` tools refuse once the same way, for a harness whose hook does
-not reach them. The queued prompt still carries the event after the turn.
+The hook adds that line to the next call the agent makes, once. The news stays unread until a call
+that opens a pull request, pushes, or ends or sleeps the run: the hook refuses that call once with
+the news as its reason, and only then is the news read. So a push after a few reads is still held.
+The `result`, `ask`, `wait` and `consult` tools refuse once the same way, for a harness whose hook
+does not reach them. The queued prompt still carries the event after the turn.
+
+News counts whoever closed the pull request or issue, so an agent that closes its own gets its next
+push or result held once too.
 
 `completed` counts whoever moved the issue: agents move Linear issues with the person's key, so the
 actor cannot tell the agent from the person. An agent that moved its own issue to Done gets one

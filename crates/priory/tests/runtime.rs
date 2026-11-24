@@ -19282,27 +19282,32 @@ fn a_move_to_in_review_during_the_turn_holds_nothing_and_adds_nothing() {
 }
 
 #[test]
-fn a_cancel_during_the_turn_reaches_the_next_call_and_then_lets_a_push_through() {
+fn a_cancel_during_the_turn_shows_on_the_next_call_once_and_still_holds_the_push() {
+    let push = bash("git push origin priory/1");
     let replies = moved_during_turn(
         "news-canceled",
         &moved_to("Canceled", "canceled"),
-        &[bash("ls"), bash("git push origin priory/1")],
+        &[bash("ls"), bash("ls"), push.clone(), push],
     );
 
-    let context = replies[0]["hookSpecificOutput"]["additionalContext"]
-        .as_str()
-        .unwrap_or_else(|| panic!("{}", replies[0]));
+    let context = |reply: &serde_json::Value| {
+        reply["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .map(str::to_owned)
+    };
+    let shown = context(&replies[0]).unwrap_or_else(|| panic!("{}", replies[0]));
     assert!(
-        context.contains("Ana moved ENG-7 to Canceled (canceled)."),
-        "{context}"
+        shown.contains("Ana moved ENG-7 to Canceled (canceled)."),
+        "{shown}"
     );
     assert_eq!(guard_denied(&replies[0]), None);
-    assert_eq!(guard_denied(&replies[1]), None, "{}", replies[1]);
+    assert_eq!(context(&replies[1]), None, "{}", replies[1]);
+    let reason = guard_denied(&replies[2]).unwrap_or_else(|| panic!("{}", replies[2]));
     assert!(
-        replies[1]["hookSpecificOutput"]["additionalContext"].is_null(),
-        "{}",
-        replies[1]
+        reason.contains("Ana moved ENG-7 to Canceled (canceled)."),
+        "{reason}"
     );
+    assert_eq!(guard_denied(&replies[3]), None, "{}", replies[3]);
 }
 
 #[test]
@@ -19375,7 +19380,8 @@ fn a_daemon_that_does_not_answer_lets_a_call_through_although_news_waits() {
     let (printed, took) = guard_hook(&home, "gh pr create --title T --body B");
 
     assert_eq!(printed, "");
-    assert!(took < Duration::from_secs(5), "{took:?}");
+    // A held call waits as long as a guarded one, inside the hook's 8 s deadline.
+    assert!(took < Duration::from_secs(8), "{took:?}");
     drop(silent.join());
 }
 

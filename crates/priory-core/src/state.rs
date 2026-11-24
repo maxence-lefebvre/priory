@@ -1964,13 +1964,15 @@ ALTER TABLE runs ADD COLUMN direnv INTEGER;
 PRAGMA user_version = 110;
 ";
 
-// News that may end a task's work, kept for its live run until a held call takes it.
+// News that may end a task's work, kept for its live run: shown to its next call, and read once a
+// held call takes it.
 const SCHEMA_111: &str = "
 CREATE TABLE news (
   id   INTEGER PRIMARY KEY,
   run  INTEGER NOT NULL REFERENCES runs (id),
   seq  INTEGER,
   text TEXT NOT NULL,
+  shown TEXT,
   read TEXT,
   UNIQUE (run, seq)
 );
@@ -1992,8 +1994,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
-    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110,
-    SCHEMA_111,
+    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.

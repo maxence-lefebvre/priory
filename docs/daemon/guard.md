@@ -93,9 +93,8 @@ The hook also delivers news that may end the task's work, such as its Linear iss
 Duplicate, during the turn (see [News during a turn](routing.md#news-during-a-turn)). This is no
 approval rule: it holds a call once, and the call passes when the agent makes it again.
 
-When the run's spool folder holds a `news` marker, the hook asks the daemon for the unread news,
-which the daemon then marks read. The hook refuses the call once, with the news as its reason, when
-the call:
+When the run's spool folder holds a `news` marker, the hook asks the daemon for the unread news.
+The hook refuses the call once, with the news as its reason, when the call:
 
 - runs `gh pr create`, or `git push` that is neither `--dry-run` nor `-n`, as the guard reads a
   command;
@@ -103,9 +102,17 @@ the call:
   `consult`;
 - matches a guard, and the guard let it through.
 
-Any other call runs, with the news added to its context. Without the marker the hook asks nothing.
-When the daemon does not answer within one second, the call runs and the news waits for the next
-call: unlike an approval, news must not stop a run while the daemon restarts.
+After such a refusal, the hook tells the daemon which news it showed, and the daemon marks that
+news read. A refusal whose acknowledgement is lost leaves the news unread, so the next such call is
+held again.
+
+Any other call runs, with news that no call showed yet added to its context. That leaves the news
+unread. Without the marker the hook asks nothing.
+
+The hook waits up to 5 seconds for the daemon on a call that news holds, as it does for a guard, and
+up to one second on any other call. When the daemon does not answer in time, the call runs and the
+news stays unread for the next call: unlike an approval, news must not stop a run while the daemon
+restarts.
 
 ## Connector sign-in
 

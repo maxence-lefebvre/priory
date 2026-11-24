@@ -4475,26 +4475,61 @@ fn outside_mcp() -> ExitCode {
     exit("mcp", mcp::serve_outside(asking_session().as_deref()))
 }
 
-/// How long the hook waits for the daemon to hand over a run's unread news.
+/// How long a call that news cannot hold waits for the daemon to show it.
 const NEWS_WAIT: Duration = Duration::from_secs(1);
 
-/// The unread news of this run, now read: none without the marker the daemon writes, or when the
-/// daemon does not answer, since news is no approval and must not stop a run's calls.
-fn news(input: &Value) -> Option<String> {
-    let session = std::env::var("PRIORY_SESSION")
+/// The unread news of a run: its ids, every line, and the lines no call showed yet.
+struct News {
+    ids: Vec<i64>,
+    all: Vec<String>,
+    new: Vec<String>,
+}
+
+/// The run's session, as the pane or the hook's input names it.
+fn hook_session(input: &Value) -> Option<String> {
+    std::env::var("PRIORY_SESSION")
         .ok()
         .filter(|id| !id.is_empty())
-        .or_else(|| input["session_id"].as_str().map(str::to_owned))?;
-    let marker = priory_runtime::jail::spool_dir(&runtime::home(), &session).join("news");
-    if !marker.exists() {
+        .or_else(|| input["session_id"].as_str().map(str::to_owned))
+}
+
+/// The unread news of `session`, waiting `wait` for the daemon: none without the marker the daemon
+/// writes, or when the daemon does not answer, since news is no approval and must not stop a call.
+fn news(session: &str, wait: Duration) -> Option<News> {
+    let marker = priory_runtime::jail::spool_dir(&runtime::home(), session).join("news");
+    if session.is_empty() || !marker.exists() {
         return None;
     }
     let line = serde_json::json!({ "news": { "session": session } });
-    runtime::call(&runtime::home(), &line.to_string(), NEWS_WAIT)
+    let reply = runtime::call(&runtime::home(), &line.to_string(), wait)
         .ok()
         .and_then(|reply| serde_json::from_str::<Result<String, String>>(&reply).ok())
-        .and_then(Result::ok)
-        .filter(|news| !news.is_empty())
+        .and_then(Result::ok)?;
+    let mut news = News {
+        ids: Vec::new(),
+        all: Vec::new(),
+        new: Vec::new(),
+    };
+    for line in reply.lines() {
+        let mut parts = line.splitn(3, '\t');
+        let (Some(id), Some(new), Some(text)) = (parts.next(), parts.next(), parts.next()) else {
+            continue;
+        };
+        let Ok(id) = id.parse() else { continue };
+        news.ids.push(id);
+        news.all.push(text.to_owned());
+        if new == "1" {
+            news.new.push(text.to_owned());
+        }
+    }
+    (!news.ids.is_empty()).then_some(news)
+}
+
+/// Tells the daemon the hook refused a call with the news `ids`, which are then read. Best effort:
+/// news left unread holds the next such call too.
+fn read_news(session: &str, ids: &[i64]) {
+    let line = serde_json::json!({ "news": { "session": session, "read": ids } });
+    let _ = runtime::call(&runtime::home(), &line.to_string(), GUARD_WAIT);
 }
 
 /// Whether the call opens a pull request, pushes, or ends or sleeps the run.
@@ -4648,12 +4683,22 @@ fn hook(event: &str) -> ExitCode {
         std::thread::spawn(move || {
             let checked = match serde_json::from_reader::<_, Value>(std::io::stdin()) {
                 Ok(input) => match guard(&input) {
-                    (None, guarded) => match news(&input) {
-                        Some(news) if guarded || holds_for_news(&input) => {
-                            (Some(priory_core::news::held(&news)), None, None)
+                    (None, guarded) => {
+                        let hold = guarded || holds_for_news(&input);
+                        let session = hook_session(&input).unwrap_or_default();
+                        let wait = if hold { GUARD_WAIT } else { NEWS_WAIT };
+                        match news(&session, wait) {
+                            Some(news) if hold => {
+                                read_news(&session, &news.ids);
+                                let lines = news.all.join("\n");
+                                (Some(priory_core::news::held(&lines)), None, None)
+                            }
+                            news => {
+                                let new = news.map(|news| news.new.join("\n"));
+                                (None, new.filter(|new| !new.is_empty()), Some(input))
+                            }
                         }
-                        news => (None, news, Some(input)),
-                    },
+                    }
                     (denied, _) => (denied, None, None),
                 },
                 Err(error) => (
