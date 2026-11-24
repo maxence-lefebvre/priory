@@ -1460,8 +1460,10 @@ the adapter lives and how it reads and acts, and [`docs/reference/herdr-panels.m
 - **Navigation.** Herdr owns tabs and panes, so a panel has no tab bar, rail or Answer capsule.
   `Enter` opens the selected row.
 - **Add.** The Desk and Queue panels open [Add](#add) as a card under their header, not as a
-  sheet: the field with Add and close buttons, then a row of chips per value, workflow, band and
-  lane, with a line that says what happened. `N` opens it.
+  sheet: the field with Add and close buttons, then a dropdown each for workflow, band
+  and lane, with a line that says what happened. Each dropdown is the facet chips' popover, at most
+  320 px tall and wide, and its first row clears the pick. The focus stays on the list and the arrow
+  keys move its highlight on `--raised`. Names truncate, at 160 px in the closed dropdown. `N` opens it.
 - **Overlays.** The answer sheet becomes a popover from the answer bar's "3 options". Secondary
   commands sit in a menu, opened by a `more-horizontal` button, and in a context menu. No command
   appears only on hover.

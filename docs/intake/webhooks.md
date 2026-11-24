@@ -170,7 +170,7 @@ A delivery publishes only when some `linear` trigger names the issue's team: its
 equals the team key, or it has none. The type of that trigger does not matter, since the poll reads
 every event of the workspace for any Linear trigger and tasks subscribe to them. A `linear.view`
 trigger names a view, and a delivery cannot tell whether an issue is in it, so views come from
-polling only. A delivery for any other team publishes nothing, so a webhook never widens what the
+polling only. A `linear.project` trigger's events come from polling only too. A delivery for any other team publishes nothing, so a webhook never widens what the
 factory acts on.
 
 A webhook message differs from the poll's:
