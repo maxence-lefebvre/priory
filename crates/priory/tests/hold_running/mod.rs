@@ -362,3 +362,166 @@ fn hold_now_before_a_budgeted_steps_first_tokens_holds_it() {
 
     assert_eq!(hold(&setup, &["--now"]), format!("task 1 {HELD}\n"));
 }
+
+/// Lets a person's hold on every keyboard go.
+fn let_keyboards_go(setup: &Setup) {
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute("UPDATE keyboard_grants SET ended = 'now'", [])
+        .unwrap();
+}
+
+/// Releases task 1 and asserts that its next run starts a session of its own with the step's
+/// prompt, and reads of no interrupted turn.
+fn starts_afresh(setup: &Setup) {
+    person(setup, "release", &["1"]);
+    let runs = setup.until("runs", |rows| rows.len() == 2);
+    assert_ne!(runs[0][4], runs[1][4], "{runs:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    let typed = setup.typed();
+    assert_eq!(typed.len(), 1, "{typed:?}");
+    assert!(
+        typed[0].starts_with("A person held this task before your turn started: room for task 2"),
+        "{typed:?}"
+    );
+    assert!(typed[0].contains("Implement the issue."), "{typed:?}");
+    assert_eq!(
+        typed[0].matches("End this step by calling").count(),
+        1,
+        "{typed:?}"
+    );
+    assert_eq!(setup.rows("outbox").len(), 1);
+}
+
+#[test]
+fn hold_now_before_a_codex_session_starts_keeps_the_step_prompt() {
+    let mut setup = Setup::new("hold-now-codex");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    fs::write(setup.dir.join("fake/silent"), "Starting").unwrap();
+    setup.publish(&requested(42));
+    setup.go();
+    // Its first prompt is a launch argument, so it is attempted before any hook.
+    setup.until("outbox", |rows| with(rows, 3, "attempted") == 1);
+
+    assert_eq!(hold(&setup, &["--now"]), format!("task 1 {HELD}\n"));
+
+    setup.gone("priory-1");
+    fs::remove_file(setup.dir.join("fake/silent")).unwrap();
+    setup.hold("hold-stop");
+    starts_afresh(&setup);
+}
+
+#[test]
+fn hold_now_before_the_first_prompt_is_submitted_does_not_resume_the_session() {
+    let mut setup = Setup::new("hold-now-unprompted");
+    setup.hold("hold-submit");
+    setup.publish(&requested(42));
+    setup.go();
+    setup.written("fake/pending");
+
+    assert_eq!(hold(&setup, &["--now"]), format!("task 1 {HELD}\n"));
+
+    setup.gone("priory-1");
+    setup.hold("hold-stop");
+    setup.release("hold-submit");
+    starts_afresh(&setup);
+    let args = launched(&setup);
+    assert!(!args.contains(&"--resume".to_owned()), "{args:?}");
+}
+
+#[test]
+fn a_hold_before_the_first_prompt_waits_for_that_prompts_turn() {
+    let mut setup = Setup::new("hold-unprompted");
+    fs::write(setup.dir.join("factory/factory.toml"), URGENT_TYPE).unwrap();
+    setup.hold("hold-stop");
+    setup.go();
+    // A grant from the run's first moment keeps it without a prompt until the mark is there.
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "CREATE TRIGGER typing AFTER INSERT ON runs WHEN NEW.id = 1 BEGIN
+           INSERT INTO keyboard_grants (run, hash, label, started, ends)
+           VALUES (NEW.id, 'typing', 'max', 'now', '9999-12-31T00:00:00Z'); END",
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+    setup.until("runs", |_| {
+        setup.sql("SELECT idle AND ready FROM runs WHERE id = 1") == Some("1".to_owned())
+    });
+    hold(&setup, &[]);
+    let_keyboards_go(&setup);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    assert_eq!(held_as(&setup, "1")[0], "running");
+    draft(&setup);
+    setup.release("hold-stop");
+    until_state(&setup, "held");
+    resumes(
+        &setup,
+        "A person held this task at the end of your turn: room for task 2",
+    );
+}
+
+#[test]
+fn a_raised_cap_leaves_a_marked_task_held_with_its_hold_s_reason() {
+    let mut setup = Setup::new("hold-cap");
+    setup.caps(&format!(
+        "[caps]\ntask = 50.0\n\n{}",
+        URGENT_TYPE.split_once("\n\n").unwrap().1
+    ));
+    mid_turn(&mut setup, requested(42));
+    setup.hold_keyboard("1");
+    hold(&setup, &[]);
+    setup.release("hold-stop");
+    setup.until("runs", |_| {
+        setup.sql("SELECT idle FROM runs WHERE id = 1") == Some("1".to_owned())
+    });
+    // The cap's check comes before the hold's on a tick.
+    let_keyboards_go(&setup);
+    until_state(&setup, "held");
+    assert!(held_as(&setup, "1")[1].starts_with("held: spent $"));
+
+    person(&setup, "answer", &["1", "raise", "--revision", "1"]);
+
+    assert_eq!(held_as(&setup, "1"), ["held", HELD]);
+    assert_eq!(on_desk(&setup), [HELD]);
+    person(&setup, "release", &["1"]);
+    setup.until("runs", |rows| rows.len() == 2);
+}
+
+#[test]
+fn hold_now_while_a_gate_grades_says_the_process_goes_on() {
+    let go = Path::new(env!("CARGO_TARGET_TMPDIR")).join("rt/hold-now-gate-go");
+    let _ = fs::remove_file(&go);
+    let script = format!(
+        "#!/bin/sh\nwhile [ ! -e {} ]; do sleep 0.1; done\n",
+        go.display()
+    );
+    let (setup, _) = gated_step("hold-now-gate", &script, 1);
+    setup.until("runs", |_| {
+        setup.sql("SELECT stopped FROM gates") == Some("1".to_owned())
+    });
+
+    assert_eq!(
+        hold(&setup, &["--now"]),
+        format!("task 1 {MARK}; its process goes on until the gate's verdict\n")
+    );
+    // As while the turn runs on after its result.
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute("UPDATE gates SET stopped = 0", [])
+        .unwrap();
+    assert_eq!(
+        hold(&setup, &["--now"]),
+        format!(
+            "task 1 {MARK}; its turn still runs, and its process goes on until the turn's end and the gate's verdict\n"
+        )
+    );
+    assert_eq!(setup.rows("runs")[0][7], "-");
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute("UPDATE gates SET stopped = 1", [])
+        .unwrap();
+
+    fs::write(&go, "").unwrap();
+    until_state(&setup, "done");
+}
