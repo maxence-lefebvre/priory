@@ -226,7 +226,7 @@ fn names(trigger: &Trigger, team: &Value) -> bool {
         .filter
         .as_ref()
         .and_then(|filter| filter.get("team"));
-    key.is_none_or(|key| key == team)
+    key.is_none_or(|key| team == key)
 }
 
 /// The fields of an `Issue` payload's data, as a poll reads them.

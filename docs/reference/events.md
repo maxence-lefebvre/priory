@@ -680,10 +680,16 @@ the issue has more than 20 relations.
 
 ### `linear.issue.entered`
 
-One message per issue found in a view that was not in it at the previous poll.
+One message per issue found in a view or project that was not in it at the previous poll.
 Schema: [`linear.issue.entered.json`](../schemas/events/linear.issue.entered.json).
 
-The issue fields, and `view` (string), the view as the trigger names it.
+The issue fields, and these:
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `view` | string, optional | The view, as the trigger names it. View events only |
+| `stream` | string, optional | `linear.project:<project>`, then `:` and the trigger's filter as JSON when it has one. Project events only |
+| `order` | object or null, optional | The issue's place in its project: `project_id`, `milestone` (its `id`, `sort_order` and `target_date`, or null) and `sort_order`. Lower orders come first. Null without a project |
 
 <!-- example: events/linear.issue.entered.json -->
 ```json
@@ -703,6 +709,11 @@ The issue fields, and `view` (string), the view as the trigger names it.
     "state": "Todo",
     "labels": ["agent", "bug"],
     "view": "6b3c2f9a1d4e",
+    "order": {
+      "project_id": "c1d5e0a2-3b4f-4e8a-9a61-7f20d4b8e913",
+      "milestone": { "id": "7a0c2f64-1f0e-4f5f-8a35-3f1d5f0f2b11", "sort_order": 1.0, "target_date": "2026-12-01" },
+      "sort_order": -412.5
+    },
     "time": "2026-11-17T11:00:02.512Z",
     "baseline": false,
     "triggers": ["agent-ready"]
@@ -713,11 +724,11 @@ The issue fields, and `view` (string), the view as the trigger names it.
 
 ### `linear.issue.left`
 
-One message per issue gone from a view that was in it at the previous poll. Its issue fields come
+One message per issue gone from a view or project that was in it at the previous poll. Its issue fields come
 from that earlier poll.
 Schema: [`linear.issue.left.json`](../schemas/events/linear.issue.left.json).
 
-The issue fields, and `view` (string).
+The issue fields, and `view`, `stream` and `order`, as for `linear.issue.entered`.
 
 <!-- example: events/linear.issue.left.json -->
 ```json
@@ -737,6 +748,11 @@ The issue fields, and `view` (string).
     "state": "In Progress",
     "labels": ["agent", "bug"],
     "view": "6b3c2f9a1d4e",
+    "order": {
+      "project_id": "c1d5e0a2-3b4f-4e8a-9a61-7f20d4b8e913",
+      "milestone": { "id": "7a0c2f64-1f0e-4f5f-8a35-3f1d5f0f2b11", "sort_order": 1.0, "target_date": "2026-12-01" },
+      "sort_order": -412.5
+    },
     "time": "2026-11-17T12:31:40.077Z",
     "baseline": false,
     "triggers": []
@@ -1361,6 +1377,7 @@ Schema: [`factory.task.requested.json`](../schemas/events/factory.task.requested
 | `source` | UUID string | The `id` of the source event's message |
 | `team` | string or null, optional | The Linear issue's team. Linear sources only |
 | `project` | string or null, optional | The Linear issue's project. Linear sources only |
+| `order` | object or null, optional | The Linear issue's place in its project, as for [`linear.issue.entered`](#linearissueentered). Linear view and project sources only |
 | `repo` | string or null, optional | `priory request --repo` for a CLI request; the pull request's repository for a review request. Those sources only |
 | `hold` | object, optional | The trigger's `hold` or `priory request --hold`. See [triggers.md](triggers.md#hold) |
 | `tldr` | string, optional | `priory request --tldr` |
@@ -1450,7 +1467,7 @@ Schema: [`factory.intake.dropped.json`](../schemas/events/factory.intake.dropped
 
 ### `factory.intake.baseline`
 
-A marker of where a stream stands, published after a poll that moved it. Consumers can ignore it.
+A marker of where a stream stands, published after a poll that moved it. Consumers can ignore it. The daemon reads the `order` of a Linear view's or project's members.
 See [github-polling.md](../intake/github-polling.md). Subject: `owner/name <stream>` for GitHub, the
 stream otherwise.
 Schema: [`factory.intake.baseline.json`](../schemas/events/factory.intake.baseline.json).
@@ -1460,7 +1477,7 @@ Schema: [`factory.intake.baseline.json`](../schemas/events/factory.intake.baseli
 | `repo` | string, optional | `owner/name`. GitHub streams only |
 | `stream` | string | The stream, such as `github.issues.labeled`, `github.review_requests:octocat`, `linear.comments` or `slack.channel:C0123` |
 | `position` | integer or string | A GitHub id or number, a count of set changes, a Linear time or a Slack `ts` |
-| `members` | array, optional | The issue fields of every issue in the view, or the pull request fields of every review request. Linear view and review request streams only |
+| `members` | array, optional | The issue fields and `order` of every issue in the view or project, or the pull request fields of every review request. Linear view, Linear project and review request streams only |
 | `seen` | array of strings, optional | The ids of the events at the position's instant. Linear issue and comment streams only |
 
 <!-- example: events/factory.intake.baseline.json -->

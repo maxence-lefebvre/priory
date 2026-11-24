@@ -989,7 +989,7 @@ fn closed_outside(tx: &Transaction, resource: &str, state: &str) -> rusqlite::Re
 /// Asks a person whether to drop or keep each task keyed by the Linear issue `resource`, which left
 /// `view` before the task's first run, holding the task until they answer. A task that ran hears
 /// the leave as an event of its own key instead.
-pub(crate) fn left(tx: &Transaction, resource: &str, view: Option<&str>) -> rusqlite::Result<()> {
+pub(crate) fn left(tx: &Transaction, resource: &str, origin: &str) -> rusqlite::Result<()> {
     let tasks: Vec<(i64, String)> = tx
         .prepare(
             "SELECT id, state FROM tasks
@@ -997,16 +997,17 @@ pub(crate) fn left(tx: &Transaction, resource: &str, view: Option<&str>) -> rusq
              AND state IN ('queued', 'ready', 'held')
              AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.task = tasks.id)
              AND NOT EXISTS (SELECT 1 FROM holds WHERE holds.task = tasks.id
-               AND holds.kind = 'person' AND holds.released IS NULL AND holds.ask IS NOT NULL
-               AND holds.reason LIKE 'left the view%')
+               AND holds.kind = 'person' AND holds.released IS NULL AND holds.met IS NULL
+               AND holds.ask IS NOT NULL
+               AND (holds.reason = 'left ' || ?2
+                 OR ?2 LIKE 'the view%' AND holds.reason LIKE 'left the view%'))
              ORDER BY id",
         )?
-        .query_map([resource], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .query_map([resource, origin], |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
     let issue = resource.trim_start_matches("linear:");
-    let view = view.map_or_else(|| "the view".to_owned(), |view| format!("the view {view}"));
     for (task, held) in tasks {
-        let reason = format!("left {view}");
+        let reason = format!("left {origin}");
         tx.execute(
             "INSERT INTO holds (task, reason, kind, resume)
              VALUES (?1, ?2, 'person', coalesce((SELECT resume FROM holds
@@ -1028,7 +1029,7 @@ pub(crate) fn left(tx: &Transaction, resource: &str, view: Option<&str>) -> rusq
         tx.execute(
             "INSERT INTO asks (task, step, kind, question, options)
              SELECT id, step, 'agent', ?2, '[\"drop\",\"keep\"]' FROM tasks WHERE id = ?1",
-            params![task, format!("{issue} left {view}. Drop the task?")],
+            params![task, format!("{issue} left {origin}. Drop the task?")],
         )?;
         tx.execute(
             "UPDATE holds SET ask = ?2 WHERE id = ?1",
@@ -1038,15 +1039,25 @@ pub(crate) fn left(tx: &Transaction, resource: &str, view: Option<&str>) -> rusq
     Ok(())
 }
 
-/// Answers `keep` for each open "left the view" hold of a task keyed by the Linear issue
-/// `resource` that left `view`, which it entered again, so the person need not also answer the ask.
-/// Entering another view answers nothing.
-pub(crate) fn entered(
-    tx: &Transaction,
-    resource: &str,
-    view: Option<&str>,
-) -> rusqlite::Result<()> {
-    let view = view.map_or_else(|| "the view".to_owned(), |view| format!("the view {view}"));
+/// The view or the project a membership event is from, as a hold names it.
+pub(crate) fn origin(data: &serde_json::Value) -> String {
+    if let Some(view) = data["view"].as_str() {
+        return format!("the view {view}");
+    }
+    let stream = data["stream"].as_str().unwrap_or_default();
+    let Some(named) = stream.strip_prefix("linear.project:") else {
+        return "the view".to_owned();
+    };
+    match named.split_once(':') {
+        Some((project, filter)) => format!("the project {project} filtered by {filter}"),
+        None => format!("the project {named}"),
+    }
+}
+
+/// Answers `keep` for each open "left" hold of a task keyed by the Linear issue `resource`
+/// that left `origin`, which it entered again, so the person need not also answer the ask.
+/// Entering another view or project answers nothing.
+pub(crate) fn entered(tx: &Transaction, resource: &str, origin: &str) -> rusqlite::Result<()> {
     let holds: Vec<i64> = tx
         .prepare(
             "SELECT holds.id FROM holds JOIN tasks ON tasks.id = holds.task
@@ -1055,7 +1066,7 @@ pub(crate) fn entered(
              AND holds.ask IS NOT NULL AND holds.reason = 'left ' || ?2
              ORDER BY holds.id",
         )?
-        .query_map(params![resource, view], |row| row.get(0))?
+        .query_map(params![resource, origin], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     let issue = resource.trim_start_matches("linear:");
     for id in holds {
@@ -1067,7 +1078,7 @@ pub(crate) fn entered(
             ),
             [id],
         )?;
-        meet(tx, id, &format!("{issue} entered {view} again"))?;
+        meet(tx, id, &format!("{issue} entered {origin} again"))?;
     }
     Ok(())
 }
@@ -1322,6 +1333,9 @@ pub(crate) fn answered(tx: &Transaction, id: i64, answer: &str) -> rusqlite::Res
         "merged" => "dropped by a person after the task it waited on could not merge",
         "person" if reason.starts_with("left the view") => {
             "dropped by a person after its issue left the view"
+        }
+        "person" if reason.starts_with("left the project") => {
+            "dropped by a person after its issue left the project"
         }
         "person" if reason.starts_with("task ") => {
             "dropped by a person after the branch it stacks on moved"

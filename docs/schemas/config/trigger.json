@@ -24,6 +24,21 @@
       ],
       "type": "string"
     },
+    "FilterValue": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "description": "Any of these. Only the `state` of a `linear.project` trigger takes a list.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "What a trigger's filter takes for one key."
+    },
     "Hold": {
       "additionalProperties": false,
       "description": "Why a task is held, and the conditions that release it once all of them hold. With none, a\nperson does.",
@@ -293,9 +308,9 @@
     },
     "filter": {
       "additionalProperties": {
-        "type": "string"
+        "$ref": "#/definitions/FilterValue"
       },
-      "description": "Values an event must have: `label` for GitHub, or `author` and `commenter` for a comment or\nreview; `team`, `project` (its name or id), `label`, `state` for Linear; `text` for Slack.",
+      "description": "Values an event must have: `label` for GitHub, or `author` and `commenter` for a comment or\nreview; `team`, `project` (its name or id), `label`, `state` for Linear; `assignee` (a user id or email)\nand `state` (a list of state types) for `linear.project`; `text` for Slack.",
       "type": [
         "object",
         "null"
@@ -398,6 +413,13 @@
       ],
       "description": "A script of the factory that runs on each matching event before it becomes a task request,\nand can drop the request or change it."
     },
+    "project": {
+      "description": "The Linear project a `linear.project` trigger reads: its UUID or its slug id.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "prompt": {
       "description": "What a schedule's firing tells the task it wakes.",
       "type": [
@@ -420,7 +442,7 @@
       ]
     },
     "source": {
-      "description": "`github`, `linear`, `linear.view`, `sentry`, `honeycomb`, `intercom`, `cloudwatch`, `figma`, `slack` or `schedule`.",
+      "description": "`github`, `linear`, `linear.view`, `linear.project`, `sentry`, `honeycomb`, `intercom`, `cloudwatch`, `figma`, `slack` or `schedule`.",
       "type": "string"
     },
     "staged": {

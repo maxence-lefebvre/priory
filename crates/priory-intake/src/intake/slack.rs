@@ -322,11 +322,10 @@ impl<'a> Slack<'a> {
             .filter(|(_, trigger)| {
                 trigger.channel.as_deref() == Some(channel)
                     && format!("slack.{}", trigger.on) == POSTED
-                    && trigger
-                        .filter
-                        .iter()
-                        .flatten()
-                        .all(|(_, text)| words.contains(&text.to_lowercase()))
+                    && trigger.filter.iter().flatten().all(|(_, text)| {
+                        text.one()
+                            .is_some_and(|text| words.contains(&text.to_lowercase()))
+                    })
                     && (!baseline || trigger.backfill == Some(true))
             })
             .map(|(name, _)| *name)

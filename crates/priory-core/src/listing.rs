@@ -998,12 +998,13 @@ fn asks_of(
     Ok(asks)
 }
 
-/// The factory's bands highest first, its requestable and opted-out workflows (`null` without the factory), the waiting tasks in start order, then the held ones with
+/// The factory's bands highest first, its requestable and opted-out workflows (`null` without the factory), its `[request]` workflow, the waiting tasks in start order, then the held ones with
 /// their hold, the live runs, and the tasks that ended in the last day, each with its title, and up next: the next three runs, with `schedules`' firings.
 pub fn queue(
     db: &Connection,
     schedules: &[(String, Trigger)],
     offered: Option<(&[String], &[String])>,
+    default_workflow: Option<&str>,
     now: Timestamp,
 ) -> rusqlite::Result<Value> {
     let waiting = format!(
@@ -1037,6 +1038,7 @@ pub fn queue(
         "bands": state::band_names(db)?,
         "workflows": offered.map(|(requestable, _)| requestable),
         "opted_out": offered.map(|(_, opted_out)| opted_out),
+        "default_workflow": default_workflow,
         "up_next": up_next(db, &waiting, schedules, now)?,
         "waiting": waiting,
         "asleep": asleep(db)?,

@@ -1,7 +1,9 @@
 use crate::intake::{self, OUTPUT, TASK_REQUESTED};
 use crate::log::{self, Log};
 use herdr_bus::{Message, Timestamp};
-use priory_factory::factory::{self, Confidence, Factory, Hold, Intervention, Trigger};
+use priory_factory::factory::{
+    self, Confidence, Factory, FilterValue, Hold, Intervention, Trigger,
+};
 use priory_factory::filters;
 use serde_json::json;
 use std::path::PathBuf;
@@ -585,7 +587,7 @@ fn linked(factory: &Factory, text: &str) -> (Vec<String>, Vec<String>) {
                     let trigger = &trigger.value;
                     let filter = trigger.filter.as_ref()?;
                     let linear = trigger.source.starts_with("linear");
-                    (linear && filter.get("team").map(String::as_str) == Some(team))
+                    (linear && filter.get("team").and_then(FilterValue::one) == Some(team))
                         .then(|| trigger.repo.clone())?
                 });
                 keys.push(format!("linear:{issue}"));
