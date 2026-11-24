@@ -137,7 +137,12 @@ const PROMPTED: &str = "(runs.session_started IS NULL AND runs.ready = 1 OR EXIS
 pub(crate) fn prompt(tx: &Transaction, run: &crate::tools::Run) -> rusqlite::Result<String> {
     let (_, why) = open(tx, run.task)?;
     let (inside, prompted): (bool, bool) = tx.query_row(
-        &format!("SELECT turn IS NOT NULL, {PROMPTED} FROM runs WHERE id = ?1"),
+        // A typed `/compact` stamps the run's turn too.
+        &format!(
+            "SELECT turn IS NOT NULL AND NOT EXISTS (SELECT 1 FROM outbox WHERE outbox.run = runs.id
+               AND compact = 1 AND outbox.state IN ('attempted', 'uncertain')), {PROMPTED}
+             FROM runs WHERE id = ?1"
+        ),
         [run.id],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
@@ -156,7 +161,8 @@ pub(crate) fn prompt(tx: &Transaction, run: &crate::tools::Run) -> rusqlite::Res
 
 /// Gives back the launch prompt of `run` when no turn of it started, and marks the run not ready
 /// when its session never took a prompt: Claude keeps no such session, so the next run starts a new
-/// one. A prompt typed into a run that is idle again had its turn.
+/// one. A prompt typed into a run that is idle again had its turn. A resumed run that read its
+/// transcript keeps its launch prompt, since its session may have taken it.
 pub(crate) fn forget_unprompted(tx: &Transaction, run: i64) -> rusqlite::Result<()> {
     const LAUNCHED: &str = "outbox.run = runs.id AND outbox.state IN ('attempted', 'uncertain')
       AND julianday(outbox.attempted) <= julianday(runs.session_started)";
@@ -175,7 +181,8 @@ pub(crate) fn forget_unprompted(tx: &Transaction, run: i64) -> rusqlite::Result<
         &format!(
             "UPDATE outbox SET state = 'queued', run = NULL, attempted = NULL
              WHERE id IN (SELECT outbox.id FROM outbox JOIN runs ON {LAUNCHED}
-               WHERE runs.id = ?1 AND runs.turn IS NULL)"
+               WHERE runs.id = ?1 AND runs.turn IS NULL
+                 AND NOT (runs.resumes IS 1 AND runs.read > 0))"
         ),
         [run],
     )

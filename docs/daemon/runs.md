@@ -441,7 +441,9 @@ incomplete, and the prompt of the next run tells the agent to check. A result, a
 already sent still counts. While a gate grades the result, the run goes on, since ending it would drop the result: the task is
 held after the verdict, and the reply says whether the turn still runs. A prompt typed but not
 confirmed when the run ends stays on the desk as `uncertain`. A run that never took a prompt gives it
-back to the queue, and the next run starts a new session with it. On a queued or ready task, `--now`
+back to the queue, and the next run starts a new session with it. The first prompt of a resumed Codex
+run stays `uncertain` once the run has read its transcript, since the session may hold that
+prompt's turn. On a queued or ready task, `--now`
 changes nothing.
 
 `--now` kills the run's tmux pane. A process that left the pane's session, such as a daemonized

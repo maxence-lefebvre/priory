@@ -2862,6 +2862,10 @@ fn stop_held(tx: &Transaction, run: &Run) -> rusqlite::Result<()> {
     crate::hold::forget_unprompted(tx, run.id)?;
     crate::state::requeue_unready(tx, run.id)?;
     tx.execute(
+        "UPDATE outbox SET state = 'uncertain' WHERE run = ?1 AND state = 'attempted'",
+        [run.id],
+    )?;
+    tx.execute(
         &format!("UPDATE runs SET ended = coalesce(ended, {NOW}), ended_as = 'held' WHERE id = ?1"),
         [run.id],
     )?;
