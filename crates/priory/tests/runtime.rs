@@ -60,7 +60,8 @@ const OUTPUT: &str = "factory.intake";
 /// pending requests.
 macro_rules! undo_pre {
     () => {
-        "ALTER TABLE asks DROP COLUMN confidence; ALTER TABLE asks DROP COLUMN rationale;
+        "ALTER TABLE tasks DROP COLUMN labels; ALTER TABLE inbox DROP COLUMN reason;
+  ALTER TABLE asks DROP COLUMN confidence; ALTER TABLE asks DROP COLUMN rationale;
   ALTER TABLE tasks DROP COLUMN auto_answer; ALTER TABLE tasks DROP COLUMN added_by; DROP VIEW task_text; CREATE VIEW task_text AS SELECT tasks.id AS task,
     coalesce(json_extract(inbox.data, '$.title'), '') AS title,
     coalesce(json_extract(inbox.data, '$.text'), json_extract(inbox.data, '$.body'),

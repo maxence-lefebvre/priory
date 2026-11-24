@@ -181,22 +181,31 @@ impl Window {
                 .map(|zoned| zoned.timestamp())
                 .find(|close| *close > at)
         };
-        match self.hours {
+        let close = match self.hours {
             Some((from, to)) if from > to && now.time() >= from => {
-                at_time(now.date().tomorrow().ok()?, to)
+                at_time(now.date().tomorrow().ok()?, to)?
             }
-            Some((_, to)) => at_time(now.date(), to),
+            Some((_, to)) => at_time(now.date(), to)?,
             None => {
                 let mut date = now.date();
+                let mut close = None;
                 for _ in 0..7 {
                     date = date.tomorrow().ok()?;
                     if !self.on(date) {
-                        return at_time(date, Time::midnight());
+                        close = at_time(date, Time::midnight());
+                        break;
                     }
                 }
-                None
+                close?
             }
-        }
+        };
+        // A DST change can move the wall clock out of the window before its end.
+        let shifted = zone
+            .following(at)
+            .map(|transition| transition.timestamp())
+            .take_while(|transition| *transition < close)
+            .find(|transition| !self.open(*transition));
+        Some(shifted.unwrap_or(close))
     }
 }
 
@@ -234,9 +243,10 @@ pub fn accepts<'a>(
         return Ok(());
     };
     // A filter that lifts can leave another that still refuses, so step until none does. Windows
-    // repeat each week, so one still refusing after eight days never lifts.
+    // repeat each week, and DST changes shift them within a year, so one still refusing after a
+    // year never lifts.
     let last = at
-        .checked_add(jiff::SignedDuration::from_hours(8 * 24))
+        .checked_add(jiff::SignedDuration::from_hours(366 * 24))
         .ok();
     let mut until = at;
     let until = loop {
@@ -398,6 +408,20 @@ mod tests {
         );
         let refused = accepts(&filters, &oss(), at("2026-10-25T01:15:00Z")).unwrap_err();
         assert_eq!(refused.until, Some(at("2026-10-25T01:30:00Z")));
+    }
+
+    #[test]
+    fn a_window_the_clock_falls_back_out_of_closes_at_the_change() {
+        // Paris falls back from 03:00 to 02:00 at 01:00 UTC on 2026-10-25, before 02:15.
+        let filters = filters(
+            r#"
+            [[filters]]
+            match = "!project=oss"
+            when = { hours = "02:15-03:30", timezone = "Europe/Paris" }
+            "#,
+        );
+        let refused = accepts(&filters, &oss(), at("2026-10-25T00:30:00Z")).unwrap_err();
+        assert_eq!(refused.until, Some(at("2026-10-25T01:00:00Z")));
     }
 
     #[test]
