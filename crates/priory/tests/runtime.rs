@@ -82,7 +82,7 @@ macro_rules! undo_scheduled_sweeps {
     };
 }
 
-/// Undoes migrations 118, who answered each revision, 117, labels, 114, a Linear place, 113, a subscription's kinds, 112, scheduled sweeps, 111, memory lapses, 110, a run under direnv, 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
+/// Undoes migrations 119, who answered each revision, 117, labels, 114, a Linear place, 113, a subscription's kinds, 112, scheduled sweeps, 111, memory lapses, 110, a run under direnv, 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
 /// `auto_answer` level, 97, the task's `added_by`, and 93: the `pre` script's task columns and the
 /// pending requests.
 macro_rules! undo_pre {
