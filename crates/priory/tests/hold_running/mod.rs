@@ -571,8 +571,10 @@ fn a_raised_cap_leaves_a_marked_task_held_with_its_hold_s_reason() {
     setup.until("runs", |_| {
         setup.sql("SELECT idle FROM runs WHERE id = 1") == Some("1".to_owned())
     });
-    // The cap's check comes before the hold's on a tick.
+    // The cap's check comes before the hold's on a tick, so a whole tick must see the grant end.
+    setup.crash();
     let_keyboards_go(&setup);
+    setup.go();
     until_state(&setup, "held");
     assert!(held_as(&setup, "1")[1].starts_with("held: spent $"));
 
