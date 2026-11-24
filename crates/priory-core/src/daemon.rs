@@ -1037,6 +1037,7 @@ fn apply(
 enum Input {
     Version(VersionLine),
     Guard(crate::guard::Line),
+    Private(crate::private::Line),
     Evidence(crate::evidence::AddLine),
     Connector(crate::todo::ConnectorLine),
     Scoped(crate::scoped::Line),
@@ -1259,6 +1260,11 @@ fn take(
         Ok(Input::Version(line)) => Ok((replied(version(&line)), None)),
         Ok(Input::Guard(line)) => {
             Ok((replied(crate::guard::decide(db, &line.guard, trace)?), None))
+        }
+        Ok(Input::Private(_)) => {
+            let private = trace.factory.private().cloned().unwrap_or_default();
+            let rules = serde_json::to_string(&private).expect("the rules serialize");
+            Ok((replied(Ok(rules)), None))
         }
         Ok(Input::Evidence(line)) => Ok((
             replied(crate::evidence::add(
@@ -1627,6 +1633,11 @@ fn tend(
         metrics::sample_room(db, share, &room, promised.memory, waiting);
     }
     // A marked run idle between turns has no turn end to wait for.
+    for session in crate::hold::idle(db)? {
+        if let Some(tmux) = tools::hold_idle(db, trace, &session)? {
+            runtime::kill(&tmux);
+        }
+    }
     for session in crate::preempt::idle(db)? {
         if let Some(tmux) = tools::preempt_idle(db, trace, &session, &watched)? {
             runtime::kill(&tmux);
@@ -1776,38 +1787,40 @@ fn verdict(
         );
         return Some(("exited", reason, false));
     }
-    if run.late {
+    let late = run.waited.and_then(|waited| {
+        // Read only past the shortest window, since each read is a query.
+        let trusted = waited >= state::ready_within(0, false) && granted();
+        let within = state::ready_within(run.direnv, trusted);
+        (waited >= within).then_some((within, trusted))
+    });
+    if let Some((within, trusted)) = late {
+        let program = harness.program();
         let mut reason = if run.direnv == 1 && runtime::direnv_loading(home, &run.session) {
             format!(
-                "direnv did not finish loading {}/.envrc within {}, so {} never started; warm it \
-                 with `direnv exec <worktree> true`, or fix the .envrc",
+                "direnv did not finish loading {}/.envrc within {within}s, so {program} never \
+                 started; warm it with `direnv exec <worktree> true`, or fix the .envrc",
                 run.worktree.as_deref().unwrap_or("its folder"),
-                state::DIRENV_READY_WITHIN.replace(" seconds", "s"),
-                harness.program(),
             )
         } else {
-            let within = match run.direnv {
-                0 => state::READY_WITHIN,
-                _ => state::DIRENV_READY_WITHIN,
-            };
             let ready = rows.as_deref().is_some_and(|rows| harness.at_prompt(rows));
-            let advice = match (ready, throttled()) {
+            let known = trusted && !harness.reviews_hooks();
+            let recorded = if known {
+                " although Priory recorded its trust"
+            } else {
+                ""
+            };
+            let advice = match (ready || known, throttled()) {
                 (true, Some(throttled)) => throttled,
-                (true, None) => {
-                    "its prompt is ready and asks for no trust, so its SessionStart hook is late \
-                     or never reached the daemon. Resume the task to try again"
-                        .to_owned()
-                }
+                (true, None) if ready => "its prompt is ready and asks for no trust, so its \
+                                          SessionStart hook is late or never reached the daemon"
+                    .to_owned(),
+                (true, None) => "it started too slowly".to_owned(),
                 (false, Some(throttled)) => format!("{}; {throttled}", trust()),
                 (false, None) => trust(),
             };
-            format!(
-                "{} showed no SessionStart within {}; {}",
-                harness.program(),
-                within.replace(" seconds", "s"),
-                advice
-            )
+            format!("{program} showed no SessionStart within {within}s{recorded}; {advice}")
         };
+        reason.push_str(". Resume the task to try again");
         let rows = rows.unwrap_or_default();
         let secrets = crate::screen::secrets(&factory.secret_envs());
         // When a secret still shows after redaction, no row of the pane is kept.
@@ -2278,7 +2291,15 @@ fn open_pr(
                 branches: &branches,
                 base: base.as_deref(),
             };
-            open_stack(Path::new(worktree), repo, &stack, commit, title, &body)
+            let worktree = Path::new(worktree);
+            factory
+                .private()
+                .map_or(Ok(()), |private| {
+                    crate::private::screen_stack(
+                        private, worktree, repo, commit, stack.base, title, &body,
+                    )
+                })
+                .and_then(|()| open_stack(worktree, repo, &stack, commit, title, &body))
         }
     };
     Ok(match opened {
@@ -3054,7 +3075,7 @@ fn compact_idle(
             trust: false,
             direnv: None,
         };
-        let env: Vec<String> = guard_env(trace.factory).into_iter().collect();
+        let env: Vec<String> = guard_env(trace.factory).collect();
         if let Err(error) = launch(
             trace.factory,
             &agent.value,
@@ -3071,13 +3092,16 @@ fn compact_idle(
     Ok(())
 }
 
-/// `PRIORY_GUARD`: the factory's own guards, which the run's tool guard hook adds to the built-in ones.
-fn guard_env(factory: &Factory) -> Option<String> {
+/// `PRIORY_GUARD`: the factory's own guards, which the run's tool guard hook adds to the built-in
+/// ones. `PRIORY_PRIVATE`: the factory has private terms, which the hook asks the daemon for.
+fn guard_env(factory: &Factory) -> impl Iterator<Item = String> {
     let guards = factory.guards();
-    (guards != Default::default()).then(|| {
+    let guards = (guards != Default::default()).then(|| {
         let json = serde_json::to_string(&guards).expect("guards serialize");
         format!("PRIORY_GUARD={json}")
-    })
+    });
+    let private = factory.private().map(|_| "PRIORY_PRIVATE=1".to_owned());
+    guards.into_iter().chain(private)
 }
 
 /// The repository a task works in: its own, else its trigger's for a task stored before tasks
@@ -3206,14 +3230,14 @@ mod tests {
             session: "s".into(),
             worktree: Some("/w/1".into()),
             ready: false,
-            late: true,
+            waited: Some(600),
             direnv: 1,
             turn: None,
             prompted: None,
         };
 
         let (ended_as, reason, _) =
-            verdict(&run, &Factory::default(), &home, &|| false, &|| None).unwrap();
+            verdict(&run, &Factory::default(), &home, &|| true, &|| None).unwrap();
 
         assert_eq!(ended_as, "exited");
         assert!(
@@ -3223,6 +3247,10 @@ mod tests {
             "{reason}"
         );
         assert!(!reason.contains("trust the"), "{reason}");
+        assert!(
+            reason.contains("fix the .envrc. Resume the task to try again"),
+            "{reason}"
+        );
     }
 
     /// Writes the factory's file once `reload::EVERY` passed, then polls.

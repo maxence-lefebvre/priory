@@ -121,6 +121,9 @@ pub const SIGN_IN_TOOLS: &[&str] = &["authenticate", "complete_authentication"];
 /// The guard on Priory's own person verbs, which nothing grants to a run.
 pub const PERSON: &str = "priory-person";
 
+/// The guard on a call that publishes one of the factory's private terms, which nothing grants.
+pub const PRIVATE: &str = "private-terms";
+
 /// The guard on a script nested too deep for the guard to read, which nothing grants.
 pub const UNREADABLE: &str = "unreadable";
 
@@ -296,7 +299,7 @@ impl Guards {
 
 /// Whether `words` asks for the program's help. A help word after an option may be that option's
 /// value, as pflag and git take it, so it counts only after a word that is no option.
-fn help(words: &[String]) -> bool {
+pub(crate) fn help(words: &[String]) -> bool {
     let short = matches!(words[0].as_str(), "gh" | "git");
     words
         .iter()
@@ -311,7 +314,7 @@ fn help(words: &[String]) -> bool {
 
 /// Whether `words` runs `run[0]` with positional words starting with the rest of `run`, and holds
 /// one of `flags` if any.
-fn starts<S: AsRef<str>>(words: &[String], run: &[S], flags: &[S]) -> bool {
+pub(crate) fn starts<S: AsRef<str>>(words: &[String], run: &[S], flags: &[S]) -> bool {
     let Some((program, rest)) = run.split_first() else {
         return false;
     };
@@ -356,7 +359,7 @@ fn clustered(word: &str, flag: &str) -> bool {
 }
 
 /// Options of a program that take the next word as their value.
-fn takes_value(program: &str, option: &str) -> bool {
+pub(crate) fn takes_value(program: &str, option: &str) -> bool {
     let options: &[&str] = match program {
         "gh" => &["-R", "--repo"],
         "git" => &["-C", "-c", "--git-dir", "--work-tree", "--namespace"],
@@ -366,7 +369,7 @@ fn takes_value(program: &str, option: &str) -> bool {
 }
 
 /// The arguments after the program that are no option nor an option's value.
-fn positional(words: &[String]) -> Vec<&str> {
+pub(crate) fn positional(words: &[String]) -> Vec<&str> {
     let mut positional = Vec::new();
     let mut args = words[1..].iter();
     while let Some(arg) = args.next() {
@@ -383,9 +386,19 @@ fn positional(words: &[String]) -> Vec<&str> {
     positional
 }
 
-/// `gh api` that writes: a method other than GET, or a field or body, which makes it a POST. A
-/// merge or an approving review is named as such, and so is one whose body Priory cannot read.
-fn gh_api(words: &[String], git: Git) -> Option<&'static str> {
+/// A `gh api` call that writes: a method other than GET, or a field or body, which makes it a POST.
+pub(crate) struct Request {
+    method: Option<String>,
+    pub fields: Vec<String>,
+    /// Its body, or a field, comes from a file or stdin.
+    pub opaque: bool,
+    /// The endpoint argument as written.
+    pub raw: String,
+    /// The endpoint's path, with no host, query or leading slash.
+    pub endpoint: String,
+}
+
+pub(crate) fn gh_request(words: &[String]) -> Option<Request> {
     if positional(words).first() != Some(&"api") {
         return None;
     }
@@ -424,12 +437,10 @@ fn gh_api(words: &[String], git: Git) -> Option<&'static str> {
     if !writes {
         return None;
     }
-    let endpoint = endpoint.unwrap_or_default();
-    let endpoint = endpoint
-        .split_once("://")
-        .map_or(endpoint.as_str(), |(_, rest)| {
-            rest.split_once('/').map_or("", |(_, path)| path)
-        });
+    let raw = endpoint.unwrap_or_default();
+    let endpoint = raw.split_once("://").map_or(raw.as_str(), |(_, rest)| {
+        rest.split_once('/').map_or("", |(_, path)| path)
+    });
     let endpoint = endpoint.trim_start_matches('/');
     let endpoint = endpoint.strip_prefix("api/v3/").unwrap_or(endpoint);
     let endpoint = endpoint.split('?').next().unwrap_or_default();
@@ -437,7 +448,27 @@ fn gh_api(words: &[String], git: Git) -> Option<&'static str> {
         "graphql"
     } else {
         endpoint
-    };
+    }
+    .to_owned();
+    Some(Request {
+        method,
+        fields,
+        opaque,
+        raw,
+        endpoint,
+    })
+}
+
+/// `gh api` that writes. A merge or an approving review is named as such, and so is one whose body
+/// Priory cannot read.
+fn gh_api(words: &[String], git: Git) -> Option<&'static str> {
+    let Request {
+        method,
+        fields,
+        opaque,
+        endpoint,
+        ..
+    } = gh_request(words)?;
     let parts: Vec<&str> = endpoint.split('/').collect();
     let pull = |tail: &str| {
         matches!(parts.as_slice(), ["repos", _, _, "pulls", number, first, ..]
@@ -512,6 +543,32 @@ pub fn moves_head(command: &str) -> bool {
     })
 }
 
+/// Whether a `git push` with `args` sends nothing: its last `--dry-run` or `--no-dry-run` decides.
+pub(crate) fn dry_run(args: &[String]) -> bool {
+    let mut dry = false;
+    let mut args = args.iter();
+    while let Some(arg) = args.next().filter(|arg| *arg != "--") {
+        match arg.as_str() {
+            "--dry-run" => dry = true,
+            // Git takes an unambiguous start of an option.
+            _ if arg.starts_with("--no-dr") => dry = false,
+            "--repo" | "--push-option" | "--receive-pack" | "--exec" | "--recurse-submodules" => {
+                args.next();
+            }
+            _ if arg.starts_with("--") => {}
+            _ if arg.starts_with('-') => {
+                let flags = arg[1..].split('o').next().unwrap_or_default();
+                dry |= flags.contains('n');
+                if flags.len() + 2 == arg.len() && arg.ends_with('o') {
+                    args.next();
+                }
+            }
+            _ => {}
+        }
+    }
+    dry
+}
+
 /// `git push` that forces, deletes, or updates the default branch. A push of every branch or of
 /// a wildcard counts as one to the default branch.
 fn git_push(words: &[String], git: Git) -> Option<&'static str> {
@@ -539,13 +596,15 @@ fn git_push(words: &[String], git: Git) -> Option<&'static str> {
             break;
         }
     }
+    if dry_run(args.as_slice()) {
+        return None;
+    }
     let mut refspecs = Vec::new();
     let mut remote_given = false;
     let mut every = false;
     while let Some(arg) = args.next() {
         let arg = arg.as_str();
         match arg {
-            "--dry-run" => return None,
             "--mirror" | "--delete" | "--prune" => return Some("git-push-force"),
             _ if arg.starts_with("--force") => return Some("git-push-force"),
             "--all" | "--branches" => every = true,
@@ -561,7 +620,6 @@ fn git_push(words: &[String], git: Git) -> Option<&'static str> {
             _ if arg.starts_with('-') && arg.len() > 1 => {
                 for (index, flag) in arg[1..].char_indices() {
                     match flag {
-                        'n' => return None,
                         'f' | 'd' => return Some("git-push-force"),
                         'o' => {
                             // `-o value` or `-ovalue`: the rest of the word is the value.
@@ -709,10 +767,42 @@ const DEPTH: usize = 16;
 /// The simple commands a shell script runs, each as its words, with wrappers removed and the
 /// program named by its file name.
 pub fn commands(script: &str) -> Vec<Vec<String>> {
+    let mut found = read(script);
+    found.retain(|words| !NOTES.contains(&words[0].as_str()));
+    found
+}
+
+/// The commands of `script`, with the `NOTES` the splitter makes about them.
+pub(crate) fn read(script: &str) -> Vec<Vec<String>> {
     let mut found = Vec::new();
     parse(script, 0, &mut found);
     found
 }
+
+/// The command the splitter records for text a script holds, such as a heredoc, a here-string or
+/// an assigned value, which `SET` follows when it lasts past its command. No program has a note's
+/// name.
+pub(crate) const TEXT: &str = "\0text";
+pub(crate) const SET: &str = "set";
+
+/// A `cd` after this note may run in a shell of its own, or not at all.
+pub(crate) const SCOPE: &str = "\0scope";
+
+/// Words, and heredoc bodies, that hold a substitution whose output the reader cannot know.
+pub(crate) const OPAQUE: &str = "\0opaque";
+
+/// Words, and heredoc bodies, whose only expansions are variables.
+pub(crate) const VARIABLE: &str = "\0variable";
+
+/// The files a substitution prints with a plain `cat`.
+pub(crate) const PRINTED: &str = "\0printed";
+
+/// A file a redirection writes: empty for one the reader cannot name, with `LITERAL` after it when
+/// the call holds the text.
+pub(crate) const WRITES: &str = "\0writes";
+pub(crate) const LITERAL: &str = "literal";
+
+pub(crate) const NOTES: &[&str] = &[TEXT, SCOPE, OPAQUE, VARIABLE, PRINTED, WRITES];
 
 /// The command the splitter records for a script nested past `DEPTH`: no program has this name.
 const TOO_DEEP: &str = "\0too deeply nested for the guard to read";
@@ -732,10 +822,13 @@ fn parse(script: &str, depth: usize, found: &mut Vec<Vec<String>>) {
         word: None,
         words: Vec::new(),
         heredocs: Vec::new(),
-        redirect: false,
+        redirect: None,
         stdin_shell: false,
         herestring: false,
         stdin: Vec::new(),
+        expansion: None,
+        expanding: Vec::new(),
+        writes: Vec::new(),
         found,
     };
     split.run();
@@ -750,10 +843,13 @@ fn substitutions(text: &str, depth: usize, found: &mut Vec<Vec<String>>) {
         word: None,
         words: Vec::new(),
         heredocs: Vec::new(),
-        redirect: false,
+        redirect: None,
         stdin_shell: false,
         herestring: false,
         stdin: Vec::new(),
+        expansion: None,
+        expanding: Vec::new(),
+        writes: Vec::new(),
         found,
     };
     while let Some(c) = text.peek(0) {
@@ -774,6 +870,11 @@ fn substitutions(text: &str, depth: usize, found: &mut Vec<Vec<String>>) {
     }
 }
 
+enum Redirect {
+    Read,
+    Write,
+}
+
 /// One pass over a script: words, the commands they form, and the scripts nested in it.
 struct Split<'a> {
     chars: Vec<char>,
@@ -785,13 +886,19 @@ struct Split<'a> {
     /// and whether the delimiter was quoted, which keeps the body from expanding.
     heredocs: Vec<(String, bool, bool)>,
     /// The next word is a redirection's target, not an argument.
-    redirect: bool,
+    redirect: Option<Redirect>,
     /// A command on this line is a shell reading its script from stdin, as from a heredoc.
     stdin_shell: bool,
     /// The next word is a here-string, which a shell would read as its script.
     herestring: bool,
     /// Here-strings and the text `echo` or `printf` pipes into this command: a shell's script.
     stdin: Vec<String>,
+    /// The note the current word needs for an expansion it holds: `OPAQUE` or `VARIABLE`.
+    expansion: Option<&'static str>,
+    /// The current command's words that expand, each with its note.
+    expanding: Vec<(&'static str, String)>,
+    /// The files the current command's redirections write.
+    writes: Vec<String>,
     found: &'a mut Vec<Vec<String>>,
 }
 
@@ -805,11 +912,18 @@ impl Split<'_> {
     }
 
     fn end_word(&mut self) {
+        let expansion = self.expansion.take();
         if let Some(word) = self.word.take() {
-            if std::mem::take(&mut self.redirect) {
+            if let Some(redirect) = self.redirect.take() {
+                if matches!(redirect, Redirect::Write) {
+                    self.writes.push(expansion.map_or(word, |_| String::new()));
+                }
                 return;
             }
+            self.expanding
+                .extend(expansion.map(|note| (note, word.clone())));
             if std::mem::take(&mut self.herestring) {
+                self.found.push(vec![TEXT.to_owned(), word.clone()]);
                 self.stdin.push(word);
                 return;
             }
@@ -819,10 +933,23 @@ impl Split<'_> {
 
     fn end_command(&mut self) {
         self.end_word();
-        if self.words.is_empty() {
+        let words = std::mem::take(&mut self.words);
+        self.note_writes(&words);
+        for (note, word) in std::mem::take(&mut self.expanding) {
+            self.found.push(vec![note.to_owned(), word]);
+        }
+        if words.is_empty() {
             return;
         }
-        let words = std::mem::take(&mut self.words);
+        let lasts = words.iter().all(|word| assignment(word));
+        for word in words.iter().take_while(|word| assignment(word)) {
+            let mut text = vec![TEXT.to_owned(), word.clone()];
+            text.extend(lasts.then(|| SET.to_owned()));
+            self.found.push(text);
+        }
+        if !matches!(words[0].as_str(), "cd" | "pushd") {
+            self.scope();
+        }
         let before = self.found.len();
         unwrap(&words, self.depth, self.found);
         let shell = self.found[before..].iter().any(|command| {
@@ -856,8 +983,43 @@ impl Split<'_> {
         self.stdin.extend(printed);
     }
 
+    fn scope(&mut self) {
+        self.found.push(vec![SCOPE.to_owned()]);
+    }
+
+    /// Notes the files the command `words` writes: the call holds what a literal `echo`, `printf`
+    /// or `cat` of a heredoc prints.
+    fn note_writes(&mut self, words: &[String]) {
+        let literal = match words.first().map(String::as_str) {
+            Some("echo" | "printf") => self.expanding.is_empty(),
+            Some("cat") => words.len() == 1 && !self.heredocs.is_empty(),
+            _ => false,
+        };
+        for path in std::mem::take(&mut self.writes) {
+            let mut note = vec![WRITES.to_owned(), path];
+            note.extend(literal.then(|| LITERAL.to_owned()));
+            self.found.push(note);
+        }
+    }
+
+    /// Notes that the current word expands, as the `$` just read makes it.
+    fn expands(&mut self) {
+        let name = |c: char| c.is_ascii_alphanumeric() || "_{@*?!#$-[".contains(c);
+        if self.peek(0).is_some_and(name) {
+            self.expansion.get_or_insert(VARIABLE);
+        }
+    }
+
     fn nested(&mut self, script: &str) {
+        let before = self.found.len();
+        self.scope();
         parse(script, self.depth + 1, self.found);
+        match printed(&self.found[before..]) {
+            Some(files) => self
+                .found
+                .push(std::iter::once(PRINTED.to_owned()).chain(files).collect()),
+            None => self.expansion = Some(OPAQUE),
+        }
         // The substitution's output is unknown, but it is part of a word.
         self.word.get_or_insert_default();
     }
@@ -885,12 +1047,28 @@ impl Split<'_> {
                         self.at += 1;
                     }
                 }
-                '|' if self.peek(0) != Some('|')
-                    && self.at.checked_sub(2).and_then(|at| self.chars.get(at)) != Some(&'|') =>
-                {
-                    self.end_piped()
+                '|' => {
+                    // Before the command it ends, which may be a `cd` in the pipe's own shell.
+                    self.scope();
+                    let previous = self.at.checked_sub(2).and_then(|at| self.chars.get(at));
+                    if self.peek(0) == Some('|') || previous == Some(&'|') {
+                        self.end_command();
+                    } else {
+                        self.end_piped();
+                    }
                 }
-                ';' | '&' | '|' | '(' | ')' => self.end_command(),
+                '&' => {
+                    let previous = self.at.checked_sub(2).and_then(|at| self.chars.get(at));
+                    if self.peek(0) != Some('&') && previous != Some(&'&') {
+                        self.scope();
+                    }
+                    self.end_command();
+                }
+                ';' => self.end_command(),
+                '(' | ')' => {
+                    self.end_command();
+                    self.scope();
+                }
                 '<' | '>' => self.redirection(c),
                 '\'' => {
                     let start = self.at;
@@ -922,6 +1100,10 @@ impl Split<'_> {
                 '$' if self.peek(0) == Some('\'') => {
                     self.at += 1;
                     self.ansi_c_quoted();
+                }
+                '$' => {
+                    self.expands();
+                    self.push('$');
                 }
                 c => self.push(c),
             }
@@ -1002,7 +1184,9 @@ impl Split<'_> {
             self.herestring = true;
             return;
         }
-        while self.peek(0).is_some_and(|c| "<>&|".contains(c)) {
+        let mut writes = c == '>';
+        while let Some(next) = self.peek(0).filter(|c| "<>&|".contains(*c)) {
+            writes |= next == '>';
             self.at += 1;
         }
         if self.chars[self.at - 1] == '&' {
@@ -1011,7 +1195,11 @@ impl Split<'_> {
             }
             return;
         }
-        self.redirect = true;
+        self.redirect = Some(if writes {
+            Redirect::Write
+        } else {
+            Redirect::Read
+        });
     }
 
     /// Reads the heredoc bodies that start here: as a script when a shell on the line reads its
@@ -1020,9 +1208,13 @@ impl Split<'_> {
         let script = std::mem::take(&mut self.stdin_shell);
         for (delimiter, strip, quoted) in std::mem::take(&mut self.heredocs) {
             let body = self.heredoc_body(&delimiter, strip);
+            self.found.push(vec![TEXT.to_owned(), body.clone()]);
             if script {
                 parse(&body, self.depth + 1, self.found);
             } else if !quoted {
+                if body_expands(&body) {
+                    self.found.push(vec![OPAQUE.to_owned(), body.clone()]);
+                }
                 substitutions(&body, self.depth, self.found);
             }
         }
@@ -1116,6 +1308,10 @@ impl Split<'_> {
                     let inner = self.balanced();
                     self.nested(&inner);
                 }
+                '$' => {
+                    self.expands();
+                    self.push('$');
+                }
                 c => self.push(c),
             }
         }
@@ -1178,6 +1374,40 @@ impl Split<'_> {
     }
 }
 
+/// Whether an unquoted heredoc's `body` holds an expansion.
+fn body_expands(body: &str) -> bool {
+    let mut chars = body.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => drop(chars.next()),
+            '`' => return true,
+            '$' if chars
+                .peek()
+                .is_some_and(|c| c.is_ascii_alphanumeric() || "_({@*?!#$-[".contains(*c)) =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// The files a substitution prints when its commands, `found`, are one `cat` of literal files or of
+/// a heredoc whose text the script holds.
+fn printed(found: &[Vec<String>]) -> Option<Vec<String>> {
+    let text = found.iter().any(|words| words[0] == TEXT);
+    let mut rest = found
+        .iter()
+        .filter(|words| words[0] != SCOPE && words[0] != TEXT);
+    let (Some(cat), None) = (rest.next(), rest.next()) else {
+        return None;
+    };
+    let files = &cat[1..];
+    let literal = files.iter().all(|file| !file.starts_with('-'));
+    (cat[0] == "cat" && literal && (text || !files.is_empty())).then(|| files.to_vec())
+}
+
 /// Words that start a command without being its program.
 const KEYWORDS: &[&str] = &[
     "!", "{", "}", "if", "then", "else", "elif", "do", "while", "until", "builtin", "coproc", "fi",
@@ -1195,7 +1425,15 @@ fn unwrap(words: &[String], depth: usize, found: &mut Vec<Vec<String>>) {
     }
     let mut at = 0;
     while let Some(word) = words.get(at) {
-        if assignment(word) || KEYWORDS.contains(&word.as_str()) {
+        if assignment(word) {
+            // `end_command` notes the ones that come first.
+            if !words[..at].iter().all(|word| assignment(word)) {
+                found.push(vec![TEXT.to_owned(), word.clone()]);
+            }
+            at += 1;
+            continue;
+        }
+        if KEYWORDS.contains(&word.as_str()) {
             at += 1;
             continue;
         }
@@ -1255,9 +1493,22 @@ fn unwrap(words: &[String], depth: usize, found: &mut Vec<Vec<String>>) {
                             .collect();
                         return unwrap(&words, depth + 1, found);
                     }
+                    let dir = match arg.as_str() {
+                        "-C" | "--chdir" => rest.get(index + 1).map(String::as_str),
+                        _ => arg
+                            .strip_prefix("--chdir=")
+                            .or_else(|| arg.strip_prefix("-C").filter(|dir| !dir.is_empty())),
+                    };
+                    if let Some(dir) = dir {
+                        found.push(vec![SCOPE.to_owned()]);
+                        found.push(vec!["cd".to_owned(), dir.to_owned()]);
+                    }
                     if ["-u", "-C", "--unset", "--chdir"].contains(&arg.as_str()) {
                         index += 2;
-                    } else if arg.starts_with('-') || assignment(arg) {
+                    } else if assignment(arg) {
+                        found.push(vec![TEXT.to_owned(), arg.clone()]);
+                        index += 1;
+                    } else if arg.starts_with('-') {
                         index += 1;
                     } else {
                         break;

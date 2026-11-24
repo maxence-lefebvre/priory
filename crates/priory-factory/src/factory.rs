@@ -81,6 +81,9 @@ pub struct Settings {
     /// Irreversible commands and MCP tools on top of the built-in ones.
     #[serde(default)]
     pub guard: crate::guard::Guards,
+    /// Terms no run may publish to the repositories it lists.
+    #[serde(default, deserialize_with = "crate::private::private")]
+    pub private: crate::private::Private,
     /// Autolinks, in order: each key a regex, each value an `https://` URL template whose `$1`
     /// names the regex's first group. An entry with a built-in link's regex replaces it.
     #[serde(default, deserialize_with = "links")]
@@ -2042,6 +2045,11 @@ pub struct Workflow {
     /// The sandbox of `factory.toml` that every model step of the workflow runs its agent in.
     /// None runs agents with the person's whole user, as before.
     pub sandbox: Option<String>,
+    /// Whether the web view's and Herdr's Add controls and the Slack shortcut offer it, and
+    /// `POST /api/request` takes it. The `[request] workflow` is always requestable. `priory add`,
+    /// `priory request`, the MCP `add` tool, batches and triggers start any workflow.
+    #[serde(default = "on")]
+    pub requestable: bool,
     pub steps: Vec<Step>,
 }
 
@@ -2719,6 +2727,12 @@ impl Factory {
             .unwrap_or_default()
     }
 
+    /// The factory's `[private]` table, when it holds a repository and a term.
+    pub fn private(&self) -> Option<&crate::private::Private> {
+        let private = &self.settings.as_ref()?.value.private;
+        (!private.repos.is_empty() && !private.terms.is_empty()).then_some(private)
+    }
+
     /// The recipe of `repo` that runs at `moment`, if the factory has one.
     pub fn recipe(&self, repo: &str, moment: Moment) -> Option<&Recipe> {
         self.settings
@@ -2808,6 +2822,25 @@ impl Factory {
     /// The defaults of `priory add`; none makes it need `--workflow`.
     pub fn request(&self) -> Option<&RequestDefaults> {
         self.settings.as_ref()?.value.request.as_ref()
+    }
+
+    /// The workflows a person may request from the Add controls, by name.
+    pub fn requestable(&self) -> Vec<String> {
+        let names = self.workflows.keys().filter(|name| !self.opted_out(name));
+        names.cloned().collect()
+    }
+
+    /// The workflows the factory keeps from the Add controls, by name.
+    pub fn not_requestable(&self) -> Vec<String> {
+        let names = self.workflows.keys().filter(|name| self.opted_out(name));
+        names.cloned().collect()
+    }
+
+    /// Whether the factory has workflow `name` and keeps it from the Add controls.
+    fn opted_out(&self, name: &str) -> bool {
+        let default = self.request().map(|request| request.workflow.as_str());
+        let workflow = self.workflows.get(name);
+        default != Some(name) && workflow.is_some_and(|workflow| !workflow.value.requestable)
     }
 
     /// The `[batch]` table: how `priory batch add` plans batches.

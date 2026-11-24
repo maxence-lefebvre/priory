@@ -514,7 +514,8 @@ linking to the task page, state and key. Then its 5 newest events as history row
 type in plain words in bold, such as "Linear issue updated" for `linear.issue.updated`, subject, the event's first line in `--text-2` under them, time), and "and 3 older"
 past that. Under them, the one action that routes the next event, by the task's state: the task
 page's **Revive** (armed, as there) for a failed or dropped task; **Request a task** for a done
-one, which opens the [Add](#add) sheet with the task's workflow and the group's `request_text`,
+one, which opens the [Add](#add) sheet with the task's workflow, or the default when the factory
+opts it out (one the factory lacks stays, and the daemon refuses it), and the group's `request_text`,
 whose GitHub or Linear URL makes the new task's key that resource (a Slack thread gets a
 `--text-2` line instead: "No new task can take this resource from here: start one from its
 thread."); **Subscribe task 12** for an active one (`POST /api/subscribe` with the revision the
@@ -555,8 +556,8 @@ with a pointer, and the `+` beside the Answer capsule opens it on a phone.
   `Enter` queues. A GitHub or Linear link in the text sets the repository and the key.
 - **The chips** read "Workflow implement", "Band today" and "Lane routed": the name in `--text-3`,
   the value in `--text` at 500, and `chevron-down`. Each opens the platform's own picker. Workflow
-  and Band start on the `[request]` defaults; Lane starts on "routed", which leaves the lane to the
-  factory's lane rules. Workflow lists the factory's workflows, Band its bands in order, and Lane
+  and Band start on the `[request]` defaults, and follow them until the person picks; Lane starts on "routed", which leaves the lane to the
+  factory's lane rules. Workflow lists the factory's requestable workflows, read each time the sheet opens, Band its bands in order, and Lane
   each lane a listed task carries. Chips are `--chip` tall with a `--control` target on a coarse
   pointer.
 - **Keys and targets.** `N` never fires inside a field or while the sheet is open. Every control is
@@ -565,6 +566,7 @@ with a pointer, and the `+` beside the Answer capsule opens it on a phone.
 | State   | What the person sees |
 | ------- | -------------------- |
 | empty   | The field and the chips; Add is disabled (`aria-disabled`, `--text-3` on `--raised`). |
+| swapped | Opened by **Request a task** for a workflow that is not requestable: a `--warn-text` line with `circle-alert`, "Workflow sweep is not requestable, so this starts the default, implement.", or "Workflow sweep is not requestable. Pick one." with no `[request]` default. It leaves once the person picks a workflow, discards the draft or adds the task. |
 | sending | The field turns read-only and Add reads "Adding…". |
 | refused | Under the field, in `--danger-text` with `circle-x`: "Could not add: " and the daemon's sentence. The text and chips stay. "Discard draft" appears. |
 | added   | The sheet shows the new task in place: its state tile, key in mono, workflow and state, the request, band and lane, with "Added. The task waits in the queue for its turn." Then "Add another" (secondary) and "Close" (primary). |
@@ -868,9 +870,8 @@ Settings, then Notifications, reached from More on a phone and from the Appearan
 screens. It turns Web Push on or off for this device. It holds:
 
 1. A screen title, "Notifications", in `--type-screen`.
-2. One sentence in `--text-2`: "Get a notification on this device when an agent asks you
-   something, or when a task is blocked or failed. It shows the ask's title and opens the ask. A
-   snoozed item sends nothing."
+2. One sentence in `--text-2`: "Get a notification on this device when something waits on you. It
+   shows a title and opens the item. A snoozed item sends nothing."
 3. A status note, a `role="status"` line, when there is something to say:
 
    | Status      | Note |
@@ -882,11 +883,21 @@ screens. It turns Web Push on or off for this device. It holds:
    | insecure    | "Notifications need HTTPS. Open Priory at its https address, such as the one tailscale serve gives, or at localhost on this machine." |
    | unsupported | "This browser cannot get notifications from a web page." |
 
-4. One button: "Turn on notifications", primary, while they are off; "Turn off notifications",
+4. While they are on, a `fieldset` named "Notify this device about", in `--type-read-h2`, with one
+   native checkbox per kind. A row is at least 60 px tall and wholly tappable, with a hairline above
+   it: a 20 px box in `--action`, the kind's name at 600, and a sentence in `--type-caption` and
+   `--text-2`. The kinds are Asks, Stopped tasks, Intake failures, Uncertain work, Spend caps, Landed
+   wrong and Queue stalls. A change applies at once. While it saves, the boxes are `aria-disabled`.
+   A refusal puts the box back and shows a `--warn-text` alert: "Could not save what this device
+   gets: why. Check that the daemon runs, then try again." A lost reply proves nothing, so the boxes
+   hide and the status note reads as unconfirmed. With no box checked, a note says "Nothing is
+   chosen, so this device gets no notification." Under it: "Each device keeps its own choice. A
+   change applies at once."
+5. One button: "Turn on notifications", primary, while they are off; "Turn off notifications",
    secondary, while they are on or unconfirmed. The permission prompt opens only from this tap,
    as iOS requires. A failure shows a `--warn-text` alert: "Could not turn on notifications: why.
    Check that the daemon runs, then try again."
-5. "Install Priory", secondary, only when the browser offers to install the view, with the note
+6. "Install Priory", secondary, only when the browser offers to install the view, with the note
    "Installing opens Priory in its own window, so notifications reach it with no tab open."
 
 The view never asks for the permission on its own: no banner and no prompt at load.
@@ -1449,8 +1460,10 @@ the adapter lives and how it reads and acts, and [`docs/reference/herdr-panels.m
 - **Navigation.** Herdr owns tabs and panes, so a panel has no tab bar, rail or Answer capsule.
   `Enter` opens the selected row.
 - **Add.** The Desk and Queue panels open [Add](#add) as a card under their header, not as a
-  sheet: the field with Add and close buttons, then a row of chips per value, workflow, band and
-  lane, with a line that says what happened. `N` opens it.
+  sheet: the field with Add and close buttons, then a dropdown each for workflow, band
+  and lane, with a line that says what happened. Each dropdown is the facet chips' popover, at most
+  320 px tall and wide, and its first row clears the pick. The focus stays on the list and the arrow
+  keys move its highlight on `--raised`. Names truncate, at 160 px in the closed dropdown. `N` opens it.
 - **Overlays.** The answer sheet becomes a popover from the answer bar's "3 options". Secondary
   commands sit in a menu, opened by a `more-horizontal` button, and in a context menu. No command
   appears only on hover.

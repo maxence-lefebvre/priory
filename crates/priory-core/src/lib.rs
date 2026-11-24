@@ -40,6 +40,7 @@ pub mod patterns;
 pub mod pending;
 pub mod post;
 mod preempt;
+pub mod private;
 pub mod progress;
 pub mod proof;
 mod provenance;

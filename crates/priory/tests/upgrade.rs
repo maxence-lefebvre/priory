@@ -455,20 +455,21 @@ fn a_daemon_that_answers_as_another_version_goes_back() {
 
 #[test]
 fn a_release_that_is_not_what_was_verified_stops_nothing() {
-    let edits: [(&str, &dyn Fn(&Setup), &str); 3] = [
+    type Edit = fn(&Setup);
+    let edits: [(&str, Edit, &str); 3] = [
         (
             "changed",
-            &|setup| script(&setup.path("home/upgrade/staged"), "#!/bin/sh\n"),
+            |setup| script(&setup.path("home/upgrade/staged"), "#!/bin/sh\n"),
             "changed after its check",
         ),
         (
             "forged",
-            &|setup| fs::write(setup.path("home/upgrade/attestations.json"), "forged").unwrap(),
+            |setup| fs::write(setup.path("home/upgrade/attestations.json"), "forged").unwrap(),
             "its attestation does not verify",
         ),
         (
             "own-build",
-            &|setup| fs::write(setup.path("home/upgrade/own.json"), "forged").unwrap(),
+            |setup| fs::write(setup.path("home/upgrade/own.json"), "forged").unwrap(),
             "the installed binary is not a release",
         ),
     ];
