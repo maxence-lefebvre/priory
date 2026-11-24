@@ -1112,7 +1112,7 @@ mod tests {
     #[test]
     fn an_alarm_opens_the_page_the_tasks_list_links() {
         let (home, db) = setup("alarm-url", 1);
-        let tasks = crate::listing::tasks(&db, None, None).unwrap();
+        let tasks = crate::listing::tasks(&db, None, None, false).unwrap();
         let id = &tasks.as_array().unwrap()[0]["id"];
         assert_eq!(read(&db, 1)["url"], format!("/tasks/{id}"));
         priory_runtime::runtime::remove_sealed(&home);

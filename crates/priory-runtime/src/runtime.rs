@@ -761,6 +761,32 @@ pub fn is_ancestor(worktree: &Path, below: &str, commit: &str) -> bool {
         .is_ok_and(|status| status.success())
 }
 
+/// The open pull requests of `repo` that `author` opened, or every open one without an author,
+/// each with its `number`, `title` and `url`.
+pub fn open_pull_requests(
+    repo: &str,
+    author: Option<&str>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let mut command = Command::new("gh");
+    command.args([
+        "pr",
+        "list",
+        "-R",
+        repo,
+        "--state",
+        "open",
+        "--limit",
+        "1000",
+        "--json",
+        "number,title,url",
+    ]);
+    if let Some(author) = author {
+        command.args(["--author", author]);
+    }
+    let open = run(&mut command)?;
+    serde_json::from_str(&open).map_err(|error| format!("gh pr list printed {open:?}: {error}"))
+}
+
 /// The state of pull request `number` on `repo`: OPEN, CLOSED or MERGED.
 pub fn pull_request_state(repo: &str, number: u64) -> Result<String, String> {
     let number = number.to_string();

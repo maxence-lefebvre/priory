@@ -36,6 +36,7 @@ GROUPS = [
         "docs/setting-up-a-nightly-dream.md",
         "docs/filtering-and-enriching-events.md",
         "docs/using-priory-from-your-own-session.md",
+        "docs/adopting-pull-requests.md",
     ]),
     ("Reference", "docs/reference", ["docs/reference/README.md", "docs/reference/cli.md"]),
     ("How it works", "docs/daemon", [

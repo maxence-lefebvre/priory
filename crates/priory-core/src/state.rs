@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 108;
+const VERSION: i64 = 109;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1926,6 +1926,37 @@ PRAGMA legacy_alter_table = OFF;
 "
 );
 
+// A parked hold: a task adopted onto a pull request, which a trigger's request releases.
+const SCHEMA_109: &str = concat!(
+    "CREATE TABLE holds_109 (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  task        INTEGER NOT NULL REFERENCES tasks (id),
+  reason      TEXT NOT NULL,
+  kind        TEXT NOT NULL CHECK (kind IN
+                ('person', 'time', 'task', 'merge', 'blockers', 'issue', 'merged', 'waiting', 'parked')),
+  until       TEXT,
+  target      INTEGER REFERENCES tasks (id),
+  resource    TEXT,
+  if_closed   TEXT CHECK (if_closed IN ('release', 'drop', 'ask')),
+  resume      TEXT NOT NULL CHECK (resume IN ('queued', 'ready')),
+  ask         INTEGER REFERENCES asks (id),
+  created     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  met         TEXT,
+  met_as      TEXT,
+  released    TEXT,
+  released_as TEXT
+);
+INSERT INTO holds_109 SELECT id, task, reason, kind, until, target, resource, if_closed, resume, ask,
+  created, met, met_as, released, released_as FROM holds;
+DROP TABLE holds;
+ALTER TABLE holds_109 RENAME TO holds;
+CREATE INDEX open_holds ON holds (task) WHERE released IS NULL;
+",
+    bumps!("holds"),
+    "PRAGMA user_version = 109;
+"
+);
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1941,7 +1972,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
-    SCHEMA_106, SCHEMA_107, SCHEMA_108,
+    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -2403,7 +2434,14 @@ pub(crate) fn route_in(
             }
             (Some(id), "created")
         }
-        Decision::Keep(id) if feedback => (Some(id), "coalesced"),
+        // A parked task's release starts its first run, which reads the events it kept.
+        Decision::Keep(id) if feedback => (
+            Some(id),
+            match crate::hold::unpark(tx, id, message.data["trigger"].as_str().unwrap_or("?"))? {
+                true => "released",
+                false => "coalesced",
+            },
+        ),
         Decision::Keep(id) if route::tick(message, factory) => (
             Some(id),
             if wakes(tx, id, factory)? {
@@ -3140,6 +3178,15 @@ fn owners(tx: &Transaction, resources: &[String]) -> rusqlite::Result<Vec<Task>>
     )?
     .query_map([resources], |row| Ok(Task { id: row.get(0)? }))?
     .collect()
+}
+
+/// The newest task in any state that owns `resource`, by key, claim, wait or subscription.
+pub fn any_owner(db: &Connection, resource: &str) -> rusqlite::Result<Option<i64>> {
+    db.query_row(
+        "SELECT max(task) FROM owned WHERE resource = ?1",
+        [resource],
+        |row| row.get(0),
+    )
 }
 
 /// What `priory attach` names: a task, which stands for its live run, or one run.

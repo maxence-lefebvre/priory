@@ -3514,6 +3514,9 @@ pub(crate) fn pull_request(tx: &Connection, task: i64) -> rusqlite::Result<Optio
              AND json_extract(inbox.data, '$.pull_request') IS NOT NULL
              AND json_extract(inbox.data, '$.head_branch') = tasks.branch
            UNION ALL
+           SELECT tasks.key, 0, 0 FROM tasks JOIN holds ON holds.task = tasks.id
+             WHERE tasks.id = ?1 AND holds.kind = 'parked'
+           UNION ALL
            SELECT tasks.key, 0, 0 FROM tasks JOIN inbox ON inbox.id = tasks.source
              WHERE tasks.id = ?1 AND inbox.type LIKE 'github.pull_request.%'
              AND inbox.type NOT LIKE 'github.pull_request.review_request%'
