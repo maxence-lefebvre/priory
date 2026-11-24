@@ -4,14 +4,17 @@ use crate::trace::Trace;
 use herdr_bus::Message;
 use jiff::{SignedDuration, Timestamp};
 use priory_factory::factory::{EventLog, Factory};
+use priory_factory::filters::{self, Labels};
 use priory_intake::intake::{
     self, ASK_ANSWERED as ANSWERED, ASK_APPLIED as APPLIED, ASK_DISMISSED as DISMISSED,
     ASK_POSTED as POSTED, OUTPUT, RUNNER_ALIVE as ALIVE, TASK_ACTED as ACTED,
-    TASK_APPLIED as ACT_APPLIED, TASK_CLAIMED as CLAIMED, TASK_HELD as HELD,
+    TASK_APPLIED as ACT_APPLIED, TASK_CLAIMED as CLAIMED, TASK_DROPPED as DROPPED,
+    TASK_HELD as HELD,
 };
 use priory_intake::log::Log;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 /// How long a runner's lease lasts past its last alive message.
@@ -67,7 +70,8 @@ pub(crate) fn view_consumer(viewer: &str) -> String {
 /// Records `message` on a view-only machine named `viewer`: it keeps the runners' claims, holds,
 /// leases, posts, submissions and memory candidates as a runner does, and claims, routes and
 /// applies nothing. A task
-/// request is `elsewhere`, and any other source event `ignored`.
+/// request of a key no runner holds is `unaccepted` until a claim wins it, and any other source
+/// event `ignored`.
 pub(crate) fn view(
     db: &mut Connection,
     message: &Message,
@@ -87,13 +91,14 @@ pub(crate) fn view(
             Some("outsider")
         } else if crate::memories::handle(&tx, message)?.is_some()
             || crate::autopilot::handle(&tx, message, true)?.is_some()
+            || handle(&tx, message, viewer, trace, None)?.is_some()
         {
             None
-        } else if crate::route::requests(message) {
-            Some("elsewhere")
-        } else if handle(&tx, message, viewer, trace, None)?.is_some() {
-            None
         } else {
+            crate::state::renamed(&tx, message, crate::route::resources(message).first())?;
+            if message.kind == "linear.issue.updated" {
+                settle(&tx, viewer, trace, None)?;
+            }
             Some("ignored")
         };
         if let Some(outcome) = outcome {
@@ -136,8 +141,14 @@ pub(crate) fn handle(
     let outcome = match kind {
         ALIVE => {
             renew(tx, text("runner"), message.time)?;
-            if text("runner") == me {
-                take_over(tx, me, message)?;
+            match trace.runner.as_deref() {
+                // A view-only machine has no alive message of its own, and takes nothing.
+                None => offer(tx, None, trace.factory, message.time)?,
+                Some(me) if text("runner") == me => {
+                    take_over(tx, me, trace.factory, message)?;
+                    offer(tx, Some(me), trace.factory, message.time)?;
+                }
+                Some(_) => {}
             }
             "noted"
         }
@@ -152,6 +163,10 @@ pub(crate) fn handle(
                 ],
             )?;
             renew(tx, text("runner"), message.time)?;
+            if owner(tx, text("key"))?.is_some_and(|owner| owner.hold != Hold::Ended) {
+                unclaim(tx, text("key"), false)?;
+                kill.extend(settle(tx, me, trace, counter)?);
+            }
             "noted"
         }
         CLAIMED => return claimed(tx, message, me, trace, counter).map(Some),
@@ -187,13 +202,40 @@ pub(crate) fn handle(
                 outcome
             }
         }
-        _ if crate::route::requests(message) => match requested(tx, message, me)? {
+        DROPPED => match drop_requests(tx, &Dropping::key(text("key")))? {
+            0 => "refused",
+            _ => "noted",
+        },
+        _ if crate::route::requests(message) => match requested(tx, message, trace)? {
             Some(outcome) => outcome,
             None => return Ok(None),
         },
-        _ => return Ok(None),
+        _ => {
+            closed(tx, message)?;
+            return Ok(None);
+        }
     };
     crate::state::record(tx, message, None, outcome, None)?;
+    if crate::route::requests(message) {
+        // The key names the row everywhere, whatever subject its sender set.
+        tx.execute(
+            "UPDATE inbox SET subject = ?2 WHERE id = ?1",
+            params![
+                message.id.to_string(),
+                crate::route::resources(message).first()
+            ],
+        )?;
+    }
+    if outcome == UNACCEPTED {
+        let now = intake::now().unwrap_or_else(|_| Timestamp::now());
+        tx.execute(
+            "UPDATE inbox SET reason = ?2 WHERE id = ?1",
+            params![
+                message.id.to_string(),
+                unaccepted(trace.factory, &[labels(&message.data)], now)
+            ],
+        )?;
+    }
     Ok(Some(kill))
 }
 
@@ -513,11 +555,12 @@ fn post(tx: &Transaction, me: &str, now: Timestamp) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// A request for a key no local task has: routed when this runner owns the key, else claimed.
+/// A request for a key no local task has: routed when this runner owns the key, else claimed when
+/// this runner's filters accept it. A view-only machine claims none.
 fn requested(
     tx: &Transaction,
     message: &Message,
-    me: &str,
+    trace: &Trace,
 ) -> rusqlite::Result<Option<&'static str>> {
     let Some(key) = crate::route::resources(message).into_iter().next() else {
         return Ok(None);
@@ -526,15 +569,339 @@ fn requested(
         return Ok(None);
     }
     match owner(tx, &key)? {
-        Some(owner) if owner.hold != Hold::Ended && owner.runner == me => Ok(None),
+        Some(owner)
+            if owner.hold != Hold::Ended
+                && Some(owner.runner.as_str()) == trace.runner.as_deref() =>
+        {
+            Ok(None)
+        }
         Some(owner) if owner.hold != Hold::Ended => Ok(Some("elsewhere")),
         _ => {
-            let claim = json!({ "key": key, "runner": me, "request": message.id.to_string() });
-            let id = format!("claim/{}/{me}", message.id);
-            send(tx, &stamped(CLAIMED, claim, &id).subject(key))?;
+            let now = intake::now().unwrap_or_else(|_| Timestamp::now());
+            let Some(me) = trace
+                .runner
+                .as_deref()
+                .filter(|me| refusal(trace.factory, me, &labels(&message.data), now).is_none())
+            else {
+                return Ok(Some(UNACCEPTED));
+            };
+            claim(tx, me, &key, &message.id.to_string())?;
             Ok(Some("claiming"))
         }
     }
+}
+
+/// Publishes this runner's claim of `key` for its request `request`.
+fn claim(tx: &Transaction, me: &str, key: &str, request: &str) -> rusqlite::Result<()> {
+    let claim = json!({ "key": key, "runner": me, "request": request });
+    let id = format!("claim/{request}/{me}");
+    send(tx, &stamped(CLAIMED, claim, &id).subject(key))
+}
+
+/// The inbox outcome of a request that no filter of this runner let it claim.
+const UNACCEPTED: &str = "unaccepted";
+
+/// The inbox rows of the unaccepted requests whose key no runner holds.
+macro_rules! unheld {
+    () => {
+        "outcome = 'unaccepted' AND NOT EXISTS (SELECT 1 FROM claims
+           WHERE claims.key = inbox.subject AND claims.hold != 'ended')"
+    };
+}
+
+/// The inbox rows of the first unaccepted request of each key that no runner holds.
+const WAITING: &str = concat!(
+    unheld!(),
+    " AND seq = (SELECT min(seq) FROM inbox AS first
+        WHERE first.subject = inbox.subject AND first.outcome = 'unaccepted')"
+);
+
+/// Settles each unaccepted request whose key a runner holds: its owner routes it, as it would had
+/// it read it now, and every other machine leaves it to that owner. Else its key's end would offer
+/// a request that the owner served already.
+pub(crate) fn settle(
+    tx: &Transaction,
+    me: &str,
+    trace: &Trace,
+    counter: Option<&crate::embed::Counter>,
+) -> Result<Vec<String>, Error> {
+    tx.execute(
+        "UPDATE inbox SET outcome = 'elsewhere', reason = NULL
+         WHERE outcome = 'unaccepted' AND EXISTS (SELECT 1 FROM claims
+           WHERE claims.key = inbox.subject AND claims.hold != 'ended' AND claims.runner != ?1)",
+        [me],
+    )?;
+    let own = tx
+        .prepare(
+            "SELECT id FROM inbox WHERE outcome = 'unaccepted' AND EXISTS (SELECT 1 FROM claims
+               WHERE claims.key = inbox.subject AND claims.hold != 'ended' AND claims.runner = ?1)
+             ORDER BY seq",
+        )?
+        .query_map([me], |row| row.get(0))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    reroute(tx, &own, trace, counter)
+}
+
+/// Routes every unaccepted request, in a factory that has one runner now: no filter keeps a
+/// request from it, only its task's start.
+pub(crate) fn unplace(
+    db: &mut Connection,
+    trace: &Trace,
+    counter: Option<&crate::embed::Counter>,
+) -> Result<Vec<String>, Error> {
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let all = tx
+        .prepare("SELECT id FROM inbox WHERE outcome = 'unaccepted' ORDER BY seq")?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    let kill = reroute(&tx, &all, trace, counter)?;
+    tx.commit()?;
+    Ok(kill)
+}
+
+fn reroute(
+    tx: &Transaction,
+    ids: &[String],
+    trace: &Trace,
+    counter: Option<&crate::embed::Counter>,
+) -> Result<Vec<String>, Error> {
+    let mut kill = Vec::new();
+    for id in ids {
+        let Some(request) = stored(tx, id)? else {
+            continue;
+        };
+        tx.execute("UPDATE inbox SET reason = NULL WHERE id = ?1", [id])?;
+        kill.extend(crate::state::route_in(tx, &request, trace, counter)?);
+    }
+    Ok(kill)
+}
+
+/// The labels a task request carries.
+pub(crate) fn labels(data: &Value) -> Labels {
+    serde_json::from_value(data["labels"].clone()).unwrap_or_default()
+}
+
+/// Why runner `runner`'s filters keep a task with `labels` off it at `at`, if they do:
+/// `runner desktop's filter !project=oss holds it until 18:00`.
+pub(crate) fn refusal(
+    factory: &Factory,
+    runner: &str,
+    labels: &Labels,
+    at: Timestamp,
+) -> Option<String> {
+    let file = &factory.runners.get(runner)?.value;
+    let refused = filters::accepts(&file.filters, labels, at).err()?;
+    let until = refused
+        .until
+        .map(|until| {
+            format!(
+                " until {}",
+                filters::when(until, at, &filters::zone(&file.filters))
+            )
+        })
+        .unwrap_or_default();
+    Some(format!(
+        "runner {runner}'s filter {} holds it{until}",
+        refused.filter
+    ))
+}
+
+/// Why no runner claims a key whose requests carry `requests`' labels at `at`: `no runner accepts it
+/// until 18:00`, at the first time one of them does.
+fn unaccepted(factory: &Factory, requests: &[Labels], at: Timestamp) -> String {
+    let lifts = factory.runners.values().flat_map(|file| {
+        let filters = &file.value.filters;
+        requests.iter().filter_map(move |labels| {
+            let until = match filters::accepts(filters, labels, at) {
+                Ok(()) => at,
+                Err(refused) => refused.until?,
+            };
+            Some((until, filters::zone(filters)))
+        })
+    });
+    match lifts.min_by_key(|(until, _)| *until) {
+        Some((until, zone)) if until > at => {
+            format!(
+                "no runner accepts it until {}",
+                filters::when(until, at, &zone)
+            )
+        }
+        Some(_) => "waits for a runner to claim it".to_owned(),
+        None => "no runner accepts it".to_owned(),
+    }
+}
+
+/// Claims, for each key no runner holds, the first unaccepted request that `me`'s filters accept at
+/// `at`; tells again why the requests of each other key wait.
+fn offer(
+    tx: &Transaction,
+    me: Option<&str>,
+    factory: &Factory,
+    at: Timestamp,
+) -> rusqlite::Result<()> {
+    let waiting = tx
+        .prepare(concat!(
+            "SELECT id, subject, data FROM inbox WHERE ",
+            unheld!(),
+            " ORDER BY seq"
+        ))?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut keys: BTreeMap<String, Vec<(String, Labels)>> = BTreeMap::new();
+    for (id, key, data) in waiting {
+        let labels = labels(&serde_json::from_str(&data).unwrap_or_default());
+        keys.entry(key).or_default().push((id, labels));
+    }
+    for (key, requests) in keys {
+        let accepted = me.and_then(|me| {
+            let (id, _) = requests
+                .iter()
+                .find(|(_, labels)| refusal(factory, me, labels, at).is_none())?;
+            Some((me, id))
+        });
+        if let Some((me, id)) = accepted {
+            claim(tx, me, &key, id)?;
+            tx.execute(
+                "UPDATE inbox SET outcome = 'claiming', reason = NULL WHERE id = ?1",
+                [id],
+            )?;
+            continue;
+        }
+        let labels: Vec<_> = requests.into_iter().map(|(_, labels)| labels).collect();
+        tx.execute(
+            "UPDATE inbox SET reason = ?2
+             WHERE subject = ?1 AND outcome = 'unaccepted' AND reason IS NOT ?2",
+            params![key, unaccepted(factory, &labels, at)],
+        )?;
+    }
+    Ok(())
+}
+
+/// Which waiting requests to drop.
+struct Dropping<'a> {
+    key: &'a str,
+    /// Also the keys that extend `key` with a `.` suffix.
+    extended: bool,
+    /// Only requests no newer than this, so a late copy of an old close drops none.
+    until: Option<Timestamp>,
+    /// Only requests that an issue's entry into this Linear view made.
+    view: Option<&'a str>,
+}
+
+impl<'a> Dropping<'a> {
+    fn key(key: &'a str) -> Self {
+        Self {
+            key,
+            extended: false,
+            until: None,
+            view: None,
+        }
+    }
+}
+
+/// Takes back this runner's claims of `key`, and with `extended` of the keys that extend it with a
+/// `.` suffix, that are not on the log yet: their requests wait again, unless another runner won. A claim on the log
+/// stays, since builds that know no drop accept it, so every build must.
+pub(crate) fn unclaim(tx: &Transaction, key: &str, extended: bool) -> rusqlite::Result<()> {
+    let queued = tx
+        .prepare(
+            "SELECT sends.id, inbox.id FROM sends
+             JOIN inbox ON inbox.id = json_extract(message, '$.data.request')
+             WHERE json_extract(message, '$.type') = ?3
+               AND json_extract(message, '$.data.from') IS NULL
+               -- A request that became a task here is adopted by its claim, which stays.
+               AND inbox.outcome IN ('claiming', 'elsewhere')
+               AND (inbox.subject = ?1
+                 OR ?2 AND substr(inbox.subject, 1, length(?1) + 1) = ?1 || '.')",
+        )?
+        .query_map(params![key, extended, CLAIMED], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (send, request) in queued {
+        tx.execute("DELETE FROM sends WHERE id = ?1", [send])?;
+        tx.execute(
+            "UPDATE inbox SET outcome = 'unaccepted' WHERE id = ?1 AND outcome = 'claiming'",
+            [request],
+        )?;
+    }
+    Ok(())
+}
+
+/// Drops the unaccepted requests of a key that no runner holds, and returns how many. It leaves a
+/// request whose claim is on the log.
+fn drop_requests(tx: &Transaction, drop: &Dropping) -> rusqlite::Result<usize> {
+    unclaim(tx, drop.key, drop.extended)?;
+    tx.execute(
+        "UPDATE inbox SET outcome = 'dropped', reason = NULL
+         WHERE outcome = 'unaccepted'
+           AND (subject = ?1 OR ?2 AND substr(subject, 1, length(?1) + 1) = ?1 || '.')
+           AND (?3 IS NULL OR julianday(time) <= julianday(?3))
+           AND (?4 IS NULL OR EXISTS (SELECT 1 FROM inbox AS source
+             WHERE source.id = json_extract(inbox.data, '$.source')
+               AND source.type = 'linear.issue.entered'
+               AND json_extract(source.data, '$.view') = ?4))
+           AND NOT EXISTS (SELECT 1 FROM claims
+             WHERE claims.key = inbox.subject AND claims.hold != 'ended')",
+        params![
+            drop.key,
+            drop.extended,
+            drop.until.map(|until| until.to_string()),
+            drop.view
+        ],
+    )
+}
+
+/// Drops the waiting requests of the issue or pull request that `message` closes, of the review it
+/// withdraws, or of the Linear view its issue left.
+fn closed(tx: &Transaction, message: &Message) -> rusqlite::Result<()> {
+    let review = crate::route::review(message).filter(|_| crate::route::withdraws(message));
+    let view = message.data["view"]
+        .as_str()
+        .filter(|_| message.kind == "linear.issue.left");
+    let closes = [intake::ISSUE_CLOSED, intake::PR_CLOSED].contains(&message.kind.as_str())
+        || view.is_some();
+    let resource = review.or_else(|| {
+        crate::route::resources(message)
+            .into_iter()
+            .next()
+            .filter(|_| closes)
+    });
+    let Some(resource) = resource else {
+        return Ok(());
+    };
+    drop_requests(
+        tx,
+        &Dropping {
+            extended: closes,
+            until: Some(message.time),
+            view,
+            ..Dropping::key(&resource)
+        },
+    )
+    .map(|_| ())
+}
+
+/// Publishes a person's drop of the requests of `key` that no runner claimed.
+pub fn drop_request(factory: &Factory, db: &Connection, key: &str) -> Result<String, String> {
+    crate::link::refuse_while_unreachable(db)?;
+    let data = json!({ "key": key, "by": "cli" });
+    publish(factory.log(), &Message::new(DROPPED, data).subject(key))
+        .map_err(|why| why.said("task"))?;
+    Ok(format!(
+        "drop of {key} sent: every runner drops its request as it reads the log, unless a runner claimed it first"
+    ))
+}
+
+/// Whether a request of `key` waits here that no runner claimed.
+pub fn waits(db: &Connection, key: &str) -> rusqlite::Result<bool> {
+    Ok(unaccepted_rows(db)?.iter().any(|row| row["key"] == key))
 }
 
 /// Applies a claim read from the log: the first that wins a key makes its runner the owner, which
@@ -606,12 +973,14 @@ fn claimed(
             if ended { "ended" } else { "waiting" }
         ],
     )?;
-    // The request, then each later one of the key that no task here took, are this task's.
+    // The request, then each later one of the key that no task here took, and each one no filter
+    // let this runner claim, are this task's.
     let mut pending: Vec<String> = tx
         .prepare(
             "SELECT id FROM inbox WHERE subject = ?1 AND id != ?2
-               AND outcome IN ('claiming', 'elsewhere')
-               AND seq > (SELECT seq FROM inbox WHERE id = ?2)
+               AND (outcome IN ('claiming', 'elsewhere')
+                   AND seq > (SELECT seq FROM inbox WHERE id = ?2)
+                 OR outcome = 'unaccepted')
              ORDER BY seq",
         )?
         .query_map([key, request], |row| row.get(0))?
@@ -634,7 +1003,8 @@ fn claimed(
     for id in &pending {
         if runner != me {
             tx.execute(
-                "UPDATE inbox SET outcome = 'elsewhere' WHERE id = ?1 AND outcome = 'claiming'",
+                "UPDATE inbox SET outcome = 'elsewhere', reason = NULL
+                 WHERE id = ?1 AND outcome IN ('claiming', 'unaccepted')",
                 [id],
             )?;
             continue;
@@ -689,12 +1059,20 @@ fn stored(tx: &Transaction, id: &str) -> Result<Option<Message>, Error> {
     }))
 }
 
-/// Claims each waiting key of another runner whose lease ended before this runner's `alive`.
-fn take_over(tx: &Transaction, me: &str, alive: &Message) -> rusqlite::Result<()> {
+/// Claims each waiting key of another runner whose lease ended before this runner's `alive`, unless
+/// this runner's filters refuse its task then.
+fn take_over(
+    tx: &Transaction,
+    me: &str,
+    factory: &Factory,
+    alive: &Message,
+) -> rusqlite::Result<()> {
     let lapsed_keys = tx
         .prepare(
-            "SELECT claims.key, claims.runner, claims.request, leases.alive
+            "SELECT claims.key, claims.runner, claims.request, leases.alive,
+               coalesce(request.data, '{}')
              FROM claims LEFT JOIN leases ON leases.runner = claims.runner
+               LEFT JOIN inbox AS request ON request.id = claims.request
              WHERE claims.runner != ?1 AND claims.hold = 'waiting' ORDER BY claims.key",
         )?
         .query_map([me], |row| {
@@ -703,12 +1081,14 @@ fn take_over(tx: &Transaction, me: &str, alive: &Message) -> rusqlite::Result<()
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, Option<i64>>(3)?,
+                row.get::<_, String>(4)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (key, from, request, renewed) in lapsed_keys {
+    for (key, from, request, renewed, data) in lapsed_keys {
         let renewed = renewed.and_then(|second| Timestamp::from_second(second).ok());
-        if !lapsed(renewed, alive.time) {
+        let labels = labels(&serde_json::from_str(&data).unwrap_or_default());
+        if !lapsed(renewed, alive.time) || refusal(factory, me, &labels, alive.time).is_some() {
             continue;
         }
         let claim = json!({ "key": key, "runner": me, "request": request, "from": from });
@@ -790,6 +1170,7 @@ pub(crate) fn send(tx: &Transaction, message: &Message) -> rusqlite::Result<()> 
 pub(crate) fn tick(
     db: &mut Connection,
     me: &str,
+    factory: &Factory,
     now: Timestamp,
     said: &mut Option<i64>,
 ) -> rusqlite::Result<()> {
@@ -808,7 +1189,8 @@ pub(crate) fn tick(
         .prepare(
             "SELECT claims.key, tasks.state,
                EXISTS (SELECT 1 FROM runs WHERE runs.task = tasks.id), claims.published,
-               tasks.generation, claims.published_generation
+               tasks.generation, claims.published_generation, tasks.id, claims.hold,
+               claims.generation IS claims.published_generation
              FROM claims JOIN tasks ON tasks.id =
                (SELECT max(id) FROM tasks WHERE tasks.key = claims.key)
              WHERE claims.runner = ?1",
@@ -820,14 +1202,28 @@ pub(crate) fn tick(
                 row.get::<_, Option<String>>(3)?,
                 row.get::<_, i64>(4)?,
                 row.get::<_, Option<i64>>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, bool>(8)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     post(&tx, me, now)?;
-    for (key, hold, published, generation, said_generation) in changed {
-        // A task reserved to start stays kept until it starts.
+    for (key, hold, published, generation, said_generation, task, logged, current) in changed {
+        // Nothing may follow a `waiting` that gives a kept key back before it is read.
+        if logged == "kept" && published.as_deref() == Some("waiting") {
+            continue;
+        }
+        // A task reserved to start stays kept until it starts, unless a filter holds it now. Only a
+        // `kept` read back is taken back: an older one still on its way would follow the `waiting`.
         let hold = match (published.as_deref(), hold) {
-            (Some("kept"), Hold::Waiting) => Hold::Kept,
+            (Some("kept"), Hold::Waiting)
+                if logged != "kept"
+                    || !current
+                    || crate::state::filtered(&tx, factory, Some(me), task)?.is_none() =>
+            {
+                Hold::Kept
+            }
             _ => hold,
         };
         if published.as_deref() == Some(hold.as_str()) && said_generation == Some(generation) {
@@ -883,6 +1279,11 @@ pub(crate) fn cleared(db: &mut Connection, me: &str, task: i64) -> rusqlite::Res
     };
     // A task the log holds as ended was reopened here: another runner may claim its key until
     // the log says this one keeps it again.
+    // A `waiting` on its way gives the key back: it is read before this runner asks to keep it again.
+    if hold == "kept" && published.as_deref() == Some("waiting") {
+        tx.commit()?;
+        return Ok(Some(false));
+    }
     if hold == "kept" {
         tx.execute(
             "UPDATE tasks SET reason = NULL WHERE id = ?1 AND reason = ?2",
@@ -1225,7 +1626,7 @@ pub(crate) fn with_remote_tasks(db: &Connection, tasks: &mut Value) -> rusqlite:
                json_extract(request.data, '$.workflow'), json_extract(request.data, '$.band'),
                json_extract(request.data, '$.lane'),
                coalesce(nullif(json_extract(request.data, '$.tldr'), ''), request.subject),
-               claims.generation
+               claims.generation, coalesce(json_extract(request.data, '$.labels'), '{}')
              FROM claims LEFT JOIN inbox AS claim ON claim.seq = claims.won
                LEFT JOIN inbox AS request ON request.id = claims.request
              WHERE claims.runner != ?1 AND claims.hold != 'ended'
@@ -1242,6 +1643,8 @@ pub(crate) fn with_remote_tasks(db: &Connection, tasks: &mut Value) -> rusqlite:
                     "lane": row.get::<_, Option<String>>(6)?,
                     "title": row.get::<_, Option<String>>(7)?,
                     "generation": row.get::<_, Option<i64>>(8)?,
+                    "labels": serde_json::from_str::<Value>(&row.get::<_, String>(9)?)
+                        .unwrap_or_default(),
                     "state": null, "step": null,
                 }),
             ))
@@ -1253,7 +1656,48 @@ pub(crate) fn with_remote_tasks(db: &Connection, tasks: &mut Value) -> rusqlite:
         task["submissions"] = task_submissions(db, runner, &key, None)?;
     }
     list.extend(remote.into_iter().map(|(_, task)| task));
+    list.extend(unaccepted_rows(db)?);
     Ok(())
+}
+
+/// The first request of each key that no runner's filters let it claim yet, as a task row with no
+/// runner and the reason it waits.
+fn unaccepted_rows(db: &Connection) -> rusqlite::Result<Vec<Value>> {
+    db.prepare(&format!(
+        "SELECT subject, time, reason, json_extract(data, '$.workflow'), json_extract(data, '$.band'),
+           json_extract(data, '$.lane'), coalesce(nullif(json_extract(data, '$.tldr'), ''), subject),
+           coalesce(json_extract(data, '$.labels'), '{{}}')
+         FROM inbox WHERE {WAITING} ORDER BY seq"
+    ))?
+    .query_map([], |row| {
+        Ok(json!({
+            "id": null, "key": row.get::<_, String>(0)?, "runner": null, "hold": null,
+            "since": row.get::<_, String>(1)?, "reason": row.get::<_, Option<String>>(2)?,
+            "workflow": row.get::<_, Option<String>>(3)?,
+            "band": row.get::<_, Option<String>>(4)?,
+            "lane": row.get::<_, Option<String>>(5)?,
+            "title": row.get::<_, Option<String>>(6)?,
+            "labels": serde_json::from_str::<Value>(&row.get::<_, String>(7)?).unwrap_or_default(),
+            "generation": null, "state": null, "step": null, "submissions": [],
+        }))
+    })?
+    .collect()
+}
+
+/// The desk's queue items of the requests no runner's filters let it claim yet.
+pub(crate) fn unaccepted_desk_items(db: &Connection) -> rusqlite::Result<Vec<Value>> {
+    Ok(unaccepted_rows(db)?
+        .into_iter()
+        .map(|row| {
+            let band = row["band"].as_str().unwrap_or("-");
+            let reason = row["reason"].as_str().unwrap_or_default();
+            json!({
+                "since": row["since"], "kind": "queue", "id": row["key"], "task": null, "key": row["key"],
+                "step": null, "lane": row["lane"], "what": format!("{band}: {reason}"),
+                "generation": null, "snoozed_until": null, "snoozed_at": null, "back_early": null,
+            })
+        })
+        .collect())
 }
 
 /// The actions sent to runner `runner`'s task of `key`, of `generation` when given, oldest first.
@@ -1804,6 +2248,32 @@ mod tests {
         }
         for state in ["done", "failed", "dropped"] {
             assert_eq!(hold(state, true), Hold::Ended, "{state}");
+        }
+    }
+
+    #[test]
+    fn a_cleared_task_waits_until_the_hold_its_runner_published_last_is_read_back() {
+        for (logged, published, cleared, sent) in [
+            ("waiting", "waiting", Some(false), 1),
+            ("waiting", "kept", Some(false), 0),
+            ("kept", "kept", Some(true), 0),
+            ("kept", "waiting", Some(false), 0),
+        ] {
+            let mut db = crate::state::memory();
+            db.execute_batch(&format!(
+                "INSERT INTO tasks (id, key, workflow, step, state, trigger, source)
+                   VALUES (1, 'k', 'w', 's', 'queued', 't', 'r');
+                 INSERT INTO claims (key, runner, request, won, hold, generation, published,
+                   published_generation)
+                   VALUES ('k', 'a', 'r', 1, '{logged}', 1, '{published}', 1);"
+            ))
+            .unwrap();
+            let case = format!("the log says {logged}, the last sent is {published}");
+            assert_eq!(super::cleared(&mut db, "a", 1).unwrap(), cleared, "{case}");
+            let sends: i64 = db
+                .query_row("SELECT count(*) FROM sends", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(sends, sent, "{case}");
         }
     }
 }

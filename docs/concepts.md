@@ -82,6 +82,13 @@ Two more settings change who starts. A [review limit](daemon/runs.md#review-limi
 while too many pull requests wait for a person. An [urgent wake](daemon/room.md#urgent-wakes) lets a
 task in a band you name stop a lower band's run at the end of its turn.
 
+**Labels and runner filters.** A label is a `key=value` pair on a task, such as `project=oss`,
+which its trigger's `labels` or `priory request --label` set. Labels differ from the marks
+`priory label` writes and from a GitHub issue's labels. A runner filter, in a runner file, matches
+labels: `project=oss` or `!project=oss`, optionally only on some days and hours. A runner claims and
+starts only the tasks its filters accept, so a desktop can leave a project's tasks to a server by
+day. See [docs/daemon/runners.md](daemon/runners.md#placing-tasks-with-filters).
+
 **Health.** Every second, the daemon checks each run for an unexpected exit, a timeout or a
 permission prompt. It never approves a permission prompt. A crashed run gets one repair attempt.
 A step's `budget` limits the dollars a task may spend at that step. When a fix fails the
