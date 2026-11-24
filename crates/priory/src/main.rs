@@ -2531,6 +2531,18 @@ fn acquire(args: &[OsString], lease: bool) -> ExitCode {
         eprintln!("priory memory: {error}; the command did not run");
         ExitCode::from(GATE_FAILED)
     };
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    // A name without `/` is looked up on PATH; check it before the command waits for its grant.
+    if !program.as_encoded_bytes().contains(&b'/')
+        && !std::env::split_paths(&path).any(|dir| executable(&dir.join(program)))
+    {
+        eprintln!(
+            "priory memory: {} is not on PATH ({}); the command did not run",
+            program.to_string_lossy(),
+            path.to_string_lossy()
+        );
+        return ExitCode::from(127);
+    }
     let acquired = gate(&Gate::Acquire {
         bytes: (gb * f64::from(1u32 << 30)) as u64,
         pid: std::process::id(),
@@ -2590,6 +2602,12 @@ fn acquire(args: &[OsString], lease: bool) -> ExitCode {
             ExitCode::from(127)
         }
     }
+}
+
+fn executable(file: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(file)
+        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
 }
 
 /// Runs a command that holds `grant` from before it starts: a shell waits for a go-ahead on a pipe,

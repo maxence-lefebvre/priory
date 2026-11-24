@@ -14366,6 +14366,88 @@ fn a_gated_command_runs_and_its_exit_code_passes_through() {
     assert!(setup.rows("memory").is_empty());
 }
 
+/// Starts `priory memory acquire --gb 1 -- <command>` in the test's `fake` directory, with `PATH`.
+fn acquire_on(setup: &Setup, path: &std::ffi::OsStr, command: &[&str]) -> Command {
+    let mut acquire = setup.command(env!("CARGO_BIN_EXE_priory"));
+    acquire
+        .args(["memory", "acquire", "--gb", "1", "--"])
+        .args(command)
+        .current_dir(setup.dir.join("fake"))
+        .env("PATH", path);
+    acquire
+}
+
+#[test]
+fn a_gated_command_finds_a_tool_only_on_acquires_path() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut setup = Setup::new("gate-path");
+    setup.start();
+    listening(&setup);
+    let tools = setup.dir.join("tools");
+    fs::create_dir_all(&tools).unwrap();
+    let tool = tools.join("only-here");
+    fs::write(&tool, "#!/bin/sh\necho ran-only-here\nexit 5\n").unwrap();
+    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(tools).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+
+    let done = acquire_on(&setup, &path, &["only-here"]).output().unwrap();
+
+    assert_eq!(
+        done.status.code(),
+        Some(5),
+        "stderr: {}",
+        String::from_utf8_lossy(&done.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&done.stdout), "ran-only-here\n");
+}
+
+#[test]
+fn a_gated_command_sees_a_variable_set_only_on_acquire() {
+    let mut setup = Setup::new("gate-env");
+    setup.start();
+    listening(&setup);
+
+    let done = acquire_on(
+        &setup,
+        &std::env::var_os("PATH").unwrap(),
+        &["sh", "-c", "echo \"$GATE_PROBE\""],
+    )
+    .env("GATE_PROBE", "from-the-run")
+    .output()
+    .unwrap();
+
+    assert!(
+        done.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&done.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&done.stdout), "from-the-run\n");
+}
+
+#[test]
+fn a_gated_tool_missing_from_path_exits_127_naming_the_path_and_takes_no_grant() {
+    let mut setup = Setup::new("gate-missing");
+    setup.start();
+    listening(&setup);
+    let path = format!("{}:/usr/bin:/bin", setup.dir.join("tools").display());
+
+    let done = acquire_on(&setup, path.as_ref(), &["no-such-tool", "run"])
+        .output()
+        .unwrap();
+
+    let said = String::from_utf8_lossy(&done.stderr);
+    assert_eq!(done.status.code(), Some(127), "stderr: {said}");
+    assert!(
+        said.contains(&format!("no-such-tool is not on PATH ({path})")),
+        "stderr: {said}"
+    );
+    assert!(!said.contains("grant"), "stderr: {said}");
+    assert!(setup.rows("memory").is_empty());
+}
+
 #[test]
 fn an_acquire_without_gb_reserves_10_gb() {
     let mut setup = Setup::new("gate-default");
