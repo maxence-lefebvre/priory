@@ -2,7 +2,7 @@
 // Agent text is untrusted: every value goes through `html`, which escapes it.
 import { ARM_MS, ASK_VIEWS, answeredAsks, answeredBy, askBody, askGroups, askHeading, confidenceNote, openAsksOf, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, optionKey, press, runsCommand, submitted, takesText, writeNote } from "./asks.js";
 import { SPLITS, attentionView, costTiles, dayBars, money, scoreTable, splitTable } from "./costs.js";
-import { addBody, addOutcome } from "./add.js";
+import { addBody, addOutcome, swapLine } from "./add.js";
 import { linked } from "./links.js";
 import { markdown } from "./markdown.js";
 import { around, dossier, nextPick, refusal } from "./reports.js";
@@ -811,12 +811,14 @@ async function subscribeTask(resource, task) {
 
 // The Add sheet with the server's text, whose URL keys the new task by the group's resource.
 async function requestTask(text, workflow) {
-  state.add.defaults ??= await api("/api/request").catch(() => null);
+  await readAddDefaults();
   const { draft, defaults } = state.add;
   draft.text = text;
   draft.band ??= defaults?.band || "";
   // The Add control offers only requestable workflows: any other prefills the factory's default.
-  draft.workflow = requestedWorkflow(workflow, defaults?.workflows) ?? (defaults?.workflow || "");
+  const offered = requestedWorkflow(workflow, defaults?.workflows);
+  draft.workflow = offered ?? (defaults?.workflow || "");
+  state.add.swapped = offered === undefined ? swapLine(workflow, defaults?.workflow) : null;
   keepDraft();
   openAdd();
 }
@@ -2384,17 +2386,26 @@ const keepDraft = () => localStorage.setItem(DRAFT_KEY, JSON.stringify({ draft: 
 // Lanes have no list of their own: the chip offers each lane a listed task carries.
 const knownLanes = () => [...new Set([...state.data.tasks, ...state.data.queue.waiting].map((task) => task.lane).filter(Boolean))].sort();
 
+// The factory may reload while the page is open; a read that fails keeps the last one.
+async function readAddDefaults() {
+  state.add.defaults = await api("/api/request").catch(() => state.add.defaults);
+}
+
 async function openAdd() {
   if (!state.data || addSheet().open) return;
   if (state.add.phase === "added") Object.assign(state.add, { phase: "empty", task: null });
-  if (!state.add.defaults) {
-    state.add.defaults = await api("/api/request").catch(() => null);
-    const { draft, defaults } = state.add;
-    if (defaults && draft.workflow === undefined) Object.assign(draft, { workflow: defaults.workflow || "", band: defaults.band || "" });
-  }
+  const before = state.add.defaults;
+  const read = readAddDefaults();
+  if (!before) await read;
+  const { draft, defaults } = state.add;
+  if (defaults && draft.workflow === undefined) Object.assign(draft, { workflow: defaults.workflow || "", band: defaults.band || "" });
+  if (addSheet().open) return;
   renderAdd();
   addSheet().showModal();
   document.getElementById("add-text")?.focus();
+  await read;
+  // A redraw closes an open picker, so only a changed list draws again.
+  if (addSheet().open && JSON.stringify(state.add.defaults) !== JSON.stringify(defaults)) renderAdd();
 }
 
 function closeAdd() {
@@ -2448,7 +2459,7 @@ const ADD_LINES = {
 function renderAdd() {
   const sheet = addSheet();
   if (!sheet) return;
-  const { draft, phase, error, defaults } = state.add;
+  const { draft, phase, error, defaults, swapped } = state.add;
   const sending = phase === "sending";
   const back = !state.failed && ["offline", "unsure"].includes(phase);
   const status = phase === "refused"
@@ -2462,8 +2473,8 @@ function renderAdd() {
   const label = sending ? "Adding…" : back ? "Send" : state.failed ? "Keep draft" : "Add";
   const body = phase === "added" ? addedTask() : html`<form data-action="add" ${sending ? raw('aria-busy="true"') : ""}>
     <label class="sr" for="add-text">What should the factory do?</label>
-    <input id="add-text" name="text" autocomplete="off" enterkeyhint="send" placeholder="What should the factory do?" value="${draft.text}" ${sending ? raw("readonly") : ""} ${status ? raw('aria-describedby="add-status"') : ""}>
-    ${status}
+    <input id="add-text" name="text" autocomplete="off" enterkeyhint="send" placeholder="What should the factory do?" value="${draft.text}" ${sending ? raw("readonly") : ""} ${status || swapped ? raw('aria-describedby="add-status add-swapped"') : ""}>
+    ${status}${swapped ? html`<p class="warnline" id="add-swapped">${icon("circle-alert", "s15")}<span>${swapped}</span></p>` : ""}
     <div class="chips">${chip("workflow", "Workflow", draft.workflow, defaults?.workflows || [], defaults?.workflow ? `default (${defaults.workflow})` : "pick one")}
       ${chip("band", "Band", draft.band, defaults?.bands || state.data?.bands || [], "default")}
       ${chip("lane", "Lane", draft.lane, state.data ? knownLanes() : [], "routed")}</div>
@@ -2502,6 +2513,7 @@ async function submitAdd() {
   if (outcome.state === "added") {
     const { defaults } = state.add;
     state.add.draft = { text: "", workflow: defaults?.workflow || "", band: defaults?.band || "", lane: "" };
+    state.add.swapped = null;
     state.add.task = { key: outcome.key, id: outcome.id, body: null };
     localStorage.removeItem(DRAFT_KEY);
     if (outcome.id !== null) api(`/api/tasks/${outcome.id}`).then((task) => { if (state.add.task?.id === outcome.id) { state.add.task.body = task; renderAdd(); } }, () => {});
@@ -2515,7 +2527,7 @@ async function submitAdd() {
 
 function discardAdd() {
   const { defaults } = state.add;
-  Object.assign(state.add, { phase: "empty", error: null, draft: { text: "", workflow: defaults?.workflow || "", band: defaults?.band || "", lane: "" } });
+  Object.assign(state.add, { phase: "empty", error: null, swapped: null, draft: { text: "", workflow: defaults?.workflow || "", band: defaults?.band || "", lane: "" } });
   localStorage.removeItem(DRAFT_KEY);
   renderAdd();
   document.getElementById("add-text")?.focus();
@@ -3228,6 +3240,10 @@ document.addEventListener("input", (event) => {
   if (event.target.id === "add-text" || event.target.dataset.addChip) {
     state.add.draft[event.target.dataset.addChip || "text"] = event.target.value;
     keepDraft();
+    if (event.target.dataset.addChip === "workflow") {
+      state.add.swapped = null;
+      document.getElementById("add-swapped")?.remove();
+    }
     // Only the button's state changes; a full redraw would reset the caret on every letter.
     addSheet().querySelector("form .btn.primary")?.setAttribute("aria-disabled", String(!state.add.draft.text.trim() || state.add.phase === "sending"));
     return;

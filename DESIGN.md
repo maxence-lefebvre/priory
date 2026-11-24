@@ -557,7 +557,7 @@ with a pointer, and the `+` beside the Answer capsule opens it on a phone.
 - **The chips** read "Workflow implement", "Band today" and "Lane routed": the name in `--text-3`,
   the value in `--text` at 500, and `chevron-down`. Each opens the platform's own picker. Workflow
   and Band start on the `[request]` defaults; Lane starts on "routed", which leaves the lane to the
-  factory's lane rules. Workflow lists the factory's workflows, Band its bands in order, and Lane
+  factory's lane rules. Workflow lists the factory's requestable workflows, read each time the sheet opens, Band its bands in order, and Lane
   each lane a listed task carries. Chips are `--chip` tall with a `--control` target on a coarse
   pointer.
 - **Keys and targets.** `N` never fires inside a field or while the sheet is open. Every control is
@@ -566,6 +566,7 @@ with a pointer, and the `+` beside the Answer capsule opens it on a phone.
 | State   | What the person sees |
 | ------- | -------------------- |
 | empty   | The field and the chips; Add is disabled (`aria-disabled`, `--text-3` on `--raised`). |
+| swapped | Opened by **Request a task** for a workflow that is not requestable: a `--warn-text` line with `circle-alert`, "Workflow sweep is not requestable, so this starts the default, implement.", or "Workflow sweep is not requestable. Pick one." with no `[request]` default. It leaves once the person picks a workflow, discards the draft or adds the task. |
 | sending | The field turns read-only and Add reads "Adding…". |
 | refused | Under the field, in `--danger-text` with `circle-x`: "Could not add: " and the daemon's sentence. The text and chips stay. "Discard draft" appears. |
 | added   | The sheet shows the new task in place: its state tile, key in mono, workflow and state, the request, band and lane, with "Added. The task waits in the queue for its turn." Then "Add another" (secondary) and "Close" (primary). |
