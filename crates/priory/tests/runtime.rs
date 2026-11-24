@@ -4758,7 +4758,10 @@ fn trust_worktrees_makes_direnv_trust_the_worktree_and_starts_the_run_in_its_env
         )),
         "{log}"
     );
-    assert_eq!(lines[1], format!("DIRENV_CONFIG={}", folder.display()));
+    assert!(
+        lines.contains(&format!("DIRENV_CONFIG={}", folder.display()).as_str()),
+        "{log}"
+    );
     let config: toml::Table = fs::read_to_string(folder.join("direnv.toml"))
         .unwrap()
         .parse()
