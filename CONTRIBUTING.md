@@ -48,6 +48,11 @@ the one CI uses.
   `corepack pnpm web:build`, and commit `crates/priory-core/web/dist/app.js` with your change. CI
   fails on a stale bundle. [ADR 0004](docs/adr/0004-the-web-view-is-a-react-app-whose-built-bundle-is-committed.md)
   says why the bundle is committed.
+- Check that a refresh keeps the page drawn: with the demo served, run
+  `node scripts/demo/refresh.mjs DIR [CHROMIUM]`. It changes the demo's data while a page is open
+  and fails on a frame that lost a section, or the Say field's focus, text or caret, on a blank page or on a
+  stale draw. It needs the `sqlite3` command. Paste its output in the pull request, since CI has no
+  browser.
 - Follow [DESIGN.md](DESIGN.md) for tokens, components, states, touch and copy. Change it in the
   same pull request when the UI needs something it lacks.
 - Retake the README's screenshots from synthetic data. Run `scripts/demo/serve.sh DIR` with a new
