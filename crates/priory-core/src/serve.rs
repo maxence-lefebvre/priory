@@ -398,6 +398,7 @@ struct Served {
     workflows: Vec<String>,
     /// The workflows `POST /api/request` refuses.
     opted_out: Vec<String>,
+    default_workflow: Option<String>,
     /// `GET /api/request`: what the Add control prefills and offers.
     request: String,
     prices: BTreeMap<String, Price>,
@@ -426,6 +427,7 @@ impl Served {
             schedules: listing::schedule_triggers(factory),
             workflows: factory.requestable(),
             opted_out: factory.not_requestable(),
+            default_workflow: factory.request().map(|defaults| defaults.workflow.clone()),
             request: serde_json::json!({
                 "workflow": factory.request().map(|defaults| &defaults.workflow),
                 "band": factory.request().and_then(|defaults| defaults.band.as_ref()),
@@ -619,7 +621,8 @@ fn route(
         "/api/queue" => match intake::now() {
             Ok(now) => listing::revised(db, "queue", |db| {
                 let offered = Some((&served.workflows[..], &served.opted_out[..]));
-                listing::queue(db, &served.schedules, offered, now).map(Some)
+                let default_workflow = served.default_workflow.as_deref();
+                listing::queue(db, &served.schedules, offered, default_workflow, now).map(Some)
             }),
             Err(error) => return Reply::error(500, &error),
         },
