@@ -135,9 +135,9 @@ impl Setup {
             tmux: TmuxDir::new(&dir),
             dir,
         };
-        // The state and the log exist, with one to-do to find again.
+        // The state and the log exist, with one report to find again.
         succeeded(&setup.priory(&["daemon", setup.path("factory").to_str().unwrap(), "--once"]));
-        succeeded(&setup.priory(&["todo", "add", "kept"]));
+        succeeded(&setup.priory(&["post", "marker", "kept"]));
         setup
     }
 
@@ -274,10 +274,10 @@ impl Setup {
             self.desk()
         );
         assert!(self.answers(), "{name}");
-        let todos = self.priory(&["todo", "list"]);
+        let inbox = self.priory(&["inbox"]);
         assert!(
-            String::from_utf8_lossy(&todos.stdout).contains("kept"),
-            "{name}: {todos:?}"
+            String::from_utf8_lossy(&inbox.stdout).contains("kept"),
+            "{name}: {inbox:?}"
         );
         assert!(!self.path("home/upgrade/journal.json").exists(), "{name}");
         let store = fs::read_to_string(self.path("home/upgrade/state.json")).unwrap();
@@ -394,7 +394,7 @@ fn a_changed_download_is_never_installed() {
 #[test]
 fn a_migration_that_fails_puts_both_databases_back() {
     let setup = Setup::new("migration", "");
-    let spoil = "\"$0\" todo list > \"$FAKE/refused\" 2>&1; \
+    let spoil = "\"$0\" desk > \"$FAKE/refused\" 2>&1; \
                  echo spoiled > \"$PRIORY_DB\"; echo spoiled > \"$HERDR_BUS_DB\"; exit 1";
     setup.upgrade(&fake(CURRENT, "exit 0", spoil), |journal| {
         journal["migrates"] = json!(true);
