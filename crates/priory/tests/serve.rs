@@ -2057,6 +2057,25 @@ fn the_queue_lists_the_factorys_requestable_workflows_so_a_view_can_offer_them()
 }
 
 #[test]
+fn the_queue_names_the_request_tables_workflow_so_a_view_can_show_the_default() {
+    let mut setup = Setup::new("queue-default-workflow", DEFAULTS);
+    let address = setup.start(&["serve", &setup.factory()]);
+    let mut bare = Setup::new("queue-no-default-workflow", SERVE);
+    let bare_address = bare.start(&["serve", &bare.factory()]);
+
+    let queue = api(&address, "/api/queue");
+    assert_eq!(queue["default_workflow"], "implement");
+    assert_eq!(json_of(&setup, "queue")["default_workflow"], "implement");
+    let output = setup.priory(&["queue", "--json"]);
+    succeeded(&output);
+    let without_factory: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let bare_queue = api(&bare_address, "/api/queue");
+    for queue in [without_factory, bare_queue, json_of(&bare, "queue")] {
+        assert_eq!(queue.get("default_workflow"), Some(&Value::Null));
+    }
+}
+
+#[test]
 fn the_views_endpoint_returns_the_default_view_priory_ships() {
     let mut setup = Setup::new("views", SERVE);
     let address = setup.start(&["serve", &setup.factory()]);
@@ -4364,6 +4383,10 @@ fn editing_links_in_a_running_daemons_factory_changes_the_links_endpoint_without
         serde_json::from_slice::<Value>(&cli.stdout).unwrap(),
         edited
     );
+    // serve answers from the new factory before the daemon writes its record.
+    eventually("the reload record", || {
+        !records(&setup, "factory.config.reloaded").is_empty()
+    });
     let reloaded = records(&setup, "factory.config.reloaded");
     assert_eq!(reloaded.len(), 1, "{reloaded:?}");
     assert_eq!(reloaded[0]["factory"], "demo");
@@ -5135,8 +5158,21 @@ fn decrypt(body: &[u8], key: &p256::SecretKey, auth: &[u8]) -> Vec<u8> {
 impl Setup {
     /// Subscribes a browser at `endpoint` through the API, and returns its private key and auth.
     fn subscribe(&self, address: &str, endpoint: &str) -> (p256::SecretKey, Vec<u8>) {
+        self.subscribe_to(address, endpoint, None)
+    }
+
+    /// As `subscribe`, with the kinds the browser chose.
+    fn subscribe_to(
+        &self,
+        address: &str,
+        endpoint: &str,
+        kinds: Option<Value>,
+    ) -> (p256::SecretKey, Vec<u8>) {
         use base64ct::{Base64UrlUnpadded, Encoding};
-        let (browser, key) = subscription(endpoint);
+        let (mut browser, key) = subscription(endpoint);
+        if let Some(kinds) = kinds {
+            browser["kinds"] = kinds;
+        }
         let (status, body) = post(address, "/api/push/subscribe", "", &browser.to_string());
         assert_eq!(status, 200, "{body}");
         let auth = Base64UrlUnpadded::decode_vec(browser["keys"]["auth"].as_str().unwrap());
@@ -5260,6 +5296,85 @@ fn a_new_ask_pushes_one_notification_per_subscription_with_only_its_title_and_ur
             .1
             .contains(secret)
     );
+}
+
+#[test]
+fn each_subscription_gets_the_kinds_it_chose() {
+    const PHONE: &str = "https://web.push.apple.com/phone";
+    const LAPTOP: &str = "https://fcm.googleapis.com/laptop";
+    const DESKTOP: &str = "https://fcm.googleapis.com/desktop";
+    let mut setup = Setup::new("push-kinds", SERVE);
+    setup.seed();
+    // No task starts, so none turns blocked and sends an alarm of its own.
+    succeeded(&setup.priory(&["pause"]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let ask_only =
+        json!({ "ask": true, "stopped": false, "intake": false, "uncertain": false, "cap": false });
+    setup.subscribe_to(&address, PHONE, Some(ask_only));
+    let resend = |endpoint: &str, kinds: Option<Value>| {
+        let (mut browser, _) = subscription(endpoint);
+        if let Some(kinds) = kinds {
+            browser["kinds"] = kinds;
+        }
+        post(&address, "/api/push/subscribe", "", &browser.to_string())
+    };
+    for refused in [
+        json!({ "weather": true }),
+        json!(["ask"]),
+        json!({ "ask": "yes" }),
+    ] {
+        let (status, body) = resend(PHONE, Some(refused));
+        assert_eq!(status, 400, "{body}");
+    }
+    // A page that knows no kinds sends the subscription again, and the choice stays.
+    let kinds = |reply: (u16, String)| -> Value {
+        let reply: Value = serde_json::from_str(&reply.1).unwrap();
+        assert_eq!(reply["ok"], "subscribed");
+        reply["kinds"].clone()
+    };
+    assert_eq!(
+        kinds(resend(PHONE, Some(json!({ "cap": true }))))["stopped"],
+        false
+    );
+    resend(PHONE, Some(json!({ "cap": false })));
+    setup.subscribe(&address, LAPTOP);
+    assert_eq!(
+        kinds(resend(LAPTOP, None)),
+        json!({ "ask": true, "stopped": true, "intake": true, "uncertain": true, "cap": true, "landed": false, "stall": false })
+    );
+    assert_eq!(
+        kinds(resend(PHONE, None)),
+        json!({ "ask": true, "stopped": false, "intake": false, "uncertain": false, "cap": false, "landed": false, "stall": false })
+    );
+    let urls = |from: usize, count: usize| {
+        setup.until_pushes(from + count);
+        std::thread::sleep(Duration::from_millis(1500));
+        let mut urls: Vec<String> = setup.pushes()[from..]
+            .iter()
+            .map(|push| push["url"].as_str().unwrap().to_owned())
+            .collect();
+        urls.sort();
+        urls
+    };
+    let db = setup.db();
+
+    setup.ask_more(&db, "Merge it?");
+    db.execute("UPDATE tasks SET state = 'blocked' WHERE id = 1", [])
+        .unwrap();
+    assert_eq!(urls(0, 3), [LAPTOP, LAPTOP, PHONE]);
+
+    // The desk, which a landed-wrong notice reads, parses an open ask's command as JSON.
+    db.execute("UPDATE asks SET answer = 'yes'", []).unwrap();
+    let late = json!({ "stopped": false, "landed": true, "stall": true });
+    setup.subscribe_to(&address, DESKTOP, Some(late));
+    db.execute(
+        "INSERT INTO inbox (id, time, type, subject, data, links, outcome)
+         VALUES ('r900', '2026-11-17T09:00:00Z', 'priory.report', 'priory',
+           '{\"line\":\"landed wrong: o/r#4 of task 1 is red on main\"}', '[]', 'report')",
+        [],
+    )
+    .unwrap();
+    assert_eq!(urls(3, 1), [DESKTOP]);
 }
 
 #[test]

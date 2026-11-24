@@ -2437,6 +2437,7 @@ fn an_issue_entering_a_view_publishes_the_event_and_one_task_request() {
             "project_id": null,
             "state": "Todo",
             "labels": ["agent"],
+            "order": null,
             "baseline": false,
             "triggers": ["agent-ready"]
         })
@@ -2450,6 +2451,7 @@ fn an_issue_entering_a_view_publishes_the_event_and_one_task_request() {
             "lane": null,
             "team": "ENG",
             "project": null,
+            "order": null,
             "trigger": "agent-ready",
             "source": source.id.to_string()
         })
@@ -3818,4 +3820,684 @@ fn a_review_request_a_crash_left_without_its_marker_still_leaves_and_asks_again(
     );
     assert_eq!(published[1].message.data["key"], REVIEW_KEY);
     assert_eq!(published[2].message.data["since"], "2026-11-20T09:00:00Z");
+}
+
+const PROJECT_TRIGGER: &str = r#"
+source = "linear.project"
+project = "a1b2c3d4e5f6"
+on = "issue.entered"
+workflow = "implement"
+key = "issue.identifier"
+band = "today"
+"#;
+
+/// `PROJECT_TRIGGER` with `filter`, inline TOML.
+fn project_trigger(filter: &str) -> String {
+    format!("{PROJECT_TRIGGER}filter = {filter}\n")
+}
+
+/// One page of a project's issues, with the cursor of the next one.
+fn project_page(issues: &[serde_json::Value], next: Option<&str>) -> serde_json::Value {
+    json!({ "data": { "project": { "issues": { "nodes": issues,
+        "pageInfo": { "hasNextPage": next.is_some(), "endCursor": next } } } } })
+}
+
+impl Setup {
+    /// Makes the fake `curl` answer the first of `answers` whose text the project query's variables
+    /// contain, and fail on a project query none matches or whose answer is none.
+    fn answer_project(&self, answers: &[(&str, Option<serde_json::Value>)]) {
+        self.answer_linear(&Linear::default());
+        let mut cases = String::new();
+        for (index, (variables, answer)) in answers.iter().enumerate() {
+            let file = self.dir.join(format!("linear-project-{index}.json"));
+            let then = match answer {
+                Some(answer) => {
+                    write(&file, &answer.to_string());
+                    format!("cat '{}'", file.display())
+                }
+                None => "echo 'curl: (22) 500' >&2; exit 22".to_owned(),
+            };
+            cases.push_str(&format!("  *'query Project'*'{variables}'*) {then} ;;\n"));
+        }
+        let curl = self.dir.join("bin/curl");
+        let script = fs::read_to_string(&curl).unwrap();
+        let (head, tail) = script.split_once(" in\n").unwrap();
+        write(&curl, &format!("{head} in\n{cases}{tail}"));
+        fs::set_permissions(&curl, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// A poll of a project that holds `issues`.
+    fn poll_project(&self, issues: &[serde_json::Value]) {
+        self.answer_project(&[("", Some(project_page(issues, None)))]);
+        succeeded(&self.intake());
+    }
+
+    /// The keys of the waiting tasks in start order, once the daemon read the intake's output.
+    fn queue(&self) -> Vec<String> {
+        self.inbox();
+        let queue: serde_json::Value =
+            serde_json::from_str(&self.priory(&["queue", "--json"])).unwrap();
+        queue["waiting"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|task| task["key"].as_str().unwrap().replace("linear:", ""))
+            .collect()
+    }
+
+    /// What `priory ARGS...` prints on this setup's state.
+    fn priory(&self, args: &[&str]) -> String {
+        let output = harness::priory()
+            .args(args)
+            .current_dir(self.dir.join("factory"))
+            .env("HERDR_BUS_DB", self.dir.join("bus.db"))
+            .env("PRIORY_DB", self.dir.join("priory.db"))
+            .output()
+            .unwrap();
+        succeeded(&output);
+        String::from_utf8(output.stdout).unwrap()
+    }
+}
+
+/// Issue `number` of `project`, at `sort_order`, in `milestone`: its sort order and target date.
+fn placed(
+    number: u64,
+    project: &str,
+    milestone: Option<(f64, Option<&str>)>,
+    sort_order: f64,
+) -> serde_json::Value {
+    let mut issue = linear_issue(number);
+    issue["project"] = json!({ "id": project, "name": project });
+    issue["sortOrder"] = json!(sort_order);
+    issue["projectMilestone"] = json!(milestone.map(|(sort, date)| json!({
+        "id": format!("milestone-{sort}-{}", date.unwrap_or("none")),
+        "sortOrder": sort, "targetDate": date,
+    })));
+    issue
+}
+
+#[test]
+fn an_issue_entering_and_leaving_a_project_publishes_each_event_once() {
+    let left = PROJECT_TRIGGER.replace("issue.entered", "issue.left");
+    let setup = Setup::linear(
+        "project-entered",
+        &[("joined", PROJECT_TRIGGER), ("gone", &left)],
+    );
+    setup.poll_project(&[]);
+    for issues in [vec![linear_issue(7)], vec![linear_issue(7)], vec![], vec![]] {
+        setup.poll_project(&issues);
+    }
+
+    let published = setup.published();
+    assert_eq!(
+        kinds(&published),
+        [
+            "linear.issue.entered",
+            "factory.task.requested",
+            "linear.issue.left",
+            "factory.task.requested"
+        ]
+    );
+    let entered = timeless(&published[0].message);
+    assert_eq!(entered["stream"], "linear.project:a1b2c3d4e5f6");
+    assert!(entered.get("view").is_none());
+    assert_eq!(entered["triggers"], json!(["joined"]));
+    assert_eq!(published[2].message.data["triggers"], json!(["gone"]));
+}
+
+#[test]
+fn a_projects_first_poll_is_a_baseline_that_only_backfill_turns_into_tasks() {
+    let backfill = format!("{PROJECT_TRIGGER}backfill = true\n");
+    for (name, trigger, expected) in [
+        (
+            "project-baseline",
+            PROJECT_TRIGGER,
+            &["linear.issue.entered"][..],
+        ),
+        (
+            "project-backfill",
+            &backfill,
+            &["linear.issue.entered", "factory.task.requested"],
+        ),
+    ] {
+        let setup = Setup::linear(name, &[("joined", trigger)]);
+        setup.poll_project(&[linear_issue(7)]);
+        setup.poll_project(&[linear_issue(7)]);
+
+        assert_eq!(kinds(&setup.published()), expected);
+        assert_eq!(setup.published()[0].message.data["baseline"], true);
+    }
+}
+
+#[test]
+fn a_restart_after_a_crash_in_a_project_poll_requests_the_task_and_repeats_no_event() {
+    let trigger = project_trigger(r#"{ state = ["backlog"] }"#);
+    let setup = Setup::linear("project-crash-source", &[("joined", &trigger)]);
+    setup.poll_project(&[]);
+    setup.poll_project(&[linear_issue(7)]);
+    let entered = setup.published()[0].message.clone();
+    let crashed = Setup::linear("project-crash", &[("joined", &trigger)]);
+    crashed.poll_project(&[]);
+    seed(&crashed, &entered);
+
+    crashed.poll_project(&[linear_issue(7)]);
+    crashed.poll_project(&[]);
+
+    assert_eq!(
+        kinds(&crashed.published()),
+        [
+            "linear.issue.entered",
+            "factory.task.requested",
+            "linear.issue.left"
+        ]
+    );
+}
+
+#[test]
+fn a_baseline_crash_of_a_project_requests_its_backfill_tasks_again() {
+    let trigger = format!("{PROJECT_TRIGGER}backfill = true\n");
+    let setup = Setup::linear("project-baseline-crash-source", &[("joined", &trigger)]);
+    setup.poll_project(&[linear_issue(7)]);
+    let entered = setup.published()[0].message.clone();
+    let crashed = Setup::linear("project-baseline-crash", &[("joined", &trigger)]);
+    seed(&crashed, &entered);
+
+    crashed.poll_project(&[linear_issue(7)]);
+
+    assert_eq!(
+        kinds(&crashed.published()),
+        ["linear.issue.entered", "factory.task.requested"]
+    );
+}
+
+#[test]
+fn an_issue_reassigned_to_and_away_from_the_filters_assignee_enters_and_leaves() {
+    let trigger =
+        project_trigger(r#"{ assignee = "Ada@Example.com", state = ["unstarted", "backlog"] }"#);
+    let sent = r#""variables":{"filter":{"assignee":{"email":{"eqIgnoreCase":"ada@example.com"}},"state":{"type":{"in":["backlog","unstarted"]}}},"project":"a1b2c3d4e5f6"}"#;
+    let setup = Setup::linear("project-assignee", &[("mine", &trigger)]);
+    for issues in [vec![], vec![linear_issue(7)], vec![]] {
+        setup.answer_project(&[(sent, Some(project_page(&issues, None)))]);
+        succeeded(&setup.intake());
+    }
+
+    assert_eq!(
+        kinds(&setup.published()),
+        [
+            "linear.issue.entered",
+            "factory.task.requested",
+            "linear.issue.left"
+        ]
+    );
+}
+
+#[test]
+fn an_assignee_id_reaches_linear_as_an_id() {
+    let user = "3f0c9a52-6d1b-4e8f-a7c4-b1d2e3f40516";
+    let setup = Setup::linear(
+        "project-assignee-id",
+        &[(
+            "mine",
+            &project_trigger(&format!("{{ assignee = \"{user}\" }}")),
+        )],
+    );
+    let sent = format!(r#""filter":{{"assignee":{{"id":{{"eq":"{user}"}}}}}}"#);
+    setup.answer_project(&[(&sent, Some(project_page(&[], None)))]);
+
+    succeeded(&setup.intake());
+}
+
+#[test]
+fn a_project_reads_every_page_and_a_failed_later_page_publishes_nothing() {
+    let setup = Setup::linear("project-pages", &[("joined", PROJECT_TRIGGER)]);
+    let issues: Vec<_> = (1..=101).map(linear_issue).collect();
+    let first = Some(project_page(&issues[..100], Some("page-2")));
+    let second = Some(project_page(&issues[100..], None));
+    let whole = [("page-2", second), ("", first.clone())];
+    setup.answer_project(&whole);
+    succeeded(&setup.intake());
+    let before = setup.output().len();
+    setup.answer_project(&[("page-2", None), ("", first)]);
+
+    let failed = setup.intake();
+
+    assert_eq!(failed.status.code(), Some(1));
+    assert_eq!(setup.output().len(), before);
+    setup.answer_project(&whole);
+    succeeded(&setup.intake());
+    assert_eq!(kinds(&setup.published()), ["linear.issue.entered"; 101]);
+}
+
+#[test]
+fn two_filters_on_one_project_publish_apart_across_restarts_and_a_filter_edit() {
+    let backlog = r#"{ state = "backlog" }"#;
+    let setup = Setup::linear(
+        "project-two-filters",
+        &[
+            ("backlog", &project_trigger(backlog)),
+            ("started", &project_trigger(r#"{ state = ["started"] }"#)),
+        ],
+    );
+    let poll = |backlog: &[u64], started: &[u64]| {
+        let page = |issues: &[u64]| {
+            let issues: Vec<_> = issues.iter().map(|number| linear_issue(*number)).collect();
+            Some(project_page(&issues, None))
+        };
+        setup.answer_project(&[
+            ("backlog", page(backlog)),
+            ("started", page(started)),
+            ("triage", page(&[7])),
+        ]);
+        succeeded(&setup.intake());
+    };
+    let seen = |from: usize| -> Vec<(String, String, serde_json::Value)> {
+        setup.published()[from..]
+            .iter()
+            .filter(|stored| stored.message.kind.starts_with("linear."))
+            .map(|stored| {
+                let data = &stored.message.data;
+                let stream = data["stream"].as_str().unwrap();
+                let (_, filter) = stream.split_once("a1b2c3d4e5f6:").unwrap();
+                (
+                    stored.message.kind.clone(),
+                    filter.to_owned(),
+                    data["triggers"].clone(),
+                )
+            })
+            .collect()
+    };
+    let event = |kind: &str, state: &str, triggers: serde_json::Value| {
+        (
+            format!("linear.issue.{kind}"),
+            format!(r#"{{"state":["{state}"]}}"#),
+            triggers,
+        )
+    };
+    poll(&[7], &[]);
+    let baseline = setup.published().len();
+
+    // Started: it leaves one filter's members and enters the other's.
+    poll(&[], &[7]);
+    assert_eq!(
+        seen(baseline),
+        [
+            event("left", "backlog", json!([])),
+            event("entered", "started", json!(["started"])),
+        ]
+    );
+
+    // An edit is a baseline of the new filter, which leaves the other one alone.
+    let moved = setup.published().len();
+    let file = setup.dir.join("factory/triggers/backlog.toml");
+    write(&file, &project_trigger(r#"{ state = ["triage"] }"#));
+    poll(&[], &[7]);
+    assert_eq!(seen(moved), [event("entered", "triage", json!([]))]);
+    assert_eq!(
+        setup.published().last().unwrap().message.data["baseline"],
+        true
+    );
+
+    // The old filter, written another way, resumes its own members.
+    let edited = setup.published().len();
+    write(
+        &file,
+        &project_trigger(r#"{ state = ["backlog", "backlog"] }"#),
+    );
+    poll(&[8], &[7]);
+    assert_eq!(
+        seen(edited),
+        [event("entered", "backlog", json!(["backlog"]))]
+    );
+}
+
+#[test]
+fn entering_one_filter_again_leaves_the_other_filters_ask_open() {
+    let backfill = |state: &str| {
+        format!(
+            "{}backfill = true\n",
+            project_trigger(&format!("{{ state = \"{state}\" }}"))
+        )
+    };
+    let setup = Setup::linear(
+        "project-two-asks",
+        &[
+            ("backlog", &backfill("backlog")),
+            ("triage", &backfill("triage")),
+        ],
+    );
+    let poll = |backlog: &[serde_json::Value], triage: &[serde_json::Value]| {
+        setup.answer_project(&[
+            ("backlog", Some(project_page(backlog, None))),
+            ("triage", Some(project_page(triage, None))),
+        ]);
+        succeeded(&setup.intake());
+        setup.inbox();
+    };
+    let here = [linear_issue(7)];
+    poll(&here, &here);
+    poll(&[], &[]);
+    poll(&here, &[]);
+
+    let questions = || -> Vec<String> {
+        let asks: serde_json::Value =
+            serde_json::from_str(&setup.priory(&["asks", "--json"])).unwrap();
+        let asks = asks["asks"].as_array().or(asks.as_array()).unwrap();
+        asks.iter()
+            .filter(|ask| ask["state"] == "open")
+            .map(|ask| ask["question"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let left = |state: &str| {
+        format!(
+            r#"ENG-7 left the project a1b2c3d4e5f6 filtered by {{"state":["{state}"]}}. Drop the task?"#
+        )
+    };
+    assert_eq!(questions(), [left("triage")]);
+
+    // Leaving the first filter again asks again, though its earlier ask's hold is not released yet.
+    poll(&[], &[]);
+    assert_eq!(questions(), [left("triage"), left("backlog")]);
+}
+
+#[test]
+fn a_projects_tasks_queue_by_milestone_then_issue_order_with_no_milestone_last() {
+    let setup = Setup::linear("project-milestones", &[("joined", PROJECT_TRIGGER)]);
+    let (first, second) = (Some((1.0, None)), Some((2.0, None)));
+    setup.poll_project(&[]);
+    setup.poll_project(&[
+        placed(1, "p", None, 0.0),
+        placed(2, "p", second, 1.0),
+        placed(3, "p", first, 9.0),
+        placed(4, "p", first, -2.5),
+        placed(5, "p", Some((1.0, Some("2026-12-01"))), 99.0),
+    ]);
+
+    // Equal milestone orders sort by target date, with none last.
+    assert_eq!(setup.queue(), ["ENG-5", "ENG-4", "ENG-3", "ENG-2", "ENG-1"]);
+
+    // Later polls move the queued tasks with their issues, and with their milestones.
+    setup.poll_project(&[
+        placed(1, "p", first, -9.0),
+        placed(2, "p", second, 1.0),
+        placed(3, "p", None, 9.0),
+        placed(4, "p", first, -2.5),
+        placed(5, "p", Some((3.0, Some("2026-12-01"))), 99.0),
+    ]);
+    assert_eq!(setup.queue(), ["ENG-1", "ENG-4", "ENG-2", "ENG-5", "ENG-3"]);
+    assert_eq!(
+        kinds(&setup.published())
+            .iter()
+            .filter(|kind| kind.starts_with("linear."))
+            .count(),
+        5,
+        "a move inside the project is no membership event"
+    );
+}
+
+#[test]
+fn a_task_revived_after_its_issue_changed_milestone_takes_the_new_place() {
+    let setup = Setup::linear("project-revived", &[("joined", PROJECT_TRIGGER)]);
+    let (first, second) = (Some((1.0, None)), Some((2.0, None)));
+    setup.poll_project(&[]);
+    setup.poll_project(&[placed(1, "p", first, 0.0), placed(2, "p", second, 0.0)]);
+    assert_eq!(setup.queue(), ["ENG-1", "ENG-2"]);
+    let state = |state: &str| {
+        let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+        db.execute("UPDATE tasks SET state = ?1 WHERE id = 1", [state])
+            .unwrap();
+    };
+    state("failed");
+    setup.poll_project(&[placed(1, "p", None, 0.0), placed(2, "p", second, 0.0)]);
+    setup.inbox();
+
+    state("queued");
+    // Another issue's change publishes a marker, which places the queue.
+    setup.poll_project(&[placed(1, "p", None, 0.0), placed(2, "p", second, 1.0)]);
+
+    assert_eq!(setup.queue(), ["ENG-2", "ENG-1"]);
+}
+
+#[test]
+fn a_persons_move_beats_a_milestone_change_until_they_clear_it() {
+    let setup = Setup::linear("project-moved", &[("joined", PROJECT_TRIGGER)]);
+    let (first, second) = (Some((1.0, None)), Some((2.0, None)));
+    setup.poll_project(&[]);
+    setup.poll_project(&[placed(1, "p", first, 0.0), placed(2, "p", second, 0.0)]);
+    assert_eq!(setup.queue(), ["ENG-1", "ENG-2"]);
+    setup.priory(&["move", "2", "--top"]);
+    setup.poll_project(&[placed(1, "p", first, -5.0), placed(2, "p", None, 0.0)]);
+
+    assert_eq!(setup.queue(), ["ENG-2", "ENG-1"]);
+
+    for task in ["1", "2"] {
+        setup.priory(&["move", task, "--band", "today"]);
+    }
+    assert_eq!(setup.queue(), ["ENG-1", "ENG-2"]);
+}
+
+#[test]
+fn a_view_orders_each_project_by_itself_and_leaves_other_work_its_place() {
+    let setup = Setup::linear("view-milestones", &[("agent-ready", VIEW_TRIGGER)]);
+    let (first, second) = (Some((1.0, None)), Some((2.0, None)));
+    succeeded(&setup.intake());
+    setup.answer_linear(&Linear {
+        view: vec![
+            placed(1, "a", second, 0.0),
+            placed(2, "b", second, 0.0),
+            linear_issue(3),
+            placed(4, "b", first, 0.0),
+            placed(5, "a", first, 0.0),
+        ],
+        ..Linear::default()
+    });
+    succeeded(&setup.intake());
+
+    assert_eq!(setup.queue(), ["ENG-5", "ENG-4", "ENG-3", "ENG-2", "ENG-1"]);
+
+    // A task moved to another band trades places only there.
+    setup.priory(&["move", "5", "--band", "later"]);
+    setup.answer_linear(&Linear {
+        view: vec![
+            placed(1, "a", second, 1.0),
+            placed(2, "b", second, 0.0),
+            linear_issue(3),
+            placed(4, "b", first, 0.0),
+            placed(5, "a", first, 0.0),
+        ],
+        ..Linear::default()
+    });
+    succeeded(&setup.intake());
+    assert_eq!(setup.queue(), ["ENG-1", "ENG-4", "ENG-3", "ENG-2", "ENG-5"]);
+}
+
+#[test]
+fn a_view_marker_without_orders_gives_queued_tasks_theirs_and_publishes_no_event() {
+    let setup = Setup::linear("view-legacy-order", &[("agent-ready", VIEW_TRIGGER)]);
+    let member = |number: u64| {
+        json!({
+            "issue": format!("ENG-{number}"), "linear_id": format!("issue-{number}"),
+            "title": "Fix the thing", "team": "ENG", "project": "p", "project_id": "p",
+            "url": format!("https://linear.app/acme/issue/ENG-{number}/fix-the-thing"),
+            "state": "Todo", "labels": ["agent"]
+        })
+    };
+    legacy_view_marker(&setup, json!([member(1), member(2)]));
+    for number in [1, 2] {
+        let request = json!({
+            "workflow": "implement", "key": format!("linear:ENG-{number}"), "band": "today",
+            "lane": null, "team": "ENG", "project": "p", "trigger": "agent-ready",
+            "source": "8beb4cb2-80ac-53e2-b95c-eeb5e39b5a11"
+        });
+        seed(
+            &setup,
+            &Message::new("factory.task.requested", request)
+                .subject(format!("linear:ENG-{number}")),
+        );
+    }
+    assert_eq!(setup.queue(), ["ENG-1", "ENG-2"]);
+    setup.answer_linear(&Linear {
+        view: vec![
+            placed(1, "p", None, 0.0),
+            placed(2, "p", Some((1.0, None)), 0.0),
+        ],
+        ..Linear::default()
+    });
+
+    succeeded(&setup.intake());
+
+    assert_eq!(setup.queue(), ["ENG-2", "ENG-1"]);
+    assert_eq!(kinds(&setup.published()), ["factory.task.requested"; 2]);
+}
+
+#[test]
+fn milestone_order_holds_within_a_lane_that_takes_turns() {
+    let trigger = format!("{PROJECT_TRIGGER}lane = \"core/intake\"\n");
+    let setup = Setup::linear("project-fair", &[("joined", &trigger)]);
+    write(
+        &setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\n\n[queue]\nfair = \"lane\"\n",
+    );
+    setup.poll_project(&[]);
+    setup.poll_project(&[
+        placed(1, "p", Some((2.0, None)), 0.0),
+        placed(2, "p", Some((1.0, None)), 0.0),
+    ]);
+
+    assert_eq!(setup.queue(), ["ENG-2", "ENG-1"]);
+}
+
+/// A project's page that holds issue `number` and nothing else.
+fn only(number: u64) -> Option<serde_json::Value> {
+    Some(project_page(&[linear_issue(number)], None))
+}
+
+#[test]
+fn a_project_linear_refuses_stops_only_its_own_stream() {
+    let refused = json!({ "data": null, "errors": [{ "message": "Entity not found: Project" }] });
+    let missing = json!({ "data": { "project": null } });
+    for (name, answer, why) in [
+        ("project-refused", refused, "Entity not found: Project"),
+        (
+            "project-missing",
+            missing,
+            "Linear answered no /project/issues",
+        ),
+    ] {
+        let bad = project_trigger(r#"{ state = "backlog" }"#).replace("a1b2c3d4e5f6", "gone");
+        let setup = Setup::linear(
+            name,
+            &[
+                ("bad", &bad),
+                ("joined", PROJECT_TRIGGER),
+                ("agent-ready", VIEW_TRIGGER),
+            ],
+        );
+        let empty = Some(project_page(&[], None));
+        setup.answer_project(&[("gone", only(7)), ("", empty)]);
+        succeeded(&setup.intake());
+        let before = setup.published().len();
+        setup.answer_project(&[("gone", Some(answer)), ("", only(8))]);
+        let page = json!({ "nodes": [linear_issue(9)],
+            "pageInfo": { "hasNextPage": false, "endCursor": null } });
+        let view = json!({ "data": { "customView": { "filterData": null, "issues": page } } });
+        write(&setup.dir.join("linear-customView.json"), &view.to_string());
+        let issues = json!({ "data": { "issues": page } });
+        write(&setup.dir.join("linear-issues.json"), &issues.to_string());
+
+        let failed = setup.intake();
+
+        assert_eq!(failed.status.code(), Some(1));
+        let stderr = String::from_utf8_lossy(&failed.stderr);
+        assert!(
+            stderr.contains(r#"linear.project:gone:{"state":["backlog"]}"#),
+            "{stderr}"
+        );
+        assert!(stderr.contains(why), "{stderr}");
+        let published: Vec<_> = setup.published()[before..]
+            .iter()
+            .map(|stored| {
+                let data = &stored.message.data;
+                let issue = data["issue"].as_str().or(data["key"].as_str()).unwrap();
+                (stored.message.kind.clone(), issue.to_owned())
+            })
+            .collect();
+        let expected = [
+            ("linear.issue.created", "ENG-9"),
+            ("linear.issue.entered", "ENG-8"),
+            ("factory.task.requested", "linear:ENG-8"),
+            ("linear.issue.entered", "ENG-9"),
+            ("factory.task.requested", "linear:ENG-9"),
+        ]
+        .map(|(kind, issue)| (kind.to_owned(), issue.to_owned()));
+        assert_eq!(published, expected);
+
+        // Read again, the project has lost no member.
+        setup.answer_project(&[("gone", only(7)), ("", only(8))]);
+        write(&setup.dir.join("linear-customView.json"), &view.to_string());
+        succeeded(&setup.intake());
+        assert_eq!(setup.published().len(), before + expected.len());
+    }
+}
+
+#[test]
+fn a_view_linear_refuses_stops_only_its_own_stream() {
+    let setup = Setup::linear(
+        "view-refused",
+        &[("joined", PROJECT_TRIGGER), ("agent-ready", VIEW_TRIGGER)],
+    );
+    setup.poll_project(&[]);
+    setup.answer_project(&[("", only(8))]);
+    let refused = json!({ "errors": [{ "message": "Entity not found: CustomView" }] });
+    write(
+        &setup.dir.join("linear-customView.json"),
+        &refused.to_string(),
+    );
+
+    let failed = setup.intake();
+
+    assert_eq!(failed.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&failed.stderr);
+    assert!(stderr.contains("linear.view:6b3c2f9a1d4e"), "{stderr}");
+    assert!(stderr.contains("Entity not found: CustomView"), "{stderr}");
+    assert_eq!(
+        kinds(&setup.published()),
+        ["linear.issue.entered", "factory.task.requested"]
+    );
+}
+
+#[test]
+fn a_page_of_a_view_or_project_reads_few_labels_per_issue() {
+    let setup = Setup::linear(
+        "membership-labels",
+        &[("joined", PROJECT_TRIGGER), ("agent-ready", VIEW_TRIGGER)],
+    );
+    setup.poll_project(&[]);
+
+    let sent = fs::read_to_string(setup.dir.join("curl-args")).unwrap();
+
+    for (query, labels) in [
+        ("query View", "labels(first: 20)"),
+        ("query Project", "labels(first: 20)"),
+        ("query Issues", "labels {"),
+        ("query Comments", "labels {"),
+    ] {
+        let line = sent.lines().find(|line| line.contains(query)).unwrap();
+        assert!(line.contains(labels), "{line}");
+        assert_eq!(line.matches("labels").count(), 1, "{line}");
+    }
+}
+
+#[test]
+fn a_task_whose_trigger_was_renamed_follows_its_milestone() {
+    let setup = Setup::linear("project-renamed", &[("joined", PROJECT_TRIGGER)]);
+    let (first, second) = (Some((1.0, None)), Some((2.0, None)));
+    setup.poll_project(&[]);
+    setup.poll_project(&[placed(1, "p", first, 0.0), placed(2, "p", second, 0.0)]);
+    assert_eq!(setup.queue(), ["ENG-1", "ENG-2"]);
+    let triggers = setup.dir.join("factory/triggers");
+    fs::rename(triggers.join("joined.toml"), triggers.join("renamed.toml")).unwrap();
+
+    setup.poll_project(&[placed(1, "p", None, 0.0), placed(2, "p", second, 0.0)]);
+
+    assert_eq!(setup.queue(), ["ENG-2", "ENG-1"]);
 }

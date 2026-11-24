@@ -16,16 +16,20 @@ duration such as `90s`, `15m` or `2h`.
    later grants that fit go first, in order, and it keeps its place ahead of them for the next
    room. A build it waits for usually ends within 5 minutes, and a grant behind it still has most
    of its 1-hour default timeout left. Once it has waited 15 minutes, later grants stop going first
-   while the end of the held grants would make it fit, so the room drains towards it. A grant held
-   for 30 minutes or more does not count: it may be a hung test or a dev server's lease. When the
-   other held grants would not make it fit, later grants that fit go first again. A retry that
-   keeps its request time does not restart the 30 minutes.
+   while the end of the held grants would make it fit, so the room drains towards it. To predict
+   that room, the daemon adds back each held grant's GB and the memory that the command's processes
+   use, at most those GB. It takes off what the run of the grant's task would promise again. The
+   prediction only holds grants back: every grant still needs the measured room. A grant held for 30
+   minutes or more does not count: it may be a hung test or a dev server's lease. So a head holds
+   back the grants behind it for at most 30 minutes after the last grant given before it, and later
+   grants that fit then go first again. They also do when the prediction changes and the head would
+   not fit. A retry that keeps its request time does not restart the 30 minutes.
 3. The command polls the daemon every 250 ms. A poll that gets no reply, because the daemon is
    busy, restarting or gone, does not end the wait. The command reports it and polls the same grant
    again until `--timeout`. The daemon keeps a waiting grant for as long as its `acquire` process
    lives, so the grant keeps its id and its place through a daemon restart. An `acquire` that asks
    again after a lost reply gets the grant it already has: the one with its process, GB, command
-   and task. Once its grant is held, it starts a shell that waits
+   and task, even when its run ended in between. Once its grant is held, it starts a shell that waits
    for a go-ahead, hands the grant to that shell's process, and only then lets the shell run the
    command with `acquire`'s own working directory, environment and terminal. It sends the hand-over
    again while a reply is lost and the shell lives. The shell becomes the
@@ -49,7 +53,7 @@ not wait for a restart then. A grant of a run that stops waiting, because it tim
 `acquire` was killed, leaves its request time behind for an hour. The daemon records it even when
 it only sees that the process is gone. When the same task acquires the same command with the same
 GB again within that hour, the new grant
-takes the old request time, so a retry keeps its place in the queue. A grant above the runner's share of the machine can never fit, so the daemon refuses it at
+takes the oldest such request time, so a retry keeps its place in the queue. Each retry takes one. A grant above the runner's share of the machine can never fit, so the daemon refuses it at
 once, as
 `9.0 GB never fits: this runner's agents may take 7.2 GB`. A command that cannot start exits 127, or 126 when it is not executable.
 `acquire` and `lease` look a program name without `/` up on `PATH` before they ask for a grant. A
@@ -85,9 +89,24 @@ Known limits:
   needs.
 - A build held for 30 minutes or more no longer protects a large grant that waits for it: smaller
   grants can take its room again.
-- The check past 15 minutes counts a held grant's GB as promised room only. Memory its command
-  already uses is missing from the measured free memory and is not added back, so smaller grants
-  can overtake a large one although an end would make it fit.
+- A held grant whose command uses its memory counts twice: in the measured free memory and in full
+  as a promise. A hung command keeps both until it ends. Counting only what a command does not use
+  yet would admit too much, because a build's use already lowers its run's promise.
+- The prediction past 15 minutes reads the anonymous memory of the command and its descendants. It
+  misses shared memory, memory above the grant's GB and a process that left the tree, so smaller
+  grants can still overtake a large one. It can also hold them back for a head that does not fit
+  once the grants end, because processes that share pages count them once each, and live runs or
+  other programs can take the room.
+- The prediction takes the command's use off its run scope's use. Pages that a build's processes
+  share copy-on-write can make the command's use sum to more than the scope's. The scope's use then
+  counts as 0, so the daemon expects the run to promise its whole declaration again.
+- The prediction finds descendants in `/proc/<pid>/task/<tid>/children`, which the kernel has only
+  with `CONFIG_PROC_CHILDREN`. Without it, only the command's own process counts.
+- A jailed run's `acquire` sends its pid inside the jail. The daemon looks that number up among the
+  host's processes, so it can watch and measure another process instead of the holder.
+- Grants ignore bands. A request from a `now` task waits behind an older one from a `later` task.
+- After the grants behind a head went first, their own 30 minutes can hold the queue back for it
+  again.
 - Two requests of the same task with the same command, GB and pid share a grant. Two jailed runs
   of one task can have the same pid.
 - A retry keeps its request time only inside a run, and only with the same command text and GB. Another
@@ -101,7 +120,7 @@ Known limits:
 - A grant that arrives in the last poll before `--timeout` still runs its command. It runs up to
   250 ms late, or up to 40 seconds late when that poll waits on a busy or restarting daemon.
   `--timeout` does not bound the hand-over that follows: while no daemon replies to it, the command
-  waits without limit.
+  waits without limit, and `acquire` prints each new reason.
 - A grant that the daemon grants just as its `acquire` times out leaves no request time, and a retry
   queues at the back.
 - A lease's memory frees as soon as the lease ends, while its command may still take up to 5
