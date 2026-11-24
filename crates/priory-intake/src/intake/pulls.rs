@@ -1,9 +1,9 @@
 use super::gh::{Login, gh};
-use super::{CHECK_RUNS, CHECKED, COMMENTED, Merge, Observed, REVIEWED};
+use super::{CHECK_RUNS, CHECKED, COMMENTED, Merge, Observed, Passed, REVIEWED, Red, RedCheck};
 use herdr_bus::Timestamp;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// GitHub creates check runs seconds after a push, and a push updates the pull request.
 const GRACE_SECONDS: i64 = 5 * 60;
@@ -463,6 +463,147 @@ fn later_run(repo: &str, merge: &Merge, name: &str, fresh: bool) -> Result<Later
         ("completed", _) => Later::Not,
         _ => Later::Running,
     })
+}
+
+/// What GitHub answered that never changes, kept for the life of the process.
+#[derive(Default)]
+pub(super) struct Known {
+    /// Whether a commit descends from a merge commit, by repository, merge commit and commit.
+    contains: HashMap<(String, String, String), bool>,
+    /// The workflow of an Actions run, by repository and run id.
+    workflows: HashMap<(String, u64), u64>,
+}
+
+/// Whether every check that failed on `red`'s merge commit passed later on a commit of the base
+/// branch that contains the merge.
+pub(super) fn recovered(red: &Red, known: &mut Known) -> Result<bool, String> {
+    for check in &red.checks {
+        if !passes(red, check, known)? {
+            return Ok(false);
+        }
+    }
+    Ok(!red.checks.is_empty())
+}
+
+fn passes(red: &Red, check: &RedCheck, known: &mut Known) -> Result<bool, String> {
+    let tip = passed_tip(red, check)?;
+    for passed in tip.iter().chain(&check.passed) {
+        if same_check(red, check, &passed.urls, known)? && contains(red, &passed.sha, known)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// GitHub's answer, or none when it has no such branch, commit or run.
+fn found<T>(answer: Result<T, String>) -> Result<Option<T>, String> {
+    match answer {
+        Err(error) if error.contains("(HTTP 404)") || error.contains("(HTTP 422)") => Ok(None),
+        answer => answer.map(Some),
+    }
+}
+
+/// The tip of `red`'s base branch, when every run of `check`'s name and app there succeeded, later
+/// than the red one.
+fn passed_tip(red: &Red, check: &RedCheck) -> Result<Option<Passed>, String> {
+    let path = format!(
+        "repos/{}/commits/heads/{}/check-runs",
+        red.repo,
+        encoded(&red.base_branch)
+    );
+    let check_name = format!("check_name={}", check.name);
+    let fields = ["-X", "GET", "-f", &check_name, "-f", "per_page=100"];
+    let Some(found) = found(gh::<CommitRuns>(&path, &fields))? else {
+        return Ok(None);
+    };
+    let runs: Vec<&Run> = found
+        .check_runs
+        .iter()
+        .filter(|run| run.app.as_ref().map(|app| &app.slug) == check.app.as_ref())
+        .collect();
+    let passed = found.total_count == found.check_runs.len()
+        && runs.iter().all(|run| {
+            run.id > check.id
+                && run.status == "completed"
+                && run.conclusion.as_deref() == Some("success")
+        });
+    Ok(runs.first().filter(|_| passed).map(|tip| Passed {
+        sha: tip.head_sha.clone(),
+        urls: runs.iter().map(|run| run.html_url.clone()).collect(),
+    }))
+}
+
+/// Whether the runs at `urls`, of `check`'s name and app, include one for each of its failing runs. Two
+/// workflows can name a job alike, so each failing GitHub Actions run needs one of its own workflow.
+fn same_check(
+    red: &Red,
+    check: &RedCheck,
+    urls: &[String],
+    known: &mut Known,
+) -> Result<bool, String> {
+    match check.app.as_deref() {
+        None => return Ok(false),
+        Some("github-actions") => {}
+        Some(_) => return Ok(true),
+    }
+    let mut passing = Vec::new();
+    for url in urls {
+        passing.extend(workflow(&red.repo, url, known)?);
+    }
+    for url in &check.urls {
+        match workflow(&red.repo, url, known)? {
+            Some(failed) if passing.contains(&failed) => {}
+            _ => return Ok(false),
+        }
+    }
+    Ok(!check.urls.is_empty())
+}
+
+#[derive(Deserialize)]
+struct ActionsRun {
+    workflow_id: u64,
+}
+
+/// The workflow of the Actions run whose job's page is `url`.
+fn workflow(repo: &str, url: &str, known: &mut Known) -> Result<Option<u64>, String> {
+    let run = url
+        .split_once("/actions/runs/")
+        .and_then(|(_, rest)| rest.split('/').next()?.parse::<u64>().ok());
+    let Some(run) = run else {
+        return Ok(None);
+    };
+    let key = (repo.to_owned(), run);
+    if let Some(workflow) = known.workflows.get(&key) {
+        return Ok(Some(*workflow));
+    }
+    let answer = match gh::<ActionsRun>(&format!("repos/{repo}/actions/runs/{run}"), &[]) {
+        // The token may read checks and not Actions. A rate limit's 403 says something else.
+        Err(error) if error.contains("Resource not accessible") => return Ok(None),
+        answer => found(answer)?,
+    };
+    let Some(answer) = answer else {
+        return Ok(None);
+    };
+    known.workflows.insert(key, answer.workflow_id);
+    Ok(Some(answer.workflow_id))
+}
+
+/// Whether the commit `sha` is `red`'s merge commit or descends from it.
+fn contains(red: &Red, sha: &str, known: &mut Known) -> Result<bool, String> {
+    if sha == red.commit {
+        return Ok(true);
+    }
+    let key = (red.repo.clone(), red.commit.clone(), sha.to_owned());
+    if let Some(contains) = known.contains.get(&key) {
+        return Ok(*contains);
+    }
+    let path = format!("repos/{}/compare/{}...{sha}", red.repo, red.commit);
+    let Some(compare) = found(gh::<Compare>(&path, &["-X", "GET", "-f", "per_page=1"]))? else {
+        return Ok(false);
+    };
+    let ahead = compare.status == "ahead";
+    known.contains.insert(key, ahead);
+    Ok(ahead)
 }
 
 /// `text` percent-encoded as one URL path segment, so a branch such as `release/x` stays one.
