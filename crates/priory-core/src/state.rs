@@ -5,7 +5,7 @@ use herdr_bus::Message;
 use priory_factory::explain;
 use priory_factory::factory::{Factory, Fair, Loaded, Session, Workflow};
 use priory_factory::lanes::{Lanes, Subject};
-use priory_intake::intake::{CHECKED, ISSUE_CLOSED, PR_CLOSED as CLOSED};
+use priory_intake::intake::{CHECKED, ISSUE_CLOSED, PR_CLOSED as CLOSED, REVIEWED};
 use priory_runtime::room::Room;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::BTreeMap;
@@ -2310,7 +2310,12 @@ pub(crate) fn route_in(
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let factory = trace.factory;
     if route::outsider(message) {
-        record(tx, message, None, "outsider", None)?;
+        let reopening = reopened_by_outsider(tx, message, trace)?;
+        let outcome = reopening.map_or("outsider", |_| "reopened");
+        let seq = record(tx, message, reopening, outcome, None)?;
+        if let Some(task) = reopening {
+            crate::tools::reopen(tx, trace, task, seq)?;
+        }
         return Ok(Vec::new());
     }
     if crate::memories::handle(tx, message)?.is_some() {
@@ -2718,6 +2723,34 @@ fn claim_pull_request(tx: &Transaction, message: &Message) -> rusqlite::Result<(
         return Ok(());
     }
     crate::stack::record(tx, task, &resource, head, base)
+}
+
+/// The done task that an outsider's review requesting changes reopens, when that task's workflow
+/// opts in and no active task owns the pull request.
+fn reopened_by_outsider(
+    tx: &Transaction,
+    message: &Message,
+    trace: &crate::trace::Trace,
+) -> rusqlite::Result<Option<i64>> {
+    if message.kind != REVIEWED || message.data["state"] != "changes_requested" {
+        return Ok(None);
+    }
+    if !owners(tx, &route::resources(message))?.is_empty() {
+        return Ok(None);
+    }
+    let Some(task) = crate::tools::reopenable(tx, message)? else {
+        return Ok(None);
+    };
+    let workflow: String =
+        tx.query_row("SELECT workflow FROM tasks WHERE id = ?1", [task], |row| {
+            row.get(0)
+        })?;
+    let opted = trace
+        .factory
+        .workflows
+        .get(&workflow)
+        .is_some_and(|flow| flow.value.reopen_on_changes_requested);
+    Ok(opted.then_some(task))
 }
 
 /// Whether `task` sleeps where an event can wake it: asleep at a model step, with no daemon's

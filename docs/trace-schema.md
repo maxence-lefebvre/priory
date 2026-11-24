@@ -319,7 +319,7 @@ It shares `factory`, `factory_revision`, `workflow`, `task`, `key`, `generation`
 
 | Field          | Required | Meaning                                               |
 | -------------- | -------- | ----------------------------------------------------- |
-| `resource`     | yes      | The pull request, issue, Linear issue or Slack thread whose feedback reopened the task |
+| `resource`     | yes      | The pull request, issue, Linear issue or Slack thread whose feedback reopened the task, or the open pull request of one a `priory say` reopened |
 | `pull_request` | no       | The pull request whose feedback reopened the task; absent for other feedback |
 
 ## `factory.tool.denied`

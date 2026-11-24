@@ -4,6 +4,7 @@ use priory_factory::factory::Factory;
 use priory_factory::lanes::Subject;
 use priory_intake::intake::review_key;
 use serde::Deserialize;
+use serde_json::Value;
 
 pub(crate) const TASK_REQUESTED: &str = "factory.task.requested";
 const REVIEW_REQUEST_REMOVED: &str = "github.pull_request.review_request_removed";
@@ -125,8 +126,13 @@ pub(crate) fn resources(message: &Message) -> Vec<String> {
 /// wakes, reopens and reaches no task. An event without `association`, as `priory publish` sends
 /// one, is a person's.
 pub(crate) fn outsider(message: &Message) -> bool {
-    message.kind.starts_with("github.")
-        && message.data["association"]
+    outsiders(&message.kind, &message.data)
+}
+
+/// As `outsider`, for the `data` of a stored event of `kind`.
+pub(crate) fn outsiders(kind: &str, data: &Value) -> bool {
+    kind.starts_with("github.")
+        && data["association"]
             .as_str()
             .is_some_and(|association| !["OWNER", "MEMBER", "COLLABORATOR"].contains(&association))
 }

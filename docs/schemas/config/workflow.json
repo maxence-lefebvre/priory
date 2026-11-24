@@ -373,6 +373,11 @@
         "null"
       ]
     },
+    "reopen_on_changes_requested": {
+      "description": "Whether a review that requests changes on a done task's open pull request reopens the task\nwhen its author has no write access to the repository; false when unset. Anyone can review a\npull request of a public repository.",
+      "type": "boolean",
+      "default": false
+    },
     "sandbox": {
       "description": "The sandbox of `factory.toml` that every model step of the workflow runs its agent in.\nNone runs agents with the person's whole user, as before.",
       "type": [

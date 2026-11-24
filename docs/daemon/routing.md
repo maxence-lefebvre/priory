@@ -231,7 +231,7 @@ Each inbox entry gets one of these outcomes:
 | Any other, with an active task owning a resource it names | `kept` | that task                   |
 | `factory.task.requested`, no active task  | `created` | a new task, `queued` at its workflow's start |
 | `factory.task.requested`, malformed       | `ignored` | none                                         |
-| A GitHub comment or review whose `association` is not `OWNER`, `MEMBER` or `COLLABORATOR` | `outsider` | none: it wakes, reopens, claims and reaches no task |
+| A GitHub comment or review whose `association` is not `OWNER`, `MEMBER` or `COLLABORATOR` | `outsider` | none: it wakes, claims and reaches no task. Only a review that requests changes may reopen one, as [below](#feedback-reopens-a-done-task) says: its outcome is then `reopened` |
 | A task request whose key no runner holds, with several runners | `claiming` | none until this runner's claim wins (see [runners.md](runners.md)) |
 | A task request whose key another runner holds | `elsewhere` | none                                    |
 | Any task request, on a [view-only machine](runners.md#a-machine-that-only-views) | `elsewhere` | none: it claims nothing |
@@ -449,7 +449,18 @@ Feedback reopened this done task as generation 2: Ana replied in slack:C0123:176
 ```
 
 The task is `ready`, so its next run resumes the session of the step's agent. The daemon appends a
-`factory.task.reopened` trace record (see [trace.md](trace.md)).
+`factory.task.reopened` trace record (see [trace.md](trace.md)), and posts a report that keeps the
+reason on the desk until it is read: `task 12 (linear:ENG-7) reopened as generation 2: ana commented
+on ...`.
+
+A person reopens a done task with [`priory say`](desk.md#say) while its pull request is open.
+
+A workflow with
+[`reopen_on_changes_requested = true`](../reference/workflows.md#top-level-keys) also reopens for a
+review that requests changes by someone without write access, such as a GitHub App. The same rules
+hold, and no active task may own the pull request. Anyone can review a pull request of a public
+repository, so the review's words stay out of the prompt. The prompt names its author and URL and
+says to read it as data. The agent may still open the URL and read the review there.
 
 A prompt that carries feedback, on a reopen or any wake, ends with the rule to sort each item as
 `trivial`, `nothing-to-do` or `persons-call`, and the result records the classes (see [Review
@@ -463,10 +474,11 @@ Limits:
   such as the subscription to its key (see [watches.md](../intake/watches.md)).
 - The intake publishes no bot's comment, and only feedback after the task was done reopens it. A
   person who comments as the same GitHub account Priory acts as reopens it like anyone else.
-- Only feedback from someone with write access to the repository reopens or wakes a task: GitHub's
+- Only feedback from someone with write access to the repository reopens or wakes a task, but for
+  the opt-in above: GitHub's
   `author_association` must be `OWNER`, `MEMBER` or `COLLABORATOR`. A stranger's comment on a public
   repository stays in the inbox as `outsider`, for a person to read with `priory inbox
-  --unrouted`. The Desk counts them. No factory setting lets other authors through.
+  --unrouted`. The Desk counts them. No other factory setting lets other authors through.
 
 ## Feedback on a failed or dropped task
 
