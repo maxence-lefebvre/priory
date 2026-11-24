@@ -409,6 +409,26 @@ mod tests {
         assert!(read("0", uploaded).is_ok_and(|started| started.upload.is_some()));
     }
 
+    #[test]
+    fn only_a_commit_git_finds_unrelated_is_never_taken() {
+        let dir = std::env::temp_dir().join(format!("priory-adopt-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let sh = |args: &[&str]| run(git(&dir).args(args)).unwrap().trim().to_owned();
+        sh(&["init", "--quiet"]);
+        let tree = sh(&["write-tree"]);
+        let commit = |message: &str| {
+            let name = ["-c", "user.name=t", "-c", "user.email=t@t"];
+            sh(&[&name[..], &["commit-tree", &tree, "-m", message]].concat())
+        };
+        let (base, unrelated) = (commit("base"), commit("unrelated"));
+        let adopted = |commit: &str| adopt(&dir, "main", &base, commit);
+
+        assert!(matches!(adopted(&unrelated), Err(NotTaken::Never(_))));
+        let missing = "1".repeat(40);
+        assert!(matches!(adopted(&missing), Err(NotTaken::Later(_))));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     proptest! {
         #[test]
         fn cloud_output_gives_a_session_id_or_none_without_panicking(

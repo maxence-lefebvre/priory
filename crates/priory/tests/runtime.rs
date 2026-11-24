@@ -34452,10 +34452,10 @@ fn a_retry_after_a_failed_cloud_session_reads_the_feedback_again() {
     }
 }
 
-#[test]
-fn a_stacked_task_never_pushes_its_parents_unpushed_commits() {
+/// Task 3, blocked since it holds a commit of task 2, the parent it stacks on, that is not on origin.
+fn stacked_on_unpushed(name: &str) -> Setup {
     let workflow = CLOUD.replace("\"implementer\"", "\"cloud\"");
-    let mut setup = batched_with("cloud-stacked", &workflow);
+    let mut setup = batched_with(name, &workflow);
     let agent = setup.dir.join("factory/agents/cloud");
     fs::create_dir_all(&agent).unwrap();
     fs::write(agent.join("agent.md"), CLOUD_AGENT).unwrap();
@@ -34485,6 +34485,11 @@ fn a_stacked_task_never_pushes_its_parents_unpushed_commits() {
 
     person(&setup, "answer", &[&asks[0][0], "open", "--revision", "1"]);
 
+    blocked_on_parent(&setup);
+    setup
+}
+
+fn blocked_on_parent(setup: &Setup) {
     let tasks = setup.until("tasks", |rows| {
         rows.iter().any(|row| row[0] == "3" && row[4] == "blocked")
     });
@@ -34495,18 +34500,156 @@ fn a_stacked_task_never_pushes_its_parents_unpushed_commits() {
     );
     assert_eq!(setup.cloud_prompts().len(), 1);
     assert!(!setup.on_origin("priory/3"));
-    assert!(
-        setup
-            .command("git")
-            .current_dir(&parent)
-            .args(["push", "-q", "origin", "priory/2"])
-            .status()
-            .unwrap()
-            .success()
+}
+
+/// Publishes the close of task 2's pull request, then resumes task 3.
+fn resume_after_close(setup: &Setup, merged: bool) {
+    let kind = "github.pull_request.closed";
+    setup.publish(&on_pull_2(
+        kind,
+        json!({ "merged": merged, "github_id": 400 }),
+    ));
+    setup.until("inbox", |rows| {
+        rows.iter().any(|row| row[1] == kind && row[4] != "-")
+    });
+    person(setup, "resume", &["3"]);
+}
+
+/// Pushes the commit task 3 started from to its parent's branch, and resumes task 3.
+fn starts_once_pushed(setup: &Setup) {
+    let child = setup.dir.join("home/worktrees/owner/repo/3");
+    setup.git(
+        &child,
+        &["push", "-q", "origin", "HEAD:refs/heads/priory/2"],
     );
-    person(&setup, "resume", &["3"]);
+    person(setup, "resume", &["3"]);
     setup.until("asks", |rows| rows.iter().any(|row| row[1] == "3"));
     assert_eq!(setup.cloud_prompts().len(), 2);
+}
+
+#[test]
+fn a_stacked_task_never_pushes_its_parents_unpushed_commits() {
+    starts_once_pushed(&stacked_on_unpushed("cloud-stacked"));
+}
+
+#[test]
+fn a_stacked_task_never_pushes_a_closed_parents_unpushed_commits() {
+    let setup = stacked_on_unpushed("cloud-stacked-closed");
+
+    resume_after_close(&setup, false);
+
+    blocked_on_parent(&setup);
+    starts_once_pushed(&setup);
+}
+
+#[test]
+fn a_stacked_task_never_pushes_a_merged_parents_unpushed_commits() {
+    let setup = stacked_on_unpushed("cloud-stacked-merged");
+
+    resume_after_close(&setup, true);
+
+    blocked_on_parent(&setup);
+    starts_once_pushed(&setup);
+}
+
+#[test]
+fn a_stacked_task_never_pushes_unpushed_commits_of_a_merged_parent_whose_branch_is_gone() {
+    let setup = stacked_on_unpushed("cloud-stacked-gone");
+    let clone = setup.dir.join("home/repos/owner/repo");
+    let parent = setup.dir.join("home/worktrees/owner/repo/2");
+    let parent = parent.to_str().unwrap();
+    setup.git(&clone, &["worktree", "remove", "--force", parent]);
+    setup.git(&clone, &["branch", "-q", "-D", "priory/2"]);
+
+    resume_after_close(&setup, true);
+
+    blocked_on_parent(&setup);
+    starts_once_pushed(&setup);
+}
+
+#[test]
+fn a_persons_own_class_is_kept_when_other_feedback_of_a_cloud_run_has_none() {
+    let mut setup = cloud("cloud-own-class", &cloud_then_fix());
+    setup.request_with_issue();
+    setup.start();
+    setup.cloud_started();
+    let mut own = issue_commented(802);
+    own.data["url"] = json!("mine");
+    own.data["own"] = json!(true);
+    own.data["agent"] = json!(false);
+    setup.publish(&issue_commented(801));
+    setup.publish(&own);
+    setup.until("inbox", |rows| {
+        rows.iter().filter(|row| row[4] == "kept").count() == 2
+    });
+    setup.crash();
+    setup.cloud_push(0);
+    setup.cloud_pushes("Fix the widget\n");
+
+    setup.start();
+
+    setup.until("asks", |rows| rows.len() == 1);
+    let triage = &task_json(&setup, "1")["triage"];
+    assert_eq!(triage.as_array().unwrap().len(), 1, "{triage}");
+    assert_eq!(triage[0]["item"], "mine");
+    assert_eq!(triage[0]["class"], "persons-call");
+}
+
+#[test]
+fn a_resume_after_an_uncertain_cloud_start_reads_the_feedback_again() {
+    let mut setup = cloud("cloud-uncertain-feedback", &cloud_then_fix());
+    setup.request_with_issue();
+    setup.start();
+    setup.cloud_started();
+    setup.publish(&issue_commented(801));
+    setup.until("inbox", |rows| {
+        rows.iter().filter(|row| row[4] == "kept").count() == 1
+    });
+    setup.crash();
+    setup.cloud_push(0);
+    setup.hold("cloud-hang");
+    setup.start();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while setup.cloud_prompts().len() < 2 {
+        assert!(Instant::now() < deadline, "the fix step never started");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    setup.crash();
+    setup.start();
+    setup.blocked();
+    setup.release("cloud-hang");
+    setup.cloud_pushes("Fix the widget\n");
+
+    person(&setup, "resume", &["1"]);
+
+    setup.until("asks", |rows| rows.len() == 1);
+    let prompts = setup.cloud_prompts();
+    assert_eq!(prompts.len(), 3, "{prompts:?}");
+    assert_eq!(prompts[2].matches("Also the empty case.").count(), 1);
+}
+
+#[test]
+fn bench_replay_of_a_cloud_step_starts_no_session() {
+    let (setup, case, _) = replayable("replay-cloud", 1);
+    let cloud = REPLAYED.replace("passed = \"approve\"", "pushed = \"approve\"");
+    fs::write(setup.dir.join("factory/workflows/implement.toml"), cloud).unwrap();
+    fs::write(
+        setup.dir.join("factory/agents/implementer/agent.md"),
+        CLOUD_AGENT,
+    )
+    .unwrap();
+
+    let output = setup.replay(&case, &["--budget", "1"]);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(
+            "ending: agent error: a replay starts no cloud session, and step implement needs one"
+        ),
+        "{output:?}"
+    );
+    assert!(setup.cloud_prompts().is_empty(), "{stdout}");
+    assert!(!setup.on_origin("priory/1"));
 }
 
 #[test]
