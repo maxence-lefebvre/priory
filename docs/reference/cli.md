@@ -97,7 +97,8 @@ a group. `PRIORY_METRICS` replaces that list for one process, such as `process,l
   error ends with the command to run, the current revision filled in:
   `; run: priory answer --revision 1 smoke.1 ok`. See [waits.md](../daemon/waits.md#asks-and-answers),
   [tools.md](tools.md#commands-an-answer-runs) and
-  [runners.md](../daemon/runners.md#answering-another-runners-ask).
+  [runners.md](../daemon/runners.md#answering-another-runners-ask). It shows no plan: see
+  [The plan an ask approves](../daemon/asks.md#the-plan-an-ask-approves).
 - `priory dismiss [--revision N | --expected N] [DIR] [RUNNER:]ASK`: closes an ask with no answer.
   `RUNNER:ASK` needs a revision too, and exits 2 without it, as `answer` does, with the command to
   run when this machine's mirror holds the ask open.
@@ -129,10 +130,12 @@ a group. `PRIORY_METRICS` replaces that list for one process, such as `process,l
   [runs.md](../daemon/runs.md#queue).
 - `priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]`:
   moves a task to another band or place in the queue.
-- `priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--expected REVISION]`:
-  holds a task back until a time, another task's end, a merge or its last open blocker. See
+- `priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--now] [--expected REVISION]`:
+  holds a task back until a time, another task's end, a merge or its last open blocker. A running
+  task is held at the end of its turn, or at once with `--now`. See
   [runs.md](../daemon/runs.md#holds).
-- `priory release TASK [--expected REVISION]`: lets a held task go.
+- `priory release TASK [--expected REVISION]`: lets a held task go, or keeps a running task from
+  being held after its turn.
 - `priory resume TASK`: resumes a blocked task. See [desk.md](../daemon/desk.md#resume).
 - `priory say TASK TEXT`: sends a task's agent a message, and wakes it if it sleeps. It
   reopens a done task whose pull request is open, and refuses any other ended task. See

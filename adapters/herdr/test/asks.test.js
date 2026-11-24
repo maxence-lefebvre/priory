@@ -242,7 +242,7 @@ test("Brief, Plan, PR and Trace come from the task's detail, each left out when 
     text: "## Goal\nExport the board as CSV.\n\n## Scope\nOne CSV per board.",
     from: "groom, run 1",
   });
-  assert.deepEqual(detail.plan, { text: "- [x] Write the exporter\n- [ ] Merge #212", from: "plan, run 2" });
+  assert.deepEqual(detail.plan, [{ text: "- [x] Write the exporter\n- [ ] Merge #212", from: "plan, run 2" }]);
   assert.deepEqual(detail.pr, {
     title: "#212 Export the board as CSV",
     line: "pri-61 into main, head a1f3c9e, open",
@@ -267,26 +267,29 @@ test("Plan falls back to the task's progress when no plan step ran", () => {
   const [ask] = fixture("asks-history.json").asks;
   const progress = { goal: "Export the board", acceptanceCriteria: [{ id: "AC1", description: "a CSV per board", required: true }], latestChange: "wrote the exporter", nextAction: "merge" };
   const detail = askDetail(ask, { now, armed: null, task: { ...fixture("task.json"), plan: null, progress } });
-  assert.deepEqual(detail.plan, { text: "Goal: Export the board\n- AC1: a CSV per board\nLatest change: wrote the exporter\nNext: merge", from: "progress" });
+  assert.deepEqual(detail.plan, [{ text: "Goal: Export the board\n- AC1: a CSV per board\nLatest change: wrote the exporter\nNext: merge", from: "progress" }]);
 });
 
 const approval = () => {
   const [answered] = fixture("asks-history.json").asks;
   const step = { ...answered, state: "open", kind: "step", options: ["approve", "revise"], approves_plan: true };
-  const plan_file = { ask: step.id, revision: step.revision, step: "groom", run: 2, path: "/home/me/worktrees/acme/shop/7/.priory/brief.md", text: "## Decisions\nD1: cursor", truncated: false };
+  const plan_file = { ask: step.id, revision: step.revision, step: "groom", run: 2, files: [{ path: "/home/me/worktrees/acme/shop/7/.priory/brief.md", text: "## Decisions\nD1: cursor", truncated: false }] };
   return { answered, step, plan_file, task: { ...fixture("task.json"), plan_file } };
 };
 
 test("Plan shows the plan an open approval ask approves, and leads it", () => {
   const { answered, step, plan_file, task } = approval();
   const detail = askDetail(step, { now, armed: null, task });
-  assert.deepEqual(detail.plan, { text: "## Decisions\nD1: cursor", from: ".priory/brief.md" });
+  assert.deepEqual(detail.plan, [{ text: "## Decisions\nD1: cursor", from: ".priory/brief.md" }]);
   assert.equal(detail.first, "plan");
   assert.equal(detail.locked, false);
   assert.deepEqual(detail.chips.slice(0, 2), [["plan", "Plan"], ["why", "Why"]]);
 
-  const cut = askDetail(step, { now, armed: null, task: { ...task, plan_file: { ...plan_file, truncated: true } } }).plan;
-  assert.equal(cut?.text, `## Decisions\nD1: cursor\n\nShowing the first 64 KB. Read the rest at ${plan_file.path}.`);
+  const [file] = plan_file.files;
+  const two = askDetail(step, { now, armed: null, task: { ...task, plan_file: { ...plan_file, files: [{ ...file, path: "/w/.priory/plan.md", text: "P" }, { ...file, truncated: true }] } } });
+  assert.deepEqual(two.plan, [{ text: "P", from: ".priory/plan.md" }, { text: `${file.text}\n\nShowing the first 64 KB. Read the rest at ${file.path}.`, from: ".priory/brief.md" }]);
+  assert.equal(two.cut, `The plan is cut at 64 KB. Read the rest at ${file.path} before you answer.`);
+  assert.equal(detail.cut, null);
   // An ask that approves no plan, or one already answered, keeps Why first.
   assert.equal(askDetail({ ...step, approves_plan: false }, { now, armed: null, task }).first, "why");
   assert.equal(askDetail({ ...answered, kind: "step", approves_plan: true }, { now, armed: null, task }).chips[0][0], "why");
@@ -619,4 +622,27 @@ test("askHeading, askBody and cutAt are the web view's, word for word", () => {
   const herdr = readFileSync(new URL("../lib/priory.js", import.meta.url), "utf8");
   assert.ok(helpers(herdr).includes("export function askHeading"));
   assert.equal(helpers(herdr), helpers(web), "copy askHeading, askBody and cutAt from adapters/herdr/lib/priory.js to crates/priory-core/web/asks.js");
+});
+
+test("an approval ask whose task cannot be read says why above its options and on its bar", async () => {
+  const { context, draw, herdr, settle, text } = await import("./kit.js");
+  const { default: Asks } = await import("../mods/priory-asks/main.js");
+  const { palette } = await import("../mods/priory-asks/tokens.js");
+  const { step, task } = approval();
+  herdr.reset();
+  herdr.replies = { asks: { revision: 1, bands: [], asks: [step] }, task, links: { links: [] } };
+  const panel = new Asks();
+  const cx = context();
+  panel.init({}, cx);
+  await settle();
+  assert.equal(panel.taskError, null);
+  const client = /** @type {any} */ (panel.priory).client;
+  client.task = async () => { throw new Error("timed out"); };
+  panel.select(step.id, cx);
+  await settle();
+  const why = "Could not read the plan: timed out. It must load before you answer.";
+  const detail = askDetail(step, { now, armed: null, task: null, taskError: panel.taskError });
+  assert.equal(detail.wait, why);
+  assert.ok(text(draw(panel, cx)).includes(why), "above the options");
+  assert.ok(text(panel.bar(step, detail, palette({}), now)).includes(why), "on the bar");
 });

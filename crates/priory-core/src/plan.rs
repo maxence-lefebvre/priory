@@ -5,7 +5,7 @@ use priory_factory::factory::Step;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
-use std::io::Read;
+use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 
 /// The step whose result is a task's brief, and the one whose result is its plan. A factory may
@@ -26,22 +26,23 @@ const LONGEST: u64 = 1024 * 1024;
 pub(crate) const NO_PLAN: &str =
     "This ask shows no plan: no groom or plan step of this generation ended with a result.";
 
-/// The plan an ask shows.
+/// A part of the plan an ask shows, as `plan_file` lists it.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Shown {
     /// The file, or `None` for the result's summary.
-    path: Option<PathBuf>,
+    path: Option<String>,
     text: String,
     truncated: bool,
 }
 
 impl Shown {
-    fn new(path: Option<PathBuf>, bytes: &[u8]) -> Self {
+    fn new(path: Option<&Path>, bytes: &[u8]) -> Self {
         let mut end = bytes.len().min(SHOWN);
         while end < bytes.len() && end > 0 && bytes[end] & 0xC0 == 0x80 {
             end -= 1;
         }
         Shown {
-            path,
+            path: path.map(|path| path.to_string_lossy().into_owned()),
             text: String::from_utf8_lossy(&bytes[..end]).into_owned(),
             truncated: end < bytes.len(),
         }
@@ -55,6 +56,31 @@ struct Document {
     bytes: Vec<u8>,
 }
 
+/// Each of `FILES`: none when it is missing, and why when Priory refuses to read it.
+type Documents = [Result<Option<Document>, Refused>; FILES.len()];
+
+/// Why Priory refuses to read a plan document.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Refused {
+    Outside,
+    Long,
+    Unread,
+}
+
+impl Refused {
+    const ALL: [Refused; 3] = [Refused::Outside, Refused::Long, Refused::Unread];
+
+    /// What the ask says of `file`.
+    fn line(self, file: &str) -> String {
+        let why = match self {
+            Refused::Outside => "it is not a regular file of the worktree, such as a symlink",
+            Refused::Long => "it is over 1 MB",
+            Refused::Unread => "it could not be read",
+        };
+        format!("This ask does not show {file}: {why}. An answer does not check its content.")
+    }
+}
+
 /// The content of each of `FILES`, as a hash: `None` for a missing one.
 type Contents = [Option<String>; FILES.len()];
 
@@ -63,7 +89,7 @@ struct Taken {
     task: i64,
     step: String,
     run: i64,
-    path: Option<String>,
+    files: Vec<Shown>,
     contents: Contents,
 }
 
@@ -155,59 +181,89 @@ fn snapshot(
         return Ok(());
     };
     let taken = taken.filter(|taken| taken.run == source.run);
-    let (documents, mut contents) = documents(source.worktree.as_deref());
-    let at = choose(source.started, &documents, &contents, taken);
-    // A second document that changed is shown at the next revision, so it stays changed until then.
-    if let Some(taken) = taken {
-        for other in (0..FILES.len()).filter(|other| Some(*other) != at) {
-            if documents[other].is_some() {
-                contents[other].clone_from(&taken.contents[other]);
-            }
-        }
+    let (documents, contents) = documents(source.worktree.as_deref());
+    let mut files: Vec<Shown> = choose(source.started, &documents, &contents, taken)
+        .map(|document| Shown::new(Some(&document.path), &document.bytes))
+        .collect();
+    if files.is_empty() {
+        files.push(Shown::new(None, source.summary.as_bytes()));
     }
-    let shown = match at.and_then(|at| documents[at].as_ref()) {
-        Some(document) => Shown::new(Some(document.path.clone()), &document.bytes),
-        None => Shown::new(None, source.summary.as_bytes()),
-    };
+    say_refused(tx, ask, &documents)?;
     tx.execute(
-        "INSERT OR REPLACE INTO ask_plans (ask, step, run, path, text, truncated, contents)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT OR REPLACE INTO ask_plans (ask, step, run, files, contents)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
         params![
             ask,
             step,
             source.run,
-            shown.path.map(|path| path.to_string_lossy().into_owned()),
-            shown.text,
-            shown.truncated,
+            serde_json::to_string(&files).expect("plans serialize"),
             serde_json::to_string(&contents).expect("hashes serialize")
         ],
     )
     .map(drop)
 }
 
-/// The document to show, by its place in `FILES`: one whose content changed since `taken`, or else
-/// the one it showed, or else the newest written since `started`. So a rewrite never hides behind
-/// an old time.
-fn choose(
+/// Says in the text of ask `ask` which documents Priory refused to read, in place of what an
+/// earlier revision said.
+fn say_refused(tx: &Transaction, ask: i64, documents: &Documents) -> rusqlite::Result<()> {
+    let before: String = tx.query_row(
+        "SELECT coalesce(text, '') FROM asks WHERE id = ?1",
+        [ask],
+        |row| row.get(0),
+    )?;
+    let stale: Vec<String> = FILES
+        .iter()
+        .flat_map(|file| Refused::ALL.map(|refused| refused.line(file)))
+        .collect();
+    let mut parts: Vec<String> = before
+        .split("\n\n")
+        .filter(|_| !before.is_empty())
+        .filter(|part| !stale.iter().any(|line| line == part))
+        .map(str::to_owned)
+        .collect();
+    // It leads, so `tell_ask` still finds its own line last.
+    let refused = FILES
+        .iter()
+        .zip(documents)
+        .filter_map(|(file, document)| Some(document.as_ref().err()?.line(file)));
+    parts.splice(0..0, refused);
+    let after = parts.join("\n\n");
+    if after == before {
+        return Ok(());
+    }
+    tx.execute(
+        "UPDATE asks SET text = nullif(?2, '') WHERE id = ?1",
+        params![ask, after],
+    )
+    .map(drop)
+}
+
+/// The documents to show, in the order of `FILES`: each one whose content changed since `taken`,
+/// that it showed, or that was written since `started`. So a rewrite never hides behind an old time.
+fn choose<'a>(
     started: Option<jiff::Timestamp>,
-    documents: &[Option<Document>; FILES.len()],
-    contents: &Contents,
-    taken: Option<&Taken>,
-) -> Option<usize> {
+    documents: &'a Documents,
+    contents: &'a Contents,
+    taken: Option<&'a Taken>,
+) -> impl Iterator<Item = &'a Document> {
     // `runs.started` holds whole seconds: a file of that second may be an earlier step's.
     let since =
         started.and_then(|started| started.checked_add(jiff::SignedDuration::from_secs(1)).ok());
-    let shown = taken.and_then(|taken| taken.path.as_deref());
-    (0..FILES.len())
-        .filter_map(|at| {
-            let document = documents[at].as_ref()?;
-            let changed = taken.is_some_and(|taken| taken.contents[at] != contents[at]);
-            let shown = shown.is_some_and(|shown| document.path.as_os_str() == shown);
-            let fresh = since.is_some_and(|since| document.written >= since);
-            (changed || shown || fresh).then_some((changed, shown, document.written, at))
+    documents
+        .iter()
+        .enumerate()
+        .filter_map(move |(at, document)| {
+            let document = document.as_ref().ok()?.as_ref()?;
+            let path = document.path.to_string_lossy();
+            let kept = taken.is_some_and(|taken| {
+                taken.contents[at] != contents[at]
+                    || taken
+                        .files
+                        .iter()
+                        .any(|shown| shown.path.as_deref() == Some(&*path))
+            });
+            (kept || since.is_some_and(|since| document.written >= since)).then_some(document)
         })
-        .max()
-        .map(|(.., at)| at)
 }
 
 /// Takes the plan of ask `ask` again, as when the ask is asked again. An ask with no plan keeps none.
@@ -249,7 +305,7 @@ pub(crate) fn changed(tx: &Transaction, ask: i64) -> rusqlite::Result<bool> {
 
 fn of_ask(tx: &Transaction, ask: i64) -> rusqlite::Result<Option<Taken>> {
     tx.query_row(
-        "SELECT asks.task, ask_plans.step, ask_plans.run, ask_plans.path, ask_plans.contents
+        "SELECT asks.task, ask_plans.step, ask_plans.run, ask_plans.files, ask_plans.contents
          FROM ask_plans JOIN asks ON asks.id = ask_plans.ask WHERE asks.id = ?1",
         [ask],
         |row| {
@@ -257,7 +313,8 @@ fn of_ask(tx: &Transaction, ask: i64) -> rusqlite::Result<Option<Taken>> {
                 task: row.get(0)?,
                 step: row.get(1)?,
                 run: row.get(2)?,
-                path: row.get(3)?,
+                files: serde_json::from_str(&row.get::<_, String>(3)?)
+                    .expect("plans are stored as JSON"),
                 contents: serde_json::from_str(&row.get::<_, String>(4)?)
                     .expect("hashes are stored as JSON"),
             })
@@ -306,18 +363,16 @@ fn source(db: &Connection, task: i64, step: &str) -> rusqlite::Result<Option<Sou
 }
 
 /// The documents `worktree` holds, and the content of each.
-fn documents(worktree: Option<&str>) -> ([Option<Document>; FILES.len()], Contents) {
+fn documents(worktree: Option<&str>) -> (Documents, Contents) {
     let worktree = worktree.and_then(|worktree| Path::new(worktree).canonicalize().ok());
     let Some(worktree) = worktree else {
-        return Default::default();
+        return (std::array::from_fn(|_| Ok(None)), Contents::default());
     };
     let found = FILES.map(|file| read(&worktree, file));
     let contents = std::array::from_fn(|at| match &found[at] {
-        Some(document) => Some(hash(&document.bytes)),
+        Ok(document) => document.as_ref().map(|document| hash(&document.bytes)),
         // A document Priory refuses to read still is not a missing one.
-        None => std::fs::symlink_metadata(worktree.join(FILES[at]))
-            .is_ok()
-            .then(|| "unreadable".to_owned()),
+        Err(_) => Some("unreadable".to_owned()),
     });
     (found, contents)
 }
@@ -330,21 +385,37 @@ fn hash(bytes: &[u8]) -> String {
 }
 
 /// `file` of `worktree`, if it is a regular file the worktree holds.
-fn read(worktree: &Path, file: &str) -> Option<Document> {
+fn read(worktree: &Path, file: &str) -> Result<Option<Document>, Refused> {
     let path = worktree.join(file);
-    let opened = open(&path)?;
-    let found = opened.metadata().ok()?;
-    if !found.is_file() || found.len() > LONGEST || !beneath(worktree, &path, &found) {
-        return None;
+    let listed = match std::fs::symlink_metadata(&path) {
+        Ok(listed) => listed,
+        Err(why) if matches!(why.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {
+            return Ok(None);
+        }
+        Err(_) => return Err(Refused::Unread),
+    };
+    if !listed.is_file() {
+        return Err(Refused::Outside);
     }
-    let written = written(&found)?;
+    let opened = open(&path).ok_or(Refused::Unread)?;
+    let found = opened.metadata().map_err(|_| Refused::Unread)?;
+    if !found.is_file() || !beneath(worktree, &path, &found) {
+        return Err(Refused::Outside);
+    }
+    let written = written(&found).ok_or(Refused::Unread)?;
     let mut bytes = Vec::new();
-    opened.take(LONGEST + 1).read_to_end(&mut bytes).ok()?;
-    (bytes.len() as u64 <= LONGEST).then_some(Document {
+    opened
+        .take(LONGEST + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| Refused::Unread)?;
+    if bytes.len() as u64 > LONGEST {
+        return Err(Refused::Long);
+    }
+    Ok(Some(Document {
         written,
         path,
         bytes,
-    })
+    }))
 }
 
 /// When a file last changed, which an agent cannot set as it can the modification time.
@@ -551,7 +622,7 @@ mod tests {
         fn refused(&self, text: &str) {
             let shown = self.shown();
             assert_eq!(
-                (&shown["text"], &shown["revision"]),
+                (&shown["files"][0]["text"], &shown["revision"]),
                 (&json!(text), &json!(2))
             );
             assert_eq!((self.step().as_str(), self.refusals()), ("approve-plan", 1));
@@ -572,10 +643,19 @@ mod tests {
             crate::listing::task(&self.db, 1).unwrap().unwrap()["plan_file"].clone()
         }
 
+        /// The text of each file the ask shows.
+        fn texts(&self) -> Vec<String> {
+            let shown = self.shown();
+            let files = shown["files"].as_array().unwrap().iter();
+            files
+                .map(|file| file["text"].as_str().unwrap().to_owned())
+                .collect()
+        }
+
         /// The text the raised ask shows.
         fn raised(&mut self) -> Value {
             self.raise();
-            self.shown()["text"].clone()
+            self.shown()["files"][0]["text"].clone()
         }
 
         fn answer(&mut self, revision: i64) -> Result<String, String> {
@@ -603,7 +683,7 @@ mod tests {
         setup.write("brief.md", "as read", 30);
         assert_eq!(setup.raised(), "as read");
         setup.write("brief.md", "edited", 0);
-        assert_eq!(setup.shown()["text"], "as read");
+        assert_eq!(setup.shown()["files"][0]["text"], "as read");
 
         let refused = setup.answer(1).unwrap_err();
 
@@ -611,7 +691,7 @@ mod tests {
         assert_eq!(setup.step(), "approve-plan");
         let shown = setup.shown();
         assert_eq!(
-            (&shown["text"], &shown["revision"]),
+            (&shown["files"][0]["text"], &shown["revision"]),
             (&json!("edited"), &json!(2))
         );
         assert!(setup.answer(1).is_err(), "the old revision stays refused");
@@ -629,7 +709,7 @@ mod tests {
         tx.commit().unwrap();
         let shown = setup.shown();
         assert_eq!(
-            (&shown["text"], &shown["revision"]),
+            (&shown["files"][0]["text"], &shown["revision"]),
             (&json!("first"), &json!(2))
         );
         setup.answer(2).unwrap();
@@ -642,12 +722,12 @@ mod tests {
         let text = format!("{}€tail", "a".repeat(SHOWN - 1));
         setup.write("plan.md", &text, 30);
         assert_eq!(setup.raised(), "a".repeat(SHOWN - 1));
-        assert_eq!(setup.shown()["truncated"], true);
+        assert_eq!(setup.shown()["files"][0]["truncated"], true);
         setup.write("plan.md", &format!("{text}!"), 0);
         assert!(setup.answer(1).is_err(), "an edit nobody was shown");
         fs::remove_file(setup.worktree.join(".priory/plan.md")).unwrap();
         assert!(setup.answer(2).is_err());
-        assert_eq!(setup.shown()["text"], "the groom summary");
+        assert_eq!(setup.shown()["files"][0]["text"], "the groom summary");
     }
 
     #[test]
@@ -669,7 +749,7 @@ mod tests {
         setup.write("plan.md", "left over", 0);
         setup.started_at("plan.md", 3600);
         assert_eq!(setup.raised(), "the groom summary");
-        assert_eq!(setup.shown()["path"], Value::Null);
+        assert_eq!(setup.shown()["files"][0]["path"], Value::Null);
     }
 
     #[test]
@@ -680,7 +760,10 @@ mod tests {
         std::thread::sleep(Duration::from_millis(1100));
         setup.write("brief.md", "fresh", 0);
         assert_eq!(setup.raised(), "fresh");
-        let path = setup.shown()["path"].as_str().unwrap().to_owned();
+        let path = setup.shown()["files"][0]["path"]
+            .as_str()
+            .unwrap()
+            .to_owned();
         assert!(path.ends_with("/7/.priory/brief.md"), "{path}");
     }
 
@@ -734,7 +817,7 @@ mod tests {
                  VALUES ('cli:7', 'server', '7', 1, 'queued');",
             )
             .unwrap();
-        assert_eq!(setup.shown()["text"], "the groom summary");
+        assert_eq!(setup.shown()["files"][0]["text"], "the groom summary");
         setup
             .db
             .execute("UPDATE claims SET runner = 'desktop'", [])
@@ -748,29 +831,41 @@ mod tests {
         let (home, folder) = (&setup.home, setup.worktree.join(".priory"));
         fs::write(home.join("plan.md"), "outside").unwrap();
         std::os::unix::fs::symlink(home.join("plan.md"), folder.join("plan.md")).unwrap();
-        assert!(read(&setup.worktree, FILES[0]).is_none());
+        assert_eq!(
+            read(&setup.worktree, FILES[0]).err(),
+            Some(Refused::Outside)
+        );
         fs::write(folder.join("brief.md"), "inside").unwrap();
-        assert!(read(&setup.worktree, FILES[1]).is_some());
+        assert!(read(&setup.worktree, FILES[1]).unwrap().is_some());
         // A symlink inside the worktree is not followed either.
         fs::remove_file(folder.join("plan.md")).unwrap();
         std::os::unix::fs::symlink("brief.md", folder.join("plan.md")).unwrap();
-        assert!(read(&setup.worktree, FILES[0]).is_none());
+        assert_eq!(
+            read(&setup.worktree, FILES[0]).err(),
+            Some(Refused::Outside)
+        );
         fs::remove_file(folder.join("plan.md")).unwrap();
         let made = std::process::Command::new("mkfifo")
             .arg(folder.join("plan.md"))
             .status()
             .unwrap();
         assert!(made.success());
-        assert!(read(&setup.worktree, FILES[0]).is_none());
+        assert_eq!(
+            read(&setup.worktree, FILES[0]).err(),
+            Some(Refused::Outside)
+        );
         fs::remove_file(folder.join("plan.md")).unwrap();
         File::create(folder.join("plan.md"))
             .unwrap()
             .set_len(LONGEST + 1)
             .unwrap();
-        assert!(read(&setup.worktree, FILES[0]).is_none());
+        assert_eq!(read(&setup.worktree, FILES[0]).err(), Some(Refused::Long));
         fs::remove_dir_all(&folder).unwrap();
         std::os::unix::fs::symlink(home, &folder).unwrap();
-        assert!(read(&setup.worktree, FILES[0]).is_none());
+        assert_eq!(
+            read(&setup.worktree, FILES[0]).err(),
+            Some(Refused::Outside)
+        );
     }
 
     #[test]
@@ -819,7 +914,7 @@ mod tests {
         let run = tools::live_run(&tx, "split").unwrap().unwrap();
         crate::debate::stop(&tx, &trace, &run, 1, "the rounds ran out").unwrap();
         tx.commit().unwrap();
-        assert_eq!(setup.shown()["text"], "as read");
+        assert_eq!(setup.shown()["files"][0]["text"], "as read");
         setup.write("brief.md", "rewritten", 3600);
         let answer = Answer {
             ask: 1,
@@ -832,7 +927,7 @@ mod tests {
         tools::answer(&mut setup.db, &answer, &trace, &|_, _| None)
             .unwrap()
             .unwrap_err();
-        assert_eq!(setup.shown()["text"], "rewritten");
+        assert_eq!(setup.shown()["files"][0]["text"], "rewritten");
     }
 
     #[test]
@@ -863,13 +958,15 @@ mod tests {
     #[test]
     fn plan_not_shown_that_is_rewritten_refuses_the_answer_and_is_shown() {
         let mut setup = Setup::new("other");
-        setup.write("plan.md", "other", 0);
-        std::thread::sleep(Duration::from_millis(20));
+        setup.write("plan.md", "an earlier step's", 0);
+        setup.started_at("plan.md", 0);
+        std::thread::sleep(Duration::from_millis(1100));
         setup.write("brief.md", "as read", 0);
         assert_eq!(setup.raised(), "as read");
         setup.write("plan.md", "unseen", 3600);
         setup.answer(1).unwrap_err();
         setup.refused("unseen");
+        assert_eq!(setup.texts(), ["unseen", "as read"]);
     }
 
     #[test]
@@ -881,12 +978,59 @@ mod tests {
         setup.write("plan.md", "plan rewritten", 0);
         setup.write("brief.md", "brief rewritten", 0);
         setup.answer(1).unwrap_err();
-        let second = setup.shown()["text"].clone();
+        assert_eq!(setup.texts(), ["plan rewritten", "brief rewritten"]);
+        setup.answer(2).unwrap();
+    }
+
+    #[test]
+    fn plan_documents_that_are_both_fresh_both_show_and_an_edit_of_either_refuses_the_answer() {
+        for edited in ["plan.md", "brief.md"] {
+            let mut setup = Setup::new(&format!("two-{edited}"));
+            setup.write("brief.md", "the brief", 0);
+            setup.write("plan.md", "the plan", 0);
+            setup.raise();
+            assert_eq!(setup.texts(), ["the plan", "the brief"]);
+            for (at, file) in FILES.iter().enumerate() {
+                let path = setup.shown()["files"][at]["path"].clone();
+                assert!(path.as_str().unwrap().ends_with(file));
+            }
+            setup.write(edited, "rewritten", 3600);
+            setup.answer(1).unwrap_err();
+            assert_eq!(setup.texts().len(), 2);
+            assert!(setup.texts().contains(&"rewritten".to_owned()));
+            setup.answer(2).unwrap();
+        }
+    }
+
+    #[test]
+    fn plan_document_priory_refuses_is_named_once_in_the_asks_text_until_it_can_be_read() {
+        let mut setup = Setup::new("refused");
+        let folder = setup.worktree.join(".priory");
+        std::os::unix::fs::symlink("brief.md", folder.join("plan.md")).unwrap();
+        File::create(folder.join("brief.md"))
+            .unwrap()
+            .set_len(LONGEST + 1)
+            .unwrap();
+        setup.raise();
+        let lines = format!(
+            "{}\n\n{}",
+            Refused::Outside.line(FILES[0]),
+            Refused::Long.line(FILES[1])
+        );
+        assert_eq!(setup.texts(), ["the groom summary"]);
+        assert!(setup.text().starts_with(&lines), "{}", setup.text());
+        let rest = setup.text()[lines.len()..].to_owned();
+
+        fs::remove_file(folder.join("brief.md")).unwrap();
+        setup.write("brief.md", "the brief", 0);
+        setup.answer(1).unwrap_err();
+        assert_eq!(setup.texts(), ["the brief"]);
+        let line = Refused::Outside.line(FILES[0]);
+        assert_eq!(setup.text(), format!("{line}{rest}"));
+
+        fs::remove_file(folder.join("plan.md")).unwrap();
         setup.answer(2).unwrap_err();
-        let third = setup.shown()["text"].clone();
-        let mut shown = [second.as_str().unwrap(), third.as_str().unwrap()];
-        shown.sort_unstable();
-        assert_eq!(shown, ["brief rewritten", "plan rewritten"]);
+        assert_eq!(setup.text(), rest.trim_start());
         setup.answer(3).unwrap();
     }
 
@@ -940,11 +1084,12 @@ mod tests {
             .execute_batch(
                 "INSERT INTO asks (id, task, step, kind, question, options, answer)
                  VALUES (9, 1, 'approve-plan', 'step', 'q', '[]', 'approved');
-                 INSERT INTO ask_plans SELECT 9, step, run, path, 'answered', truncated, contents
+                 INSERT INTO ask_plans SELECT 9, step, run,
+                   json_set(files, '$[0].text', 'answered'), contents
                  FROM ask_plans;",
             )
             .unwrap();
-        assert_eq!(setup.shown()["text"], "open");
+        assert_eq!(setup.shown()["files"][0]["text"], "open");
     }
 
     #[test]
@@ -1040,9 +1185,9 @@ mod tests {
             .map(|plan| serde_json::from_str(&plan).unwrap())
             .unwrap();
         assert_eq!(
-            (&plan["text"], &plan["truncated"]),
+            (&plan[0]["text"], &plan[0]["truncated"]),
             (&json!("as read"), &json!(false))
         );
-        assert!(plan["path"].as_str().unwrap().ends_with("/brief.md"));
+        assert!(plan[0]["path"].as_str().unwrap().ends_with("/brief.md"));
     }
 }

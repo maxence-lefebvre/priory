@@ -181,8 +181,8 @@ INSERT INTO tasks (id,key,workflow,step,state,band,lane,trigger,source,repo,tldr
 (14,'ENG-270','groom','approve-plan','asleep','today','search','linear','seed-14','acme/shop','Paginate the search results page',strftime('%Y-%m-%dT%H:%M:%SZ','now','-70 minutes'),strftime('%Y-%m-%dT%H:%M:%SZ','now','-15 minutes'),strftime('%Y-%m-%dT%H:%M:%SZ','now','-15 minutes'),'claude-opus-5-5','priory/eng-270');
 INSERT INTO asks (id,task,step,kind,revision,question,options,recommendation,title,text,created) VALUES
 (91,14,'approve-plan','step',1,'Approve the plan for ENG-270?','["approve","revise","reject"]','approve','Approve the plan for ENG-270','The brief holds three decisions for you, the acceptance criteria and the plan.',strftime('%Y-%m-%dT%H:%M:%SZ','now','-15 minutes'));
-INSERT INTO ask_plans (ask,step,run,path,text,truncated,contents) VALUES
-(91,'groom',0,'/home/me/worktrees/acme/shop/eng-270/.priory/brief.md','# ENG-270: paginate the search results page
+INSERT INTO ask_plans (ask,step,run,files,contents) VALUES
+(91,'groom',0,json_array(json_object('path','/home/me/worktrees/acme/shop/eng-270/.priory/brief.md','text','# ENG-270: paginate the search results page
 
 ## Decisions to approve
 
@@ -203,7 +203,7 @@ INSERT INTO ask_plans (ask,step,run,path,text,truncated,contents) VALUES
 3. Cover the three criteria in `tests/search_pages.rs`.
 
 Risk: the rank changes when the index rebuilds, so a cursor can skip a result during a rebuild.
-',0,'[null,null]');
+','truncated',json('false'))),'[null,null]');
 -- ask 2 snoozed until tomorrow 09:00
 INSERT INTO snoozes (kind,item,task,snoozed,until) VALUES ('ask',2,2,strftime('%Y-%m-%dT%H:%M:%SZ','now','-30 minutes'),strftime('%Y-%m-%dT09:00:00Z','now','+1 day'));
 -- a stalled queue's banner, and a skipped check on task 1's pull request

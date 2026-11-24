@@ -368,8 +368,18 @@ export const plansFirst = (ask) => ask.state === "open" && Boolean(ask.approves_
 /** Whether `task`, as last read, lacks the plan this revision of the ask approves: no answer goes until it is read. @param {any} ask @param {any} task */
 export const planUnread = (ask, task) => plansFirst(ask) && !(task?.plan_file?.ask === ask.id && task.plan_file.revision === ask.revision);
 
-/** Where a plan came from: its file, else its result. @param {any} plan */
-export const planFrom = (plan) => (plan.path ? planName(plan.path) : `${plan.step}, run ${plan.run}`);
+/** Each part of a plan: its file, else its result, with its text. @param {any} plan */
+export const planParts = (plan) => plan.files.map((/** @type {any} */ file) => ({ ...file, from: file.path ? planName(file.path) : `${plan.step}, run ${plan.run}` }));
+
+/** What stands beside the options of an ask whose plan, as read, is cut, else null. @param {any} ask @param {any} task */
+export const planCut = (ask, task) => {
+  if (!plansFirst(ask) || planUnread(ask, task)) return null;
+  const cut = planParts(task.plan_file).filter((/** @type {any} */ part) => part.truncated);
+  return cut.length ? `The plan is cut at 64 KB. Read the rest at ${cut.map((/** @type {any} */ part) => part.path || part.from).join(" and ")} before you answer.` : null;
+};
+
+/** Why an ask's options wait for its plan. @param {any} ask @param {string | null | undefined} error why the read failed */
+export const planWait = (ask, error) => (error ? `Could not read the plan: ${error}. It must load before you answer.` : `Reading the plan of revision ${ask.revision} before you answer.`);
 
 /** The runner of another runner's ask, which alone lists `submissions`, else null. @param {any} ask */
 export const runnerOf = (ask) => (Array.isArray(ask?.submissions) ? ask.runner : null);

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, submitted, seenAgo, sentNote, shownGroups, snoozeShortcut, stillArmed, press, optionKey, takesText, openAsksOf, planFrom, planName, planUnread, plansFirst, writeNote, shrunkHead, answeredAsks, confidenceNote, askHeading, askBody, cutAt, HEADING_MAX } from "./asks.js";
+import { ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, submitted, seenAgo, sentNote, shownGroups, snoozeShortcut, stillArmed, press, optionKey, takesText, openAsksOf, planCut, planParts, planName, planUnread, planWait, plansFirst, writeNote, shrunkHead, answeredAsks, confidenceNote, askHeading, askBody, cutAt, HEADING_MAX } from "./asks.js";
 
 const now = Date.parse("2026-11-20T12:00:00Z");
 const ask = (id, fields) => ({ id, state: "open", snoozed_until: null, ...fields });
@@ -310,7 +310,7 @@ test("only an open ask that approves a plan leads with it", () => {
 
 test("an approving ask is locked until its task was read with the plan of its own revision", () => {
   const ask = { id: 4, revision: 2, state: "open", approves_plan: true };
-  const plan = (ask, revision) => ({ plan_file: { ask, revision, path: null, step: "groom", run: 9, text: "D1" } });
+  const plan = (ask, revision) => ({ plan_file: { ask, revision, step: "groom", run: 9, files: [{ path: null, text: "D1", truncated: false }] } });
   assert.equal(planUnread(ask, null), true);
   assert.equal(planUnread(ask, { plan_file: null }), true);
   assert.equal(planUnread(ask, plan(3, 2)), true, "an earlier ask's plan");
@@ -319,9 +319,24 @@ test("an approving ask is locked until its task was read with the plan of its ow
   assert.equal(planUnread({ ...ask, approves_plan: false }, null), false);
 });
 
-test("a plan names its file, else its result", () => {
-  assert.equal(planFrom({ path: "/home/me/worktrees/acme/shop/7/.priory/plan.md" }), ".priory/plan.md");
-  assert.equal(planFrom({ path: null, step: "groom", run: 9 }), "groom, run 9");
+test("a plan lists each file it holds, else its result", () => {
+  const files = [{ path: "/w/7/.priory/plan.md", text: "P", truncated: false }, { path: "/w/7/.priory/brief.md", text: "B", truncated: false }];
+  assert.deepEqual(planParts({ files }).map(({ from, text }) => [from, text]), [[".priory/plan.md", "P"], [".priory/brief.md", "B"]]);
+  assert.equal(planParts({ step: "groom", run: 9, files: [{ path: null, text: "S" }] })[0].from, "groom, run 9");
+});
+
+test("a cut plan says so beside the options, with each cut file", () => {
+  const ask = { id: 4, revision: 2, state: "open", approves_plan: true };
+  const read = (...truncated) => ({ plan_file: { ask: 4, revision: 2, files: truncated.map((cut, i) => ({ path: `/w/${i}`, text: "", truncated: cut })) } });
+  assert.equal(planCut(ask, read(false, true)), "The plan is cut at 64 KB. Read the rest at /w/1 before you answer.");
+  assert.equal(planCut(ask, read(true, true)), "The plan is cut at 64 KB. Read the rest at /w/0 and /w/1 before you answer.");
+  assert.equal(planCut(ask, read(false)), null);
+  assert.equal(planCut(ask, null), null);
+});
+
+test("an ask's locked options say why", () => {
+  assert.equal(planWait({ revision: 2 }, null), "Reading the plan of revision 2 before you answer.");
+  assert.equal(planWait({ revision: 2 }, "timed out"), "Could not read the plan: timed out. It must load before you answer.");
 });
 
 test("a plan file is named from its worktree", () => {

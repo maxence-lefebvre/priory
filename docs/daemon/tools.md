@@ -401,7 +401,7 @@ lane. It starts ahead of its band's other tasks, and passes the pause, the revie
 outcomes `answered` and `skipped` both lead to `done`. Its first prompt carries a
 `priory.ask.routed` event: the task, its key, the ask, its revision, question, options,
 recommendation, trade-off, title, text and, when it approves one, [the plan](asks.md#the-plan-an-ask-approves)
-as `path`, `text` and `truncated`.
+as a list of files, each with `path`, `text` and `truncated`.
 
 The lead answers with `result`:
 

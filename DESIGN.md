@@ -697,13 +697,20 @@ underline, with no fill.
    "What waits." as two facts with the `scale` and `hourglass` icons.
 2. **Brief**: the task's brief file as Markdown, with its file name and an open link.
 3. **Plan**: the task's plan as Markdown; a checklist shows done items with `check` in
-   `--ok-text`.
+   `--ok-text`. Each file of it has its own `.sh` line with its path.
 4. **PR**: the pull request summary (below).
 5. **Trace**: the runs that led to the ask, as a waterfall (below).
 6. **History**: the answer history (below).
 7. **Command**: for a command ask, the command and its target (below).
 
 A section the task lacks, such as a plan, is left out with its chip.
+
+An open ask that **approves a plan** puts Plan first, before Why, as the section the detail opens on.
+Its options are disabled until the plan of its revision on screen is read, under a `layers` note,
+"Reading the plan of revision 2 before you answer.", or "Could not read the plan: ..." when the read
+fails. The answer bar shows the same note. When a file is cut, a `.note.warn` under the options, in the
+answer bar and in the answer sheet says "The plan is cut at 64 KB. Read the rest at ... before you
+answer.".
 
 A **go ask**, the human step of a batch's planning task, reads the batch first. Its chips start with
 Plan, Closes and Splits, then Why and the task's other sections. Plan is the [lane graph](#batch-page-and-lane-graph) with
@@ -787,7 +794,8 @@ Ask text, briefs and plans render as sanitized Markdown, never as HTML (principl
 
 - The web view parses a subset itself: paragraphs, headings, bullet, numbered and check lists,
   bold, inline code, fenced code blocks, links and images. Anything else, raw HTML included, shows
-  as escaped text. A link or image whose target is not `https:` shows as its source text.
+  as escaped text. A fence line's other words show as a `.info` line in mono over the block, and only
+  a bare fence at least as long as the opening one closes it. A link or image whose target is not `https:` shows as its source text.
 - A check list's open item shows an empty box in `--text-3`.
 
 - Body in `--type-read`, at most `--measure` wide. Headings: h1 in `--type-read-h1`, h2 and h3 in
@@ -870,9 +878,8 @@ Settings, then Notifications, reached from More on a phone and from the Appearan
 screens. It turns Web Push on or off for this device. It holds:
 
 1. A screen title, "Notifications", in `--type-screen`.
-2. One sentence in `--text-2`: "Get a notification on this device when an agent asks you
-   something, or when a task is blocked or failed. It shows the ask's title and opens the ask. A
-   snoozed item sends nothing."
+2. One sentence in `--text-2`: "Get a notification on this device when something waits on you. It
+   shows a title and opens the item. A snoozed item sends nothing."
 3. A status note, a `role="status"` line, when there is something to say:
 
    | Status      | Note |
@@ -884,11 +891,21 @@ screens. It turns Web Push on or off for this device. It holds:
    | insecure    | "Notifications need HTTPS. Open Priory at its https address, such as the one tailscale serve gives, or at localhost on this machine." |
    | unsupported | "This browser cannot get notifications from a web page." |
 
-4. One button: "Turn on notifications", primary, while they are off; "Turn off notifications",
+4. While they are on, a `fieldset` named "Notify this device about", in `--type-read-h2`, with one
+   native checkbox per kind. A row is at least 60 px tall and wholly tappable, with a hairline above
+   it: a 20 px box in `--action`, the kind's name at 600, and a sentence in `--type-caption` and
+   `--text-2`. The kinds are Asks, Stopped tasks, Intake failures, Uncertain work, Spend caps, Landed
+   wrong and Queue stalls. A change applies at once. While it saves, the boxes are `aria-disabled`.
+   A refusal puts the box back and shows a `--warn-text` alert: "Could not save what this device
+   gets: why. Check that the daemon runs, then try again." A lost reply proves nothing, so the boxes
+   hide and the status note reads as unconfirmed. With no box checked, a note says "Nothing is
+   chosen, so this device gets no notification." Under it: "Each device keeps its own choice. A
+   change applies at once."
+5. One button: "Turn on notifications", primary, while they are off; "Turn off notifications",
    secondary, while they are on or unconfirmed. The permission prompt opens only from this tap,
    as iOS requires. A failure shows a `--warn-text` alert: "Could not turn on notifications: why.
    Check that the daemon runs, then try again."
-5. "Install Priory", secondary, only when the browser offers to install the view, with the note
+6. "Install Priory", secondary, only when the browser offers to install the view, with the note
    "Installing opens Priory in its own window, so notifications reach it with no tab open."
 
 The view never asks for the permission on its own: no banner and no prompt at load.
@@ -1534,7 +1551,7 @@ Every ask, with the web's ask detail fitted to the pane.
   question in its detail. An answered row and the history say who answered.
 - The detail keeps the web's order: context line, History line, heading, recommendation with what happens next,
   options with keys `1` to `9`, write an answer, then the section chips Why, Brief, Plan, PR,
-  Trace and History.
+  Trace and History. An ask that approves a plan leads with Plan, and waits for it as on the web.
 - Once the options scroll out of view, the sticky answer bar shows "3 options", the recommended
   option and the overflow menu.
 - On an ask that belongs to a task, the overflow menu offers Open task, which opens the

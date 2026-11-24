@@ -214,7 +214,7 @@ application/json` and a JSON body of at most 16 KiB with exactly the fields belo
 | `POST /api/reports/comment` | `row`, the row's id, `text`, a string, and `revision`, the report's revision the client showed. A comment verb takes `text` only with `comment` and `reply`, and `revision` only with `comment` |
 | `POST /api/reports/reply` | `comment`, an integer, and `text`, a string |
 | `POST /api/reports/resolve`, `POST /api/reports/reopen` | `comment`, an integer |
-| `POST /api/push/subscribe` | the browser's `PushSubscription.toJSON()`: `endpoint`, a string, `keys`, an object of `p256dh` and `auth`, base64url strings, and optionally `expirationTime`, which is ignored. See [Notifications](#notifications) |
+| `POST /api/push/subscribe` | the browser's `PushSubscription.toJSON()`: `endpoint`, a string, `keys`, an object of `p256dh` and `auth`, base64url strings, and optionally `expirationTime`, which is ignored, and `kinds`, an object of booleans. An unknown kind gets `400`. See [Notifications](#notifications) |
 | `POST /api/push/unsubscribe` | `endpoint`, a string |
 | `POST /api/todos` | `text`, one line, then optionally `band`, one of the factory's bands, and `due`, an RFC 3339 time, as `priory todo add`. The reply's `ok` is the new to-do's id |
 | `POST /api/todos/{id}/done` | `{}`, as `priory todo done`. A to-do already done gets `422` |
@@ -690,7 +690,7 @@ And these objects:
 | ----- | ---- | ------- |
 | `brief` | object | `title` and `request`, the request's title and text, each null when it has none, `result`, the latest result of a step named `groom`, or null, `intent`, its trigger's [`intent`](triggers.md#intent-and-noop) or null, and `noop`, its trigger's no-op cases, `[]` with none |
 | `plan` | object or null | The latest result of a step named `plan`, or else of a step whose name starts with `plan-`, such as `plan-implementation`. A result has `run`, `step`, `outcome`, `summary`, `evidence`, `commit_sha` and `created`. When it is null, `progress` holds the plan the agent published |
-| `plan_file` | object or null | The plan the task's latest approval ask shows, as Priory stored it when that ask's revision was raised. It has `ask`, `revision`, `step`, `run`, `path`, `text` and `truncated`. `path` is the file it was read from, or null when `text` is the summary of `run`'s result. `text` holds at most the first 64 KB, and `truncated` is true when the plan is longer. Null when no ask approved a plan, when a later `plan` result replaced an answered ask's plan, and when another runner holds the task |
+| `plan_file` | object or null | The plan the task's latest approval ask shows, as Priory stored it when that ask's revision was raised. It has `ask`, `revision`, `step`, `run` and `files`, one entry per document shown, each with `path`, `text` and `truncated`. `path` is the file it was read from, or null when `text` is the summary of `run`'s result. `text` holds at most the first 64 KB, and `truncated` is true when the file is longer. Null when no ask approved a plan, when a later `plan` result replaced an answered ask's plan, and when another runner holds the task |
 | `pull_request` | object or null | The latest pull request the task owns that has stored GitHub events: `repo`, `number`, `title`, `url`, `branch`, `base`, `head_sha` (each from the newest event that carries it), `state` (`open`, `closed` or `merged`; a reopened pull request stays `closed`, since the intake publishes no reopen event), `review` (the latest review's state, or null) and `checks`, the latest conclusion of each check run on the head: `name`, `conclusion` and `at` |
 
 ## Evidence
@@ -948,7 +948,22 @@ same `endpoint`. The daemon refuses it with `422` when:
 - 20 other subscriptions exist.
 
 `POST /api/push/unsubscribe` drops the subscription with that `endpoint`, and answers `200` even
-when none had it. Both reply `{"ok": "subscribed"}` or `{"ok": "unsubscribed"}`.
+when none had it, with `{"ok": "unsubscribed"}`.
+
+`kinds` turns kinds of notification on or off for that subscription. It adds to the stored choice,
+and a kind no one turned on or off takes its default. Without `kinds`, a known `endpoint`
+keeps its choice. The reply is `{"ok": "subscribed", "kinds": {...}}`, with every kind and whether the subscription
+gets it:
+
+| Kind | Default | Notifies for |
+| ---- | ------- | ------------ |
+| `ask` | on | a new ask, and an ask asked again |
+| `stopped` | on | a task that turns `blocked` or `failed` |
+| `intake` | on | a report the intake posts when a poll fails |
+| `uncertain` | on | a prompt or an answer's command that turns `uncertain` |
+| `cap` | on | a `day` or `week` spend cap reached |
+| `landed` | off | a merge that landed wrong |
+| `stall` | off | a queue that stays stalled for 5 minutes |
 
 Each notification is a Web Push message encrypted as RFC 8291 says (`Content-Encoding:
 aes128gcm`), signed with VAPID (RFC 8292), with `TTL: 86400` and `Urgency: high`. Its plaintext is
@@ -957,8 +972,8 @@ JSON with three fields and nothing else:
 | Field | For a new ask | For an alarm |
 | ----- | ------------- | ------------ |
 | `id` | `<queued>/<row>`: when the daemon queued the notification and its row, so a service worker drops a copy | as for an ask |
-| `title` | the ask's title, cut to 120 characters; without one, `task <key> asks at <step>`, or `ask <name>` for an outside ask | `task <key> <state>`, such as `task gh:o/r#42 blocked`; for a spend cap reached, the desk's line for it, cut to 120 characters |
-| `url` | `/asks/<id>`, with the ask's `id` as `/api/asks` lists it: an outside ask's or the daemon's ask's name, else its number | `/tasks/<id>`, with the task's `id` as `/api/tasks` lists it, or `/` for a spend cap or an intake report |
+| `title` | the ask's title, cut to 120 characters; without one, `task <key> asks at <step>`, or `ask <name>` for an outside ask | `task <key> <state>`, such as `task gh:o/r#42 blocked`; for a spend cap reached, the desk's line for it, cut to 120 characters; for a stall, `the queue is stalled: short of <resource>` |
+| `url` | `/asks/<id>`, with the ask's `id` as `/api/asks` lists it: an outside ask's or the daemon's ask's name, else its number | `/tasks/<id>`, with the task's `id` as `/api/tasks` lists it, `/` for a spend cap or a report, or `/queue` for a stall |
 
 ## Report
 

@@ -63,6 +63,8 @@ export default class PrioryAsks extends View {
     /** `priory task ID --json` of the selected ask's task: its brief, plan, pull request and runs. */
     /** @type {any} */
     this.task = null;
+    /** @type {string | null} why the last read of the task failed */
+    this.taskError = null;
     this.updated = 0;
     this.width = 420;
     /** @type {string | null} the command line Copy last put on the clipboard */
@@ -157,14 +159,18 @@ export default class PrioryAsks extends View {
     return this.list().sections.flatMap((section) => section.rows);
   }
 
-  /** Reads the selected ask's task; a task that cannot be read leaves its sections out. */
+  /** Reads the selected ask's task; a task that cannot be read leaves its sections out and says why on an ask that waits for its plan. */
   async readTask() {
     // Another runner's ask names a task of that runner, which this machine cannot read.
     const id = runnerOf(this.selectedAsk()) ? null : this.selectedAsk()?.task;
     const read = (this.taskReads = (this.taskReads ?? 0) + 1);
-    const task = id == null || !this.priory ? null : await this.priory.client.task(id).catch(() => null);
+    /** @type {string | null} */
+    let error = null;
+    const task = id == null || !this.priory ? null : await this.priory.client.task(id).catch((/** @type {unknown} */ why) => { error = message(why); return null; });
     // Only the latest read lands, so a slower earlier one never replaces it.
-    if (read === this.taskReads) this.task = task;
+    if (read !== this.taskReads) return;
+    this.task = task;
+    this.taskError = error;
   }
 
   firstRow() {
@@ -207,6 +213,7 @@ export default class PrioryAsks extends View {
     this.popover = null;
     this.armed = null;
     this.task = null;
+    this.taskError = null;
     cx.spawn(async (cx) => {
       await this.readTask();
       cx.notify();
@@ -345,7 +352,7 @@ export default class PrioryAsks extends View {
     if (event.is_held && !["j", "k", "up", "down"].includes(event.key)) return;
     // Single keys never fire inside the answer field.
     if (this.typing || event.modifiers?.control || event.modifiers?.platform || event.modifiers?.alt) return;
-    const detail = ask && askDetail(ask, { now: Date.now(), armed: this.armed, task: this.task, links: this.links });
+    const detail = ask && askDetail(ask, { now: Date.now(), armed: this.armed, task: this.task, taskError: this.taskError, links: this.links });
     const digit = Number(event.key);
     if (event.key === "j" || event.key === "down") return this.move(1, cx);
     if (event.key === "k" || event.key === "up") return this.move(-1, cx);
@@ -486,7 +493,7 @@ export default class PrioryAsks extends View {
           return v_flex().px(S["space-2"])
             .child(this.row(row, selected, t))
             .when(inPlace && selected && Boolean(ask), (el) => el.child(v_flex().px(S["space-2"]).pt(S["space-2"]).pb(S["space-4"]).gap(S["space-3"])
-              .child(this.decide(ask, t, now)).child(this.chips(ask, t)).child(this.section(ask, askDetail(ask, { now, armed: this.armed, task: this.task, links: this.links }).first, t, now))));
+              .child(this.decide(ask, t, now)).child(this.chips(ask, t)).child(this.section(ask, askDetail(ask, { now, armed: this.armed, task: this.task, taskError: this.taskError, links: this.links }).first, t, now))));
         }))));
   }
 
@@ -536,7 +543,7 @@ export default class PrioryAsks extends View {
   /** The decide part: context, question, recommendation, options, write an answer and the overflow menu. */
   /** @param {any} ask @param {Palette} t @param {number} now */
   decide(ask, t, now) {
-    const detail = askDetail(ask, { now, armed: this.armed, task: this.task, links: this.links });
+    const detail = askDetail(ask, { now, armed: this.armed, task: this.task, taskError: this.taskError, links: this.links });
     const notice = this.notices.get(ask.id);
     return v_flex().gap(S["space-3"])
       .child(h_flex().flex_wrap().gap(S["space-2"]).items_center().text_size(TYPE.caption[0]).text_color(t["text-3"])
@@ -558,7 +565,8 @@ export default class PrioryAsks extends View {
           .child(svg(ICON("corner-down-right")).size(14).flex_none().mt(2)).child(div().flex_1().min_w_0().whitespace_normal().child(selectable(`next-${ask.id}`, detail.recommendation?.next ?? "")))))))
       .when(detail.options.length > 0, (el) => el.child(this.options(ask, detail, t, now)))
       .when(Boolean(this.error) && ask.state === "open", (el) => el.child(this.note("x", "Reconnect to answer.", t["text-2"])))
-      .when(detail.locked && !this.error, (el) => el.child(this.note("clock", `Reading the plan of revision ${ask.revision} before you answer.`, t["text-2"])))
+      .when(detail.locked && !this.error, (el) => el.child(this.note(this.taskError ? "x" : "clock", detail.wait ?? "", t["text-2"])))
+      .when(Boolean(detail.cut), (el) => el.child(this.note("message-text", detail.cut ?? "", t["warn-text"])))
       .when(Boolean(this.pending && this.pending.id === ask.id), (el) => el.child(this.sending(t)))
       .when(ask.state === "open", (el) => el.child(this.actions(ask, detail, t)))
       .when(Boolean(detail.elsewhere), (el) => el.child(div().whitespace_normal().text_size(TYPE.small[0]).text_color(t["text-2"]).child(selectable(`elsewhere-${ask.id}`, detail.elsewhere ?? ""))))
@@ -696,7 +704,7 @@ export default class PrioryAsks extends View {
 
   /** @param {any} ask @param {Palette} t */
   chips(ask, t) {
-    const detail = askDetail(ask, { now: Date.now(), armed: null, task: this.task, links: this.links });
+    const detail = askDetail(ask, { now: Date.now(), armed: null, task: this.task, taskError: this.taskError, links: this.links });
     const current = this.reading ?? (this.width >= PANE.split ? detail.first : null);
     return h_flex().flex_none().gap(S["space-1"]).flex_wrap().children(detail.chips.map(([id, label]) =>
       Button.new(`chip-${ask.id}-${id}`).h(PANE.chip).px(S["space-3"]).flex().items_center().rounded(RADIUS.md).selected(current === id)
@@ -712,7 +720,7 @@ export default class PrioryAsks extends View {
 
   /** @param {any} ask @param {string} id @param {Palette} t @param {number} now */
   section(ask, id, t, now) {
-    const detail = askDetail(ask, { now, armed: this.armed, task: this.task, links: this.links });
+    const detail = askDetail(ask, { now, armed: this.armed, task: this.task, taskError: this.taskError, links: this.links });
     /** @param {string} icon @param {string} title @param {string} [meta] */
     const head = (icon, title, meta = "") => h_flex().gap(S["space-2"]).items_center().text_size(TYPE.small[0]).font_weight(650)
       .child(svg(ICON(icon)).size(14).text_color(t["text-2"])).child(title).child(div().flex_1())
@@ -738,7 +746,7 @@ export default class PrioryAsks extends View {
         .when(Boolean(detail.brief.text), (el) => el.child(body("brief", detail.brief.text)));
     }
     if (id === "plan" && detail.plan) {
-      return v_flex().gap(S["space-2"]).child(head("check", "Plan", detail.plan.from)).child(body("plan", detail.plan.text));
+      return v_flex().gap(S["space-2"]).children(detail.plan.flatMap((part, index) => [head("check", "Plan", part.from), body(`plan-${index}`, part.text)]));
     }
     if (id === "pr" && detail.pr) {
       return v_flex().gap(S["space-2"]).child(head("terminal", detail.pr.title, detail.pr.review ?? ""))
@@ -792,7 +800,7 @@ export default class PrioryAsks extends View {
   /** From 720 px: the decide part pinned at the top, and the sections scrolling under it. */
   /** @param {any} ask @param {Palette} t @param {number} now */
   drawer(ask, t, now) {
-    const detail = askDetail(ask, { now, armed: this.armed, task: this.task, links: this.links });
+    const detail = askDetail(ask, { now, armed: this.armed, task: this.task, taskError: this.taskError, links: this.links });
     return v_flex().flex_1().min_w_0().min_h_0()
       .child(v_flex().id("ask-decide").flex_none().max_h("50%").overflow_y_scrollbar().p(S["space-4"]).gap(S["space-3"]).border_b(1).border_color(t.line)
         .child(this.decide(ask, t, now)).child(this.chips(ask, t)))
@@ -804,7 +812,7 @@ export default class PrioryAsks extends View {
   /** Below 720 px, reading a section: a one-line header, the chips, the section, and the answer bar. */
   /** @param {any} ask @param {Palette} t @param {number} now */
   reader(ask, t, now) {
-    const detail = askDetail(ask, { now, armed: this.armed, task: this.task, links: this.links });
+    const detail = askDetail(ask, { now, armed: this.armed, task: this.task, taskError: this.taskError, links: this.links });
     const open = this.rows().filter((row) => row.tile === "ask").map((row) => row.id);
     const at = open.indexOf(ask.id);
     /** @param {string} id @param {string} icon @param {string} label @param {(cx: import("gpui-kit").Context) => void} action @param {boolean} [off] */
@@ -842,6 +850,9 @@ export default class PrioryAsks extends View {
     return v_flex().flex_none().gap(S["space-2"]).px(S["space-3"]).py(S["space-3"]).bg(t.bar).border_t(1).border_color(t.line)
       .when(option.armed && option.runs && Boolean(detail.command), (el) => el.child(this.commandBlock(/** @type {any} */ (detail.command), t, "bar")))
       .when(Boolean(this.pending && this.pending.id === ask.id), (el) => el.child(this.sending(t)))
+      .when(Boolean(this.error), (el) => el.child(this.note("x", "Reconnect to answer.", t["text-2"])))
+      .when(detail.locked && !this.error, (el) => el.child(this.note(this.taskError ? "x" : "clock", detail.wait ?? "", t["text-2"])))
+      .when(Boolean(detail.cut), (el) => el.child(this.note("message-text", detail.cut ?? "", t["warn-text"])))
       .child(h_flex().min_h(PANE.bar - 20).gap(S["space-2"]).items_center()
         .child(Popover.new(`options-menu-${ask.id}`).trigger(trigger).anchor("bottom_left").open(opened)
           .on_open_change((/** @type {boolean} */ next, /** @type {import("gpui-kit").Context} */ cx) => { this.popover = next ? "options" : null; cx.notify(); })

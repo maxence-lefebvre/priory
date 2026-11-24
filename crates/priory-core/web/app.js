@@ -1,6 +1,6 @@
 // Priory's web view (DESIGN.md): the frame, the Desk and the Asks, with answering through the CLI's verbs.
 // Agent text is untrusted: every value goes through `html`, which escapes it.
-import { ARM_MS, ASK_VIEWS, answeredAsks, answeredBy, askBody, askGroups, askHeading, confidenceNote, openAsksOf, planFrom, planUnread, plansFirst, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, optionKey, press, runsCommand, submitted, takesText, writeNote } from "./asks.js";
+import { ARM_MS, ASK_VIEWS, answeredAsks, answeredBy, askBody, askGroups, askHeading, confidenceNote, openAsksOf, planCut, planParts, planUnread, planWait, plansFirst, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, optionKey, press, runsCommand, submitted, takesText, writeNote } from "./asks.js";
 import { SPLITS, attentionView, costTiles, dayBars, money, scoreTable, splitTable } from "./costs.js";
 import { addBody, addOutcome, swapLine, withDefaults } from "./add.js";
 import { linked } from "./links.js";
@@ -15,6 +15,7 @@ import { actionNote, arrivalAsk, batchParts, capsuleWords, countHead, countWords
 import { TASK_VIEWS, elsewhere, filtered, olderPart, remoteActs, remoteId, remoteSent, taskFacets, taskLabel, taskViews, triageWords, workStep } from "./tasks.js";
 import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "./runs.js";
 import { PANELS, TYPED_FIELDS, backTo, pageTitle, taskRead } from "./pages.js";
+import { confirmPush, kindBoxes, saveKinds } from "./push.js";
 import { QUEUE_VIEWS, moveOptions, queueBands, waitReason } from "./queue.js";
 
 const ICONS = {
@@ -209,7 +210,7 @@ const state = {
   // The Add sheet: its draft and chips, the server's defaults, and where the last send got to.
   // Notifications on this device: its status, a request in flight, and why the last one failed.
   // check counts status reads, so a read that a tap or a newer read overtook is dropped.
-  push: { status: null, busy: false, error: null, check: 0, checking: false },
+  push: { status: null, kinds: null, busy: false, error: null, check: 0, checking: false },
   // The browser's install prompt, kept until the person taps Install.
   install: null,
   // Since you looked: the events the Desk opened on and each newer one, the visit they start
@@ -315,12 +316,17 @@ function keep() {
   } catch {}
 }
 
+// The service worker reads the same copy when the push service replaces the subscription.
+const KEPT_KINDS = "/api/worker/kinds";
+
 // The service worker cannot read local storage, so it gets its own copy of the token to tell the
-// daemon about a subscription the push service replaced. Signing out drops it.
+// daemon about a subscription the push service replaced. Signing out drops it, and the kept kinds.
 function keepTokenForWorker(token) {
   if (!("caches" in window)) return;
   caches.open("priory-push")
-    .then((cache) => (token ? cache.put("/api/worker/token", new Response(token)) : cache.delete("/api/worker/token")))
+    .then((cache) => token
+      ? cache.put("/api/worker/token", new Response(token))
+      : Promise.all(["/api/worker/token", KEPT_KINDS].map((key) => cache.delete(key))))
     .catch(() => {});
 }
 if (state.token) keepTokenForWorker(state.token);
@@ -1155,9 +1161,9 @@ function askDetail(id, wide) {
   const bound = `${runnerOf(ask) ? `Runs on ${runnerOf(ask)}. ` : ""}Bound to revision ${ask.revision}.`;
   const optionButtons = optionList(ask, wide);
   const notice = state.notices.get(ask.id);
-  const planError = (ask.approves_plan ? state.task : state.batch)?.error;
+  const planError = planErrorOf(ask);
   const lockedNote = locked === "offline" ? html`<p class="note" id="answer-locked">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>`
-    : locked ? html`<p class="note" id="answer-locked">${icon("layers", "s15")}<span>${planError ? `Could not read the plan: ${planError}. It must load before you answer.` : `Reading the plan of revision ${ask.revision} before you answer.`}</span></p>` : "";
+    : locked ? html`<p class="note" id="answer-locked">${icon("layers", "s15")}<span>${planWait(ask, planError)}</span></p>` : cutNote(ask);
   const writing = state.writing.has(ask.id) && !locked;
   const write = !takesText(ask)
     ? ""
@@ -1238,7 +1244,7 @@ function askDetail(id, wide) {
       <button id="bar-answer" class="btn primary ${barArmed ? "armed" : ""}" data-answer="${options.indexOf(recommended)}" aria-disabled="${locked ? "true" : "false"}">${barArmed
         ? armedLabel(recommended, runsCommand(ask, recommended))
         : html`<span>${recommended}</span><small>${[recommended === ask.recommendation ? "Recommended" : "First option", runsCommand(ask, recommended) && "Runs a command"].filter(Boolean).join(". ")}</small>`}</button>
-      ${locked === "offline" ? html`<p class="note">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>` : ""}</div>`
+      ${locked === "offline" ? html`<p class="note">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>` : locked ? html`<p class="note">${icon("layers", "s15")}<span>${planWait(ask, planError)}</span></p>` : cutNote(ask)}</div>`
     : "";
   const reading = read.map(([, , section]) => section);
   const plan = [...planned, ...lead].map(([, , section]) => section);
@@ -1287,6 +1293,13 @@ function batchOf(which, version = null) {
   });
   return state.batch.body;
 }
+
+const planErrorOf = (ask) => (ask.approves_plan ? taskRead(state.task, ask.task).task : state.batch)?.error;
+
+const cutNote = (ask) => {
+  const cut = planCut(ask, state.task?.id === ask.task ? state.task.body : null);
+  return cut ? html`<p class="note warn">${icon("file-text", "s15")}<span>${cut}</span></p>` : "";
+};
 
 // Why the options of an ask are disabled: offline, or an ask whose plan is not read yet for this
 // revision, so no answer approves a plan the page did not show.
@@ -1582,7 +1595,11 @@ function taskSections(task) {
   }
   const file = task.plan_file;
   if (file) {
-    sections.push(["plan", "Plan", sect("plan", "check", "Plan", html`<span class="mono" title="${file.path || ""}">${planFrom(file)}</span>`, html`${md(file.text, task.repo)}${file.truncated ? html`<p class="note">${icon("file-text", "s15")}<span>Showing the first 64 KB. Read the rest at ${file.path || planFrom(file)}.</span></p>` : ""}`)]);
+    const [first, ...others] = planParts(file).map((part) => ({
+      meta: html`<span class="mono" title="${part.path || ""}">${part.from}</span>`,
+      body: html`${md(part.text, task.repo)}${part.truncated ? html`<p class="note">${icon("file-text", "s15")}<span>Showing the first 64 KB. Read the rest at ${part.path || part.from}.</span></p>` : ""}`,
+    }));
+    sections.push(["plan", "Plan", sect("plan", "check", "Plan", first.meta, html`${first.body}${others.map(({ meta, body }) => html`<div class="sh">${icon("check", "s15")}Plan<span class="meta">${meta}</span></div>${body}`)}`)]);
   } else if (task.plan) sections.push(["plan", "Plan", sect("plan", "check", "Plan", `${task.plan.step}, run ${task.plan.run}`, md(task.plan.summary, task.repo))]);
   const pr = task.pull_request;
   if (pr) {
@@ -2436,7 +2453,7 @@ function renderSheet() {
   if (!ask || ask.state !== "open" || state.pending) return sheet.close();
   const focused = document.activeElement?.closest?.("#answer") ? focusKey(document.activeElement) : null;
   sheet.innerHTML = html`<div class="shead"><h2 id="answer-title">Answer ask #${ask.id}<small>revision ${ask.revision}</small></h2><button class="iconbtn" data-action="sheet-close" aria-label="Close">${icon("x", "s20")}</button></div>
-    <div class="opts" role="group" aria-label="Options">${optionList(ask, false)}</div>`.text;
+    <div class="opts" role="group" aria-label="Options">${optionList(ask, false)}</div>${cutNote(ask)}`.text;
   if (focused) sheet.querySelector(focused)?.focus();
 }
 
@@ -2698,20 +2715,36 @@ const settingsScreen = () => (route()[1] === "notifications" ? notifications() :
 // iOS lets only a Home Screen web app subscribe, so Safari in a tab lacks PushManager.
 const iosTab = () => /iPhone|iPad|iPod/.test(navigator.userAgent) && !navigator.standalone;
 
+const pushIo = {
+  send: (body) => post("/api/push/subscribe", body),
+  async kept() {
+    const hit = await (await caches.open("priory-push")).match(KEPT_KINDS);
+    return hit ? hit.json().catch(() => null) : null;
+  },
+  async keep(kinds) {
+    const cache = await caches.open("priory-push");
+    if (!kinds) return cache.delete(KEPT_KINDS);
+    return cache.put(KEPT_KINDS, new Response(JSON.stringify(kinds)));
+  },
+};
+
 async function pushStatus() {
-  if (!window.isSecureContext) return "insecure";
-  if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) return iosTab() ? "install" : "unsupported";
-  if (Notification.permission === "denied") return "blocked";
+  if (!window.isSecureContext) return { status: "insecure" };
+  if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
+    return { status: iosTab() ? "install" : "unsupported" };
+  }
+  if (Notification.permission === "denied") return { status: "blocked" };
   const registration = await navigator.serviceWorker.ready;
   const subscription = await registration.pushManager.getSubscription();
-  if (!subscription) return "off";
+  if (!subscription) return { status: "off" };
   // The browser keeps a subscription the daemon may have dropped or never stored: send it again.
   // Only the daemon's refusal ends it; a dropped connection or a stopped daemon proves nothing.
-  const { status } = await post("/api/push/subscribe", subscription.toJSON()).catch(() => ({ status: 0 }));
-  if (status === 200) return "on";
-  if (status !== 422) return "unconfirmed";
+  const { status, kinds, confirmed } = await confirmPush(subscription.toJSON(), pushIo)
+    .catch(() => ({ status: 0, kinds: null, confirmed: false }));
+  if (status === 200) return { status: confirmed ? "on" : "unconfirmed", kinds };
+  if (status !== 422) return { status: "unconfirmed" };
   await subscription.unsubscribe().catch(() => {});
-  return "off";
+  return { status: "off" };
 }
 
 const PUSH_NOTES = {
@@ -2728,12 +2761,12 @@ function notifications() {
   if (status === null && !state.push.checking) {
     const check = ++state.push.check;
     state.push.checking = true;
-    const settle = (found) => {
+    const settle = ({ status, kinds = null }) => {
       if (check !== state.push.check) return;
-      Object.assign(state.push, { status: found, checking: false });
+      Object.assign(state.push, { status, kinds, checking: false });
       render();
     };
-    pushStatus().then(settle, () => settle("unsupported"));
+    pushStatus().then(settle, () => settle({ status: "unsupported" }));
   }
   const button = status === "on" || status === "unconfirmed"
     ? html`<button class="btn secondary" data-action="push-off" aria-disabled="${busy}">Turn off notifications</button>`
@@ -2744,9 +2777,10 @@ function notifications() {
     : "";
   return html`<div class="scroll"><div class="screen">
     <h1>Notifications</h1>
-    <p>Get a notification on this device when an agent asks you something, or when a task is blocked or failed. It shows the ask's title and opens the ask. A snoozed item sends nothing.</p>
+    <p>Get a notification on this device when something waits on you. It shows a title and opens the item. A snoozed item sends nothing.</p>
     ${PUSH_NOTES[status] ? html`<p class="note" role="status">${icon(status === "on" ? "check" : "unplug", "s15")}<span>${PUSH_NOTES[status]}</span></p>` : ""}
     ${error ? html`<p class="note warn" role="alert">${icon("unplug", "s15")}<span>${error}</span></p>` : ""}
+    ${status === "on" ? raw(kindBoxes(state.push.kinds, busy)) : ""}
     ${button ? html`<div class="push-row">${button}</div>` : ""}
     ${install}</div></div>`;
 }
@@ -2769,13 +2803,13 @@ async function turnPush(on) {
       const subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(key) });
       // A browser subscription the daemon never stored would read "On" and get nothing.
       try {
-        const { status, body } = await post("/api/push/subscribe", subscription.toJSON());
+        const { status, body, kinds, confirmed } = await confirmPush(subscription.toJSON(), pushIo);
         if (status !== 200) throw new Error(body.error || `the server answered ${status}`);
+        Object.assign(state.push, { kinds, status: confirmed ? "on" : "unconfirmed" });
       } catch (error) {
         await subscription.unsubscribe().catch(() => {});
         throw error;
       }
-      state.push.status = "on";
       return;
     }
     const subscription = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
@@ -2789,6 +2823,27 @@ async function turnPush(on) {
     const verb = on ? "turn on" : "turn off";
     const why = error instanceof TypeError ? "the connection dropped" : error.message;
     state.push.error = `Could not ${verb} notifications: ${why}. Check that the daemon runs, then try again.`;
+  } finally {
+    state.push.busy = false;
+    render();
+  }
+}
+
+// A refused save shows the choice as it was. A lost reply proves nothing, so the boxes hide until the
+// next status read.
+async function chooseKind(kind, on) {
+  if (state.push.busy) return render();
+  const before = state.push.kinds;
+  Object.assign(state.push, { busy: true, error: null, kinds: { ...before, [kind]: on } });
+  render();
+  try {
+    const subscription = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
+    if (!subscription) throw new Error("this browser is no longer subscribed");
+    const kinds = await saveKinds(subscription.toJSON(), { [kind]: on }, before, pushIo);
+    Object.assign(state.push, { kinds, status: kinds ? "on" : "unconfirmed" });
+  } catch (error) {
+    const why = `Could not save what this device gets: ${error.message}.`;
+    Object.assign(state.push, { kinds: before, error: `${why} Check that the daemon runs, then try again.` });
   } finally {
     state.push.busy = false;
     render();
@@ -3238,6 +3293,8 @@ document.addEventListener("toggle", (event) => {
 }, true);
 
 document.addEventListener("change", (event) => {
+  const kind = event.target.dataset.pushKind;
+  if (kind) return chooseKind(kind, event.target.checked);
   if (event.target.dataset.action !== "costs-by") return;
   state.costs.by = event.target.value;
   loadCosts();

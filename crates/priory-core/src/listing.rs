@@ -192,9 +192,13 @@ const DESK: &str = concat!(
                WHERE actions.action = 'answer' AND actions.status = 'uncertain'
                  AND tasks.state NOT IN ('done', 'failed', 'dropped')
                UNION ALL
-               SELECT 0, holds.created, 'held', holds.id, holds.task, tasks.lane, tasks.reason
+               SELECT 0, holds.created, 'held', holds.id, holds.task, tasks.lane,
+                 CASE tasks.state WHEN 'held' THEN tasks.reason
+                   WHEN 'running' THEN 'holds after this turn: ' || holds.reason
+                   ELSE 'holds once it is ready: ' || holds.reason END
                FROM holds JOIN tasks ON tasks.id = holds.task
-               WHERE holds.released IS NULL AND tasks.state = 'held' AND holds.id = (
+               WHERE holds.released IS NULL AND tasks.state NOT IN ('done', 'failed', 'dropped')
+                 AND holds.id = (
                  SELECT min(id) FROM holds AS hold WHERE hold.task = holds.task
                  AND hold.released IS NULL) AND holds.kind != 'parked'
                  AND (tasks.batch_entry IS NULL OR EXISTS (SELECT 1 FROM holds AS hold
@@ -1810,8 +1814,7 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
 fn plan_file(db: &Connection, task: i64) -> rusqlite::Result<Value> {
     let mut found = rows(
         db,
-        "SELECT asks.id AS ask, asks.revision, ask_plans.step, ask_plans.run, ask_plans.path,
-           ask_plans.text, ask_plans.truncated
+        "SELECT asks.id AS ask, asks.revision, ask_plans.step, ask_plans.run, ask_plans.files
          FROM ask_plans JOIN asks ON asks.id = ask_plans.ask JOIN tasks ON tasks.id = asks.task
          WHERE asks.task = ?1
            AND ((asks.answer IS NULL AND asks.withdrawn IS NULL) OR NOT EXISTS (
@@ -1828,7 +1831,8 @@ fn plan_file(db: &Connection, task: i64) -> rusqlite::Result<Value> {
     let Some(mut plan) = found.as_array_mut().and_then(Vec::pop) else {
         return Ok(Value::Null);
     };
-    plan["truncated"] = (plan["truncated"].as_i64() == Some(1)).into();
+    let files = plan["files"].as_str().unwrap_or_default();
+    plan["files"] = serde_json::from_str(files).unwrap_or(Value::Null);
     Ok(plan)
 }
 

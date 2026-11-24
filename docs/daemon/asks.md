@@ -76,16 +76,17 @@ Known limits:
 
 A human step approves a plan when the task's latest result leads to it, and that result is from a
 step named `groom`, `plan` or `plan-<something>`, or graded the task red, yellow or green. So does the
-ask of a `plan` task's grading step, and the pick of a split debate whose outcomes are grades. A
-merge, deploy, other debate or batch ask approves no such plan.
+ask of a `plan` task's grading step, and the pick of a split debate whose outcomes are grades. An
+ask after any other result, such as one before a merge or a deploy, approves no plan, and neither does
+a batch's or any other debate's.
 
 A step that only grades the plan, such as a grading step or any debate, is not its author. Priory
 then takes the latest `groom`, `plan` or `plan-<something>` result of the task's current generation.
 With none, the ask shows no plan and its text says so.
 
-When the ask is raised, Priory stores the plan: the newer of `.priory/plan.md` and `.priory/brief.md`
-in the task's worktree, or else the summary of the author's result. A file counts only when it last
-changed after the second the author's runs began, so a file left by an earlier step or generation
+When the ask is raised, Priory stores the plan: `.priory/plan.md` and `.priory/brief.md` of the
+task's worktree, each that is fresh, or else the summary of the author's result. A file is fresh when it
+last changed after the second the author's runs began, so a file left by an earlier step or generation
 does not show. That change time (`ctime`) is one an agent cannot set.
 `priory task ID --json` and `/api/tasks/ID` serve the stored plan as `plan_file` (see
 [serve.md](../reference/serve.md)). The web view and the Herdr Asks panel show it
@@ -96,22 +97,28 @@ is read.
 An answer approves only the plan shown. With the plan, Priory stores a hash of each document's
 content, and compares both when the ask is answered, whatever the files' times say. When either
 changed, appeared or went, Priory refuses the answer and asks again as the next revision, which shows
-the changed document. When both changed, the next answer is refused as well, to show the other. A lead's, a session's and another runner's answer are checked the same way. A
-lead that was refused ends with `skipped`, and the person answers the new revision.
+each document that is fresh, changed or was shown before. A lead's, a session's and another runner's
+answer are checked the same way. A lead that was refused ends with `skipped`, and the person answers
+the new revision.
 
 ![The approve-plan ask of ENG-270 in the web view: the Plan section leads, with .priory/brief.md, its three decisions, acceptance criteria and plan.](../images/web-view-plan-ask-1440-light.png)
 
 Priory reads only a regular file the worktree itself holds: it follows no symlink and waits on no
-FIFO. It ignores a file over 1 MB. Past 64 KB the text is cut, and the section says where to read
-the rest; an edit past the cut still refuses an answer.
+FIFO. It refuses a file over 1 MB. The ask's text names each document it refused, and why. Past 64 KB
+a file's text is cut: the Plan section and a note beside the options say where to read the rest. An
+edit past the cut still refuses an answer.
 
 Known limits:
 
 - Another runner's ask shows no plan here, since its plan is stored on that runner.
 - A retired task has no worktree to compare, so its stored plan is the one approved.
 - An edit after the answer is not checked.
-- An ask that was open when Priory was upgraded to schema 113 shows no plan and is answered
+- An ask that was open when Priory was upgraded to schema 114 shows no plan and is answered
   unchecked.
+- A task revived before that upgrade has no record of where its current generation began. An ask a
+  grading step raises can then show the plan of an earlier generation.
+- The [GitHub extension](../adapters/github.md) and `priory answer` show no plan and do not wait for one
+  to be read. The answer is still refused when the plan changed.
 - A plan written within a second of its run's start shows as the result's summary. Its content is
   still compared.
 - Priory compares no content of a document it refuses to read, only that one is there.
