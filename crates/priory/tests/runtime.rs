@@ -16432,6 +16432,244 @@ fn a_dirty_asleep_task_never_retires_and_says_why() {
     assert!(setup.worktree(1).join("notes.txt").exists());
 }
 
+/// Names `target` and `link` the build output of `owner/repo`, and sweeps every second.
+const BUILD: &str = "build = [\"target\", \"link\"]\n\n[sweep]\nevery = \"1s\"";
+
+/// Writes 1 MiB of build output into task 1's worktree, in a folder the test may make read-only.
+fn build_output(setup: &Setup) -> PathBuf {
+    let locked = setup.worktree(1).join("target/debug/locked");
+    fs::create_dir_all(&locked).unwrap();
+    fs::write(locked.join("lib.rlib"), vec![1u8; 1 << 20]).unwrap();
+    setup.worktree(1).join("target")
+}
+
+/// Task 1 sleeps on pull request 7 with build output in its worktree, under a factory that names
+/// it.
+fn asleep_with_build_output(name: &str) -> (Setup, PathBuf) {
+    let mut setup = Setup::new(name);
+    setup.recipes(BUILD);
+    setup.calls(&[wait(on_pull_7("pull_request"))]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    let target = build_output(&setup);
+    (setup, target)
+}
+
+#[test]
+fn an_idle_task_build_output_goes_under_the_reclaim_threshold_even_read_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let (setup, target) = asleep_with_build_output("reclaim");
+    let outside = setup.dir.join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("keep"), "x\n").unwrap();
+    std::os::unix::fs::symlink(&outside, setup.worktree(1).join("link")).unwrap();
+    fs::set_permissions(
+        target.join("debug/locked"),
+        fs::Permissions::from_mode(0o555),
+    )
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(2100));
+    assert!(target.exists(), "100 GB free is over the 40 GB threshold");
+
+    setup.disk(30);
+    let records = until_record(&setup, "factory.worktree.reclaimed");
+
+    assert!(!target.exists());
+    assert!(
+        outside.join("keep").exists(),
+        "a symlinked build folder is not followed"
+    );
+    assert!(setup.worktree(1).join("link").exists());
+    assert!(setup.worktree(1).join(".git").exists());
+    assert!(setup.branches().contains("priory/1"));
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        [&records[0]["task"], &records[0]["path"]],
+        ["1", target.to_str().unwrap()]
+    );
+    assert!(records[0]["bytes"].as_u64().unwrap() >= 1 << 20);
+    let desk = String::from_utf8(setup.priory(&["desk"]).stdout).unwrap();
+    assert!(
+        desk.contains(
+            "reclaimed 0.0 GB of build output from 1 folder in the last 24 hours, last at "
+        ),
+        "{desk}"
+    );
+}
+
+#[test]
+fn a_symlink_inside_the_build_output_goes_without_what_it_points_to() {
+    use std::os::unix::fs::PermissionsExt;
+    let (setup, target) = asleep_with_build_output("reclaim-escape");
+    // Empty, so the test's cleanup can still remove it.
+    let sealed = setup.dir.join("outside/sealed");
+    fs::create_dir_all(&sealed).unwrap();
+    fs::set_permissions(&sealed, fs::Permissions::from_mode(0o555)).unwrap();
+    std::os::unix::fs::symlink(&sealed, target.join("debug/escape")).unwrap();
+
+    setup.disk(30);
+    until_record(&setup, "factory.worktree.reclaimed");
+
+    assert!(!target.exists());
+    let mode = fs::metadata(&sealed).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o555, "a chmod does not follow the symlink");
+}
+
+#[test]
+fn a_build_folder_holding_a_tracked_file_stays() {
+    let (setup, target) = asleep_with_build_output("reclaim-tracked");
+    setup.commit(1, "target/app.js");
+
+    setup.disk(30);
+    std::thread::sleep(Duration::from_millis(2100));
+
+    assert!(target.join("app.js").exists());
+    assert!(target.join("debug/locked/lib.rlib").exists());
+    assert!(trace_records(&setup, "factory.worktree.reclaimed").is_empty());
+}
+
+#[test]
+fn a_staged_deletion_inside_a_build_folder_keeps_it() {
+    let (setup, target) = asleep_with_build_output("reclaim-staged");
+    setup.commit(1, "target/app.js");
+    setup.git(&setup.worktree(1), &["rm", "-q", "target/app.js"]);
+
+    setup.disk(30);
+    std::thread::sleep(Duration::from_millis(2100));
+
+    assert!(target.join("debug/locked/lib.rlib").exists());
+    assert!(trace_records(&setup, "factory.worktree.reclaimed").is_empty());
+}
+
+#[test]
+fn the_sweep_deletes_one_build_folder_per_tick() {
+    let (setup, target) = asleep_with_build_output("reclaim-tick");
+    let link = setup.worktree(1).join("link");
+    fs::create_dir_all(&link).unwrap();
+    fs::write(link.join("out.o"), vec![1u8; 1 << 10]).unwrap();
+
+    setup.disk(30);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while trace_records(&setup, "factory.worktree.reclaimed").len() < 2 {
+        assert!(Instant::now() < deadline, "two reclaims");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    assert!(!target.exists() && !link.exists());
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    let gap: f64 = db
+        .query_row(
+            "SELECT (julianday(max(time)) - julianday(min(time))) * 86400 FROM trace
+             WHERE type = 'factory.worktree.reclaimed'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        gap >= 0.5,
+        "the second folder waits for the next tick: {gap}s"
+    );
+}
+
+#[test]
+fn a_retirement_waits_for_the_reclaim_to_take_the_build_output() {
+    let (setup, target) = asleep_with_build_output("reclaim-retire");
+    // Ignored, so it does not itself keep the worktree from retiring.
+    let exclude = setup.git(
+        &setup.worktree(1),
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "info/exclude",
+        ],
+    );
+    fs::write(exclude.trim(), "target\n").unwrap();
+
+    setup.disk(10);
+    setup.removed(1);
+
+    assert!(!target.exists());
+    assert_eq!(trace_records(&setup, "factory.worktree.reclaimed").len(), 1);
+}
+
+#[test]
+fn a_live_run_keeps_its_build_output_until_it_ends() {
+    let mut setup = Setup::new("reclaim-live");
+    setup.recipes(BUILD);
+    setup.hold("hold-stop");
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(42));
+    setup.disk(30);
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1);
+    let target = build_output(&setup);
+
+    std::thread::sleep(Duration::from_millis(2100));
+    assert!(target.exists());
+
+    setup.release("hold-stop");
+    until_record(&setup, "factory.worktree.reclaimed");
+    assert!(!target.exists());
+}
+
+#[test]
+fn a_held_memory_grant_keeps_its_task_build_output_after_the_run_sleeps() {
+    let mut setup = Setup::new("reclaim-grant");
+    setup.recipes(BUILD);
+    setup.hold("hold-stop");
+    setup.calls(&[wait(on_pull_7("pull_request"))]);
+    setup.publish(&requested(42));
+    setup.start();
+    let runs = setup.until("runs", |rows| rows.len() == 1);
+    setup.hold("hold-g");
+    let grant = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .env("PRIORY_SESSION", &runs[0][4])
+        .args([
+            "memory",
+            "acquire",
+            "--gb",
+            "1",
+            "--",
+            "sh",
+            "-c",
+            &held("g"),
+        ])
+        .current_dir(setup.dir.join("fake"))
+        .spawn()
+        .unwrap();
+    setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
+    setup.release("hold-stop");
+    setup.until("runs", |rows| rows[0][7] == "asleep");
+    let target = build_output(&setup);
+    setup.disk(30);
+
+    std::thread::sleep(Duration::from_millis(2100));
+    assert!(target.exists());
+
+    setup.release("hold-g");
+    assert!(grant.wait_with_output().unwrap().status.success());
+    until_record(&setup, "factory.worktree.reclaimed");
+    assert!(!target.exists());
+}
+
+#[test]
+fn an_uncommitted_change_keeps_the_build_output() {
+    let (setup, target) = asleep_with_build_output("reclaim-dirty");
+    setup.commit(1, "widget.txt");
+    fs::write(setup.worktree(1).join("widget.txt"), "edited\n").unwrap();
+
+    setup.disk(30);
+    std::thread::sleep(Duration::from_millis(2100));
+
+    assert!(target.exists());
+    assert!(trace_records(&setup, "factory.worktree.reclaimed").is_empty());
+}
+
 impl Setup {
     /// Gives `owner/repo` the recipes `table`, the body of its `[repos."owner/repo"]` table.
     fn recipes(&self, table: &str) {

@@ -639,6 +639,16 @@
       "additionalProperties": false,
       "description": "`[repos.\"owner/name\"]`: what the daemon runs in a worktree of the repository, so no run has to\nfind out how to install and build it.",
       "properties": {
+        "build": {
+          "description": "The folders, relative to the worktree, that a build regenerates and a reclaim may delete;\n`[\"target\"]` in a worktree with a `Cargo.toml` when unset.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "cloud_setup": {
           "description": "A script in the repository that installs what its checks need in a Claude cloud session.\n`priory cloud setup-script` copies it into the cloud environment's setup script. It holds\nno secret: anyone who uses the environment can read it.",
           "type": [
@@ -972,6 +982,12 @@
           "default": null,
           "description": "How often the built-in worktree sweep runs; every 10 minutes when unset.",
           "pattern": "^0*[1-9][0-9]*[smhd]$",
+          "type": "string"
+        },
+        "reclaim": {
+          "default": null,
+          "description": "The free disk under which the sweep deletes idle tasks' build output; 20 % of the disk,\nat most 40 GB, when unset.",
+          "pattern": "^(?=[^KMGT]*[1-9])([0-9]+(\\.[0-9]*)?|\\.[0-9]+)(KB|MB|GB|TB)$",
           "type": "string"
         },
         "repo": {

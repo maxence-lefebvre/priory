@@ -432,6 +432,17 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                     }
                 }
             }
+            for path in recipes.build.iter().flatten() {
+                let inside = Path::new(path)
+                    .components()
+                    .all(|part| matches!(part, std::path::Component::Normal(_)));
+                if path.is_empty() || !inside {
+                    let message = format!(
+                        "`[repos.\"{repo}\"] build` path `{path}` needs to be a folder inside the worktree, with no `..`"
+                    );
+                    problems.push(problem(settings, at, message));
+                }
+            }
         }
         let mut named: Vec<&str> = crate::guard::BUILT_IN.to_vec();
         for command in &settings.value.guard.commands {

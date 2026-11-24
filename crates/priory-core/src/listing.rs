@@ -1610,6 +1610,7 @@ pub fn desk(
         "reviews": crate::review::desk_lines(db)?,
         "banner": stall::banner(db)?,
         "intake": outside,
+        "reclaim": sweep::reclaim_line(db, now)?,
         "counts": {
             "asleep": asleep, "snoozed": snoozed, "unrouted": unrouted, "unheard": unheard,
             "dropped": dropped, "outsider": outsider,
