@@ -42,12 +42,19 @@ ask are refused, since only one of their options moves the task on.
   [score.md](score.md#pre-review)). An option
   that leads anywhere else, such as `done` or a code step, or that runs a command, refuses a note:
   `ask 12 answered approved leads to done, which reads no note: answer approved alone`.
-- A step's ask also takes a written answer: text that is neither one of its options nor
-  `OPTION: NOTE`. The ask keeps the text as its answer, and the task goes back to the model step it
-  ran last, with `A person answered step <step> in writing: <text>` queued as that step's prompt.
+- A human step's ask also takes a written answer: text that is neither one of its options nor
+  `OPTION: NOTE`. The ask keeps the text as its answer, and the task goes back to the
+  reversible model step it ran last in its current generation, with `A person answered step <step> in writing: <text>` queued as that step's prompt.
   Its next run resumes that agent's session. The step's trace record has the outcome `written`.
-  When the task ran no model step before the ask, the answer is refused:
-  `ask 12 takes one of: approved, rejected; no earlier model step reads a written answer`.
+  When the task ran no such step, the answer is refused:
+  `ask 12 takes one of: approved, rejected; no earlier model step reads a written answer`. So is one
+  that would let an irreversible step run again on an approval a person already gave, before a person
+  decides again. An `autonomous` step does not refuse it.
+- Every ask refuses a blank answer and one over 16 KiB. A human step's ask and a hold's
+  ask also refuse text that looks like a mistyped option: the text, or its part before a colon,
+  differs from an option only by case or whitespace, or is one word a letter or two away from it.
+  The error says which: `ask 12 takes one of: approved, rejected; did you mean approved?`. A plan's
+  approval and a debate's pick take only their options.
 - A hold's ask takes a written answer too. The hold and its ask stay open, and the text waits as
   the task's next prompt, `A person wrote on ask <id>: <text>`, which its first run after the
   release types. Release or drop the hold with one of its options. A dropped task never gets the

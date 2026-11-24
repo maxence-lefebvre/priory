@@ -279,7 +279,15 @@ pub fn answer_lets_irreversible_run(workflow: &Workflow, ask: &str) -> bool {
 /// let run before a person decides again.
 pub fn irreversible_step_after<'a>(workflow: &'a Workflow, ask: &str) -> Option<&'a str> {
     let step = workflow.step(ask)?;
-    let mut reached: BTreeSet<&str> = step.next.values().map(String::as_str).collect();
+    irreversible_unattended(workflow, step.next.values().map(String::as_str).collect()).next()
+}
+
+/// The irreversible steps, in workflow order, that a task at one of `starts` can run before a
+/// person decides.
+pub fn irreversible_unattended<'a>(
+    workflow: &'a Workflow,
+    mut reached: BTreeSet<&'a str>,
+) -> impl Iterator<Item = &'a str> {
     let mut pending: Vec<&str> = reached.iter().copied().collect();
     while let Some(id) = pending.pop() {
         let Some(step) = workflow.step(id) else {
@@ -294,7 +302,9 @@ pub fn irreversible_step_after<'a>(workflow: &'a Workflow, ask: &str) -> Option<
     workflow
         .steps
         .iter()
-        .find(|step| step.effect == Effect::Irreversible && reached.contains(step.id.as_str()))
+        .filter(move |step| {
+            step.effect == Effect::Irreversible && reached.contains(step.id.as_str())
+        })
         .map(|step| step.id.as_str())
 }
 
