@@ -39346,7 +39346,10 @@ fn news_during_a_cloud_run_reaches_its_ask_and_keeps_the_push() {
     let task = task_json(&setup, "1");
     assert_eq!(task["results"][0]["outcome"], "pushed", "{task}");
     let text = task["asks"][0]["text"].as_str().unwrap();
-    assert!(text.contains("ENG-7") && text.contains("Canceled"), "{text}");
+    assert!(
+        text.contains("ENG-7") && text.contains("Canceled"),
+        "{text}"
+    );
 }
 
 #[test]
@@ -39455,7 +39458,15 @@ fn private_terms_stop_the_push_before_a_cloud_start() {
     fs::write(worktree.join("note.txt"), "on vault9\n").unwrap();
     for args in [
         &["add", "note.txt"][..],
-        &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "Note"],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "Note",
+        ],
     ] {
         assert!(git(&worktree).args(args).status().unwrap().success());
     }
@@ -39507,11 +39518,7 @@ fn a_cloud_run_that_never_sends_session_start_starts_no_new_session() {
 #[test]
 fn a_live_cloud_run_counts_toward_its_lanes_window_cap() {
     let mut setup = windowed("cloud-window", "");
-    fs::write(
-        setup.dir.join("factory/workflows/implement.toml"),
-        CLOUD,
-    )
-    .unwrap();
+    fs::write(setup.dir.join("factory/workflows/implement.toml"), CLOUD).unwrap();
     fs::write(
         setup.dir.join("factory/agents/implementer/agent.md"),
         CLOUD_AGENT,
