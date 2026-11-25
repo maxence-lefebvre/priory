@@ -1691,6 +1691,7 @@ pub fn desk(
         crate::kit::banner(db)?,
         sweep::fetch_banner(home),
         sweep::slice_banner(home),
+        sweep::moved_banner(home),
         crate::watchdog::banner(home),
     ]
     .into_iter()

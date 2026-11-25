@@ -383,6 +383,17 @@ pub(crate) fn teardown_of(db: &Connection, task: i64) -> rusqlite::Result<Option
         }))
 }
 
+/// Whether no teardown of `repo` is left to run before `task`'s worktree goes.
+pub(crate) fn torn(
+    db: &Connection,
+    factory: &Factory,
+    task: i64,
+    repo: &str,
+) -> rusqlite::Result<bool> {
+    Ok(factory.recipe(repo, Moment::Teardown).is_none()
+        || matches!(teardown_of(db, task)?, Some(Teardown::Done)))
+}
+
 /// Before the sweep or a retirement removes `task`'s `worktree` of `repo`: `Done` when it may go,
 /// owing the factory's teardown first when its latest one is not done. A failed teardown is owed
 /// again only once the factory's teardown changed.
