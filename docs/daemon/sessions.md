@@ -357,6 +357,7 @@ a worktree or clone that a symlink leads elsewhere.
   - Git writes the file with other content than it stores, as `core.autocrlf` or a filter does.
   - A git command of the check fails. The reason then says `could not be checked` with the command and
     its exit code, such as `git hash-object: exit 139` for a crash, and the daemon's log has its error.
+    A command that ran past `command_timeout` has its seconds instead, such as `timed out after 300s`.
 
   The check has limits:
 
