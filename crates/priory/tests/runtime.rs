@@ -22156,6 +22156,112 @@ fn a_cancel_during_the_turn_shows_on_the_next_call_once_and_still_holds_the_push
     assert_eq!(guard_denied(&replies[3]), None, "{}", replies[3]);
 }
 
+/// What is planted at `news` in a run's spool and at its marker, before a cancel reaches the run.
+fn a_planted_path_survives(name: &str, plant: impl Fn(&Path, &Path)) {
+    let mut setup = Setup::new(name);
+    setup.calls(&[json!([bash("ls")])]);
+    setup.hold("hold-call");
+    setup.publish(&linear_requested("ENG-7", "source"));
+    setup.start();
+    setup.written("fake/submitted");
+    let session = setup.rows("runs")[0][4].clone();
+    let target = setup.dir.join("precious");
+    fs::write(&target, "kept").unwrap();
+    for folder in ["spools", "news"] {
+        let folder = setup.dir.join("home").join(folder).join(&session);
+        fs::create_dir_all(&folder).unwrap();
+        plant(&folder.join("news"), &target);
+    }
+
+    setup.publish(&moved_to("Canceled", "canceled"));
+    setup.until("inbox", |rows| rows.len() == 2 && rows[1][4] == "kept");
+    setup.release("hold-call");
+
+    let shown = setup.replied(1)[0].to_string();
+    assert!(shown.contains("Ana moved ENG-7 to Canceled"), "{shown}");
+    assert_eq!(fs::read_to_string(target).unwrap(), "kept");
+}
+
+#[test]
+fn a_planted_link_where_news_is_marked_leaves_its_target_alone() {
+    a_planted_path_survives("news-symlink", |path, target| {
+        std::os::unix::fs::symlink(target, path).unwrap();
+    });
+}
+
+#[test]
+fn a_planted_pipe_where_news_is_marked_holds_no_routing() {
+    a_planted_path_survives("news-fifo", |path, _| {
+        let made = harness::command("mkfifo").arg(path).status().unwrap();
+        assert!(made.success());
+    });
+}
+
+#[test]
+fn a_session_that_is_a_path_removes_no_file() {
+    let mut setup = Setup::new("news-traversal");
+    setup.start();
+    let outside = setup.dir.join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("news"), "kept").unwrap();
+    fs::create_dir_all(setup.dir.join("home/news")).unwrap();
+
+    setup.hook_call("../../outside", "ls", None);
+
+    assert!(outside.join("news").exists());
+}
+
+#[test]
+fn a_subagents_calls_leave_the_news_to_the_main_agent() {
+    let mut setup = Setup::new("news-subagent");
+    setup.calls(&[serde_json::Value::Null]);
+    setup.hold("hold-stop");
+    setup.publish(&linear_requested("ENG-7", "source"));
+    setup.start();
+    setup.written("fake/submitted");
+    let session = setup.rows("runs")[0][4].clone();
+    setup.publish(&moved_to("Canceled", "canceled"));
+    setup.until("inbox", |rows| rows.len() == 2 && rows[1][4] == "kept");
+    let push = "git push origin priory/1";
+
+    assert_eq!(setup.hook_call(&session, "ls", Some("a1")), "");
+    let held = setup.hook_call(&session, push, Some("a1"));
+    let again = setup.hook_call(&session, push, Some("a1"));
+    let shown = setup.hook_call(&session, "ls", None);
+    let main = setup.hook_call(&session, push, None);
+
+    assert!(held.contains("waits for the main agent"), "{held}");
+    assert_eq!(held, again);
+    assert!(shown.contains("Ana moved ENG-7 to Canceled"), "{shown}");
+    assert!(main.contains("Priory held this call once"), "{main}");
+    let cleared = setup.hook_call(&session, push, None);
+    assert!(!cleared.contains("Priory held"), "{cleared}");
+}
+
+impl Setup {
+    /// What `priory hook PreToolUse` prints for `command` in the run whose harness session is
+    /// `session`, from its subagent `agent` if any.
+    fn hook_call(&self, session: &str, command: &str, agent: Option<&str>) -> String {
+        use std::io::Write;
+        let mut hook = self
+            .command(env!("CARGO_BIN_EXE_priory"))
+            .args(["hook", "PreToolUse"])
+            .env("PRIORY_SESSION", session)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let input = json!({ "session_id": session, "tool_name": "Bash", "agent_id": agent,
+            "tool_input": { "command": command }, "cwd": self.dir });
+        hook.stdin
+            .take()
+            .unwrap()
+            .write_all(input.to_string().as_bytes())
+            .unwrap();
+        String::from_utf8(hook.wait_with_output().unwrap().stdout).unwrap()
+    }
+}
+
 #[test]
 fn a_cancel_during_the_turn_refuses_the_result_once_with_the_news() {
     let mut setup = Setup::new("news-result");
@@ -22213,9 +22319,9 @@ fn a_cancel_wakes_a_task_asleep_at_its_checks_gate() {
 fn a_daemon_that_does_not_answer_lets_a_call_through_although_news_waits() {
     let home = Path::new(env!("CARGO_TARGET_TMPDIR")).join("news-silent");
     priory_runtime::runtime::remove_sealed(&home);
-    let spool = home.join("spools/6f1c0b9e-0d2a-4f43-9a51-3c2e8e1b7d10");
-    fs::create_dir_all(&spool).unwrap();
-    fs::write(spool.join("news"), "").unwrap();
+    let marked = home.join("news/6f1c0b9e-0d2a-4f43-9a51-3c2e8e1b7d10");
+    fs::create_dir_all(&marked).unwrap();
+    fs::write(marked.join("news"), "").unwrap();
     let socket = priory_runtime::runtime::socket_in(Some(&home), &home);
     fs::create_dir_all(socket.parent().unwrap()).unwrap();
     // A long home puts the socket under /tmp, where an earlier run's socket stays.

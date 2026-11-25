@@ -257,10 +257,14 @@ fn not_an_answer(text: &str) -> String {
 
 /// `text` cut to 200 characters, so a reason stays one short line.
 pub(crate) fn short(text: &str) -> String {
-    let text = text.replace(['\n', '\r'], " ");
-    match text.char_indices().nth(200) {
+    cut(&text.replace(['\n', '\r'], " "), 200)
+}
+
+/// `text` cut to `limit` characters.
+pub(crate) fn cut(text: &str, limit: usize) -> String {
+    match text.char_indices().nth(limit) {
         Some((at, _)) => format!("{}…", &text[..at]),
-        None => text,
+        None => text.to_owned(),
     }
 }
 

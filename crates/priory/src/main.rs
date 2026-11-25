@@ -4698,6 +4698,9 @@ fn outside_mcp() -> ExitCode {
 /// How long a call that news cannot hold waits for the daemon to show it.
 const NEWS_WAIT: Duration = Duration::from_secs(1);
 
+/// What the hook keeps of its deadline to print its answer.
+const NEWS_MARGIN: Duration = Duration::from_millis(500);
+
 /// One unread news item: its id, whether no call showed it yet, and its text.
 type News = (i64, bool, String);
 
@@ -4709,11 +4712,16 @@ fn hook_session(input: &Value) -> Option<String> {
         .or_else(|| input["session_id"].as_str().map(str::to_owned))
 }
 
+/// `wait`, or what is left of the hook's deadline `by` when less.
+fn within(wait: Duration, by: std::time::Instant) -> Duration {
+    wait.min(by.saturating_duration_since(std::time::Instant::now()))
+}
+
 /// The unread news of `session`, waiting `wait` for the daemon: none without the marker the daemon
 /// writes, or when the daemon does not answer, since news is no approval and must not stop a call.
 fn news(session: &str, wait: Duration) -> Vec<News> {
-    let marker = priory_runtime::jail::spool_dir(&runtime::home(), session).join("news");
-    if session.is_empty() || !marker.exists() {
+    let marker = priory_runtime::jail::news_dir(&runtime::home(), session).join("news");
+    if wait.is_zero() || session.is_empty() || !marker.exists() {
         return Vec::new();
     }
     let line = serde_json::json!({ "news": { "session": session } });
@@ -4727,13 +4735,13 @@ fn news(session: &str, wait: Duration) -> Vec<News> {
 
 /// Tells the daemon that the hook has `news`, as `mark`: `shown`, or `read` when it refuses the call
 /// with it. Returns the texts. Best effort: news left unmarked comes with the next call too.
-fn got_news(session: &str, mark: &str, news: Vec<News>) -> Option<String> {
+fn got_news(session: &str, mark: &str, news: Vec<News>, by: std::time::Instant) -> Option<String> {
     if news.is_empty() {
         return None;
     }
     let ids: Vec<i64> = news.iter().map(|(id, ..)| *id).collect();
     let line = serde_json::json!({ "news": { "session": session, mark: ids } });
-    let _ = runtime::call(&runtime::home(), &line.to_string(), NEWS_WAIT);
+    let _ = runtime::call(&runtime::home(), &line.to_string(), within(NEWS_WAIT, by));
     let texts: Vec<String> = news.into_iter().map(|(.., text)| text).collect();
     Some(texts.join("\n"))
 }
@@ -4886,6 +4894,8 @@ fn hook(event: &str) -> ExitCode {
         // A hook that fails or that Claude kills lets the call through, so a guard that panics or
         // hangs anywhere, in git, the connect or the reply, denies before Claude's timeout.
         let (sender, receiver) = std::sync::mpsc::channel();
+        // News takes only what the guard leaves, so a slow daemon never denies a call over it.
+        let by = std::time::Instant::now() + GUARD_DEADLINE - NEWS_MARGIN;
         std::thread::spawn(move || {
             let checked = match serde_json::from_reader::<_, Value>(std::io::stdin()) {
                 Ok(input) => match guard(&input) {
@@ -4893,10 +4903,21 @@ fn hook(event: &str) -> ExitCode {
                         let hold = guarded || holds_for_news(&input);
                         let session = hook_session(&input).unwrap_or_default();
                         let wait = if hold { GUARD_WAIT } else { NEWS_WAIT };
-                        let mut news = news(&session, wait);
+                        // A subagent's call must not use up the main agent's news.
+                        let subagent = input["agent_id"].as_str().is_some_and(|id| !id.is_empty());
+                        // The acknowledgement keeps its own second of what is left.
+                        let mut news = match subagent && !hold {
+                            true => Vec::new(),
+                            false => news(&session, within(wait, by - NEWS_WAIT)),
+                        };
+                        if subagent && !news.is_empty() {
+                            let held = priory_core::news::SUBAGENT.to_owned();
+                            let _ = sender.send((Some(held), None, None));
+                            return;
+                        }
                         let mark = if hold { "read" } else { "shown" };
                         news.retain(|(_, new, _)| hold || *new);
-                        match got_news(&session, mark, news) {
+                        match got_news(&session, mark, news, by) {
                             Some(lines) if hold => {
                                 (Some(priory_core::news::held(&lines)), None, None)
                             }
@@ -4913,7 +4934,7 @@ fn hook(event: &str) -> ExitCode {
                     None,
                 ),
             };
-            sender.send(checked)
+            let _ = sender.send(checked);
         });
         let (denied, news, input) = receiver.recv_timeout(GUARD_DEADLINE).unwrap_or_else(|_| {
             let reason = format!(
@@ -4929,7 +4950,7 @@ fn hook(event: &str) -> ExitCode {
             receiver.recv_timeout(SCOPED_DEADLINE).ok().flatten()
         });
         let news = news.map(|news| {
-            format!("Priory news for this task, which may end its work:\n{news}\nDecide with it before you open a pull request, push or end the step.")
+            format!("Priory news for this task, which may end its work. {}\n{news}\nDecide with it before you open a pull request, push or end the step.", priory_core::news::DATA)
         });
         let context: Vec<String> = news.into_iter().chain(scoped).collect();
         if let Some(reason) = denied {
