@@ -332,12 +332,17 @@ fn patient(
     loop {
         let began = Instant::now();
         let said = live();
-        let left = patience.get();
-        if said.is_ok() || left.is_zero() {
+        if said.is_ok() {
             return said;
         }
-        std::thread::sleep(left.min(Duration::from_secs(1)));
-        patience.set(left.saturating_sub(began.elapsed()));
+        // A read of a busy state file waits too.
+        let left = patience.get().saturating_sub(began.elapsed());
+        let pause = left.min(Duration::from_secs(1));
+        std::thread::sleep(pause);
+        patience.set(left - pause);
+        if patience.get().is_zero() {
+            return said;
+        }
     }
 }
 
@@ -1013,6 +1018,7 @@ mod tests {
                 if reads.get() > 9 {
                     return Ok(true);
                 }
+                std::thread::sleep(Duration::from_millis(100));
                 Err("database is locked".to_owned())
             })
         };
@@ -1024,7 +1030,7 @@ mod tests {
         assert_eq!(check(), Err("database is locked".to_owned()));
 
         // What was left of the wait is spent, so the second check reads once.
-        assert!((2..=3).contains(&first), "{first}");
+        assert!((1..=2).contains(&first), "{first}");
         assert_eq!(reads.get(), 1);
     }
 

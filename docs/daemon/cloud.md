@@ -74,7 +74,8 @@ time. The daemon:
    which `priory runs` shows in its `session` column.
 
 When the state file cannot be read for those two checks, the daemon reads it again each second. One
-start waits `command_timeout` at most for both together, and only then fails.
+start waits `command_timeout` at most for both together, past which a read under way still ends, and
+only then fails.
 
 The rules tell the session to push its work to the branch `claude/priory-<task>-<token>`, where
 the token is the first 8 characters of the run's harness session id. They tell it to open no pull
