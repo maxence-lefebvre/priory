@@ -306,3 +306,10 @@ export async function seen() {
   const { status, body } = await post("/api/seen", { at: state.since.opened }).catch((error) => ({ status: 0, body: { error: error.message } }));
   if (status !== 200) console.warn(`priory: could not record the visit: ${body.error || status}`);
 }
+
+export function deskClick(action, target) {
+  if (action === "todo-done") markDone(target);
+  else if (action === "row-act") rowAct(target);
+  else return false;
+  return true;
+}

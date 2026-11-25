@@ -74,3 +74,25 @@ export async function moveTask(target) {
   document.getElementById(`move-${task.id}`)?.focus();
   refresh();
 }
+
+export function queueClick(action, target) {
+  if (action !== "move") return false;
+  moveTask(target);
+  return true;
+}
+
+export function queueKey(event) {
+  const menu = event.key === "Escape" && document.querySelector("details.move[open]");
+  if (!menu) return false;
+  menu.open = false;
+  menu.querySelector("summary").focus();
+  return true;
+}
+
+// A Move menu's toggle does not bubble, so it is caught on its way down.
+document.addEventListener("toggle", (event) => {
+  if (!event.target.matches?.("details.move")) return;
+  const task = Number(event.target.dataset.move);
+  if (event.target.open) state.moveOpen = task;
+  else if (state.moveOpen === task) state.moveOpen = null;
+}, true);

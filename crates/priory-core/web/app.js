@@ -1,24 +1,24 @@
 // Priory's web view (DESIGN.md): the frame, the Desk and the Asks, with answering through the CLI's verbs.
 // Agent text is untrusted: every value goes through `html`, which escapes it.
-import { optionKey, snoozeShortcut, writeShown } from "./asks.js";
+import { tasksClick } from "./legacy/tasks.js";
 import { arrivalAsk } from "./desk.js";
-import { addButton, addSheet, closeAdd, discardAdd, keepDraft, openAdd, renderAdd, submitAdd } from "./legacy/add.js";
-import { act, answer, answerSheet, askDetail, askOnScreen, asksPhone, disarm, drawer, lockOf, renderSheet, snooze } from "./legacy/asks.js";
-import { batchPage, drawLanes, editPlan, planEditAt, planEditOf } from "./legacy/batch.js";
-import { costsPage, loadCosts } from "./legacy/costs.js";
+import { addButton, addClick, addInput, addSheet, addSubmit, openAdd, renderAdd } from "./legacy/add.js";
+import { answerSheet, askDetail, askOnScreen, asksClick, asksInput, asksKey, asksPhone, asksSubmit, disarm, drawer, renderSheet } from "./legacy/asks.js";
+import { batchClick, batchPage, drawLanes } from "./legacy/batch.js";
+import { costsChange, costsClick, costsPage, loadCosts } from "./legacy/costs.js";
 import { keepTokenForWorker, refresh, signOut } from "./legacy/data.js";
-import { deskPhone, deskView, markDone, openAsks, rowAct, seen } from "./legacy/desk.js";
-import { flowsPage } from "./legacy/flows.js";
+import { deskClick, deskPhone, deskView, openAsks, seen } from "./legacy/desk.js";
+import { flowsClick, flowsPage } from "./legacy/flows.js";
 import { OWN_PAGE_LISTS, connection, laterPanel, listPanel, loading, notFound, shownPanels, signIn, staleStrip, tabs, tree, watchSections } from "./legacy/frame.js";
-import { inboxViews, requestTask, subscribeTask, unroutedRows } from "./legacy/inbox.js";
-import { disarmMemory, memoriesPage, memoryAct } from "./legacy/memories.js";
-import { moveTask } from "./legacy/queue.js";
-import { reportAct, reportsPage, submitRemark } from "./legacy/reports.js";
-import { chooseKind, morePage, settingsScreen, turnPush } from "./legacy/settings.js";
+import { inboxClick, inboxViews, unroutedRows } from "./legacy/inbox.js";
+import { disarmMemory, memoriesClick, memoriesPage } from "./legacy/memories.js";
+import { queueClick, queueKey } from "./legacy/queue.js";
+import { reportsClick, reportsInput, reportsPage, reportsSubmit } from "./legacy/reports.js";
+import { morePage, settingsChange, settingsClick, settingsScreen } from "./legacy/settings.js";
 import { current, focusKey, html, icon, layout, route, routeKey, selectedAsk, state, view } from "./legacy/shared.js";
 import { taskPage } from "./legacy/task.js";
-import { disarmTask, remoteBody, remoteGeneration, taskAct, taskIdOf, taskWrite } from "./legacy/taskacts.js";
-import { copyTerminal, keyboard, keyboardAct, keyboardSheet, observeTerminal, openKeyboardSheet, paintTerminal, screenText, sendInput, syncTerminal, terminal, watch } from "./legacy/terminal.js";
+import { disarmTask, remoteGeneration, taskClick, taskInput, taskSubmit } from "./legacy/taskacts.js";
+import { keyboardSheet, observeTerminal, paintTerminal, syncTerminal, terminalClick, terminalInput, terminalKey, terminalSubmit } from "./legacy/terminal.js";
 import { PANELS, TYPED_FIELDS, pageTitle } from "./pages.js";
 import { go } from "./router.js";
 
@@ -144,90 +144,17 @@ function page() {
   return html`${staleStrip()}${top}<div class="wide">${nav("rail")}${main}${drawer(true, plain ? [list] : shownPanels(layoutNode, list))}</div>`;
 }
 
-// Events
+// Events: each page's file acts on its own controls.
+const CLICKS = [terminalClick, costsClick, addClick, asksClick, flowsClick, settingsClick, taskClick, tasksClick, batchClick, deskClick, memoriesClick, queueClick, inboxClick, reportsClick];
+const SUBMITS = [addSubmit, asksSubmit, reportsSubmit, terminalSubmit, taskSubmit];
+
 document.addEventListener("click", (event) => {
   const target = event.target.closest("a, button, [data-action]");
   if (!target) return;
   const action = target.dataset.action;
   if (action === "retry") return refresh();
-  if (action === "term-fit") return (terminal.fit = !terminal.fit), paintTerminal(document.getElementById("app"));
-  if (action === "term-copy") return watch.state().screen && copyTerminal(screenText(watch.state().screen), "screen");
-  if (action === "term-earlier") return watch.earlier();
-  if (action === "term-type") {
-    Object.assign(terminal, { typing: !terminal.typing, said: null });
-    paintTerminal(document.getElementById("app"), true);
-    return terminal.typing && document.getElementById("term-line")?.focus();
-  }
-  if (action === "term-attach") return copyTerminal(`priory attach ${target.dataset.task} --read-only`, "attach");
-  if (action === "term-menu") return (terminal.menu = !terminal.menu), paintTerminal(document.getElementById("app"), true);
-  if (action === "term-take-ask" || action === "term-give-ask") {
-    terminal.menu = false;
-    paintTerminal(document.getElementById("app"), true);
-    return openKeyboardSheet(action === "term-take-ask" ? "take" : "give");
-  }
-  if (action === "term-take" || action === "term-give") return keyboardAct(action);
-  if (action === "keyboard-close") return keyboardSheet().close();
-  if (action === "term-key") return sendInput({ key: target.dataset.key });
-  // A refresh that reaches the daemon reads the costs again.
-  if (action === "costs-retry") return (state.costs.error = null), refresh();
-  if (action === "add-open") return openAdd();
-  if (action === "add-close" || action === "add-done") return closeAdd();
-  if (action === "sheet-close") return answerSheet().close();
-  if (action === "add-discard") return discardAdd();
-  if (action === "add-another") {
-    Object.assign(state.add, { phase: "empty", task: null });
-    renderAdd();
-    return document.getElementById("add-text")?.focus();
-  }
-  if (action === "flows-retry") { state.flowsError = null; return render(); }
   if (action === "sign-out") { event.preventDefault(); return signOut(null); }
-  if (action === "push-on" || action === "push-off") return turnPush(action === "push-on");
-  if (action === "install" && state.install) {
-    state.install.prompt();
-    state.install = null;
-    return render();
-  }
-  if (action === "task-act") return taskAct(target);
-  if (action === "remote-open" && !event.target.closest("form, .task-acts")) {
-    state.remoteOpen = state.remoteOpen === target.dataset.task ? null : target.dataset.task;
-    return render();
-  }
-  if (action === "entry-menu" && state.batch?.body) {
-    const edit = planEditOf(state.batch.body);
-    const open = edit.open === target.dataset.entry ? null : target.dataset.entry;
-    state.planEdit = { ...edit, at: planEditAt(state.batch.body), batch: state.batch.body.id, open, armed: null };
-    return render();
-  }
-  if (action === "batch-edit") return editPlan(target);
-  if (action === "todo-done") return markDone(target);
-  if (action === "row-act") return rowAct(target);
-  if (action === "memory-act") return memoryAct(target);
-  if (action === "memory-current") {
-    event.preventDefault();
-    const { id } = target.dataset;
-    if (!state.memoryCurrent.delete(id)) state.memoryCurrent.add(id);
-    return render();
-  }
-  if (action === "move") return moveTask(target);
-  if (action === "request-task") return requestTask(target.dataset.text, target.dataset.workflow);
-  if (action === "unheard-say") {
-    if (target.getAttribute("aria-disabled") !== "true") taskWrite(Number(target.dataset.task), "say", { text: target.dataset.text });
-    return;
-  }
-  if (action === "subscribe-task") {
-    if (state.unrouted.busy === null) subscribeTask(target.dataset.resource, Number(target.dataset.task));
-    return;
-  }
-  if (["pick", "pick-undo", "pick-change", "pick-keep", "report-go", "report-next", "report-search", "compose", "compose-cancel", "reply", "resolve", "reopen"].includes(action)) return reportAct(target);
-  if (target.dataset.answer !== undefined || ["options", "write", "dismiss", "snooze", "unsnooze"].includes(action)) return act(target);
-  if (action === "mode" || action === "theme") {
-    const root = document.documentElement;
-    if (action === "mode") root.dataset.mode = target.dataset.pickMode;
-    else root.dataset.theme = target.dataset.themePick;
-    localStorage.setItem("priory.mode", root.dataset.mode);
-    localStorage.setItem("priory.theme", root.dataset.theme);
-    return render();
-  }
+  if (CLICKS.some((click) => click(action, target, event))) return;
   const modified = event.metaKey || event.ctrlKey || event.shiftKey || event.altKey;
   if (target.tagName === "A" && target.origin === location.origin && !target.hash && !target.target && !modified) {
     event.preventDefault();
@@ -240,83 +167,23 @@ document.addEventListener("click", (event) => {
   }
 });
 
-// A Move menu's toggle does not bubble, so it is caught on its way down.
-document.addEventListener("toggle", (event) => {
-  if (!event.target.matches?.("details.move")) return;
-  const task = Number(event.target.dataset.move);
-  if (event.target.open) state.moveOpen = task;
-  else if (state.moveOpen === task) state.moveOpen = null;
-}, true);
-
-document.addEventListener("change", (event) => {
-  const kind = event.target.dataset.pushKind;
-  if (kind) return chooseKind(kind, event.target.checked);
-  if (event.target.dataset.action !== "costs-by") return;
-  state.costs.by = event.target.value;
-  loadCosts();
+document.addEventListener("change", ({ target }) => {
+  settingsChange(target);
+  costsChange(target);
 });
 
-document.addEventListener("input", (event) => {
-  if (event.target.id === "add-text" || event.target.dataset.addChip) {
-    state.add.draft[event.target.dataset.addChip || "text"] = event.target.value;
-    keepDraft();
-    if (event.target.dataset.addChip === "workflow") {
-      state.add.swapped = null;
-      document.getElementById("add-swapped")?.remove();
-    }
-    // Only the button's state changes; a full redraw would reset the caret on every letter.
-    addSheet().querySelector("form .btn.primary")?.setAttribute("aria-disabled", String(!state.add.draft.text.trim() || state.add.phase === "sending"));
-    return;
-  }
-  const ask = event.target.id === "draft" && askOnScreen();
-  if (ask) state.drafts.set(ask.id, event.target.value);
-  if (event.target.id === "report-draft" && state.compose) state.compose.text = event.target.value;
-  if (event.target.id === "report-query") {
-    state.reportQuery = event.target.value;
-    render();
-  }
-  const form = event.target.id === "say" && event.target.closest("form");
-  if (form) state.sayDrafts.set(taskIdOf(form.dataset.task), event.target.value);
-  if (event.target.id === "term-keys") terminal.keys = event.target.value;
-  if (event.target.id === "term-line") {
-    terminal.line = event.target.value;
-    // Only the button changes; a repaint per letter would cost the caret.
-    event.target.form.querySelector(".send").setAttribute("aria-disabled", String(!terminal.line.trim() || terminal.saying));
-  }
+document.addEventListener("input", ({ target }) => {
+  if (addInput(target)) return;
+  asksInput(target);
+  reportsInput(target);
+  taskInput(target);
+  terminalInput(target);
 });
 
 document.addEventListener("submit", (event) => {
-  if (event.target.dataset.action === "add") {
-    event.preventDefault();
-    return submitAdd();
-  }
-  if (event.target.dataset.action === "send-text") {
-    event.preventDefault();
-    const ask = askOnScreen();
-    const text = (state.drafts.get(ask?.id) || "").trim();
-    if (ask && text && writeShown(state.writing.has(ask.id), lockOf(ask), Boolean(state.pending)) === "form") answer(ask, text, true);
-    return;
-  }
-  if (event.target.dataset.action === "remark") {
-    event.preventDefault();
-    return submitRemark();
-  }
-  if (event.target.dataset.action === "term-paste") {
-    event.preventDefault();
-    return terminal.keys && sendInput({ text: terminal.keys });
-  }
-  if (event.target.dataset.action === "term-say") {
-    event.preventDefault();
-    return sayFromPane(Number(event.target.dataset.task));
-  }
-  if (event.target.dataset.action === "say") {
-    event.preventDefault();
-    const task = taskIdOf(event.target.dataset.task);
-    const text = (state.sayDrafts.get(task) || "").trim();
-    if (text && state.taskBusy === null) taskWrite(task, "say", remoteBody(task, { text }));
-    return;
-  }
-  if (event.target.dataset.action !== "sign-in") return;
+  const action = event.target.dataset.action;
+  if (SUBMITS.some((submit) => submit(action, event.target))) return event.preventDefault();
+  if (action !== "sign-in") return;
   event.preventDefault();
   const token = new FormData(event.target).get("token").trim();
   if (!token) return;
@@ -326,18 +193,9 @@ document.addEventListener("submit", (event) => {
   refresh();
 });
 
-// Desktop shortcuts: j and k move, Enter opens, Esc closes, S snoozes the selected ask for 1 h. Never inside an input.
+// Desktop shortcuts: j and k move, Enter opens, Esc closes. Never inside an input.
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && terminal.menu && event.target.closest?.(".term")) {
-    terminal.menu = false;
-    paintTerminal(document.getElementById("app"), true);
-    return document.querySelector('[data-action="term-menu"]')?.focus();
-  }
-  if (event.key === "Escape" && event.target.id === "term-line") {
-    Object.assign(terminal, { typing: false, said: null });
-    paintTerminal(document.getElementById("app"), true);
-    return document.querySelector('[data-action="term-type"]')?.focus();
-  }
+  if (terminalKey(event)) return;
   if ((event.key === " " || event.key === "Enter") && event.target.matches?.("[role=radio]")) {
     event.preventDefault();
     return event.target.click();
@@ -349,46 +207,25 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "n" || event.key === "N") {
     event.preventDefault();
     openAdd();
-  } else if (event.key === "s" || event.key === "S") {
-    const body = askOnScreen() && !state.failed && !state.pending && snoozeShortcut(askOnScreen(), Date.now());
-    if (body) snooze(askOnScreen(), { dataset: { for: body.for } });
-  } else if (selectedAsk() && /^[1-9]$/.test(event.key)) {
-    const index = optionKey(event);
-    if (index !== null) document.querySelector(`.opt[data-answer="${index}"]`)?.click();
+  } else if (asksKey(event)) {
+    return;
   } else if (event.key === "j" || event.key === "k") {
     const next = rows[Math.min(rows.length - 1, Math.max(0, at + (event.key === "j" ? 1 : -1)))];
     if (next) go(hrefOf(next));
   } else if (event.key === "Enter" && at >= 0 && document.activeElement === document.body) {
     go(hrefOf(rows[at]));
-  } else if (event.key === "Escape" && document.querySelector("details.move[open]")) {
-    const menu = document.querySelector("details.move[open]");
-    menu.open = false;
-    menu.querySelector("summary").focus();
+  } else if (queueKey(event)) {
+    return;
   } else if (event.key === "Escape" && selectedAsk()) {
     go(state.listUrl);
   }
 });
 
-// A tap on the scrim, outside the sheet's box, closes it; closing hands focus back to an Add button.
-addSheet().addEventListener("click", (event) => { if (event.target === addSheet()) closeAdd(); });
-answerSheet().addEventListener("click", (event) => { if (event.target === answerSheet()) answerSheet().close(); });
-// A page that goes away gives its keyboard back, so the run's outbox does not wait out the 15 minutes.
-addEventListener("pagehide", () => keyboard.leave());
-keyboardSheet().addEventListener("click", (event) => { if (event.target === keyboardSheet()) keyboardSheet().close(); });
-keyboardSheet().addEventListener("close", () => document.querySelector("#app [data-action='term-menu']")?.focus());
-addSheet().addEventListener("close", () => document.querySelector("#app [data-action='add-open']")?.focus());
 for (const query of ["(min-width: 600px)", "(min-width: 1024px)"]) matchMedia(query).addEventListener("change", render);
-addEventListener("resize", () => { if (terminal.fit) paintTerminal(document.getElementById("app")); });
 document.addEventListener("visibilitychange", () => {
   syncTerminal(document.getElementById("app"));
   if (!document.hidden && state.token) refresh();
 });
 // Ages read in minutes, so repaint them once a minute even when nothing changes.
 setInterval(() => { if (!document.hidden && state.token) refresh(); }, 60000);
-// The browser offers to install only once the page handles this; the Notifications screen shows it.
-addEventListener("beforeinstallprompt", (event) => {
-  event.preventDefault();
-  state.install = event;
-  render();
-});
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});

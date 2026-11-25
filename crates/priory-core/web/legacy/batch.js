@@ -153,3 +153,14 @@ export async function editPlan(target) {
   render();
   refresh();
 }
+
+export function batchClick(action, target) {
+  if (action === "entry-menu" && state.batch?.body) {
+    const edit = planEditOf(state.batch.body);
+    const open = edit.open === target.dataset.entry ? null : target.dataset.entry;
+    state.planEdit = { ...edit, at: planEditAt(state.batch.body), batch: state.batch.body.id, open, armed: null };
+    render();
+  } else if (action === "batch-edit") editPlan(target);
+  else return false;
+  return true;
+}

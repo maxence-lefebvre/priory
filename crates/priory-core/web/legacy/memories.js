@@ -71,3 +71,14 @@ export async function memoryAct(target) {
   render();
   refresh();
 }
+
+export function memoriesClick(action, target, event) {
+  if (action === "memory-act") memoryAct(target);
+  else if (action === "memory-current") {
+    event.preventDefault();
+    const { id } = target.dataset;
+    if (!state.memoryCurrent.delete(id)) state.memoryCurrent.add(id);
+    render();
+  } else return false;
+  return true;
+}

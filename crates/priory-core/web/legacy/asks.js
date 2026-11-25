@@ -1,6 +1,6 @@
 // The asks page's legacy drawing and actions.
 import { render } from "../app.js";
-import { ARM_MS, ASK_VIEWS, answeredBy, askBody, askGroups, askHeading, dismissable, planCut, planUnread, planWait, plansFirst, press, routedMark, routedNote, runnerOf, runsCommand, seenAgo, sentNote, shownGroups, shrunkHead, snoozed, submitted, writeNote, writeShown } from "../asks.js";
+import { ARM_MS, ASK_VIEWS, answeredBy, askBody, askGroups, askHeading, dismissable, optionKey, planCut, planUnread, planWait, plansFirst, press, routedMark, routedNote, runnerOf, runsCommand, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, submitted, writeNote, writeShown } from "../asks.js";
 import { plural } from "../desk.js";
 import { emptyDetail } from "../inbox.js";
 import { taskRead } from "../pages.js";
@@ -445,3 +445,37 @@ export function drawer(wide, panels) {
   const body = id ? askDetail(id, wide) : html`<p class="empty">${emptyDetail(panels)}</p>`;
   return html`<aside class="drawer" aria-label="Ask">${body}</aside>`;
 }
+
+export function asksClick(action, target) {
+  if (action === "sheet-close") answerSheet().close();
+  else if (target.dataset.answer !== undefined || ["options", "write", "dismiss", "snooze", "unsnooze"].includes(action)) act(target);
+  else return false;
+  return true;
+}
+
+export function asksInput(target) {
+  const ask = target.id === "draft" && askOnScreen();
+  if (ask) state.drafts.set(ask.id, target.value);
+}
+
+export function asksSubmit(action) {
+  if (action !== "send-text") return false;
+  const ask = askOnScreen();
+  const text = (state.drafts.get(ask?.id) || "").trim();
+  if (ask && text && writeShown(state.writing.has(ask.id), lockOf(ask), Boolean(state.pending)) === "form") answer(ask, text, true);
+  return true;
+}
+
+// S snoozes the selected ask for 1 h, 1 to 9 press its options. Never inside an input.
+export function asksKey(event) {
+  if (event.key === "s" || event.key === "S") {
+    const body = askOnScreen() && !state.failed && !state.pending && snoozeShortcut(askOnScreen(), Date.now());
+    if (body) snooze(askOnScreen(), { dataset: { for: body.for } });
+  } else if (selectedAsk() && /^[1-9]$/.test(event.key)) {
+    const index = optionKey(event);
+    if (index !== null) document.querySelector(`.opt[data-answer="${index}"]`)?.click();
+  } else return false;
+  return true;
+}
+
+answerSheet().addEventListener("click", (event) => { if (event.target === answerSheet()) answerSheet().close(); });

@@ -2,7 +2,7 @@
 import { render } from "../app.js";
 import { SPLITS, attentionView, costTiles, dayBars, money, scoreTable, splitTable } from "../costs.js";
 import { taskLabel } from "../tasks.js";
-import { api, keep, signOut } from "./data.js";
+import { api, keep, refresh, signOut } from "./data.js";
 import { connection } from "./frame.js";
 import { date, html, icon, layout, raw, savedViews, state, timeTag } from "./shared.js";
 
@@ -139,4 +139,18 @@ function taskBar(task) {
     return html`<line class="gap" x1="${edge * 100}%" x2="${edge * 100}%" y1="0" y2="12"/>`;
   });
   return html`<svg class="tbar" width="100%" height="12" role="img" aria-label="${task.text}">${parts}${gaps}</svg>`;
+}
+
+export function costsClick(action) {
+  if (action !== "costs-retry") return false;
+  // A refresh that reaches the daemon reads the costs again.
+  state.costs.error = null;
+  refresh();
+  return true;
+}
+
+export function costsChange(target) {
+  if (target.dataset.action !== "costs-by") return;
+  state.costs.by = target.value;
+  loadCosts();
 }

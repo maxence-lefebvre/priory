@@ -5,7 +5,7 @@ import { taskLabel } from "../tasks.js";
 import { addSheet, keepDraft, openAdd, readAddDefaults, renderAdd } from "./add.js";
 import { api, refresh, signOut } from "./data.js";
 import { html, post, raw, savedViews, state, taskName, tile, timeTag } from "./shared.js";
-import { taskActs } from "./taskacts.js";
+import { taskActs, taskWrite } from "./taskacts.js";
 
 
 // Unrouted (DESIGN.md, Desk): events that reached no task, by resource, each with a way to route the next one.
@@ -132,4 +132,14 @@ export async function requestTask(text, workflow) {
   state.add.swapped = offered === undefined ? workflow : null;
   keepDraft();
   openAdd();
+}
+
+export function inboxClick(action, target) {
+  if (action === "request-task") requestTask(target.dataset.text, target.dataset.workflow);
+  else if (action === "unheard-say") {
+    if (target.getAttribute("aria-disabled") !== "true") taskWrite(Number(target.dataset.task), "say", { text: target.dataset.text });
+  } else if (action === "subscribe-task") {
+    if (state.unrouted.busy === null) subscribeTask(target.dataset.resource, Number(target.dataset.task));
+  } else return false;
+  return true;
 }

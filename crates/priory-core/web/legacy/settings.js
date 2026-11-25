@@ -184,3 +184,32 @@ export async function chooseKind(kind, on) {
     render();
   }
 }
+
+export function settingsClick(action, target) {
+  if (action === "push-on" || action === "push-off") turnPush(action === "push-on");
+  else if (action === "install" && state.install) {
+    state.install.prompt();
+    state.install = null;
+    render();
+  } else if (action === "mode" || action === "theme") {
+    const root = document.documentElement;
+    if (action === "mode") root.dataset.mode = target.dataset.pickMode;
+    else root.dataset.theme = target.dataset.themePick;
+    localStorage.setItem("priory.mode", root.dataset.mode);
+    localStorage.setItem("priory.theme", root.dataset.theme);
+    render();
+  } else return false;
+  return true;
+}
+
+export function settingsChange(target) {
+  const kind = target.dataset.pushKind;
+  if (kind) chooseKind(kind, target.checked);
+}
+
+// The browser offers to install only once the page handles this; the Notifications screen shows it.
+addEventListener("beforeinstallprompt", (event) => {
+  event.preventDefault();
+  state.install = event;
+  render();
+});

@@ -88,3 +88,10 @@ export function flowsPage(compact) {
   const body = flows.workflows.length ? html`${flowLegend()}${flows.workflows.map((workflow) => flowSection(workflow, flows.paths, flows.irreversible))}` : html`<p class="empty">This factory has no workflows. Add one under <code>workflows/</code>.</p>`;
   return html`${head}<div class="panel" role="region" aria-label="Flows"><div class="scroll">${body}</div></div>`;
 }
+
+export function flowsClick(action) {
+  if (action !== "flows-retry") return false;
+  state.flowsError = null;
+  render();
+  return true;
+}

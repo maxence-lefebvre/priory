@@ -80,3 +80,22 @@ export async function taskWrite(task, act, body) {
   render();
   refresh();
 }
+
+export function taskClick(action, target) {
+  if (action !== "task-act") return false;
+  taskAct(target);
+  return true;
+}
+
+export function taskInput(target) {
+  const form = target.id === "say" && target.closest("form");
+  if (form) state.sayDrafts.set(taskIdOf(form.dataset.task), target.value);
+}
+
+export function taskSubmit(action, form) {
+  if (action !== "say") return false;
+  const task = taskIdOf(form.dataset.task);
+  const text = (state.sayDrafts.get(task) || "").trim();
+  if (text && state.taskBusy === null) taskWrite(task, "say", remoteBody(task, { text }));
+  return true;
+}

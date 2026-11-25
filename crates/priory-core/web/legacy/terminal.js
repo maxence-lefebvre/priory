@@ -1,9 +1,9 @@
 // The terminal page's legacy drawing and actions.
 import { plural } from "../desk.js";
 import { taskLabel } from "../tasks.js";
-import { EARLIER_CAP, KEYS, keyboardSession, paintRows, screenRows, screenWatch } from "../terminal.js";
+import { EARLIER_CAP, KEYS, keyboardSession, paintRows, sayLine, screenRows, screenWatch } from "../terminal.js";
 import { api, signOut } from "./data.js";
-import { STATES, clock, html, icon, raw, state, stateWord, tile, track } from "./shared.js";
+import { STATES, clock, html, icon, post, raw, state, stateWord, tile, track } from "./shared.js";
 
 
 // The run's terminal: its screen polled while shown (terminal.js), never kept on this device.
@@ -152,6 +152,23 @@ export async function sendInput(input) {
   paintTerminal(document.getElementById("app"), true);
 }
 
+// Sends the Say line; a refusal keeps its text, so a tap sends it again.
+async function sayFromPane(task) {
+  const [text, run] = [terminal.line, terminal.run];
+  if (terminal.saying || !text.trim()) return;
+  terminal.saying = true;
+  paintTerminal(document.getElementById("app"), true);
+  const said = await sayLine(post, task, text);
+  if (said.signOut) return signOut("The daemon refused this token. Paste the current one.");
+  // The pane moved to another run meanwhile: its line and note are not this one's.
+  if (terminal.run !== run) return;
+  terminal.saying = false;
+  // Text typed while the line was in flight stays.
+  if (said.said && terminal.line === text) terminal.line = "";
+  terminal.said = said;
+  paintTerminal(document.getElementById("app"), true);
+}
+
 // Repaints the pane when what it shows changed, or always after a render, keeping its sideways
 // scroll and focus. Fit sizes the text to the pane, between 9 px and the pane's own size.
 export function paintTerminal(app, rendered = false) {
@@ -225,3 +242,64 @@ export function terminalsPanel() {
   if (!running.length) return html`<p class="empty">No agent runs now. A running task's terminal shows here.</p>`;
   return html`<ol class="hist" aria-label="Running tasks">${running.map((task) => html`<li>${tile("running", "sm")}<a href="/tasks/${task.id}#terminal" title="task ${task.id}"><span class="mono">${taskLabel(task.key)}</span> ${task.title || ""}</a></li>`)}</ol>`;
 }
+
+// Each event function of a page returns true once it acted.
+export function terminalClick(action, target) {
+  if (action === "term-fit") (terminal.fit = !terminal.fit), paintTerminal(document.getElementById("app"));
+  else if (action === "term-copy") watch.state().screen && copyTerminal(screenText(watch.state().screen), "screen");
+  else if (action === "term-earlier") watch.earlier();
+  else if (action === "term-type") {
+    Object.assign(terminal, { typing: !terminal.typing, said: null });
+    paintTerminal(document.getElementById("app"), true);
+    if (terminal.typing) document.getElementById("term-line")?.focus();
+  } else if (action === "term-attach") copyTerminal(`priory attach ${target.dataset.task} --read-only`, "attach");
+  else if (action === "term-menu") (terminal.menu = !terminal.menu), paintTerminal(document.getElementById("app"), true);
+  else if (action === "term-take-ask" || action === "term-give-ask") {
+    terminal.menu = false;
+    paintTerminal(document.getElementById("app"), true);
+    openKeyboardSheet(action === "term-take-ask" ? "take" : "give");
+  } else if (action === "term-take" || action === "term-give") keyboardAct(action);
+  else if (action === "keyboard-close") keyboardSheet().close();
+  else if (action === "term-key") sendInput({ key: target.dataset.key });
+  else return false;
+  return true;
+}
+
+export function terminalInput(target) {
+  if (target.id === "term-keys") terminal.keys = target.value;
+  if (target.id === "term-line") {
+    terminal.line = target.value;
+    // Only the button changes; a repaint per letter would cost the caret.
+    target.form.querySelector(".send").setAttribute("aria-disabled", String(!terminal.line.trim() || terminal.saying));
+  }
+}
+
+export function terminalSubmit(action, form) {
+  if (action === "term-paste") terminal.keys && sendInput({ text: terminal.keys });
+  else if (action === "term-say") sayFromPane(Number(form.dataset.task));
+  else return false;
+  return true;
+}
+
+export function terminalKey(event) {
+  if (event.key !== "Escape") return false;
+  if (terminal.menu && event.target.closest?.(".term")) {
+    terminal.menu = false;
+    paintTerminal(document.getElementById("app"), true);
+    document.querySelector('[data-action="term-menu"]')?.focus();
+    return true;
+  }
+  if (event.target.id === "term-line") {
+    Object.assign(terminal, { typing: false, said: null });
+    paintTerminal(document.getElementById("app"), true);
+    document.querySelector('[data-action="term-type"]')?.focus();
+    return true;
+  }
+  return false;
+}
+
+// A page that goes away gives its keyboard back, so the run's outbox does not wait out the 15 minutes.
+addEventListener("pagehide", () => keyboard.leave());
+keyboardSheet().addEventListener("click", (event) => { if (event.target === keyboardSheet()) keyboardSheet().close(); });
+keyboardSheet().addEventListener("close", () => document.querySelector("#app [data-action='term-menu']")?.focus());
+addEventListener("resize", () => { if (terminal.fit) paintTerminal(document.getElementById("app")); });

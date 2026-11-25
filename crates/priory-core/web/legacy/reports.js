@@ -240,3 +240,22 @@ export function reportAct(target) {
   }
   remark(target.dataset.row, `/api/reports/${action}`, { comment: Number(target.dataset.comment) });
 }
+
+export function reportsClick(action, target) {
+  if (!["pick", "pick-undo", "pick-change", "pick-keep", "report-go", "report-next", "report-search", "compose", "compose-cancel", "reply", "resolve", "reopen"].includes(action)) return false;
+  reportAct(target);
+  return true;
+}
+
+export function reportsInput(target) {
+  if (target.id === "report-draft" && state.compose) state.compose.text = target.value;
+  if (target.id !== "report-query") return;
+  state.reportQuery = target.value;
+  render();
+}
+
+export function reportsSubmit(action) {
+  if (action !== "remark") return false;
+  submitRemark();
+  return true;
+}

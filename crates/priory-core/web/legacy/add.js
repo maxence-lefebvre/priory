@@ -140,3 +140,38 @@ export function discardAdd() {
   renderAdd();
   document.getElementById("add-text")?.focus();
 }
+
+export function addClick(action) {
+  if (action === "add-open") openAdd();
+  else if (action === "add-close" || action === "add-done") closeAdd();
+  else if (action === "add-discard") discardAdd();
+  else if (action === "add-another") {
+    Object.assign(state.add, { phase: "empty", task: null });
+    renderAdd();
+    document.getElementById("add-text")?.focus();
+  } else return false;
+  return true;
+}
+
+export function addInput(target) {
+  if (target.id !== "add-text" && !target.dataset.addChip) return false;
+  state.add.draft[target.dataset.addChip || "text"] = target.value;
+  keepDraft();
+  if (target.dataset.addChip === "workflow") {
+    state.add.swapped = null;
+    document.getElementById("add-swapped")?.remove();
+  }
+  // Only the button's state changes; a full redraw would reset the caret on every letter.
+  addSheet().querySelector("form .btn.primary")?.setAttribute("aria-disabled", String(!state.add.draft.text.trim() || state.add.phase === "sending"));
+  return true;
+}
+
+export function addSubmit(action) {
+  if (action !== "add") return false;
+  submitAdd();
+  return true;
+}
+
+// A tap on the scrim, outside the sheet's box, closes it; closing hands focus back to an Add button.
+addSheet().addEventListener("click", (event) => { if (event.target === addSheet()) closeAdd(); });
+addSheet().addEventListener("close", () => document.querySelector("#app [data-action='add-open']")?.focus());

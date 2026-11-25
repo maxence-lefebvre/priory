@@ -1,4 +1,5 @@
 // The tasks page's legacy drawing and actions.
+import { render } from "../app.js";
 import { TASK_VIEWS, elsewhere, filtered, olderPart, remoteActs, remoteId, remoteSent, taskFacets, taskLabel, taskViews, workStep } from "../tasks.js";
 import { ago, batchTag, facet, facetPicks, facetQuery, html, icon, listView, olderRow, olderTasks, prsTag, raw, reasonShown, role, savedViews, state, stateWord, tile, timeTag } from "./shared.js";
 import { taskActs } from "./taskacts.js";
@@ -75,4 +76,11 @@ export function tasksBody(wide) {
     ? html`<table class="tbl tasks"><thead><tr><th>State</th><th>Task</th><th>Title</th><th>Workflow and step</th><th>Lane</th><th>Band</th><th class="r">Age</th></tr></thead><tbody>${list.map(taskTableRow)}${olderRow("tasks", unloaded, true, 7)}</tbody></table>`
     : [...list.map(taskListRow), olderRow("tasks", unloaded, false)];
   return { views: html`${chips}${facets}`, rows };
+}
+
+export function tasksClick(action, target, event) {
+  if (action !== "remote-open" || event.target.closest("form, .task-acts")) return false;
+  state.remoteOpen = state.remoteOpen === target.dataset.task ? null : target.dataset.task;
+  render();
+  return true;
 }
