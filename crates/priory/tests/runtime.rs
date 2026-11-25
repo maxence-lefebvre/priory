@@ -20330,6 +20330,25 @@ fn a_removed_review_request_drops_its_running_task_and_ends_its_run() {
 }
 
 #[test]
+fn a_start_over_a_backlog_runs_no_task_that_the_rest_of_the_log_withdraws() {
+    let mut setup = reviews("review-withdrawn-in-backlog");
+    setup.publish_all(&review_request(1));
+    // Over one pass's 100 messages, so the removal comes in a later pass than the request.
+    for at in 0..150 {
+        setup.publish(&Message::new("t.event", json!({ "at": at })));
+    }
+    setup.publish(&review_event(
+        "github.pull_request.review_request_removed",
+        2,
+    ));
+
+    setup.start();
+
+    setup.until("tasks", |rows| rows.len() == 1 && rows[0][4] == "dropped");
+    assert!(setup.rows("runs").is_empty());
+}
+
+#[test]
 fn a_review_task_finishes_without_owning_its_pull_request() {
     let mut setup = reviews("review-done");
     setup.calls(&[result("passed")]);
@@ -26719,6 +26738,103 @@ fn a_runner_that_joins_late_reads_a_finished_task_without_running_it_again() {
     until_alive(&b, "b");
     assert!(b.own_tasks().is_empty());
     assert_eq!(claimants(&b, "github:owner/repo#1"), ["a"]);
+}
+
+#[test]
+fn a_runner_several_ticks_behind_claims_and_runs_nothing_before_it_read_the_whole_log() {
+    let mut a = runner("behind", "a", None);
+    let key = "github:owner/repo#1";
+    let request = requested(1);
+    a.publish(&request);
+    // Over one tick's 100 messages, so the claim comes in a later tick than the request.
+    for at in 0..250 {
+        a.publish(&Message::new("t.event", json!({ "at": at })));
+    }
+    for (kind, data) in [
+        (
+            "priory.task.claimed",
+            json!({ "key": key, "runner": "b", "request": request.id.to_string() }),
+        ),
+        (
+            "priory.task.held",
+            json!({ "key": key, "runner": "b", "hold": "kept", "generation": 1 }),
+        ),
+    ] {
+        a.publish(&Message::new(kind, data).subject(key));
+    }
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    until_alive(&a, "a");
+
+    assert_eq!(claimants(&a, key), ["b"]);
+    assert!(a.own_tasks().is_empty());
+    assert!(a.rows("runs").is_empty());
+    a.crash();
+}
+
+#[test]
+fn a_runner_several_ticks_behind_holds_and_runs_no_task_that_the_rest_of_the_log_gives_away() {
+    let mut a = runner("behind-given", "a", None);
+    let key = "github:owner/repo#1";
+    let request = requested(1);
+    let id = request.id.to_string();
+    a.publish(&request);
+    let mine = json!({ "key": key, "runner": "a", "request": id });
+    let kept = json!({ "key": key, "runner": "a", "hold": "kept", "generation": 1 });
+    a.publish(&Message::new("priory.task.claimed", mine).subject(key));
+    a.publish(&Message::new("priory.task.held", kept).subject(key));
+    for at in 0..150 {
+        a.publish(&Message::new("t.event", json!({ "at": at })));
+    }
+    let gift = json!({ "key": key, "runner": "b", "request": id, "from": "a", "given": true });
+    a.publish(&Message::new("priory.task.claimed", gift).subject(key));
+
+    a.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+    until_alive(&a, "a");
+
+    assert_eq!(a.own_tasks()[0][4], "dropped");
+    assert!(a.rows("runs").is_empty());
+    let held = a
+        .rows("inbox")
+        .into_iter()
+        .filter(|row| row[1] == "priory.task.held")
+        .count();
+    assert_eq!(held, 1, "a says nothing from a log it read in part");
+    a.crash();
+}
+
+#[test]
+fn a_runner_several_ticks_behind_applies_no_line_before_it_read_the_whole_log() {
+    let mut a = runner("behind-line", "a", None);
+    let bus = a.bus();
+    for at in 0..1500 {
+        let event = Message::new("t.event", json!({ "at": at }));
+        bus.publish(OUTPUT, &event).unwrap();
+    }
+
+    a.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut socket = loop {
+        if let Ok(socket) = std::os::unix::net::UnixStream::connect(a.socket()) {
+            break socket;
+        }
+        assert!(Instant::now() < deadline, "the daemon does not listen");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    std::io::Write::write_all(&mut socket, b"{\"version\":true}\n").unwrap();
+    let mut reply = String::new();
+    std::io::Read::read_to_string(&mut socket, &mut reply).unwrap();
+
+    assert!(reply.contains("Ok"), "{reply}");
+    assert!(a.rows("inbox").len() >= 1500);
+    a.crash();
 }
 
 #[test]
@@ -36299,6 +36415,64 @@ fn pull_comment(body: &str) -> Message {
             "url": "https://github.com/owner/repo/pull/7#issuecomment-701"
         }),
     )
+}
+
+/// Restarts `setup`'s daemon over four comments whose triage sleeps 4 s each, so every pass of the
+/// catch-up is under the 10 s of a long tick, and asserts that it reports the whole hold.
+fn reports_a_held_catch_up(mut setup: Setup) {
+    setup.decides(ANSWERS);
+    let output = setup.calibrate();
+    assert!(output.status.success(), "{output:?}");
+    fs::write(
+        setup.dir.join("factory/answers.tsv"),
+        "Thanks\tsleep\t4\t-\n",
+    )
+    .unwrap();
+    setup.calls(&[wait(on_pull_7("review"))]);
+    setup.publish(&requested(42));
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    setup.start_with(exe, &[KEY]);
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.crash();
+    for id in 701..705 {
+        let mut comment = pull_comment("Thanks, looks good.");
+        comment.data["github_id"] = json!(id);
+        comment.data["url"] = json!(format!(
+            "https://github.com/owner/repo/pull/7#issuecomment-{id}"
+        ));
+        setup.publish(&comment);
+    }
+
+    setup.start_with(exe, &[KEY]);
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let log = loop {
+        let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+        if log.contains("a tick took") {
+            break log;
+        }
+        assert!(Instant::now() < deadline, "no long tick: {log}");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert!(log.contains("a tick runs for over 10s: messages"), "{log}");
+    let messages = log
+        .split_once("s: messages for ")
+        .and_then(|(_, rest)| rest.split_once('s'))
+        .and_then(|(seconds, _)| seconds.parse::<u64>().ok());
+    assert!(messages.is_some_and(|seconds| seconds >= 14), "{log}");
+    let noted = fs::read_to_string(setup.dir.join("home/tick.json")).unwrap();
+    assert!(noted.contains("messages for"), "{noted}");
+    setup.crash();
+}
+
+#[test]
+fn a_held_catch_up_of_short_passes_is_reported_as_one_long_tick() {
+    reports_a_held_catch_up(Setup::new("held-catch-up"));
+}
+
+#[test]
+fn a_runners_held_catch_up_of_short_passes_is_reported_as_one_long_tick() {
+    reports_a_held_catch_up(runner("held-catch-up", "a", None));
 }
 
 #[test]

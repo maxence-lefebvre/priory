@@ -1,7 +1,7 @@
 // What the frame draws around a page: where an address leads, the listings it shows, the list a
 // detail was opened from, and the shell that fits the screen.
 import { arrivalAsk } from "./desk.js";
-import { PANELS } from "./pages.js";
+import { PANELS, decoded } from "./pages.js";
 
 export const pathOf = (href) => href.split(/[?#]/)[0];
 export const searchOf = (href) => /\?[^#]*/.exec(href)?.[0] ?? "";
@@ -14,7 +14,7 @@ export function where(href) {
   const number = /^\d+$/.test(id || "") ? id : null;
   return {
     here,
-    ask: here === "asks" && id ? decodeURIComponent(id) : null,
+    ask: here === "asks" && id ? decoded(id) : null,
     task: here === "tasks" && number ? Number(number) : null,
     batch: here === "batches" && number ? number : null,
   };

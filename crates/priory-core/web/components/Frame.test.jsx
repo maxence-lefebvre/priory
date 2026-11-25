@@ -28,13 +28,13 @@ test("a wide screen draws the top bar, the rail with every panel, then the page"
 
 test("a phone draws the page, then four tabs and More", (t) => {
   const html = frame(t, "/queue", "compact", 0);
-  assert.match(html, /^<main><\/main><nav class="tabbar" aria-label="Panels">/);
+  assert.match(html, /^<div class="flat"><main><\/main><\/div><nav class="tabbar" aria-label="Panels">/);
   assert.deepEqual([...html.matchAll(/href="([^"]+)" aria-current="(\w+)"/g)].map(([, href, current]) => `${href} ${current}`), ["/ false", "/asks false", "/tasks false", "/runs false", "/more page"]);
   assert.ok(!html.includes("badge"));
 });
 
 test("an ask takes the phone's whole screen", (t) => {
-  assert.equal(frame(t, "/asks/4", "compact"), "<main></main>");
+  assert.equal(frame(t, "/asks/4", "compact"), '<div class="flat"><main></main></div>');
 });
 
 test("a failed read shows the strip, with a Retry", (t) => {

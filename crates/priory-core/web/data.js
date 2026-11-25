@@ -1,8 +1,6 @@
 // The app's QueryClient, its copy on this device, and its refreshes.
 import { client, heldRevision, moved, refreshMounted, restore, snapshot } from "./queries.js";
-import { api, failureWords, onSignOut, refuse, session, setFailed } from "./session.js";
-
-const KEY = "priory.snapshot";
+import { EARLIER_SNAPSHOT, SNAPSHOT, api, failureWords, onSignOut, refuse, session, setFailed } from "./session.js";
 
 // When the first live read of the desk began, so an event between that read and the visit still shows next time.
 let opened = null;
@@ -18,22 +16,35 @@ export const cache = client({
   refused: (error) => error.token === session.get().token && refuse(),
 });
 
-try {
-  restore(cache, JSON.parse(localStorage.getItem(KEY) || "null"));
-} catch {
-  localStorage.removeItem(KEY);
+// An earlier version's sign-out leaves this version's copy behind.
+if (!session.get().token) for (const key of [SNAPSHOT, EARLIER_SNAPSHOT]) localStorage.removeItem(key);
+for (const key of [SNAPSHOT, EARLIER_SNAPSHOT]) {
+  try {
+    const kept = JSON.parse(localStorage.getItem(key) || "null");
+    if (!kept) continue;
+    restore(cache, kept);
+    break;
+  } catch {
+    localStorage.removeItem(key);
+  }
 }
 
 // The listings and their times go in one value, so a full storage never pairs old data with a new time.
 let keeping = false;
+let unkept = false;
 cache.getQueryCache().subscribe((event) => {
-  if (event.type !== "updated" || event.action.type !== "success" || keeping) return;
+  if (event.type !== "updated") return;
+  unkept ||= event.action.type === "success";
+  // A failed or cancelled read may be the last one the others waited for.
+  if (!unkept || keeping) return;
   keeping = true;
   setTimeout(() => {
     keeping = false;
-    if (!session.get().token) return;
+    // Once per refresh: the read still in flight keeps them all as it ends.
+    if (!unkept || cache.isFetching() || !session.get().token) return;
+    unkept = false;
     try {
-      localStorage.setItem(KEY, JSON.stringify(snapshot(cache)));
+      localStorage.setItem(SNAPSHOT, JSON.stringify(snapshot(cache)));
     } catch {}
   });
 });

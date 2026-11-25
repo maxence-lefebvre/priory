@@ -1,12 +1,13 @@
 // The routes, in code. Every page is a child of one route that renders the grid, so a slot stays
 // mounted from one page to the next. Which part fills a slot is its entry's, under entries/.
 import { createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
+import { PageError, RootError } from "./pages/PageError.jsx";
 import { NotFound } from "./pages/NotFound.jsx";
 import { PageGrid } from "./pages/PageGrid.jsx";
 import { Shell } from "./pages/Shell.jsx";
-import { history, hrefOf, parseSearch, stringifySearch } from "./router.js";
+import { history, parseSearch, stringifySearch } from "./router.js";
 
-const root = createRootRoute({ component: Shell, notFoundComponent: NotFound });
+const root = createRootRoute({ component: Shell, notFoundComponent: NotFound, errorComponent: RootError });
 const page = createRoute({ getParentRoute: () => root, id: "page", component: PageGrid });
 
 // Only a page's first segment picks it, as before the router: `/runs/x` is Runs.
@@ -20,7 +21,5 @@ export const makeRouter = (from = history) => createRouter({
   parseSearch,
   stringifySearch,
   trailingSlash: "preserve",
-  scrollRestoration: true,
-  // A page keeps its scroll by its address, as a person left it.
-  getScrollRestorationKey: (location) => hrefOf(location).split("#")[0],
+  defaultErrorComponent: PageError,
 });

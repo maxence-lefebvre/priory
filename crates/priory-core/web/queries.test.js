@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { QueriesObserver, QueryObserver } from "@tanstack/react-query";
-import { client, heldRevision, keyOf, moved, oldestRead, params, refreshMounted, restore, snapshot, staleAll } from "./queries.js";
+import { client, heldRevision, keyOf, moved, oldestRead, params, refreshMounted, restore, snapshot, staleAll, stuck } from "./queries.js";
 
 // A server whose listings the test changes, which records each path read.
 function server() {
@@ -11,6 +11,8 @@ function server() {
   let held = null;
   const api = async (path) => {
     paths.push(path);
+    // The answer is as it was when the read began.
+    const was = structuredClone(body);
     if (held) await held;
     const name = path.split("?")[0].replace("/api/", "");
     if (failing.has(name)) throw Object.assign(new Error(`${path} answered ${failing.get(name)}`), { status: failing.get(name) });
@@ -18,8 +20,8 @@ function server() {
     if (name === "links") return { links: [] };
     if (name === "reports") return { reports: [] };
     if (name.startsWith("reports/")) return { report: null };
-    if (name.startsWith("tasks/")) return { id: Number(name.slice(6)), revision: body.tasks.revision };
-    return structuredClone(body[name]);
+    if (name.startsWith("tasks/")) return { id: Number(name.slice(6)), revision: was.tasks.revision };
+    return was[name];
   };
   return { api, body, paths, failing, hold: () => { let release; held = new Promise((resolve) => (release = resolve)); return () => { held = null; release(); }; } };
 }
@@ -107,10 +109,10 @@ test("a person's refresh supersedes the read in flight, whose answer never lands
   const release = hold();
   const late = moved(cache);
   await new Promise((resolve) => setTimeout(resolve, 5));
+  body.tasks.tasks[0].title = "b";
   const asked = refreshMounted(cache);
   await new Promise((resolve) => setTimeout(resolve, 5));
   assert.equal(paths.length, 2);
-  body.tasks.tasks[0].title = "b";
   release();
   await Promise.all([late, asked]);
   assert.equal(cache.getQueryData(keyOf("tasks")).tasks[0].title, "b");
@@ -265,4 +267,85 @@ test("no snapshot, and one that is not ours, restore nothing", (t) => {
   restore(cache, null);
   restore(cache, {});
   assert.deepEqual(cache.getQueryCache().getAll(), []);
+});
+
+test("a detail that cannot be read again fails the refresh, shows the sign, and holds no poll back", async (t) => {
+  const { cache, body, failing, heard } = start(t);
+  await mount(t, cache, [["desk"], ["task", 7]]);
+  failing.set("tasks/7", 500);
+  body.desk.revision = 2;
+  assert.equal(await moved(cache), false);
+  assert.equal(heard.failed.at(-1), "/api/tasks/7 answered 500");
+  assert.equal(heldRevision(cache), 2);
+});
+
+test("a detail that lands last says the failure is over", async (t) => {
+  const { cache, failing, heard } = start(t);
+  await mount(t, cache, [["desk"], ["task", 7]]);
+  failing.set("tasks/7", 500);
+  await moved(cache);
+  failing.clear();
+  await cache.refetchQueries({ queryKey: ["task", 7] });
+  assert.equal(heard.failed.at(-1), null);
+});
+
+test("a detail never read keeps a listing's recovery heard", async (t) => {
+  const { cache, failing, heard } = start(t);
+  failing.set("tasks/9", 404);
+  await mount(t, cache, [["desk"], ["task", 9]]);
+  failing.set("desk", 500);
+  await moved(cache);
+  assert.equal(heard.failed.at(-1), "/api/desk answered 500");
+  failing.delete("desk");
+  await moved(cache);
+  assert.equal(heard.failed.at(-1), null);
+});
+
+test("leaving the page whose read failed says the failure is over", async (t) => {
+  const { cache, failing, heard } = start(t);
+  await mount(t, cache, [["desk"]]);
+  failing.set("runs", 500);
+  const page = await mount(t, cache, [keyOf("runs")]);
+  assert.equal(heard.failed.at(-1), "/api/runs answered 500");
+  page.leave();
+  assert.equal(heard.failed.at(-1), null);
+});
+
+test("a page is stuck while a listing it shows failed with nothing live to draw", async (t) => {
+  const { cache, failing } = start(t);
+  assert.equal(stuck(cache), false);
+  failing.set("runs", 500);
+  await mount(t, cache, [["desk"], keyOf("runs")]);
+  assert.equal(stuck(cache), true);
+  failing.clear();
+  await moved(cache);
+  assert.equal(stuck(cache), false);
+  failing.set("runs", 500);
+  await moved(cache);
+  assert.equal(stuck(cache), false, "the poll reads a page that landed once");
+});
+
+test("a listing the device kept, whose live read fails, is stuck too", async (t) => {
+  const { cache, failing } = start(t);
+  restore(cache, { reads: [[["runs", false], { runs: [] }, 5]] });
+  failing.set("runs", 500);
+  await mount(t, cache, [keyOf("runs")]);
+  assert.equal(stuck(cache), true);
+});
+
+test("a read that began before the move is read once more after it, never two at a time", async (t) => {
+  const { cache, body, paths, hold } = start(t);
+  await mount(t, cache, [["desk"]]);
+  paths.length = 0;
+  const release = hold();
+  const early = moved(cache);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  body.desk = { revision: 2, items: [{ id: 9 }] };
+  const joined = moved(cache);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.deepEqual(paths, ["/api/desk"]);
+  release();
+  await Promise.all([early, joined]);
+  assert.deepEqual(cache.getQueryData(["desk"]), { revision: 2, items: [{ id: 9 }] });
+  assert.deepEqual(paths, ["/api/desk", "/api/desk"]);
 });

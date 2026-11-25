@@ -56,13 +56,14 @@ export const Nav = memo(function Nav({ layout, current, rail, open }) {
 export const Frame = memo(function Frame({ shell, size, views, open, onRetry, children }) {
   const { layout } = views.views.default;
   const strip = <StaleStrip key="strip" onRetry={onRetry} />;
-  if (size === "compact") return <>{strip}{children}{shell.nav ? <Nav layout={layout} current={shell.nav} open={open} /> : null}</>;
+  const compact = size === "compact";
   const wide = size === "wide";
+  // One tree for every size, so a rotation keeps the page's elements.
   return (
     <>
-      {strip}<TopBar factory={views.factory} />
-      <div className={shell.grid}>{wide ? <Nav rail layout={layout} current={shell.nav} open={open} /> : null}{children}</div>
-      {wide ? null : <Nav layout={layout} current={shell.nav} open={open} />}
+      {strip}{compact ? null : <TopBar factory={views.factory} />}
+      <div className={compact ? "flat" : shell.grid}>{wide ? <Nav rail layout={layout} current={shell.nav} open={open} /> : null}{children}</div>
+      {wide || (compact && !shell.nav) ? null : <Nav layout={layout} current={shell.nav} open={open} />}
     </>
   );
 });

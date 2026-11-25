@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { followLink, go, history, parseSearch, placeAt, stringifySearch } from "./router.js";
+import { followLink, go, history, parseSearch, placeAt, replace, stringifySearch, wellFormed } from "./router.js";
 
 test("a search string goes round as its own text, never as JSON", () => {
   for (const search of ["?view=needs", "?view=all&band=now", "?view=42", "?q=true", "?risk=high&runner=desk-1", ""]) {
@@ -81,4 +81,18 @@ test("a modified click, another button, another target or another site is the br
     assert.deepEqual(click(t, "/runs", event), { prevented: false, scrolled: [], at: "/tasks/1" }, JSON.stringify(event));
   }
   assert.equal(click(t, "https://example.com/runs").prevented, false);
+});
+
+test("a hash that does not decode scrolls nowhere and throws nothing", (t) => {
+  go("/tasks/1");
+  assert.deepEqual(click(t, "#100%"), { prevented: true, scrolled: [["100%", "auto"]], at: "/tasks/1" });
+});
+
+test("an address that does not decode becomes one that decodes to its own text", () => {
+  for (const href of ["/asks/desk-1%3A42?view=100%", "/tasks/1#100%", "/"]) assert.equal(wellFormed(href), href);
+  assert.equal(wellFormed("/asks/%E0%A4%A?x=%#y"), "/asks/%25E0%25A4%25A?x=%#y");
+  go("/asks/100%");
+  assert.equal(history.location.href, "/asks/100%25");
+  replace("/asks/%E0%A4%A");
+  assert.equal(history.location.href, "/asks/%25E0%25A4%25A");
 });

@@ -435,6 +435,40 @@ fn a_task_reopened_after_its_hold_ended_starts_only_once_the_log_says_its_runner
     );
 }
 
+#[test]
+fn a_daemon_whose_log_returns_runs_no_task_that_the_rest_of_the_log_withdraws() {
+    let Some(database) = Database::new("withdrawn") else {
+        return;
+    };
+    let mut setup = reviews("withdrawn-while-cut");
+    let link = Proxy::new(&database.url);
+    let factory = setup.dir.join("factory/factory.toml");
+    let mut text = fs::read_to_string(&factory).unwrap();
+    text.push_str("\n[log]\nbackend = \"postgres\"\ntimeout = \"2s\"\n");
+    fs::write(factory, text).unwrap();
+    setup.log_url = Some(database.url(&link.url));
+    let log = database.log();
+    let event = |at: u64| Message::new("t.event", json!({ "at": at }));
+    log.publish(OUTPUT, &event(0)).unwrap();
+    setup.start_as(Path::new(env!("CARGO_BIN_EXE_priory")));
+    setup.until("inbox", |rows| rows.len() == 1);
+
+    link.set(Link::Cut);
+    until_unreachable(&setup, true);
+    for message in review_request(1) {
+        log.publish(OUTPUT, &message).unwrap();
+    }
+    for at in 1..=150 {
+        log.publish(OUTPUT, &event(at)).unwrap();
+    }
+    let removed = review_event("github.pull_request.review_request_removed", 2);
+    log.publish(OUTPUT, &removed).unwrap();
+    link.set(Link::Up);
+
+    setup.until("tasks", |rows| rows.len() == 1 && rows[0][4] == "dropped");
+    assert!(setup.rows("runs").is_empty());
+}
+
 /// Sends the `log` group from runner `setup` to `collector` every 10 seconds.
 fn metered(setup: &Setup, collector: &super::metrics::Collector) {
     let factory = setup.dir.join("factory/factory.toml");

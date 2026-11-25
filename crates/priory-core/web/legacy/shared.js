@@ -2,6 +2,7 @@
 import { runnerOf } from "../asks.js";
 import { taskRepo } from "../desk.js";
 import { linked } from "../links.js";
+import { decoded } from "../pages.js";
 import { markdown } from "../markdown.js";
 import { prStack } from "../stack.js";
 import { leaves, parts, pathOf, searchOf } from "../frame.js";
@@ -123,7 +124,7 @@ export const reasonShown = (task) => Boolean(task.reason) && ["blocked", "held",
 // Ask detail
 export const selectedAsk = () => {
   const [first, id] = route();
-  return first === "asks" && id ? decodeURIComponent(id) : null;
+  return first === "asks" && id ? decoded(id) : null;
 };
 
 // An id no other control's parts can spell: whitespace and quotes are escaped away.

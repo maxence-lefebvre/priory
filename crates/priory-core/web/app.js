@@ -10,7 +10,7 @@ import { each, entries, entryOf, first } from "./registry.js";
 import { go } from "./router.js";
 import { signOut } from "./session.js";
 
-// What each legacy element draws, { slot, kind, name, id, panels }, and whether it has.
+// What each legacy element draws, { slot, kind, name, id, panels }, and the page it drew last.
 const slots = new Map();
 // The elements on screen, in document order.
 const hosts = () => (slots.size ? [...document.querySelectorAll("#app .legacy")].filter((element) => slots.has(element)) : []);
@@ -56,10 +56,11 @@ const dropObservers = () => {
   state.observers = [];
 };
 
-const scrollKey = (element) => `${slots.get(element).slot} ${state.renderedKey}`;
+// The page the element drew, which the last legacy page to leave may have forgotten.
+const scrollKey = (element) => `${slots.get(element).slot} ${slots.get(element).drawn}`;
 const keepScroll = (element) => {
   // An element React just put there has drawn nothing: its scroll is the one kept before.
-  if (state.renderedKey && slots.get(element).drawn) state.scrolls.set(scrollKey(element), [...element.querySelectorAll(".scroll")].map((part) => part.scrollTop));
+  if (slots.get(element).drawn) state.scrolls.set(scrollKey(element), [...element.querySelectorAll(".scroll")].map((part) => part.scrollTop));
 };
 
 // A draw that throws is reported and leaves the page as it was: React would unmount the root.
@@ -88,11 +89,12 @@ export function render() {
   if (typeof state.taskArmed?.task === "string" && remoteGeneration(state.taskArmed.task) !== state.taskArmed.generation) disarmTask();
   // Every part is built before the first one lands: a part that throws leaves them all as they were.
   const drawn = shown.map((host, at) => [host, text(slots.get(host), at)]);
+  // The answer bar shows once the options scroll away; a redraw of the same page keeps it shown, so focus on it stays.
+  const samePage = state.renderedKey === routeKey();
   for (const [host, html] of drawn) {
-    // The answer bar shows once the options scroll away; a redraw keeps it shown, so focus on it stays.
-    const barShown = host.querySelector(".abar:not([hidden])") !== null;
+    const barShown = samePage && host.querySelector(".abar:not([hidden])") !== null;
     host.innerHTML = html;
-    slots.get(host).drawn = true;
+    slots.get(host).drawn = routeKey();
     if (barShown) host.querySelector(".abar")?.removeAttribute("hidden");
   }
   state.renderedKey = routeKey();
@@ -148,4 +150,11 @@ document.addEventListener("submit", (event) => {
   if (first("submit", event.target.dataset.action, event.target)) event.preventDefault();
 });
 
-acts.subscribe(draw);
+// A Say draft is in its field already, and a redraw would replace the field being typed in.
+let drawnActs = acts.get();
+acts.subscribe(() => {
+  const { armed, busy, notices } = acts.get();
+  const same = armed === drawnActs.armed && busy === drawnActs.busy && notices === drawnActs.notices;
+  drawnActs = acts.get();
+  if (!same) draw();
+});

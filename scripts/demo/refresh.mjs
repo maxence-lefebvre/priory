@@ -19,6 +19,8 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const profile = mkdtempSync(join(tmpdir(), "priory-refresh-"));
 const browser = spawn(chromium, ["--headless=new", "--no-sandbox", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
+// A check that throws would leave the browser polling the server, which holds only four waits.
+process.on("exit", () => browser.kill());
 const address = await new Promise((resolve, reject) => {
   let seen = "";
   browser.stderr.on("data", (chunk) => {
@@ -80,10 +82,28 @@ await page("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, dev
 await page("Page.addScriptToEvaluateOnNewDocument", { source: `
   localStorage.setItem("priory.token", "demo-token");
   globalThis.reads = []; globalThis.hidden = false; globalThis.landed = 0;
+  // What a check does to the requests: paths that fail, that answer late or at another revision, and the answer of a POST.
+  globalThis.hook = { fails: [], slow: {}, revision: {}, ...JSON.parse(sessionStorage.getItem("hook") || "{}") };
+  if (hook.cold) for (const key of Object.keys(localStorage)) if (key.startsWith("priory.snapshot")) localStorage.removeItem(key);
+  globalThis.posts = []; globalThis.polls = 0; globalThis.errors = []; globalThis.kept = 0; globalThis.clocks = new Set();
+  addEventListener("error", (event) => errors.push(event.message));
+  const { setInterval: every, clearInterval: stop } = globalThis;
+  globalThis.setInterval = (run, ms, ...rest) => { const id = every(run, ms, ...rest); if (ms === 5000) clocks.add(id); return id; };
+  globalThis.clearInterval = (id) => { clocks.delete(id); stop(id); };
+  const setItem = Storage.prototype.setItem;
+  Storage.prototype.setItem = function (key, value) { if (key.startsWith("priory.snapshot")) kept++; return setItem.call(this, key, value); };
   const read = fetch;
   globalThis.fetch = async (path, options) => {
+    if (options?.method === "POST" && hook.reply && path !== "/api/seen") { posts.push([path, JSON.parse(options.body)]); return new Response(JSON.stringify(hook.reply), { status: 409 }); }
     const counted = String(path).startsWith("/api/") && !String(path).startsWith("/api/events") && options?.method !== "POST";
     if (counted) reads.push(path);
+    if (String(path).startsWith("/api/events")) polls++;
+    if (hook.slow[path]) await new Promise((done) => setTimeout(done, hook.slow[path]));
+    if (hook.fails.includes(path)) return new Response("{}", { status: 500 });
+    const named = hook.revision[path];
+    if (named) return read(path, options).then(async (reply) => new Response(JSON.stringify({ ...(await reply.json()), revision: named }))).finally(() => { landed++; });
+    const late = hook.late === path && await read(path, options);
+    if (late) { hook.late = null; await new Promise((done) => setTimeout(done, 4000)); return late; }
     try { return await read(path, options); } finally { if (counted) landed++; }
   };
   Object.defineProperty(document, "hidden", { get: () => globalThis.hidden });
@@ -244,10 +264,216 @@ await holds("a list keeps its scroll while the drawer's ask changes", "/asks/1",
 await holds("the drawer keeps its scroll through a refresh of the list", "/asks/1", 'location.pathname === "/asks/1" && document.querySelector(".drawer #trace")',
   `(async () => { const part = () => document.querySelector(".drawer .scroll"); part().scrollTop = 60; const at = part().scrollTop; document.dispatchEvent(new Event("visibilitychange")); ${SETTLE(1500)} return at > 0 && part().scrollTop === at; })()`);
 
-for (const { check: own } of pages) if (own) await own({ open, holds, page, evaluate, until, sleep, change, report });
+// Each check opens a page with the requests hooked, and says true, or what it found instead.
+async function hooked(name, path, ready, hook, look) {
+  let found;
+  try {
+    // A blank page first: an open page would keep its snapshot again as it leaves.
+    await evaluate(`sessionStorage.setItem("hook", ${JSON.stringify(JSON.stringify(hook))})`);
+    await open(path, ready);
+    found = await look();
+  } catch (error) {
+    found = error.message;
+  }
+  report(found === true, name, found === true ? "" : JSON.stringify(found));
+  await evaluate('sessionStorage.removeItem("hook")').catch(() => {});
+}
+const screen = (width, height) => page("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: width < 1000 });
+const key = (name) => evaluate(`document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "${name}", bubbles: true, cancelable: true }))`);
+const refused = { error: "refused by the check" };
+const SAYS = 'document.getElementById("say")';
+
+await screen(390, 844);
+await hooked("a next ask opens at its question with the bar hidden, and two taps where the bar was answer nothing", "/asks/1", 'document.querySelector("#app .opts")', { reply: refused }, async () => {
+  await sleep(1500);
+  await evaluate('document.querySelector("#app .scroll").scrollTop = 600');
+  await until('document.querySelector("#app .abar")?.hidden === false', "the answer bar");
+  const found = await evaluate(`(async () => {
+    const before = document.querySelector("#app .scroll"), box = document.getElementById("bar-answer").getBoundingClientRect();
+    document.querySelector('[aria-label="Next ask"]').click();
+    while (document.querySelector("#app .scroll") === before) await new Promise(requestAnimationFrame);
+    const shown = document.querySelector("#app .abar")?.hidden === false;
+    for (let i = 0; i < 2; i++) document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)?.click();
+    await new Promise((done) => setTimeout(done, 1200));
+    return { shown, top: document.querySelector("#app .scroll").scrollTop, later: document.querySelector("#app .abar")?.hidden === false, armed: Boolean(document.querySelector("#app .armed")), posts };
+  })()`);
+  return found.shown || found.top || found.later || found.armed || found.posts.length ? found : true;
+});
+await hooked("a rotation keeps the Say field, its focus and caret", "/tasks/1", SAYS, {}, async () => {
+  await sleep(1000);
+  const seen = [];
+  await evaluate(`globalThis.saySeen = ${SAYS}; saySeen.focus()`);
+  await page("Input.insertText", { text: "hello" });
+  await evaluate("saySeen.setSelectionRange(2, 4)");
+  for (const [width, height] of [[844, 390], [390, 844], [1440, 900], [390, 844]]) {
+    await screen(width, height);
+    await sleep(400);
+    seen.push(await evaluate(`saySeen === ${SAYS} && document.activeElement === saySeen && saySeen.selectionStart === 2 && saySeen.selectionEnd === 4 && saySeen.getClientRects().length > 0`));
+  }
+  return seen.every(Boolean) || seen;
+});
+await screen(1440, 900);
+
+await hooked("a task read that keeps failing polls no faster, and shows the stale sign", "/tasks/1", SAYS, {}, async () => {
+  await sleep(2500);
+  await evaluate('hook.fails = ["/api/tasks/1"]; polls = 0; reads.length = 0');
+  change();
+  await sleep(9000);
+  const found = await evaluate('({ polls, reads: reads.length, stale: document.querySelector(".stale")?.innerText ?? null, said: [...document.querySelectorAll("#task-scroll > .note")].map((note) => note.innerText).join() })');
+  return (found.polls <= 4 && found.reads <= 12 && found.stale && found.said.includes("Could not read task 1 again")) ? true : found;
+});
+await hooked("a Cancel on a cold task page sends the revision of the task on screen", "/tasks/1", 'document.getElementById("act-1-cancel")', { cold: true, reply: refused, slow: { "/api/tasks": 8000 }, revision: { "/api/tasks/1": 4242 } }, async () => {
+  for (let i = 0; i < 2; i++) {
+    await evaluate('document.getElementById("act-1-cancel").click()');
+    await sleep(200);
+  }
+  const sent = await evaluate("posts");
+  return sent.length === 1 && sent[0][0] === "/api/tasks/1/cancel" && sent[0][1].revision === 4242 ? true : sent;
+});
+const DESK_CANCEL = 'document.querySelector("[data-act=cancel]")';
+await open("/", DESK_CANCEL);
+await sleep(2000);
+await hooked("a Cancel on a Desk this device kept waits for the live read, then sends its revision", "/", DESK_CANCEL, { reply: refused, slow: { "/api/desk": 4000 }, revision: { "/api/desk": 4243 } }, async () => {
+  const twice = async () => {
+    for (let i = 0; i < 2; i++) {
+      await evaluate(`${DESK_CANCEL}.click()`);
+      await sleep(400);
+    }
+    return evaluate("posts");
+  };
+  const early = await twice();
+  await until(`${DESK_CANCEL}?.getAttribute("aria-disabled") === "false"`, "the live read");
+  const sent = await twice();
+  return early.length === 0 && sent.length === 1 && sent[0][1].revision === 4243 ? true : { early, sent };
+});
+await hooked("a first read that failed is read again within 6 s", "/runs", 'document.querySelector("#app nav")', { cold: true, fails: ["/api/runs"] }, async () => {
+  await sleep(1500);
+  await evaluate("hook.fails = []");
+  await sleep(6000);
+  const found = await evaluate('({ conn: document.querySelector(".conn").innerText, stale: document.querySelector(".stale")?.innerText ?? null, title: document.querySelector("#app h1")?.textContent })');
+  return found.conn === "live" && !found.stale && found.title === "Runs" ? true : found;
+});
+await hooked("a first read that fails after a move from a page that polls is read again within 8 s", "/more", 'document.querySelector("#app nav")', { cold: true, fails: ["/api/runs"] }, async () => {
+  await sleep(2500);
+  await evaluate(`document.querySelector('a[href="/runs"]').click()`);
+  await sleep(1000);
+  await evaluate("hook.fails = []");
+  await sleep(8000);
+  const found = await evaluate('({ conn: document.querySelector(".conn").innerText, title: document.querySelector("#app h1")?.textContent })');
+  return found.conn === "live" && found.title === "Runs" ? true : found;
+});
+await hooked("keys on a cold task page: S, J and Enter do nothing, N opens Add", "/tasks/1", SAYS, { cold: true }, async () => {
+  for (const name of ["s", "j", "k", "Enter", "Escape", "1"]) await key(name);
+  const errors = await evaluate("errors");
+  const address = await evaluate("location.pathname");
+  await key("n");
+  await until('document.getElementById("add").open', "Add by its key");
+  return errors.length === 0 && address === "/tasks/1" ? true : { errors, address };
+});
+await hooked("the Add button opens Add on a cold task page", "/tasks/1", SAYS, { cold: true }, async () => {
+  await evaluate('document.querySelector("[data-action=add-open]").click()');
+  await until('document.getElementById("add").open', "Add by its button");
+  return true;
+});
+await hooked("typing to another runner's task keeps the field", "/tasks", 'document.querySelector("tr.remote")', {}, async () => {
+  await sleep(1500);
+  await evaluate('document.querySelector("tr.remote [data-action=remote-open]").click()');
+  await until(SAYS, "the remote task's Say");
+  await evaluate(`globalThis.saySeen = ${SAYS}; saySeen.focus()`);
+  for (const text of ["a", "b"]) await page("Input.insertText", { text });
+  await sleep(200);
+  return (await evaluate(`saySeen === ${SAYS} && saySeen.value.endsWith("ab")`)) || "another field";
+});
+for (const [path, wanted] of [["/asks/%E0%A4%A", "No ask %E0%A4%A here"], ["/tasks/1#100%", "Say"], ["/batches/x", "No page lives at this address."]]) {
+  await hooked(`${path} draws its page in the frame`, path, 'document.querySelector("#app nav")', {}, async () => {
+    await until(`document.getElementById("app").innerText.includes(${JSON.stringify(wanted)})`, wanted);
+    return true;
+  });
+}
+await hooked("a link that does not decode draws its page in the frame", "/more", 'document.querySelector("#app nav")', {}, async () => {
+  await evaluate('document.querySelector("#app nav a").setAttribute("href", "/asks/100%"); document.querySelector("#app nav a").click()');
+  await until('document.getElementById("app").innerText.includes("No ask 100% here")', "the ask's page");
+  return true;
+});
+
+const OPTION = 'document.querySelector(".drawer .opt[aria-disabled=false]")';
+await screen(390, 844);
+await hooked("Back keeps the scroll of a list and of a task", "/", 'document.querySelector("#app .scroll")', {}, async () => {
+  const scroll = (top) => evaluate(`document.querySelector("#app .scroll").scrollTop ${top === undefined ? "" : `= ${top}`}`);
+  await sleep(1500);
+  await scroll(200);
+  await sleep(200);
+  await evaluate(`document.querySelector('#app .scroll a[href^="/tasks/"]').click()`);
+  await until(SAYS + ' || document.querySelector("#task-scroll")', "a task");
+  await sleep(500);
+  const opened = await scroll();
+  await scroll(100);
+  await sleep(200);
+  await evaluate("history.back()");
+  await sleep(800);
+  const list = await scroll();
+  await evaluate("history.forward()");
+  await sleep(800);
+  const task = await scroll();
+  return opened === 0 && list === 200 && task > 0 ? true : { opened, list, task };
+});
+await screen(1440, 900);
+
+const REVISION = 'document.querySelector(".drawer .ahead .ctx")?.innerText.match(/revision (\\d+)/)?.[1]';
+await open("/asks/1", OPTION);
+await sleep(2000);
+await hooked("an ask drawn from what this device kept answers with the revision it drew", "/asks/1", OPTION, { reply: refused, slow: { "/api/asks": 6000 } }, async () => {
+  const drawn = Number(await evaluate(REVISION));
+  for (let i = 0; i < 2; i++) {
+    await evaluate(`${OPTION}.click()`);
+    await sleep(800);
+  }
+  const found = await evaluate('({ posts, landed: reads.length })');
+  return found.posts.length === 1 && found.posts[0][1].revision === drawn ? true : { drawn, ...found };
+});
+await hooked("a refused answer's ask stays, also once the page is left and opened again", "/asks/1", OPTION, {}, async () => {
+  await sleep(1500);
+  await evaluate(`(async () => {
+    const { asks } = await (await fetch("/api/asks", { headers: { Authorization: "Bearer demo-token" } })).json();
+    hook.reply = { error: "the ask moved", ask: { ...asks.find((ask) => ask.id === 1), revision: 99 } };
+    // An older read, begun before the answer, lands after its refusal; every later one fails.
+    hook.late = "/api/asks";
+    document.dispatchEvent(new Event("visibilitychange"));
+    await new Promise((done) => setTimeout(done, 500));
+    hook.fails = ["/api/asks"];
+  })()`);
+  for (let i = 0; i < 2; i++) {
+    await evaluate(`${OPTION}.click()`);
+    await sleep(800);
+  }
+  await until(`${REVISION} === "99"`, "the refused ask's revision");
+  await sleep(5000);
+  await evaluate(`document.querySelector('a[href="/runs"]').click()`);
+  await until(TITLE("Runs"), "Runs");
+  await evaluate("history.back()");
+  await until('document.querySelector(".drawer .opt")', "the ask");
+  await sleep(500);
+  return (await evaluate(`${REVISION} === "99"`)) || "the older ask came back";
+});
+await hooked("one 5 s clock on a task page, none in a hidden tab, and one snapshot per refresh", "/tasks/1", SAYS, {}, async () => {
+  await sleep(3000);
+  const shown = await evaluate("clocks.size");
+  await evaluate("kept = 0");
+  change();
+  await until("kept", "the snapshot");
+  await sleep(1500);
+  const kept = await evaluate("kept");
+  await evaluate(TAB(true));
+  const hidden = await evaluate("clocks.size");
+  await evaluate(TAB(false));
+  const again = await evaluate("clocks.size");
+  return shown === 1 && kept === 1 && hidden === 0 && again === 1 ? true : { shown, kept, hidden, again };
+});
+
+for (const { check: own } of pages) if (own) await own({ open, holds, hooked, page, evaluate, until, sleep, change, report, screen });
 
 socket.close();
 browser.kill();
-await sleep(200);
+await sleep(800);
 rmSync(profile, { recursive: true, force: true });
 process.exit(results.every(Boolean) ? 0 : 1);
