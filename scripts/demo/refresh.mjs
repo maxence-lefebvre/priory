@@ -383,7 +383,8 @@ await hooked("a queue that cannot be read again says so on its page, and the app
 });
 await hooked("a page whose first read failed says why, and the app stays live", "/queue", 'document.querySelector("#app nav")', { cold: true, fails: ["/api/queue"] }, async () => {
   await until('document.getElementById("app").innerText.includes("Could not load this page: /api/queue answered 500.")', "why the page has nothing");
-  return (await evaluate('document.querySelector(".conn").innerText')) === "live" || "reconnecting";
+  const found = await evaluate('({ conn: document.querySelector(".conn").innerText, retry: Boolean(document.querySelector(".stale button")) })');
+  return found.conn === "live" && found.retry ? true : found;
 });
 await hooked("an ask answers while the tasks and its task cannot be read", "/asks/1", OPTION, { reply: refused }, async () => {
   await sleep(1500);

@@ -98,10 +98,10 @@ export async function moved(cache) {
 /** Whether a listing on screen failed with nothing live to draw, so the events poll cannot start for it. */
 export const stuck = (cache) => errored(cache).some((query) => isListing(query) && (query.state.data === undefined || (REVISIONED.includes(query.queryKey[0]) && query.state.data.revision === undefined)));
 
-/** A listing on screen that no answer depends on, whose last read failed: its name and the error, else null. */
+/** A listing on screen that no answer depends on, whose last read failed: its name, the error and whether it holds an earlier read, else null. */
 export function unread(cache) {
-  const query = errored(cache).find((each) => isListing(each) && !locks(each) && each.state.data !== undefined);
-  return query ? { name: query.queryKey[0], error: query.state.error } : null;
+  const query = errored(cache).find((each) => isListing(each) && !locks(each));
+  return query ? { name: query.queryKey[0], error: query.state.error, held: query.state.data !== undefined } : null;
 }
 
 /** The person acted, or asked: a new read of each mounted query, which supersedes one in flight. */

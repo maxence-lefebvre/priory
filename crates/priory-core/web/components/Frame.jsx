@@ -20,7 +20,9 @@ function useUnread(cache) {
   const watch = useCallback((changed) => cache.getQueryCache().subscribe(changed), [cache]);
   const words = () => {
     const found = unread(cache);
-    return found ? `Could not read the ${found.name} again: ${failureWords(found.error)}. This is its last read.` : null;
+    if (!found) return null;
+    const why = failureWords(found.error);
+    return found.held ? `Could not read the ${found.name} again: ${why}. This is its last read.` : `Could not read the ${found.name}: ${why}.`;
   };
   return useSyncExternalStore(watch, words, words);
 }

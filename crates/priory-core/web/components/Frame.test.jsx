@@ -54,6 +54,15 @@ test("a page's own listing that fails says so, and the app stays live", async (t
   assert.match(html, /^<div class="stale" role="status"><svg.*<span>Could not read the queue again: \/api\/queue answered 500. This is its last read.<\/span><button type="button" class="ghost" data-retry="true">Retry<\/button><\/div>.*<span class="conn ">live<\/span>/);
 });
 
+test("a listing never read says so without a last read", async (t) => {
+  const cache = client({ api: async () => { throw new TypeError("no network"); } });
+  t.after(() => cache.clear());
+  t.after(new QueryObserver(cache, { queryKey: ["queue"] }).subscribe(() => {}));
+  await moved(cache);
+  const html = renderToStaticMarkup(<QueryClientProvider client={cache}><Frame shell={shellOf(where("/queue"), { size: "wide", list: "desk", layout })} size="wide" views={views} open={0} onRetry={() => {}} /></QueryClientProvider>);
+  assert.match(html, /<span>Could not read the queue: the connection dropped.<\/span>/);
+});
+
 test("an icon draws its strokes", () => {
   assert.equal(renderToStaticMarkup(<Icon name="plus" size="s20" />), '<svg class="ico s20" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"></path><path d="M12 5v14"></path></svg>');
 });
