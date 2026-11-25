@@ -216,6 +216,26 @@ fn instant(text: &str) -> Result<Timestamp, String> {
         .map_err(|error| format!("time {text:?}: {error}"))
 }
 
+/// Each pull request a task owns: when it was first seen, closed and merged. The `+` drops
+/// the column's TEXT affinity, with which SQLite would scan `inbox_closed_pulls` instead of seeking.
+const PULLS: &str = "WITH seen AS (
+      SELECT task, resource, created AS time FROM pull_requests
+      UNION ALL
+      SELECT owns.task, 'github:' || json_extract(inbox.data, '$.repo') || '#'
+        || json_extract(inbox.data, '$.pull_request'), inbox.time
+      FROM inbox JOIN owns ON owns.resource = 'github:' || json_extract(inbox.data, '$.repo')
+        || '@' || json_extract(inbox.data, '$.head_branch')
+      WHERE inbox.type LIKE 'github.pull_request%'
+        AND json_extract(inbox.data, '$.pull_request') IS NOT NULL)
+    SELECT task, min(time), (SELECT min(time) FROM inbox
+      WHERE type = 'github.pull_request.closed' AND 'github:' || json_extract(data, '$.repo')
+        || '#' || json_extract(data, '$.pull_request') = +seen.resource),
+      (SELECT min(time) FROM inbox
+      WHERE type = 'github.pull_request.closed' AND json_extract(data, '$.merged') = 1
+        AND 'github:' || json_extract(data, '$.repo')
+        || '#' || json_extract(data, '$.pull_request') = +seen.resource)
+    FROM seen GROUP BY task, resource";
+
 /// The trials of each irreversible step of `gates`' workflows and of the records, or only
 /// `workflow`'s, whose reach lies between `start` and `now`. With `by_lane`, each target splits
 /// into one per lane its tasks have now.
@@ -300,25 +320,7 @@ pub fn risk(
     }
     let mut pulls: BTreeMap<String, Vec<Pull>> = BTreeMap::new();
     let rows: Vec<(i64, String, Option<String>, Option<String>)> = db
-        .prepare(
-            "WITH seen AS (
-               SELECT task, resource, created AS time FROM pull_requests
-               UNION ALL
-               SELECT owns.task, 'github:' || json_extract(inbox.data, '$.repo') || '#'
-                 || json_extract(inbox.data, '$.pull_request'), inbox.time
-               FROM inbox JOIN owns ON owns.resource = 'github:' || json_extract(inbox.data, '$.repo')
-                 || '@' || json_extract(inbox.data, '$.head_branch')
-               WHERE inbox.type LIKE 'github.pull_request%'
-                 AND json_extract(inbox.data, '$.pull_request') IS NOT NULL)
-             SELECT task, min(time), (SELECT min(time) FROM inbox
-               WHERE type = 'github.pull_request.closed' AND 'github:' || json_extract(data, '$.repo')
-                 || '#' || json_extract(data, '$.pull_request') = seen.resource),
-               (SELECT min(time) FROM inbox
-               WHERE type = 'github.pull_request.closed' AND json_extract(data, '$.merged') = 1
-                 AND 'github:' || json_extract(data, '$.repo')
-                 || '#' || json_extract(data, '$.pull_request') = seen.resource)
-             FROM seen GROUP BY task, resource",
-        )
+        .prepare(PULLS)
         .and_then(|mut statement| {
             statement
                 .query_map([], |row| {
@@ -806,6 +808,56 @@ fn columns(table: &[(Vec<String>, bool)]) -> Vec<String> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn a_pull_requests_close_is_looked_up_by_its_resource() {
+        let db = crate::state::memory();
+        db.execute_batch(
+            r#"INSERT INTO tasks (id, key, workflow, step, state, trigger, source)
+               VALUES (1, 'k', 'w', 's', 'done', 't', 'e');
+             INSERT INTO pull_requests (task, resource, branch, base, created) VALUES
+               (1, 'github:owner/repo#1', 'a', 'main', '2026-01-01T00:00:00Z'),
+               (1, 'github:owner/repo#2', 'b', 'main', '2026-01-02T00:00:00Z');
+             INSERT INTO owns (task, resource) VALUES (1, 'github:owner/repo@c');
+             INSERT INTO inbox (id, type, time, data, links, outcome) VALUES
+               ('1', 'github.pull_request.closed', '2026-01-03T00:00:00Z',
+                 '{"repo":"owner/repo","pull_request":1,"merged":true}', '[]', 'ignored'),
+               ('2', 'github.pull_request.opened', '2026-01-04T00:00:00Z',
+                 '{"repo":"owner/repo","pull_request":2}', '[]', 'ignored'),
+               ('3', 'github.pull_request.closed', '2026-01-05T00:00:00Z',
+                 '{"repo":"owner/repo","pull_request":3,"head_branch":"c","merged":false}',
+                 '[]', 'ignored');"#,
+        )
+        .unwrap();
+        let rows = || -> Vec<(i64, String, Option<String>, Option<String>)> {
+            db.prepare(PULLS)
+                .unwrap()
+                .query_map([], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        let day = |day: u8| format!("2026-01-0{day}T00:00:00Z");
+
+        let indexed = rows();
+
+        let plan = crate::state::query_plan(&db, PULLS);
+        // `(<expr>=?)` is a seek: without it SQLite reads the whole index for each pull request.
+        let seeks = plan.matches("inbox_closed_pulls (<expr>=?)").count();
+        assert_eq!(seeks, 2, "{plan}");
+        assert_eq!(
+            indexed,
+            [
+                (1, day(1), Some(day(3)), Some(day(3))),
+                (1, day(2), None, None),
+                (1, day(5), Some(day(5)), None),
+            ]
+        );
+        db.execute_batch("DROP INDEX inbox_closed_pulls").unwrap();
+        assert_eq!(rows(), indexed);
+    }
 
     fn percent(k: u64, n: u64) -> [String; 3] {
         [0.05, 0.5, 0.95].map(|p| format!("{:.1}", beta_quantile(p, 1 + k, 1 + n - k) * 100.0))

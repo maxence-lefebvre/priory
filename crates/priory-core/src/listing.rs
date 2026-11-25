@@ -645,6 +645,12 @@ fn quoted(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
+const UNROUTED: &str = "SELECT seq, type, subject, time, data FROM inbox
+     WHERE task IS NULL AND outcome = 'ignored' AND seq > ?1
+       AND (?2 IS NULL OR julianday(time) BETWEEN julianday(?2) AND julianday(?3))
+       AND NOT EXISTS (SELECT 1 FROM tasks WHERE tasks.source = inbox.id)
+     ORDER BY seq DESC";
+
 /// Each unrouted event after `since`, and within `window` (from, to) when given, newest first,
 /// with the first resource it names. An event that names no resource is left out: no task could
 /// own it.
@@ -653,13 +659,7 @@ fn unrouted_events(
     since: i64,
     window: Option<(&str, &str)>,
 ) -> rusqlite::Result<Vec<(String, Value)>> {
-    let mut statement = db.prepare(
-        "SELECT seq, type, subject, time, data FROM inbox
-         WHERE task IS NULL AND outcome = 'ignored' AND seq > ?1
-           AND (?2 IS NULL OR julianday(time) BETWEEN julianday(?2) AND julianday(?3))
-           AND NOT EXISTS (SELECT 1 FROM tasks WHERE tasks.source = inbox.id)
-         ORDER BY seq DESC",
-    )?;
+    let mut statement = db.prepare(UNROUTED)?;
     let (from, to) = window.unzip();
     let mut rows = statement.query(params![since, from, to])?;
     let mut events = Vec::new();
@@ -2022,5 +2022,42 @@ pub fn print(columns: &[&str], rows: &Value) {
             })
             .collect();
         state::emit(&cells.join("\t"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unrouted_events_look_up_the_tasks_by_source() {
+        let db = state::memory();
+        db.execute_batch(
+            r#"INSERT INTO inbox (id, type, time, data, links, outcome) VALUES
+               ('taken', 'github.issue.labeled', '2026-01-01T00:00:00Z',
+                 '{"repo":"owner/repo","issue":1}', '[]', 'ignored'),
+               ('free', 'github.issue.labeled', '2026-01-02T00:00:00Z',
+                 '{"repo":"owner/repo","issue":2}', '[]', 'ignored'),
+               ('routed', 'github.issue.labeled', '2026-01-03T00:00:00Z',
+                 '{"repo":"owner/repo","issue":3}', '[]', 'created');
+             INSERT INTO tasks (key, workflow, step, state, trigger, source)
+               VALUES ('k', 'w', 's', 'done', 't', 'taken');"#,
+        )
+        .unwrap();
+        let resources = || -> Vec<(String, Value)> {
+            unrouted_events(&db, 0, None)
+                .unwrap()
+                .into_iter()
+                .map(|(resource, event)| (resource, event["seq"].clone()))
+                .collect()
+        };
+
+        let indexed = resources();
+
+        let plan = state::query_plan(&db, UNROUTED);
+        assert!(plan.contains("tasks_by_source (source=?)"), "{plan}");
+        assert_eq!(indexed, [("github:owner/repo#2".to_owned(), json!(2))]);
+        db.execute_batch("DROP INDEX tasks_by_source").unwrap();
+        assert_eq!(resources(), indexed);
     }
 }
