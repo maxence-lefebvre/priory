@@ -1,7 +1,7 @@
 use crate::room::{TOOL, tool};
 use crate::runtime::{
-    OWN_GIT, PATCHES, SCAN, as_one, at_risk, fed_raw_within, fetching, git, is_ancestor,
-    move_aside, read_regular, run, soon, timed_out, unseal,
+    OWN_GIT, PATCHES, SCAN, as_one, as_one_within, at_risk, fed_raw_within, fetching, git,
+    is_ancestor, loop_left, move_aside, read_regular, run, soon, timed_out, unseal, within,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -584,7 +584,7 @@ type Mounts<'a> = &'a dyn Fn() -> std::io::Result<Vec<u8>>;
 
 pub(crate) fn mountinfo() -> std::io::Result<Vec<u8>> {
     if cfg!(target_os = "macos") {
-        let listed = fed_raw_within(&mut tool("mount", &[]), None, TOOL);
+        let listed = fed_raw_within(&mut tool("mount", &[]), None, TOOL.min(loop_left()));
         return mountinfo_of_mount(&listed.map_err(std::io::Error::other)?);
     }
     fs::read("/proc/self/mountinfo")
@@ -892,7 +892,8 @@ pub(crate) fn removes_at(path: &Path) -> bool {
 /// Moves the worktree that `removable` allowed aside. It runs no git, so it fits a tick: `detach`
 /// does the rest.
 pub fn take(home: &Path, found: &Found) -> Result<Taken, String> {
-    take_under(home, found, &mountinfo)
+    // On macOS, the mount and the process check each run a command.
+    as_one_within(TOOL, || take_under(home, found, &mountinfo))
 }
 
 fn take_under(home: &Path, found: &Found, mounts: Mounts) -> Result<Taken, String> {
@@ -1365,7 +1366,10 @@ fn occupied(path: &Path) -> Result<bool, String> {
     };
     if cfg!(target_os = "macos") {
         return occupied_of_lsof(&path, &|| {
-            soon(Command::new("lsof").args(["-w", "-a", "-d", "cwd", "-Fn"]))
+            within(
+                &mut tool("lsof", &["-w", "-a", "-d", "cwd", "-Fn"]),
+                TOOL.min(loop_left()),
+            )
         });
     }
     Ok(fs::read_dir("/proc")
@@ -1391,12 +1395,22 @@ fn occupied_of_lsof(
         return Err(unsure("lsof escapes its path"));
     }
     let listed = lsof().map_err(|error| unsure(&error))?;
-    let mut cwds = listed.lines().filter_map(|line| line.strip_prefix('n'));
+    let cwds: Vec<&str> = listed
+        .lines()
+        .filter_map(|line| line.strip_prefix('n'))
+        .collect();
     // Every process has one, this one included.
-    let first = cwds.next().ok_or_else(|| unsure("lsof listed nothing"))?;
-    Ok(std::iter::once(first)
-        .chain(cwds)
-        .any(|cwd| Path::new(cwd).starts_with(path)))
+    if cwds.is_empty() {
+        return Err(unsure("lsof listed nothing"));
+    }
+    if cwds.iter().any(|cwd| Path::new(cwd).starts_with(path)) {
+        return Ok(true);
+    }
+    // An error in place of a folder, such as `cwd|rtd info error: ...`, could be of any folder.
+    match cwds.iter().find(|cwd| !cwd.starts_with('/')) {
+        Some(row) => Err(unsure(&format!("lsof printed {row:?}"))),
+        None => Ok(false),
+    }
 }
 
 /// Whether the process is a git command Priory runs, or a child of one, which ends on its own: its
@@ -2282,6 +2296,14 @@ mod tests {
         assert!(refused.ends_with("lsof: not found"), "{refused}");
         let refused = of("/w/1", Ok(String::new()));
         assert!(refused.ends_with("lsof listed nothing"), "{refused}");
+        let row = "cwd|rtd info error: Operation not permitted";
+        let refused = of("/w/1", Ok(format!("n/\nn{row}\n")));
+        assert!(
+            refused.ends_with(&format!("lsof printed {row:?}")),
+            "{refused}"
+        );
+        let refused = of("/w/1", Ok("n/\nn\n".to_owned()));
+        assert!(refused.ends_with("lsof printed \"\""), "{refused}");
         for path in ["/w/\u{e9}/1", "/w/a\\b", "/w/a\tb"] {
             let refused = of(path, Ok("n/\n".to_owned()));
             assert!(refused.ends_with("lsof escapes its path"), "{refused}");

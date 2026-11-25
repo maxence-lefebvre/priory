@@ -207,7 +207,7 @@ macOS has no `/proc`, so the daemon reads the same measures from the system's ow
 | The daemon's own memory and CPU time | `ps -o rss=,utime=,time=` |
 | The memory of a held grant's command and its descendants | `ps -axo pid=,ppid=,rss=`, whose resident memory counts shared pages once per process |
 
-Each tool runs in the C locale and has 5 seconds. Setting `PRIORY_PROC` on macOS reads its directory
+Each tool runs in the C locale and has 5 seconds. A measure of the room is used again for 1 second. Setting `PRIORY_PROC` on macOS reads its directory
 in place of the tools for memory, CPU, the host name, the daemon's own use and a command's memory.
 A process's start time always comes from `ps`. The
 [agents slice](agents-slice.md) needs systemd, so on macOS the room check is the only cap.

@@ -2,10 +2,11 @@ use crate::runtime::{fed_within, within};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 /// The machine's room, measured live.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Room {
     /// `MemAvailable`, in bytes.
     pub memory_free: u64,
@@ -22,6 +23,39 @@ pub struct Room {
 /// Measures memory and load from `/proc`, or from `PRIORY_PROC` when set, and disk with `df` on
 /// `home`. On macOS, which has no `/proc`, memory and load come from `sysctl` and `vm_stat`.
 pub fn measure(home: &Path) -> Result<Room, String> {
+    if macos() {
+        static LAST: Mutex<Option<Last>> = Mutex::new(None);
+        return recent(&LAST, home, KEPT, || measure_now(home));
+    }
+    measure_now(home)
+}
+
+/// How long a measure of the room stays in use on macOS, where each runs four commands.
+const KEPT: Duration = Duration::from_secs(1);
+
+/// The folder, the result of a measure there, and when it ended.
+type Last = (PathBuf, Result<Room, String>, Instant);
+
+/// What `last` holds of `home`, unless it is older than `kept`: then it measures again.
+fn recent(
+    last: &Mutex<Option<Last>>,
+    home: &Path,
+    kept: Duration,
+    measure: impl FnOnce() -> Result<Room, String>,
+) -> Result<Room, String> {
+    let mut last = last.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((of, room, at)) = &*last
+        && of == home
+        && at.elapsed() < kept
+    {
+        return room.clone();
+    }
+    let room = measure();
+    *last = Some((home.to_owned(), room.clone(), Instant::now()));
+    room
+}
+
+fn measure_now(home: &Path) -> Result<Room, String> {
     let (memory_free, memory_total, load) = if macos() {
         let total = ask("sysctl", &["-n", "hw.memsize"])?;
         let load = ask("sysctl", &["-n", "vm.loadavg"])?;
@@ -433,6 +467,24 @@ mod tests {
         assert_eq!(load_of("1.23 1.45 1.67 2/99 7\n"), Some(1.23));
         assert_eq!(load_of("{ 1,23 1,45 1,67 }\n"), None);
         assert_eq!(ask("sh", &["-c", "echo $LC_ALL"]), Ok("C\n".to_owned()));
+    }
+
+    #[test]
+    fn a_recent_measure_of_the_same_folder_is_used_again() {
+        let last = Mutex::new(None);
+        let mut calls = 0;
+        let mut ask = |home: &str, kept| {
+            let measure = || {
+                calls += 1;
+                Err(calls.to_string())
+            };
+            recent(&last, Path::new(home), kept, measure).unwrap_err()
+        };
+        let long = Duration::from_secs(600);
+        assert_eq!(ask("/a", long), "1");
+        assert_eq!(ask("/a", long), "1");
+        assert_eq!(ask("/b", long), "2");
+        assert_eq!(ask("/b", Duration::ZERO), "3");
     }
 
     #[test]

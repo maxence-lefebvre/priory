@@ -72,14 +72,19 @@ thread_local! {
 
 /// Runs `work`, whose `soon` commands share one `loop_timeout`.
 pub(crate) fn as_one<T>(work: impl FnOnce() -> T) -> T {
-    let before = ENDS.replace(Some(Instant::now() + loop_timeout()));
+    as_one_within(loop_timeout(), work)
+}
+
+/// As `as_one`, with `limit` to share.
+pub(crate) fn as_one_within<T>(limit: Duration, work: impl FnOnce() -> T) -> T {
+    let before = ENDS.replace(Some(Instant::now() + limit));
     let done = work();
     ENDS.set(before);
     done
 }
 
 /// What is left of `loop_timeout`, or of the `as_one` around.
-fn loop_left() -> Duration {
+pub(crate) fn loop_left() -> Duration {
     ENDS.get()
         .map_or_else(loop_timeout, left)
         .min(loop_timeout())

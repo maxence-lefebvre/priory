@@ -549,7 +549,7 @@ dropped. Only the task's latest action moves it, so a command killed by a cancel
 task that a revive started again.
 
 A daemon restart never runs a command twice. The restarted daemon kills the command its predecessor
-left running, after checking its process group's start time in `/proc`, and ends the action
+left running, after checking its process group's start time in `/proc`, or with `ps` on macOS, and ends the action
 `failed` with the error `interrupted by a daemon restart`. The task then follows `next.failed`. So
 a restart reads as a failure even when the command had finished just before it.
 

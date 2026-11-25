@@ -22,8 +22,8 @@ It removes a folder and its branch `priory/<id>` only when all checks hold:
   the way carries the same value. Any process can set the variable, so the value alone hides none.
   On macOS, `lsof` lists the working directories. No process's environment can be read there, so
   Priory's own git counts too, and the worktree waits for the next sweep. A worktree also stays when
-  `lsof` fails, runs past its deadline or lists nothing, and when its path holds a backslash or is
-  not plain ASCII, which `lsof` escapes.
+  `lsof` fails, takes more than 5 seconds, lists nothing or prints an error in place of a folder. So
+  does one whose path holds a backslash or is not plain ASCII, which `lsof` escapes.
 - Its task has no live run and no memory grant, waiting or held (see Memory gate).
 - No mount is at or under it, and it holds no repository of its own (see What a removal never takes).
 - The branch tip is in `origin/HEAD`, or is the head commit of a merged pull request for the
@@ -91,8 +91,10 @@ The daemon's loop starts runs and delivers answers, so a sweep must not hold it:
 1. The loop lists the worktrees of ended tasks and starts one thread. The thread fetches, checks each
    worktree, and walks the ignored files of one that may go. A walk has no time limit, so a large
    worktree can go too. Its answer waits for a later tick.
-2. Each tick takes one worktree and runs no git. The task's state is the same, with no live run and no
-   memory grant, no process runs in the folder, and no mount is in it. Then the tick renames the folder
+2. Each tick takes one worktree and runs no git. On macOS it runs `mount` and `lsof`, which share 5
+   seconds. The task's state is the same, with no live run and no
+   memory grant, no process runs in the folder, and no mount is in it. A check that cannot answer keeps
+   the worktree. Then the tick renames the folder
    to `PRIORY_HOME/reclaim/`, or beside it on another filesystem.
 3. A second thread checks the moved folder, where a change by the old path no longer reaches it: `HEAD`
    and the branch are those the first thread judged, nothing is uncommitted or untracked, no process
@@ -331,7 +333,7 @@ script past its `timeout`, 5 minutes by default, is killed with its children. Th
 last 2000 bytes of output and the status, `exit <code>` or `timed out after <n>s`. The desk lists
 each script of the open stall as a `sweep` row. Children a script leaves in the background are
 killed when it ends. A script that fails or cannot start never stops the daemon. A restarted daemon
-kills its predecessor's running scripts, after checking each process group's start time in `/proc`
+kills its predecessor's running scripts, after checking each process group's start time in `/proc`, or with `ps` on macOS
 so a reused pid is left alone. It records them as `interrupted by a daemon restart`, with the tail
 of their output.
 
