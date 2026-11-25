@@ -734,3 +734,19 @@ fn a_hold_during_a_debate_turn_holds_the_task_before_the_next_turn() {
     assert_eq!(speakers(&setup), ["architect", "skeptic"]);
     assert_eq!(results(&setup)[0]["outcome"], "process");
 }
+
+#[test]
+fn a_debater_gets_no_news_of_a_cancel() {
+    let mut setup = debating("debate-news", &debate_workflow(2, "$5.00", "15m"));
+    setup.calls(&[serde_json::Value::Null]);
+    setup.hold("hold-stop");
+    setup.publish(&linear_requested("ENG-7", "source"));
+    setup.start();
+    setup.written("fake/submitted");
+    let session = setup.rows("runs")[0][4].clone();
+
+    setup.publish(&moved_to("Canceled", "canceled"));
+    setup.until("inbox", |rows| rows.len() == 2 && rows[1][4] == "kept");
+
+    assert_eq!(setup.hook_call(&session, "ls", None), "");
+}

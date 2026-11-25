@@ -1046,6 +1046,7 @@ enum Input {
     Evidence(crate::evidence::AddLine),
     Connector(crate::todo::ConnectorLine),
     Scoped(crate::scoped::Line),
+    News(crate::news::Line),
     Todo(crate::todo::Line),
     Subscribe(subscribe::Line),
     Unsubscribe(subscribe::EndLine),
@@ -1287,6 +1288,7 @@ fn take(
             Ok((replied(Ok(String::new())), None))
         }
         Ok(Input::Scoped(line)) => Ok((replied(crate::scoped::sent(db, &line.scoped)?), None)),
+        Ok(Input::News(line)) => Ok((replied(crate::news::asked(db, &line.news)?), None)),
         Ok(Input::Todo(line)) => Ok((
             replied(crate::todo::change(db, &line, trace.factory)?),
             None,

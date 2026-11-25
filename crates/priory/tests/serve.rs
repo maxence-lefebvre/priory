@@ -6054,7 +6054,8 @@ fn a_signed_linear_state_change_and_comment_publish_their_poll_types() {
             "issue": "ENG-7", "linear_id": "issue-7", "title": "Fix the thing",
             "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing", "team": "ENG",
             "project": null, "project_id": null, "state": "In Progress", "labels": ["agent"],
-            "from": null, "to": "In Progress", "actor": "max", "blockers": null,
+            "from": null, "to": "In Progress", "to_type": "started", "duplicate_of": null,
+            "actor": "max", "blockers": null,
             "time": "2026-11-17T10:00:00.000Z", "baseline": false
         })
     );

@@ -34,6 +34,7 @@ pub mod metrics;
 mod milestones;
 #[cfg(feature = "model")]
 mod model;
+pub mod news;
 mod notify;
 mod otlp;
 pub mod outside;

@@ -1233,10 +1233,12 @@ fn the_upgrade_marks_read_the_alarms_of_merges_whose_only_red_checks_were_cancel
         ),
     ]);
     assert_eq!(setup.alarms().len(), 5);
+
+    // Back to before migration 116, which marks them read, without what later ones added.
     setup
         .db()
         .execute_batch(
-            "ALTER TABLE tasks DROP COLUMN labels; DROP INDEX inbox_unaccepted;
+            "DROP TABLE news; ALTER TABLE tasks DROP COLUMN labels; DROP INDEX inbox_unaccepted;
              ALTER TABLE inbox DROP COLUMN reason; PRAGMA user_version = 115;",
         )
         .unwrap();

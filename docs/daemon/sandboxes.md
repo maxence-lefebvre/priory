@@ -62,6 +62,7 @@ trusted and a path the sweep reads in `/proc` then mean the same file on both si
 | for a run that starts under direnv ([sessions.md](sessions.md#with-trust_worktrees)): the run's `direnv/<session>/` folder in Priory home, the person's `direnvrc` and `lib` it links to, and the `direnv` program as the harness's | read-only |
 | the daemon's socket folder | read-write |
 | `spools/<session>/` in Priory home, the run's own spool | read-write |
+| `news/<session>/` in Priory home, where the daemon marks news for the run's hook | read-only |
 | the sandbox's `read` and `write` paths | as declared, skipped when missing |
 
 A write anywhere else lands in the jail's own folders in memory, and is gone when the run ends.

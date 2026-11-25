@@ -2729,7 +2729,7 @@ fn moved(number: u64, id: &str, to: &str, time: &str) -> serde_json::Value {
         "id": id,
         "createdAt": time,
         "fromState": { "name": "Todo" },
-        "toState": { "name": to },
+        "toState": { "name": to, "type": "started" },
         "actor": { "displayName": "max" }
     }] });
     issue
@@ -2781,6 +2781,8 @@ fn a_state_change_that_matches_a_filter_requests_a_task_once() {
             "blockers": [],
             "from": "Todo",
             "to": "In Progress",
+            "to_type": "started",
+            "duplicate_of": null,
             "actor": "max",
             "time": "2026-11-17T11:00:00.000Z",
             "baseline": false,
@@ -2789,6 +2791,42 @@ fn a_state_change_that_matches_a_filter_requests_a_task_once() {
     );
     assert_eq!(task.data["key"], "linear:ENG-7");
     assert_eq!(published[3].message.data["triggers"], json!([]));
+}
+
+#[test]
+fn a_move_to_duplicate_carries_its_state_type_and_the_issue_it_duplicates() {
+    let setup = Setup::linear("linear-duplicate", &[("started", STATE_TRIGGER)]);
+    setup.answer_linear(&Linear {
+        issues: vec![linear_issue(1)],
+        ..Linear::default()
+    });
+    succeeded(&setup.intake());
+    let mut issue = moved(7, "history-7", "Duplicate", "2026-11-17T11:00:00.000Z");
+    issue["history"]["nodes"][0]["toState"]["type"] = json!("canceled");
+    issue["relations"] = json!({ "nodes": [
+        { "type": "blocks", "relatedIssue": { "id": "issue-3", "identifier": "ENG-3" } },
+        { "type": "duplicate", "relatedIssue": { "id": "issue-9", "identifier": "ENG-9" } }
+    ] });
+    setup.answer_linear(&Linear {
+        issues: vec![issue],
+        ..Linear::default()
+    });
+
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    let change = published
+        .iter()
+        .find(|published| published.message.kind == "linear.issue.state_changed")
+        .unwrap();
+    assert_eq!(
+        [
+            &change.message.data["to"],
+            &change.message.data["to_type"],
+            &change.message.data["duplicate_of"]
+        ],
+        [&json!("Duplicate"), &json!("canceled"), &json!("ENG-9")]
+    );
 }
 
 fn view_with(filter: serde_json::Value, issues: &[u64]) -> Linear {

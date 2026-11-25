@@ -322,9 +322,9 @@ impl<'a> Linear<'a> {
              issues(filter: $filter, first: $first, after: $after, orderBy: updatedAt, \
              includeArchived: true) {{ nodes {{ \
              ...issue {LABELS} description history(first: 50, orderBy: createdAt) {{ nodes {{ id createdAt \
-             fromState {{ name }} toState {{ name }} fromTeam {{ key }} toTeam {{ key }} \
+             fromState {{ name }} toState {{ name type }} fromTeam {{ key }} toTeam {{ key }} \
              actor {{ displayName }} {EDITS} }} }} previousIdentifiers \
-             {BLOCKING} relations(first: 20) {{ nodes {{ type relatedIssue {{ id }} }} }} }} {PAGE} }} }} {ISSUE}"
+             {BLOCKING} relations(first: 20) {{ nodes {{ type relatedIssue {{ id identifier }} }} }} }} {PAGE} }} }} {ISSUE}"
         );
         let issues = self.nodes(&query, page(since, "updatedAt"), "/issues", since.is_some())?;
         let mut events = Vec::new();
@@ -347,6 +347,8 @@ impl<'a> Linear<'a> {
                 data["linear_id"] = change["id"].clone();
                 data["from"] = change["fromState"]["name"].clone();
                 data["to"] = change["toState"]["name"].clone();
+                data["to_type"] = change["toState"]["type"].clone();
+                data["duplicate_of"] = duplicate_of(issue);
                 data["actor"] = change["actor"]["displayName"].clone();
                 data["blockers"] = blockers(issue);
                 data["time"] = change["createdAt"].clone();
@@ -892,6 +894,18 @@ fn excerpt(description: &Value) -> Value {
         cut = format!("{}…", cut.trim_end());
     }
     json!(cut)
+}
+
+/// The identifier of the issue `issue` duplicates, as its `duplicate` relation names it, if any.
+fn duplicate_of(issue: &Value) -> Value {
+    issue["relations"]["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|relation| relation["type"] == "duplicate")
+        .map_or(Value::Null, |relation| {
+            relation["relatedIssue"]["identifier"].clone()
+        })
 }
 
 /// The identifiers of the issues that block `issue` and are neither completed nor canceled. Null

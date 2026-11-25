@@ -82,7 +82,7 @@ macro_rules! undo_scheduled_sweeps {
     };
 }
 
-/// Undoes migrations 119, who answered each revision, 117, labels, 114, a Linear place, 113, a subscription's kinds, 112, scheduled sweeps, 111, memory lapses, 110, a run under direnv, 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
+/// Undoes the news migration and migrations 119, who answered each revision, 117, labels, 114, a Linear place, 113, a subscription's kinds, 112, scheduled sweeps, 111, memory lapses, 110, a run under direnv, 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
 /// `auto_answer` level, 97, the task's `added_by`, and 93: the `pre` script's task columns and the
 /// pending requests.
 macro_rules! undo_pre {
@@ -100,7 +100,7 @@ macro_rules! undo_pre {
   ALTER TABLE memory_candidates DROP COLUMN step; ALTER TABLE gates DROP COLUMN lessons; ALTER TABLE gates DROP COLUMN ask; ALTER TABLE gates DROP COLUMN judges;
   ALTER TABLE runs DROP COLUMN session_started; ALTER TABLE runs DROP COLUMN harness;
   ALTER TABLE runs DROP COLUMN resumes; ALTER TABLE runs DROP COLUMN sandbox; ALTER TABLE runs DROP COLUMN direnv; DROP TABLE lapses;
-  DROP TRIGGER ask_answered_by; DROP TRIGGER push_a_landed_wrong; DROP TRIGGER push_a_stall; ALTER TABLE push_subscriptions DROP COLUMN kinds;
+  DROP TRIGGER ask_answered_by; DROP TRIGGER push_a_landed_wrong; DROP TRIGGER push_a_stall; ALTER TABLE push_subscriptions DROP COLUMN kinds; DROP TABLE news;
   ")
     };
 }
@@ -3153,6 +3153,7 @@ fn a_state_file_at_111_keeps_its_stall_runs_and_takes_scheduled_ones() {
            'exit 3', 'nope', 42, 43);
          INSERT INTO tasks (id, key, workflow, step, state, trigger, source)
            VALUES (1, 'k', 'w', 's', 'done', 't', 'e');
+         DROP TABLE news;
          PRAGMA user_version = 111;"
     ))
     .unwrap();
@@ -22086,6 +22087,285 @@ fn a_read_passes_the_tool_guard_with_no_daemon_to_ask() {
     let (printed, _) = guard_hook(&home, "gh pr view 12");
 
     assert_eq!(printed, "");
+}
+
+/// Ana moves ENG-7 to `to`, a state of type `to_type`, now.
+fn moved_to(to: &str, to_type: &str) -> Message {
+    let duplicate_of = (to == "Duplicate").then_some("ENG-9");
+    linear_event(
+        "linear.issue.state_changed",
+        "ENG-7",
+        json!({ "linear_id": format!("ENG-7-{to}"), "from": "In Progress", "to": to,
+                "to_type": to_type, "duplicate_of": duplicate_of, "actor": "Ana" }),
+    )
+    .time(herdr_bus::Timestamp::now())
+}
+
+/// Starts a task on ENG-7 whose turn makes `calls`, and publishes `moved` while the turn runs,
+/// before its calls. Returns once the fake logged a reply for each call.
+fn moved_during_turn(
+    name: &str,
+    moved: &Message,
+    calls: &[serde_json::Value],
+) -> Vec<serde_json::Value> {
+    let mut setup = Setup::new(name);
+    setup.calls(&[json!(calls)]);
+    setup.hold("hold-call");
+    setup.publish(&linear_requested("ENG-7", "source"));
+    setup.start();
+    setup.written("fake/submitted");
+    setup.publish(moved);
+    setup.until("inbox", |rows| rows.len() == 2 && rows[1][4] == "kept");
+
+    setup.release("hold-call");
+
+    setup.replied(calls.len())
+}
+
+#[test]
+fn a_duplicate_during_the_turn_holds_the_first_pull_request_and_names_the_issue_it_duplicates() {
+    let create = bash("gh pr create --title T --body B");
+
+    let replies = moved_during_turn(
+        "news-duplicate",
+        &moved_to("Duplicate", "canceled"),
+        &[create.clone(), create],
+    );
+
+    let reason = guard_denied(&replies[0]).unwrap_or_else(|| panic!("{}", replies[0]));
+    assert!(
+        reason.contains("Ana moved ENG-7 to Duplicate (canceled), as a duplicate of ENG-9."),
+        "{reason}"
+    );
+    assert!(reason.starts_with("Priory held this call once"), "{reason}");
+    assert_eq!(guard_denied(&replies[1]), None, "{}", replies[1]);
+}
+
+#[test]
+fn a_move_to_in_review_during_the_turn_holds_nothing_and_adds_nothing() {
+    let replies = moved_during_turn(
+        "news-in-review",
+        &moved_to("In Review", "started"),
+        &[bash("ls"), bash("gh pr create --title T --body B")],
+    );
+
+    for reply in &replies {
+        assert_eq!(guard_denied(reply), None, "{reply}");
+        assert!(
+            reply["hookSpecificOutput"]["additionalContext"].is_null(),
+            "{reply}"
+        );
+    }
+}
+
+#[test]
+fn a_cancel_during_the_turn_shows_on_the_next_call_once_and_still_holds_the_push() {
+    let push = bash("git push origin priory/1");
+    let replies = moved_during_turn(
+        "news-canceled",
+        &moved_to("Canceled", "canceled"),
+        &[bash("ls"), bash("ls"), push.clone(), push],
+    );
+
+    let context = |reply: &serde_json::Value| {
+        reply["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .map(str::to_owned)
+    };
+    let shown = context(&replies[0]).unwrap_or_else(|| panic!("{}", replies[0]));
+    assert!(
+        shown.contains("Ana moved ENG-7 to Canceled (canceled)."),
+        "{shown}"
+    );
+    assert_eq!(guard_denied(&replies[0]), None);
+    assert_eq!(context(&replies[1]), None, "{}", replies[1]);
+    let reason = guard_denied(&replies[2]).unwrap_or_else(|| panic!("{}", replies[2]));
+    assert!(
+        reason.contains("Ana moved ENG-7 to Canceled (canceled)."),
+        "{reason}"
+    );
+    assert_eq!(guard_denied(&replies[3]), None, "{}", replies[3]);
+}
+
+/// What is planted at `news` in a run's spool and at its marker, before a cancel reaches the run.
+fn a_planted_path_survives(name: &str, plant: impl Fn(&Path, &Path)) {
+    let mut setup = Setup::new(name);
+    setup.calls(&[json!([bash("ls")])]);
+    setup.hold("hold-call");
+    setup.publish(&linear_requested("ENG-7", "source"));
+    setup.start();
+    setup.written("fake/submitted");
+    let session = setup.rows("runs")[0][4].clone();
+    let target = setup.dir.join("precious");
+    fs::write(&target, "kept").unwrap();
+    for folder in ["spools", "news"] {
+        let folder = setup.dir.join("home").join(folder).join(&session);
+        fs::create_dir_all(&folder).unwrap();
+        plant(&folder.join("news"), &target);
+    }
+
+    setup.publish(&moved_to("Canceled", "canceled"));
+    setup.until("inbox", |rows| rows.len() == 2 && rows[1][4] == "kept");
+    setup.release("hold-call");
+
+    let shown = setup.replied(1)[0].to_string();
+    assert!(shown.contains("Ana moved ENG-7 to Canceled"), "{shown}");
+    assert_eq!(fs::read_to_string(target).unwrap(), "kept");
+}
+
+#[test]
+fn a_planted_link_where_news_is_marked_leaves_its_target_alone() {
+    a_planted_path_survives("news-symlink", |path, target| {
+        std::os::unix::fs::symlink(target, path).unwrap();
+    });
+}
+
+#[test]
+fn a_planted_pipe_where_news_is_marked_holds_no_routing() {
+    a_planted_path_survives("news-fifo", |path, _| {
+        let made = harness::command("mkfifo").arg(path).status().unwrap();
+        assert!(made.success());
+    });
+}
+
+#[test]
+fn a_session_that_is_a_path_removes_no_file() {
+    let mut setup = Setup::new("news-traversal");
+    setup.start();
+    let outside = setup.dir.join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("news"), "kept").unwrap();
+    fs::create_dir_all(setup.dir.join("home/news")).unwrap();
+
+    setup.hook_call("../../outside", "ls", None);
+
+    assert!(outside.join("news").exists());
+}
+
+#[test]
+fn a_subagents_calls_leave_the_news_to_the_main_agent() {
+    let mut setup = Setup::new("news-subagent");
+    setup.calls(&[serde_json::Value::Null]);
+    setup.hold("hold-stop");
+    setup.publish(&linear_requested("ENG-7", "source"));
+    setup.start();
+    setup.written("fake/submitted");
+    let session = setup.rows("runs")[0][4].clone();
+    setup.publish(&moved_to("Canceled", "canceled"));
+    setup.until("inbox", |rows| rows.len() == 2 && rows[1][4] == "kept");
+    let push = "git push origin priory/1";
+
+    assert_eq!(setup.hook_call(&session, "ls", Some("a1")), "");
+    let held = setup.hook_call(&session, push, Some("a1"));
+    let again = setup.hook_call(&session, push, Some("a1"));
+    let shown = setup.hook_call(&session, "ls", None);
+    let main = setup.hook_call(&session, push, None);
+
+    assert!(held.contains("waits for the main agent"), "{held}");
+    assert_eq!(held, again);
+    assert!(shown.contains("Ana moved ENG-7 to Canceled"), "{shown}");
+    assert!(main.contains("Priory held this call once"), "{main}");
+    let cleared = setup.hook_call(&session, push, None);
+    assert!(!cleared.contains("Priory held"), "{cleared}");
+}
+
+impl Setup {
+    /// What `priory hook PreToolUse` prints for `command` in the run whose harness session is
+    /// `session`, from its subagent `agent` if any.
+    fn hook_call(&self, session: &str, command: &str, agent: Option<&str>) -> String {
+        use std::io::Write;
+        let mut hook = self
+            .command(env!("CARGO_BIN_EXE_priory"))
+            .args(["hook", "PreToolUse"])
+            .env("PRIORY_SESSION", session)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let input = json!({ "session_id": session, "tool_name": "Bash", "agent_id": agent,
+            "tool_input": { "command": command }, "cwd": self.dir });
+        hook.stdin
+            .take()
+            .unwrap()
+            .write_all(input.to_string().as_bytes())
+            .unwrap();
+        String::from_utf8(hook.wait_with_output().unwrap().stdout).unwrap()
+    }
+}
+
+#[test]
+fn a_cancel_during_the_turn_refuses_the_result_once_with_the_news() {
+    let mut setup = Setup::new("news-result");
+    setup.calls(&[result("passed"), result("passed")]);
+    setup.hold("hold-call");
+    setup.publish(&linear_requested("ENG-7", "source"));
+    setup.start();
+    setup.written("fake/submitted");
+    setup.publish(&moved_to("Canceled", "canceled"));
+    setup.until("inbox", |rows| rows.len() == 2 && rows[1][4] == "kept");
+
+    setup.release("hold-call");
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    let (text, error) = reply(&setup.replies()[0]);
+    assert!(error, "{text}");
+    assert!(
+        text.contains("Ana moved ENG-7 to Canceled (canceled)."),
+        "{text}"
+    );
+    let (text, error) = reply(&setup.replies()[1]);
+    assert!(!error, "{text}");
+}
+
+#[test]
+fn a_cancel_wakes_a_task_asleep_at_its_checks_gate() {
+    let mut setup = Setup::new("news-gate");
+    setup.calls(&[
+        wait(on_pull_7("review")),
+        passed_at("abc0000000000000000000000000000000000000"),
+    ]);
+    setup.publish(&linear_requested("ENG-7", "source"));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.publish(&reviewed());
+    setup.until("runs", |rows| rows.len() == 2 && rows[1][7] != "-");
+    setup.gone("priory-1");
+    setup.until("tasks", |rows| rows[0][4] == "asleep");
+    setup.publish(&moved_to("In Review", "started"));
+    setup.until("inbox", |rows| rows.len() == 3);
+
+    setup.publish(&moved_to("Duplicate", "canceled"));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    assert!(
+        typed[2].starts_with(
+            "wait 2 fired: Ana moved ENG-7 to Duplicate (canceled), as a duplicate of ENG-9."
+        ),
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn a_daemon_that_does_not_answer_lets_a_call_through_although_news_waits() {
+    let home = Path::new(env!("CARGO_TARGET_TMPDIR")).join("news-silent");
+    priory_runtime::runtime::remove_sealed(&home);
+    let marked = home.join("news/6f1c0b9e-0d2a-4f43-9a51-3c2e8e1b7d10");
+    fs::create_dir_all(&marked).unwrap();
+    fs::write(marked.join("news"), "").unwrap();
+    let socket = priory_runtime::runtime::socket_in(Some(&home), &home);
+    fs::create_dir_all(socket.parent().unwrap()).unwrap();
+    // A long home puts the socket under /tmp, where an earlier run's socket stays.
+    let _ = fs::remove_file(&socket);
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let silent = std::thread::spawn(move || listener.accept().map(|(stream, _)| stream));
+
+    let (printed, took) = guard_hook(&home, "gh pr create --title T --body B");
+
+    assert_eq!(printed, "");
+    // A held call waits as long as a guarded one, inside the hook's 8 s deadline.
+    assert!(took < Duration::from_secs(8), "{took:?}");
+    drop(silent.join());
 }
 
 #[test]

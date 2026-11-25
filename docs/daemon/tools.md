@@ -146,7 +146,8 @@ that asks for something, as [routing.md](routing.md#feedback-reopens-a-done-task
 Priory's own comment. Until that prompt is typed, `result`, `ask` and `wait` are refused with
 `feedback for this run is queued: end your turn to read it`. So a review comment read during the
 turn reaches the agent before the task ends or sleeps. Other kept events, such as check runs, do
-not refuse them.
+not refuse them. Unread news that may end the task's work refuses them once, with the news as the
+reason (see [News during a turn](routing.md#news-during-a-turn)).
 
 ## Subscriptions
 
@@ -157,7 +158,7 @@ subscription does not end when one event arrives. Its events reach the task by i
 | ---- | ------------------------ |
 | `running` | is queued as a prompt, read after the current turn |
 | `asleep` at a model step, with no checks gate | wakes it, unless the task has an open wait on the resource, which decides instead. The inbox records `woke` |
-| `asleep` at its checks gate | fires the gate when it is a comment on an issue or a Linear issue, or a Slack reply, as pull request feedback does. Other events wait for the next wake |
+| `asleep` at its checks gate | fires the gate when it is a comment on an issue or a Linear issue, a Slack reply, or a Linear state change whose `to_type` is `canceled`, as pull request feedback does. Other events wait for the next wake |
 | `done` | reopens it, when it is a comment or a review that asks for something and no pull request of the task merged (see [routing.md](routing.md#feedback-reopens-a-done-task)) |
 
 An event the task keeps that was written while it ran, from the start of its first run up to the

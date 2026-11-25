@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 119;
+const VERSION: i64 = 120;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -2144,6 +2144,21 @@ END;
 "
 );
 
+// News that may end a task's work, kept for its live run: shown to its next call, and read once a
+// held call takes it.
+const SCHEMA_120: &str = "
+CREATE TABLE news (
+  id   INTEGER PRIMARY KEY,
+  run  INTEGER NOT NULL REFERENCES runs (id),
+  seq  INTEGER,
+  text TEXT NOT NULL,
+  shown TEXT,
+  read TEXT,
+  UNIQUE (run, seq)
+);
+PRAGMA user_version = 120;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -2160,7 +2175,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
     SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112, SCHEMA_113,
-    SCHEMA_114, SCHEMA_115, SCHEMA_116, SCHEMA_117, SCHEMA_118, SCHEMA_119,
+    SCHEMA_114, SCHEMA_115, SCHEMA_116, SCHEMA_117, SCHEMA_118, SCHEMA_119, SCHEMA_120,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -2794,10 +2809,12 @@ pub(crate) fn route_in(
                  VALUES (?1, ?2, ?3, ?4)",
                 params![seq, other.id, outcome, prompt],
             )?;
+            crate::news::keep(tx, other.id, seq, &message.kind, &message.data)?;
         }
     }
     match (task, outcome) {
         (Some(task), "kept") => {
+            crate::news::keep(tx, task, seq, &message.kind, &message.data)?;
             let (fired, ended) = crate::tools::event(tx, task, seq, factory)?;
             kill.extend(ended);
             if !fired {

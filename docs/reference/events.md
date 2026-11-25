@@ -842,6 +842,8 @@ Schema: [`linear.issue.state_changed.json`](../schemas/events/linear.issue.state
 | ----- | ---- | ------- |
 | `from` | string or null | The state it moved from; null from a webhook, whose payload names only its id |
 | `to` | string | The state it moved to |
+| `to_type` | string or null | The type of the state it moved to: `triage`, `backlog`, `unstarted`, `started`, `completed` or `canceled`. Linear's Duplicate state is `canceled`. Null from an older intake |
+| `duplicate_of` | string or null | The issue it duplicates, from its `duplicate` relation; null without one, and from a webhook |
 | `actor` | string or null | Who moved it |
 | `blockers` | array of strings or null | Its open blockers |
 | `delivery` | string | Present when a webhook delivery published it: its `Linear-Delivery`. See [webhooks.md](../intake/webhooks.md#linear) |
@@ -865,6 +867,8 @@ Schema: [`linear.issue.state_changed.json`](../schemas/events/linear.issue.state
     "labels": ["agent", "bug"],
     "from": "Todo",
     "to": "In Progress",
+    "to_type": "started",
+    "duplicate_of": null,
     "actor": "Ada Lovelace",
     "blockers": ["ENG-3"],
     "time": "2026-11-17T12:31:12.330Z",

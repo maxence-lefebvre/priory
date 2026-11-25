@@ -81,6 +81,7 @@ The Warp column comes from Warp's public page and is blank where that page says 
 | Inbox      | The durable list of events, each routed to the task it concerns          |              | inbox            |
 | Desk       | What waits on a person: asks, blocked tasks, reports and to-dos           |              | asks panel       |
 | Wait       | The conditions an agent names before it sleeps                            |              | `retire --on`    |
+| News       | An event that may end a task's work, such as its issue marked a duplicate, handed to its run during a turn |  |                  |
 | Ask        | A question to a person, with options, a recommendation and a trade-off    | review gate  | ask              |
 | Autopilot  | A window in which the daemon answers eligible asks in a person's place    |              |                  |
 | Result     | The immutable record of a run's outcome and its evidence                  |              | result           |

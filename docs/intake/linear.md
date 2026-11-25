@@ -64,6 +64,18 @@ Their fields and examples are in [events.md](../reference/events.md#linear).
 
 The daemon routes a Linear event to the active task whose key is `linear:<issue>`.
 
+### State changes
+
+A `linear.issue.state_changed` carries the new state's name in `to` and its type in `to_type`:
+`triage`, `backlog`, `unstarted`, `started`, `completed` or `canceled`. Linear's Duplicate state is
+of type `canceled`. When the issue has a `duplicate` relation, `duplicate_of` names the issue it
+duplicates. A webhook delivery carries `to_type` but no `duplicate_of`, since its payload names no
+relations; the poll's copy of the same change is then dropped as a repeat.
+
+The daemon hands a change to `canceled` or `completed` to the running task that owns the issue
+during its turn (see [News during a turn](../daemon/routing.md#news-during-a-turn)). A change to
+any other type, such as In Review, waits for the end of the turn.
+
 ### Edits
 
 The issues stream reads each issue's last 50 history entries. An entry that changes the title,

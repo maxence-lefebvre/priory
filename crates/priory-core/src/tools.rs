@@ -222,6 +222,14 @@ pub(crate) fn call(
             None,
         ));
     }
+    // News refuses the call once and is then read, so this refusal commits.
+    if matches!(call.tool.as_str(), "result" | "ask" | "wait" | "consult")
+        && run.debate.is_none()
+        && let Some(held) = crate::news::refusal(&tx, &run.session)?
+    {
+        tx.commit()?;
+        return Ok((Err(held), None));
+    }
     let refused = match (call.tool.as_str(), open_ask, open_wait) {
         ("result" | "ask" | "wait" | "consult", ..) if run.debate.is_some() => {
             Some(crate::debate::ENDS_WITH_POSITION.to_owned())
@@ -1609,15 +1617,20 @@ fn feedback_on(kind: &str, data: &Value) -> Option<String> {
 
 /// Fires the checks gate of `task` on a comment or reply in `message` on its issue, Linear issue
 /// or Slack thread, as pull request feedback fires it, since a merge would end the task unheard.
+/// Its Linear issue canceled or marked a duplicate fires it too.
 pub(crate) fn gate_feedback(
     tx: &Transaction,
     task: i64,
     message: &herdr_bus::Message,
     seq: Option<i64>,
 ) -> rusqlite::Result<bool> {
-    let Some(resource) = feedback_on(&message.kind, &message.data)
-        .filter(|_| !FEEDBACK.contains(&message.kind.as_str()))
-    else {
+    // Only a cancel: a merge moves a Linear issue to Done and closes issues, and ends the task.
+    let news = crate::news::line(&message.kind, &message.data)
+        .filter(|_| message.data["to_type"] == "canceled");
+    let resource = feedback_on(&message.kind, &message.data)
+        .filter(|_| !FEEDBACK.contains(&message.kind.as_str()));
+    // The news itself, or else the resource a comment or reply is on.
+    let Some(about) = news.map(Ok).or(resource.map(Err)) else {
         return Ok(false);
     };
     let gate: Option<i64> = tx.query_row(
@@ -1630,7 +1643,10 @@ pub(crate) fn gate_feedback(
     let Some(gate) = gate else {
         return Ok(false);
     };
-    let said = reopened_by(&resource, None, &message.kind, &message.data);
+    let said = match about {
+        Ok(news) => news,
+        Err(resource) => reopened_by(&resource, None, &message.kind, &message.data),
+    };
     let mut text = format!("wait {gate} fired: {said}");
     // Another task kept the event, so its whole line goes with the reason.
     if seq.is_none() {
