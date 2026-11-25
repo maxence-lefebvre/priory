@@ -57,9 +57,10 @@ ordered there. The other later slices are not built.
 - `priory attach` builds the tmux attach command (`crates/priory-runtime/src/runtime.rs:1527`).
   Priory never reads tmux clients, so it does not know who watches a run
   ([sessions.md](../daemon/sessions.md#attaching-to-a-run)).
-- A pause, a hold and a cancel exist. None of them stops a run and lets it resume later:
-  `priory pause` only stops admissions (`state.rs:2888`), `priory hold` refuses a running task, and
-  `priory cancel` drops the task.
+- A pause, a hold and a cancel exist. None of them stopped a run and let it resume later:
+  `priory pause` only stops admissions (`state.rs:2888`), `priory hold` refused a running task, and
+  `priory cancel` drops the task. A hold now takes a running task too
+  ([runs.md](../daemon/runs.md#holding-a-running-task)).
 
 So Priory has every part of a resume, and no rule that ends a run for another task's sake.
 

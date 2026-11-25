@@ -208,8 +208,9 @@ const DESK: &str = concat!(
                UNION ALL
                SELECT 0, holds.created, 'held', holds.id, holds.task, tasks.lane,
                  CASE tasks.state WHEN 'held' THEN tasks.reason
-                   WHEN 'running' THEN 'holds after this turn: ' || holds.reason
-                   ELSE 'holds once it is ready: ' || holds.reason END
+                   ELSE iif(tasks.state = 'running' AND EXISTS (SELECT 1 FROM runs
+                     WHERE runs.task = tasks.id AND runs.ended IS NULL),
+                     'holds after this turn: ', 'holds once it is ready: ') || holds.reason END
                FROM holds JOIN tasks ON tasks.id = holds.task
                WHERE holds.released IS NULL AND tasks.state NOT IN ('done', 'failed', 'dropped')
                  AND holds.id = (
