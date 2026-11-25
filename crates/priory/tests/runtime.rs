@@ -5427,7 +5427,9 @@ fn a_git_that_crashes_in_the_envrcs_check_is_the_reason_and_not_a_difference() {
             db.busy_timeout(Duration::from_secs(10)).unwrap();
             assert_eq!(db.execute("DELETE FROM envrc_bases", []).unwrap(), 1);
         }
-        fs::write(setup.dir.join("fake/git-crash"), command).unwrap();
+        if !command.is_empty() {
+            fs::write(setup.dir.join("fake/git-crash"), command).unwrap();
+        }
 
         let resumed = setup.priory(&["resume", "1"]);
 
