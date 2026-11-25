@@ -822,6 +822,8 @@ mod tests {
              INSERT INTO inbox (id, type, time, data, links, outcome) VALUES
                ('1', 'github.pull_request.closed', '2026-01-03T00:00:00Z',
                  '{"repo":"owner/repo","pull_request":1,"merged":true}', '[]', 'ignored'),
+               ('1-again', 'github.pull_request.closed', '2026-01-06T00:00:00Z',
+                 '{"repo":"owner/repo","pull_request":1,"merged":true}', '[]', 'ignored'),
                ('2', 'github.pull_request.opened', '2026-01-04T00:00:00Z',
                  '{"repo":"owner/repo","pull_request":2}', '[]', 'ignored'),
                ('3', 'github.pull_request.closed', '2026-01-05T00:00:00Z',
@@ -829,8 +831,8 @@ mod tests {
                  '[]', 'ignored');"#,
         )
         .unwrap();
-        let rows = || -> Vec<(i64, String, Option<String>, Option<String>)> {
-            db.prepare(PULLS)
+        let rows = |sql: &str| -> Vec<(i64, String, Option<String>, Option<String>)> {
+            db.prepare(sql)
                 .unwrap()
                 .query_map([], |row| {
                     Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
@@ -841,7 +843,7 @@ mod tests {
         };
         let day = |day: u8| format!("2026-01-0{day}T00:00:00Z");
 
-        let indexed = rows();
+        let indexed = rows(PULLS);
 
         let plan = crate::state::query_plan(&db, PULLS);
         // `(<expr>=?)` is a seek: without it SQLite reads the whole index for each pull request.
@@ -856,7 +858,8 @@ mod tests {
             ]
         );
         db.execute_batch("DROP INDEX inbox_closed_pulls").unwrap();
-        assert_eq!(rows(), indexed);
+        assert_eq!(rows(PULLS), indexed);
+        assert_eq!(rows(&PULLS.replace("= +seen", "= seen")), indexed);
     }
 
     fn percent(k: u64, n: u64) -> [String; 3] {

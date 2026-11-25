@@ -40,7 +40,7 @@ Every request carries these attributes on its resource.
 
 | Metric | Kind | Unit | Attributes | Value |
 | ------ | ---- | ---- | ---------- | ----- |
-| `priory.process.tick.duration` | gauge | `s` | `stat` = `avg`, `p95`, `max` | the loop ticks of the interval: the daemon's 1-second tick, the intake's poll. No web request is a tick, so `priory serve`, which runs no loop, never sends it. Absent from an interval with no tick |
+| `priory.process.tick.duration` | gauge | `s` | `stat` = `avg`, `p95`, `max` | the loop ticks of the interval: the daemon's 1-second tick, the intake's poll. No web request is a tick, and `priory serve` records none, so it never sends this metric. Absent from an interval with no tick |
 | `process.memory.usage` | gauge | `By` | | `VmRSS` in `/proc/self/status`. On macOS, `rss` of `ps` |
 | `process.cpu.time` | counter | `s` | `cpu.mode` = `user`, `system` | `utime` and `stime` in `/proc/self/stat`, at 100 ticks a second. On macOS, `utime` of `ps`, and its `time` less `utime` |
 | `process.uptime` | gauge | `s` | | since the process started |
