@@ -18213,11 +18213,21 @@ fn a_clean_asleep_task_retires_when_disk_runs_short_and_resurrects_with_its_work
 
     setup.removed(1);
 
-    let statuses = fs::read_to_string(setup.dir.join("fake/git-statuses")).unwrap();
-    let checks = statuses
-        .lines()
-        .filter(|line| line.contains("/1 ") && line.contains("--ignore-submodules=none"));
-    assert_eq!(checks.count(), 1, "a retirement checks once: {statuses}");
+    // The second thread checks the folder the tick moved.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let checks = loop {
+        let statuses = fs::read_to_string(setup.dir.join("fake/git-statuses")).unwrap();
+        let checks = statuses
+            .lines()
+            .filter(|line| line.contains("/1 ") || line.contains("/reclaim/1-"))
+            .filter(|line| line.contains("--ignore-submodules=none"))
+            .count();
+        if checks >= 2 || Instant::now() > deadline {
+            break checks;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(checks, 2, "each of a retirement's two threads checks");
     let tasks = setup.until("tasks", |rows| rows[0][10] != "-");
     assert_eq!(tasks[0][4], "asleep");
     assert!(setup.branches().contains("priory/1"));
@@ -26193,6 +26203,11 @@ fn woken_by_feedback(name: &str) -> Setup {
     setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
     setup.publish(&thread_comment_at(802));
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    // Until its wait fires, the run sleeps again at each Stop, and a tool call finds no live run.
+    setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[3] == "confirmed" && row[4].contains("wait 1 fired"))
+    });
     setup.publish(&thread_comment_at(803));
     setup.publish(&changes_requested());
     // A nudge can take a prompt between them, so count the items, not the prompts.

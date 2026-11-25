@@ -249,6 +249,10 @@ process set <slice> to <limits>; the sweep restored its limits at <time>`. While
 set them, it ends with `left the limits of <slice> alone: <why>` instead. The daemon reads both from
 Priory home too. See [agents-slice.md](agents-slice.md#restoring-the-limits).
 
+For 24 hours after a removal that left files elsewhere than it found them, the banner ends with
+`removing <worktree>: <reason> at <time>`. The daemon reads it from Priory home too. See
+[sweep.md](sweep.md#off-the-tick).
+
 For 24 hours after a tick of the daemon's loop took over 10 seconds, the banner ends with what it ran
 and when, such as `a tick took 42s: sweep for 40s, git fetch for 30s at <time>`. The daemon reads it
 from Priory home too. See [home.md](home.md#long-ticks).
