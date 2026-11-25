@@ -30008,6 +30008,27 @@ fn an_answer_sent_to_another_runners_ask_is_accepted_applied_by_its_runner_and_i
 }
 
 #[test]
+fn a_resent_answer_to_another_runners_ask_gets_its_first_reply_after_the_runner_applied_it() {
+    let (a, _b, ask, address) = asked_on_a("remote-resend");
+    let id = format!("a:{ask}");
+    until_ask(&address, &id, |ask| ask["state"] == "open");
+    let body =
+        r#"{"option": "approved", "revision": 1, "call": "0a1b2c3d-0000-4000-8000-000000000002"}"#;
+    let path = format!("/api/asks/{id}/answer");
+
+    let (status, first) = runner_http(&address, "POST", &path, body);
+    assert_eq!(status, 202, "{first}");
+    until_ask(&address, &id, |ask| {
+        ask["state"] == "answered" && ask["submissions"][0]["outcome"] == "answered"
+    });
+    let (status, again) = runner_http(&address, "POST", &path, body);
+
+    assert_eq!(status, 202, "{again}");
+    assert_eq!(again["submission"], first["submission"]);
+    assert_eq!(on_log(&a, "priory.ask.answered").len(), 1);
+}
+
+#[test]
 fn a_stale_answer_to_another_runners_ask_gets_409_and_nothing_is_published() {
     let (a, _b, ask, address) = asked_on_a("remote-stale");
     let id = format!("a:{ask}");

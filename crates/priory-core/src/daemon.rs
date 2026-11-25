@@ -1118,10 +1118,12 @@ fn apply(
     Ok(())
 }
 
-/// A person's answer or dismiss, which waits for no tick.
+/// A person's answer, dismiss or desk action, which waits for no tick. Desk actions share the path,
+/// so a cancel or a hold sent before an answer still applies first.
 enum Person {
     Answer(Called<Answer>),
     Dismiss(Called<Dismiss>),
+    Act(Act),
 }
 
 impl Person {
@@ -1130,21 +1132,24 @@ impl Person {
         match serde_json::from_str(line).ok()? {
             Input::Answer(answer) => Some(Person::Answer(answer)),
             Input::Dismiss(dismiss) => Some(Person::Dismiss(dismiss)),
+            Input::Act(act) => Some(Person::Act(act)),
             _ => None,
         }
     }
 
+    /// The reply, and a tmux session to kill.
     fn apply(
         &self,
         db: &mut Connection,
         trace: &Trace,
-    ) -> rusqlite::Result<Result<String, String>> {
-        match self {
-            Person::Answer(answer) => tools::answer(db, answer, trace, &|worktree, branch| {
-                runtime::kept_head(&runtime::home(), worktree, branch)
-            }),
-            Person::Dismiss(dismiss) => tools::dismiss(db, dismiss, trace.factory),
-        }
+    ) -> Result<(Result<String, String>, Option<String>), Error> {
+        let head =
+            |worktree: &Path, branch: &str| runtime::kept_head(&runtime::home(), worktree, branch);
+        Ok(match self {
+            Person::Answer(answer) => (tools::answer(db, answer, trace, &head)?, None),
+            Person::Dismiss(dismiss) => (tools::dismiss(db, dismiss, trace.factory)?, None),
+            Person::Act(act) => tools::act(db, act, trace)?,
+        })
     }
 }
 
@@ -1156,16 +1161,17 @@ struct Lines<'a> {
 }
 
 impl Lines<'_> {
-    /// Applies the answers and dismisses that arrived, in order.
+    /// Applies the answers, dismisses and desk actions that arrived, in order.
     fn people(&mut self, db: &mut Connection, trace: &Trace) -> Result<(), Error> {
         while let Ok(line) = self.socket.try_recv() {
             let Some(person) = Person::of(&line.text) else {
                 self.waiting.push_back(line);
                 continue;
             };
-            let reply = person.apply(db, trace)?;
+            let (reply, kill) = person.apply(db, trace)?;
             let reply = serde_json::to_string(&reply).expect("a result serializes");
             let _ = line.applied.send(reply);
+            kill.inspect(|tmux| runtime::kill(tmux));
         }
         Ok(())
     }
@@ -1567,15 +1573,15 @@ fn take(
             None,
         )),
         Ok(Input::Answer(answer)) => {
-            let person = Person::Answer(answer);
-            Ok((replied(person.apply(db, trace)?), None))
+            let (reply, kill) = Person::Answer(answer).apply(db, trace)?;
+            Ok((replied(reply), kill))
         }
         Ok(Input::Dismiss(dismiss)) => {
-            let person = Person::Dismiss(dismiss);
-            Ok((replied(person.apply(db, trace)?), None))
+            let (reply, kill) = Person::Dismiss(dismiss).apply(db, trace)?;
+            Ok((replied(reply), kill))
         }
         Ok(Input::Act(act)) => {
-            let (reply, kill) = tools::act(db, &act, trace)?;
+            let (reply, kill) = Person::Act(act).apply(db, trace)?;
             Ok((replied(reply), kill))
         }
         Ok(Input::Snooze(snooze)) => Ok((replied(snooze::snooze(db, &snooze, trace)?), None)),
@@ -3708,7 +3714,8 @@ mod tests {
     }
 
     #[test]
-    fn an_answer_applies_between_two_messages_of_the_drain_and_the_other_lines_keep_their_order() {
+    fn a_persons_writes_apply_in_order_between_two_messages_of_the_drain_and_the_other_lines_keep_theirs()
+     {
         let dir = std::env::temp_dir().join(format!("priory-between-{}", std::process::id()));
         fs::create_dir_all(dir.join("workflows")).unwrap();
         fs::write(dir.join("factory.toml"), "name = \"t\"\n").unwrap();
@@ -3745,12 +3752,18 @@ mod tests {
             passes += 1;
             if passes == 2 {
                 send(r#"{"version":true}"#);
+                send(r#"{"act":"cancel","task":7}"#);
                 send(r#"{"ask":1,"text":"yes","revision":1,"by":"serve"}"#);
                 send(r#"{"dismiss":1,"revision":1}"#);
                 send(r#"{"read":9}"#);
             }
             lines.people(db, &trace)?;
             if passes == 2 {
+                let cancelled = reply.try_recv().expect("the cancel waited for the drain");
+                assert!(
+                    cancelled.contains("Err") && cancelled.contains('7'),
+                    "{cancelled}"
+                );
                 let replied = reply.try_recv().expect("the answer waited for the drain");
                 assert_eq!(replied, r#"{"Ok":"ask o answered"}"#);
                 assert!(reply.try_recv().unwrap().contains("Err"));

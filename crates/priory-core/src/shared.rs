@@ -41,6 +41,14 @@ impl Shared {
     ) -> Reply {
         let place = {
             let mut places = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+            // A body no request may take any more is dropped, so a quiet path holds no memory.
+            places.retain(|_, place| {
+                Arc::strong_count(place) > 1
+                    || place.try_lock().map_or(true, |held| {
+                        held.as_ref()
+                            .is_some_and(|held| held.began.elapsed() < KEPT)
+                    })
+            });
             if places.len() >= PATHS && !places.contains_key(request.path) {
                 places.clear();
             }
@@ -171,6 +179,20 @@ mod tests {
         assert_eq!(read(&other, "c", 200), "c");
         std::thread::sleep(KEPT);
         assert_eq!(read(&other, "d", 200), "d");
+    }
+
+    #[test]
+    fn a_body_past_its_time_is_dropped_by_the_next_read_of_any_path() {
+        let db = state::memory();
+        let shared = Shared::default();
+        let factory = Arc::new(());
+        let reply = || Reply::json(200, "{}".to_owned());
+        shared.read(&db, &factory, &request(Instant::now()), reply);
+        std::thread::sleep(KEPT);
+        let other = Request::get("/api/desk", Instant::now());
+        shared.read(&db, &factory, &other, reply);
+        let places = shared.0.lock().unwrap();
+        assert_eq!(places.keys().collect::<Vec<_>>(), ["/api/desk"]);
     }
 
     #[test]

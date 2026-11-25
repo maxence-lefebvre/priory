@@ -1474,6 +1474,12 @@ pub fn submit(
     send_to(log, kind, runner, &format!("{runner}:{ask}"), data, call)
 }
 
+/// The id of the message that sends `data` for `call`: a resend of the same write has the same id,
+/// which the log holds once.
+pub(crate) fn called(call: uuid::Uuid, kind: &str, subject: &str, data: &Value) -> uuid::Uuid {
+    uuid::Uuid::new_v5(&call, format!("{kind} {subject} {data}").as_bytes())
+}
+
 /// Publishes a write for runner `runner` about `subject`, with its own message id as its
 /// submission.
 fn send_to(
@@ -1490,9 +1496,7 @@ fn send_to(
     }
     let mut message = Message::new(kind, json!({})).subject(subject);
     if let Some(call) = call {
-        // A resend of the same write has the same id, which the log holds once.
-        let sent = format!("{kind} {subject} {data}");
-        message.id = uuid::Uuid::new_v5(&call, sent.as_bytes());
+        message.id = called(call, kind, subject, &data);
     }
     data["runner"] = json!(runner);
     data["submission"] = json!(message.id.to_string());

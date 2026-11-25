@@ -1341,6 +1341,23 @@ fn remote_write(db: &Connection, remote: &Remote, write: &Write, body: &[u8]) ->
                 (ASK_DISMISSED, body.revision, data, body.call)
             }
         };
+        // A resend of a write this machine already sent gets the first reply, whatever the ask says now.
+        if let Some(call) = call {
+            let submission =
+                runners::called(call, kind, &format!("{runner}:{id}"), &data).to_string();
+            let sent = db
+                .query_row(
+                    "SELECT 1 FROM remote_submissions WHERE submission = ?1",
+                    [&submission],
+                    |_| Ok(()),
+                )
+                .optional()
+                .map_err(|error| Reply::error(500, &error.to_string()))?;
+            if sent.is_some() {
+                let sent = serde_json::json!({ "sent": runner, "submission": submission });
+                return Ok(Reply::json(202, sent.to_string()));
+            }
+        }
         let mirrored = runners::mirrored(db, runner, id)
             .map_err(|error| Reply::error(500, &error.to_string()))?
             .ok_or_else(gone)?;
