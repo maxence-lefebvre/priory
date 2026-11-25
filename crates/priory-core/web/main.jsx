@@ -4,6 +4,7 @@ import { flushSync } from "react-dom";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
 import { cache, refresh, reread, revision } from "./data.js";
+import "./entries/index.js";
 import { follow } from "./events.js";
 import { watch } from "./legacy/terminal.js";
 import { staleAll } from "./queries.js";

@@ -1,19 +1,11 @@
 // What the legacy pages draw from: the listings of the page on screen, landed together.
 import { draw } from "../app.js";
-import { cache, deskReadAt, refresh as refreshQueries } from "../data.js";
-import { mergeSince } from "../desk.js";
+import { cache, refresh as refreshQueries } from "../data.js";
 import { keyOf, params } from "../queries.js";
 import { onSignOut, session } from "../session.js";
 import { store } from "../store.js";
-import { RUN_VIEWS } from "../runs.js";
-import { TASK_VIEWS } from "../tasks.js";
-import { askView } from "./asks.js";
-import { loadCosts } from "./costs.js";
-import { deskView } from "./desk.js";
-import { loadUnrouted } from "./inbox.js";
-import { acceptReport } from "./reports.js";
-import { current, listView, selectedAsk, state } from "./shared.js";
-import { keyboard, watch } from "./terminal.js";
+import { each, entries } from "../registry.js";
+import { state } from "./state.js";
 
 // Which rows and which report the page asks the server for.
 export const asked = store(params());
@@ -25,21 +17,18 @@ const page = { names: [], landed: {}, stamp: null };
 export function openPage(names) {
   page.names = names;
   // Older rows load again when the person scrolls back to them.
-  const history = {
-    asks: Boolean(selectedAsk()) || (current() === "asks" && ["answered", "all"].includes(askView())),
-    tasks: (current() === "desk" && deskView() === "all") || (current() === "tasks" && listView(TASK_VIEWS) === "ended"),
-    runs: current() === "runs" && listView(RUN_VIEWS) === "recent",
-  };
   const { all } = asked.get();
-  const left = Object.fromEntries(Object.entries(all).map(([name, on]) => [name, on && history[name]]));
+  const left = Object.fromEntries(Object.entries(all).map(([name, on]) => [name, on && entries.some((entry) => entry.older?.[name]?.())]));
   if (Object.keys(all).some((name) => all[name] !== left[name])) askFor({ all: left });
   land();
 }
 
 // Whether every listing of the page has data: the page draws a loading line until then.
-export const ready = () => page.names.every((name) => name in page.landed);
+export const ready = () => Boolean(state.data) && page.names.every((name) => name in page.landed);
+export const landing = store(true);
 
-const drawn = ({ desk, queue, report, reports, asks, tasks, runs, older }) => [desk, queue, report, reports, asks, tasks, runs, older.asks, older.tasks, older.runs];
+const kept = () => entries.flatMap((entry) => entry.kept ?? []);
+const drawn = (data) => [data.desk, data.queue, data.asks, data.tasks, data.runs, data.older.asks, data.older.tasks, data.older.runs, ...kept().map((name) => data[name])];
 
 // Lands the page's listings in one step, once none of them is being read: a draw never mixes two reads.
 export function land() {
@@ -68,10 +57,7 @@ export function land() {
 function accept({ of, fresh }) {
   const desk = of("desk");
   // A desk kept on this device names no revision: the visit opens on the first live read.
-  if (desk.revision !== undefined) {
-    if (!state.since.opened) Object.assign(state.since, { opened: deskReadAt(), from: desk.last_visit });
-    state.since.events = mergeSince(state.since.events, desk.since_you_looked);
-  }
+  if (desk.revision !== undefined) each("live", desk);
   const [asksList, tasksList, runsList] = ["asks", "tasks", "runs"].map(of);
   const before = state.data;
   state.data = {
@@ -80,16 +66,11 @@ function accept({ of, fresh }) {
     queue: of("queue") ?? EMPTY_QUEUE,
     tasks: tasksList?.tasks ?? NONE, runs: runsList?.runs ?? NONE,
     older: { asks: asksList?.older, tasks: tasksList?.older, runs: runsList?.older },
-    report: of("report") ?? null, reports: of("reports") ?? null,
-    // The Costs and Flows panels read their own; a refresh keeps the last ones.
-    spend: of("spend") ?? null, flows: of("flows") ?? null,
+    // Each page's own; a refresh keeps the last ones.
+    ...Object.fromEntries(kept().map((name) => [name, of(name) ?? null])),
   };
   if (fresh && ready()) {
-    acceptReport();
-    if (state.task) state.task.stale = true;
-    if (state.batch) state.batch.stale = true;
-    if (current() === "costs") loadCosts();
-    if (current() === "inbox") loadUnrouted();
+    each("landed");
   }
   const same = before && drawn(before).every((part, i) => part === drawn(state.data)[i]);
   if (!same || Date.now() - state.rendered >= 60000) draw();
@@ -107,11 +88,9 @@ export { cache };
 export { api, refuse, signOut, KEPT_KINDS } from "../session.js";
 
 onSignOut(() => {
-  watch.stop();
-  // Before the token goes: giving the keyboard back needs it.
-  keyboard.leave();
+  each("signedOut");
   Object.assign(page, { landed: {}, stamp: null });
-  Object.assign(state, { data: null, flowsError: null, costs: { by: "workflow", loading: false, slow: false, error: null } });
+  state.data = null;
   asked.set(params());
 });
 session.subscribe(draw);

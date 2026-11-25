@@ -14,7 +14,6 @@ import { terminalRun } from "../legacy/terminal.js";
 import { backTo } from "../pages.js";
 import { toHash } from "../router.js";
 import { taskLabel, workStep } from "../tasks.js";
-import { LegacyPage } from "./LegacyPage.jsx";
 import { usePlace } from "./place.js";
 
 // The task's open asks, each with a way to answer it.
@@ -158,9 +157,3 @@ function useScroll(href, loaded) {
     return () => element.removeEventListener("scroll", kept);
   }, [href, loaded]);
 }
-
-/** `/tasks/7` is a task's page; any other address under `/tasks` is the list. */
-export const TaskRoute = memo(function TaskRoute() {
-  const { at } = usePlace();
-  return at.task ? <TaskPage key={at.task} id={at.task} /> : <LegacyPage />;
-});

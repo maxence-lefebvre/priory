@@ -4,8 +4,10 @@ import { plural } from "../desk.js";
 import { KINDS, edgeStyle, historyRows, lockBadge, nodeShape, timeline, ungatedPairs } from "../flows.js";
 import { api, cache, signOut } from "./data.js";
 import { connection } from "./frame.js";
-import { ICONS, html, icon, raw, state } from "./shared.js";
+import { ICONS, html, icon, raw } from "./shared.js";
+import { state } from "./state.js";
 
+Object.assign(state, { flowsLoading: false, flowsError: null });
 
 // Flows: each workflow drawn top to bottom. The factory is read once, so the flows load once.
 const KIND_WORD = { read: "read", reversible: "reversible write", irreversible: "irreversible write", ask: "ask", answer: "answer", verdict: "verdict" };

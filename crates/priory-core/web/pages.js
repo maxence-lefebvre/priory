@@ -30,9 +30,6 @@ export function backTo(from) {
   return panel ? [from, PANELS[panel][0]] : ["/tasks", "Tasks"];
 }
 
-/** The text fields a repaint gives back their focus, caret and selection, by id. */
-export const TYPED_FIELDS = ["draft", "say", "report-draft", "report-query", "term-line", "term-keys"];
-
 /**
  * The document title of the page at `path`: a task by its key, an ask by its number.
  * @param {string} path @param {{ tasks: any[] }} data

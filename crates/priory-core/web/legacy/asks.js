@@ -11,7 +11,18 @@ import { refresh, signOut } from "./data.js";
 import { fold, openAsks } from "./desk.js";
 import { connection } from "./frame.js";
 import { taskOf, taskSections } from "./sections.js";
-import { age, ago, autolinked, clock, date, facet, facetPicks, facetQuery, faceted, focusKey, html, icon, layout, listSearch, loadOlder, md, olderRow, post, raw, savedViews, selectedAsk, shownFacets, state, stateWord, tile, timeTag, today } from "./shared.js";
+import { age, ago, autolinked, clock, date, facet, facetPicks, facetQuery, faceted, focusKey, html, icon, layout, listSearch, loadOlder, md, olderRow, post, raw, savedViews, selectedAsk, shownFacets, stateWord, tile, timeTag, today } from "./shared.js";
+import { state } from "./state.js";
+
+Object.assign(state, {
+  // The answer in flight: { id, text }.
+  pending: null,
+  // The option the first tap armed, until the second tap sends it or 4 s pass: { id, revision, text, at, timer }.
+  armed: null,
+  drafts: new Map(),
+  notices: new Map(),
+  writing: new Set(),
+});
 
 // The open asks the list shows, so previous, next and the ask after an answer stay in its facets.
 const listedAsks = () => faceted(openAsks(), facetPicks());
@@ -297,7 +308,7 @@ function ranLine(ran) {
 }
 
 // Writes: each is the twin of a CLI verb, sent with the revision the page showed.
-export const askOnScreen = () => state.data.asks.find((ask) => String(ask.id) === selectedAsk());
+export const askOnScreen = () => state.data?.asks.find((ask) => String(ask.id) === selectedAsk());
 
 // An answer leaves at once: a tapped option was already confirmed by its second tap, and Send is a
 // deliberate press of its own. "Sending" shows only while the request is in flight.
@@ -440,10 +451,19 @@ export function asksPhone() {
     <div class="panel" role="region" aria-label="Asks"><div class="scroll">${views}${rows}</div></div>`;
 }
 
-export function drawer(wide, panels) {
-  const id = selectedAsk();
+export function drawer(id, wide, panels) {
   const body = id ? askDetail(id, wide) : html`<p class="empty">${emptyDetail(panels)}</p>`;
   return html`<aside class="drawer" aria-label="Ask">${body}</aside>`;
+}
+
+// A new revision is a new question: a tap armed on the old one must not run it.
+export function asksBefore() {
+  if (state.armed && (selectedAsk() !== String(state.armed.id) || askOnScreen()?.revision !== state.armed.revision)) disarm();
+}
+
+export function asksLeft() {
+  disarm();
+  answerSheet().close();
 }
 
 export function asksClick(action, target) {

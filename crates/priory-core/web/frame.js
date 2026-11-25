@@ -60,20 +60,22 @@ export function shellOf(at, { size, list, layout }) {
   return { grid: "wide", nav, panels: plain(layout) ? [shown] : shownPanels(layout, shown) };
 }
 
-const DESK = ["asks", "queue", "tasks"];
-const PANEL_NEEDS = { desk: DESK, asks: ["asks"], tasks: ["tasks"], runs: ["runs"], queue: ["queue", "tasks"], inbox: ["tasks"], terminal: ["tasks"], reports: ["report", "reports", "tasks"] };
-
-/** The listings a page shows beside the frame's own: those of its panels, and its detail's. */
-export function needs({ here, ask, task, batch }, { panels }, settings = "appearance") {
-  const wanted = new Set(panels.flatMap((panel) => PANEL_NEEDS[panel] ?? []));
-  if (PANEL_NEEDS[here] && !task && !ask) PANEL_NEEDS[here].forEach((name) => wanted.add(name));
-  if (ask) ["asks", "tasks"].forEach((name) => wanted.add(name));
-  if (task) ["asks", "tasks"].forEach((name) => wanted.add(name));
-  if (batch) wanted.add("tasks");
-  // The theme previews draw the Desk.
-  if (here === "settings" && settings !== "notifications") DESK.forEach((name) => wanted.add(name));
-  return [...wanted].sort();
+/**
+ * What fills the shell: `main` is one part or the view file's tree, and `drawer` whether a drawer
+ * stands beside it. A part is { kind, name, id }: a `list` beside others, a `page` alone, a `detail`.
+ */
+export function partsOf({ here, ask, task, batch }, { grid, panels }, { size, layout }) {
+  if (task) return { main: { kind: "detail", name: "tasks", id: task }, drawer: false };
+  if (batch) return { main: { kind: "detail", name: "batches", id: batch }, drawer: false };
+  if (size === "compact") return { main: ask ? { kind: "detail", name: "asks", id: ask } : { kind: "page", name: here }, drawer: false };
+  if (!panels.length) return { main: { kind: "page", name: here }, drawer: false };
+  const drawer = grid === size;
+  const main = drawer && size === "wide" && !plain(layout) ? layout : { kind: "list", name: panels[0] };
+  return { main, drawer };
 }
+
+/** The parts of a tree on screen, in order: each tabs node shows one child. */
+export const partsIn = (main, list) => (main.kind ? [main] : shownPanels(main, list).map((name) => ({ kind: "list", name })));
 
 /** The list a person came from, as it stood before they opened anything. */
 export const START = { list: "desk", listUrl: "/", from: null };

@@ -8,7 +8,7 @@
 // so a web change needs no Rust build to check.
 // It drives Chromium over the DevTools protocol with Node's own WebSocket, so it needs no package, only the `sqlite3` command.
 import { spawn, execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -168,11 +168,10 @@ await until('document.getElementById("say")', "Back to the task");
 report((await evaluate('document.getElementById("say").value')) === "hello", "the Say draft outlives its page");
 
 // What each page reads once the revision moves.
-for (const [path, wanted] of [
-  ["/tasks", "/api/desk /api/tasks"], ["/runs", "/api/desk /api/runs"], ["/more", "/api/desk"],
-  ["/tasks/1", "/api/asks /api/desk /api/tasks /api/tasks/1"], ["/costs", "/api/attention /api/costs?by=workflow /api/desk"],
-  ["/inbox", "/api/desk /api/inbox?unrouted=1 /api/tasks"],
-]) {
+// Each page's own file says it, so two ports touch no common line.
+const folder = new URL("./pages/", import.meta.url);
+const pages = await Promise.all(readdirSync(folder).sort().map((file) => import(new URL(file, folder))));
+for (const [path, wanted] of pages.flatMap(({ reads }) => reads)) {
   await open(path, 'document.querySelector("#app nav")');
   await sleep(2000);
   await evaluate("reads.length = 0");
@@ -185,6 +184,9 @@ for (const [path, wanted] of [
 }
 
 // A hidden tab reads nothing, and reads once when it is shown.
+const TASKS = pages.flatMap(({ reads }) => reads).find(([path]) => path === "/tasks")[1];
+await open("/tasks", 'document.querySelector("#app nav")');
+await sleep(2000);
 const TAB = (off) => `globalThis.hidden = ${off}; document.dispatchEvent(new Event("visibilitychange"))`;
 await evaluate(`reads.length = 0; ${TAB(true)}`);
 change();
@@ -193,7 +195,7 @@ const unseen = (await evaluate("reads")).length;
 await evaluate(TAB(false));
 await sleep(1500);
 const seen = (await evaluate("reads")).sort().join(" ");
-report(unseen === 0 && seen === "/api/desk /api/inbox?unrouted=1 /api/tasks", "a hidden tab reads nothing, and once when it is shown", `${unseen}, then ${seen}`);
+report(unseen === 0 && seen === TASKS, "a hidden tab reads nothing, and once when it is shown", `${unseen}, then ${seen}`);
 
 // The page at PATH, after SCRIPT ran in it, must say true.
 async function holds(name, path, ready, script) {
@@ -233,6 +235,16 @@ await holds("a superseded refresh never draws", "/", ROW,
     again(); ${SETTLE(300)} again(); ${SETTLE(3000)}
     return !hold && !seen;
   })()`);
+
+// The list and the drawer draw apart, in one pass.
+await holds("a list keeps its scroll while the drawer's ask changes", "/asks/1", `document.querySelector('.drawer [aria-label="Next ask"][href]')`,
+  `(async () => { const list = () => document.querySelector(".list .scroll"); const next = document.querySelector('.drawer [aria-label="Next ask"]'); const to = next.getAttribute("href");
+    list().scrollTop = 60; document.dispatchEvent(new Event("visibilitychange")); ${SETTLE(1500)} const kept = list().scrollTop === 60; next.click(); ${SETTLE(800)}
+    return kept && location.pathname === to && document.querySelectorAll("#app .legacy").length === 2; })()`);
+await holds("the drawer keeps its scroll through a refresh of the list", "/asks/1", 'document.querySelector(".drawer #trace")',
+  `(async () => { const part = () => document.querySelector(".drawer .scroll"); part().scrollTop = 60; const at = part().scrollTop; document.dispatchEvent(new Event("visibilitychange")); ${SETTLE(1500)} return at > 0 && part().scrollTop === at; })()`);
+
+for (const { check: own } of pages) if (own) await own({ open, holds, page, evaluate, until, sleep, change, report });
 
 socket.close();
 browser.kill();

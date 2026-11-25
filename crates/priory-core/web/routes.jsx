@@ -1,24 +1,21 @@
-// The routes, in code. A legacy page is a child of `legacy`, which renders LegacyPage for all of them,
-// so it stays mounted from one to the next. A port moves its route to the root, with its own component.
+// The routes, in code. Every page is a child of one route that renders the grid, so a slot stays
+// mounted from one page to the next. Which part fills a slot is its entry's, under entries/.
 import { createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
-import { LegacyPage } from "./pages/LegacyPage.jsx";
 import { NotFound } from "./pages/NotFound.jsx";
+import { PageGrid } from "./pages/PageGrid.jsx";
 import { Shell } from "./pages/Shell.jsx";
-import { TaskRoute } from "./pages/TaskPage.jsx";
 import { history, hrefOf, parseSearch, stringifySearch } from "./router.js";
 
 const root = createRootRoute({ component: Shell, notFoundComponent: NotFound });
-const legacy = createRoute({ getParentRoute: () => root, id: "legacy", component: LegacyPage });
+const page = createRoute({ getParentRoute: () => root, id: "page", component: PageGrid });
 
 // Only a page's first segment picks it, as before the router: `/runs/x` is Runs.
-const LEGACY = ["asks", "tasks", "runs", "inbox", "reports", "queue", "terminal", "workflow", "costs", "more", "memories", "settings"];
-const legacyRoutes = ["/", "index.html", ...LEGACY.flatMap((page) => [page, `${page}/$`]), "batches/$batch"].filter((path) => path !== "tasks/$")
-  .map((path) => createRoute({ getParentRoute: () => legacy, path }));
-
-const task = createRoute({ getParentRoute: () => root, path: "tasks/$", component: TaskRoute });
+const PAGES = ["asks", "tasks", "runs", "inbox", "reports", "queue", "terminal", "workflow", "costs", "more", "memories", "settings"];
+const pageRoutes = ["/", "index.html", ...PAGES.flatMap((name) => [name, `${name}/$`]), "batches/$batch"]
+  .map((path) => createRoute({ getParentRoute: () => page, path }));
 
 export const makeRouter = (from = history) => createRouter({
-  routeTree: root.addChildren([legacy.addChildren(legacyRoutes), task]),
+  routeTree: root.addChildren([page.addChildren(pageRoutes)]),
   history: from,
   parseSearch,
   stringifySearch,

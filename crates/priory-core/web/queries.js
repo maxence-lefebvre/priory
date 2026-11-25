@@ -2,9 +2,10 @@
 // its own queries, so a moved revision reads only what is on screen. A read keeps the last data on
 // screen until the new data lands, and a failed read keeps it.
 import { QueryCache, QueryClient } from "@tanstack/react-query";
+import { READS } from "./reads/index.js";
 
 // The server reads its views and links once, when it starts, so a page reads them once.
-const ONCE = new Set(["views", "links"]);
+const ONCE = new Set(["views", "links", ...Object.values(READS).filter((each) => each.once).map((each) => each.name)]);
 const LISTINGS = ["views", "links", "desk", "asks", "queue", "tasks", "runs", "report", "reports"];
 const REVISIONED = ["desk", "asks", "queue", "tasks", "runs"];
 
@@ -19,7 +20,9 @@ export function keyOf(name, { all, reportShown } = params()) {
 }
 
 /** Reads the query `key` from the server. */
-export function read(api, [name, part], signal) {
+export function read(api, key, signal) {
+  const [name, part] = key;
+  if (Object.hasOwn(READS, name)) return READS[name].read(api, key, signal);
   if (name === "links") return api("/api/links", signal).then((body) => body.links);
   if (name === "reports") return api("/api/reports", signal).then((body) => body.reports);
   if (name === "task") return api(`/api/tasks/${part}`, signal);
@@ -105,7 +108,14 @@ export function oldestRead(cache) {
   return times.length ? Math.min(...times) : null;
 }
 
-const KEPT = new Set([...LISTINGS, "spend", "flows"]);
+const KEPT = new Set([...LISTINGS, "spend", ...Object.values(READS).filter((each) => each.kept).map((each) => each.name)]);
+
+/** The newest read of `name` the cache holds, whichever rows it asked for. */
+export function newest(cache, name) {
+  const held = cache.getQueryCache().findAll({ queryKey: [name] }).filter((query) => query.state.data !== undefined);
+  return held.sort((a, b) => b.state.dataUpdatedAt - a.state.dataUpdatedAt)[0]?.state.data;
+}
+
 const withoutRevision = (data) => {
   if (!data || Array.isArray(data) || typeof data !== "object" || !("revision" in data)) return data;
   const { revision: _, ...rest } = data;
@@ -137,7 +147,11 @@ function earlier({ data, updated }) {
 /** Puts a kept snapshot in the cache, marked stale so a live page reads it again. */
 export function restore(cache, kept) {
   const reads = kept?.reads ?? (kept?.data ? earlier(kept) : []);
-  for (const [[name, part], data, updatedAt] of reads) {
+  // The Costs panel keeps one value of two reads until it is in React.
+  const spend = reads.find(([[name]]) => name === "spend");
+  const split = spend?.[1] ? [[["costs", spend[1].costs.by], spend[1].costs, spend[2]], [["attention"], spend[1].attention, spend[2]]] : [];
+  const missing = split.filter(([[name]]) => !reads.some(([key]) => key[0] === name));
+  for (const [[name, part], data, updatedAt] of [...reads, ...missing]) {
     // A page opens on its listings' newest rows, and on the newest report.
     const key = part === true ? [name, false] : name === "report" ? ["report", null] : part === undefined ? [name] : [name, part];
     cache.setQueryData(key, withoutRevision(data), { updatedAt });

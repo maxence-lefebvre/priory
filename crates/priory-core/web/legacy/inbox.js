@@ -4,9 +4,12 @@ import { droppedWhy, eventWords, neverOwned, requestedWorkflow, routeAction, unh
 import { taskLabel } from "../tasks.js";
 import { addSheet, keepDraft, openAdd, readAddDefaults, renderAdd } from "./add.js";
 import { api, refresh, signOut } from "./data.js";
-import { html, post, raw, savedViews, state, taskName, tile, timeTag } from "./shared.js";
+import { html, post, raw, savedViews, taskName, tile, timeTag } from "./shared.js";
+import { state } from "./state.js";
 import { taskActs, taskWrite } from "./taskacts.js";
 
+// The Unrouted view's groups, read when the view opens, and each resource's last subscribe note.
+Object.assign(state, { unrouted: { groups: null, error: null, loading: false, busy: null, notices: new Map() } });
 
 // Unrouted (DESIGN.md, Desk): events that reached no task, by resource, each with a way to route the next one.
 export async function loadUnrouted() {
