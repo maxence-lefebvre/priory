@@ -1324,6 +1324,16 @@ pub(crate) fn read(db: &mut Connection, wait: i64, current: &str) -> rusqlite::R
     tx.commit()
 }
 
+/// Gives task `?1` the ignored events of resource `?3` since its wait `?2`'s prompt.
+pub(crate) const KEEP_IGNORED: &str = "UPDATE inbox SET task = ?1, outcome = 'kept'
+     WHERE outcome = 'ignored' AND task IS NULL
+     AND julianday(time) >= julianday((SELECT since FROM waits WHERE id = ?2))
+     AND ?3 = CASE
+       WHEN type LIKE 'linear.%' THEN 'linear:' || json_extract(data, '$.issue')
+       WHEN type LIKE 'slack.%' THEN 'slack:' || json_extract(data, '$.channel') || ':'
+         || coalesce(json_extract(data, '$.thread_ts'), json_extract(data, '$.ts'))
+     END";
+
 /// Stores a wait on the one condition `on` and returns its id.
 fn condition(tx: &Transaction, run: &Run, on: &Value) -> rusqlite::Result<Result<i64, String>> {
     let kind = on["type"].as_str().unwrap_or_default();
@@ -1352,17 +1362,7 @@ fn condition(tx: &Transaction, run: &Run, on: &Value) -> rusqlite::Result<Result
             )?;
             let id = tx.last_insert_rowid();
             // No task owned the resource before: its events since the last prompt were ignored.
-            tx.execute(
-                "UPDATE inbox SET task = ?1, outcome = 'kept'
-                 WHERE outcome = 'ignored' AND task IS NULL
-                 AND julianday(time) >= julianday((SELECT since FROM waits WHERE id = ?2))
-                 AND ?3 = CASE
-                   WHEN type LIKE 'linear.%' THEN 'linear:' || json_extract(data, '$.issue')
-                   WHEN type LIKE 'slack.%' THEN 'slack:' || json_extract(data, '$.channel') || ':'
-                     || coalesce(json_extract(data, '$.thread_ts'), json_extract(data, '$.ts'))
-                 END",
-                params![run.task, id, resource],
-            )?;
+            tx.execute(KEEP_IGNORED, params![run.task, id, resource])?;
             return Ok(Ok(id));
         }
         "time" => {

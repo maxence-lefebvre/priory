@@ -20344,9 +20344,7 @@ fn a_start_over_a_backlog_runs_no_task_that_the_rest_of_the_log_withdraws() {
 
     setup.start();
 
-    setup.until("tasks", |rows| {
-        rows.len() == 1 && rows[0][4] == "dropped"
-    });
+    setup.until("tasks", |rows| rows.len() == 1 && rows[0][4] == "dropped");
     assert!(setup.rows("runs").is_empty());
 }
 
@@ -26772,6 +26770,70 @@ fn a_runner_several_ticks_behind_claims_and_runs_nothing_before_it_read_the_whol
     assert_eq!(claimants(&a, key), ["b"]);
     assert!(a.own_tasks().is_empty());
     assert!(a.rows("runs").is_empty());
+    a.crash();
+}
+
+#[test]
+fn a_runner_several_ticks_behind_holds_and_runs_no_task_that_the_rest_of_the_log_gives_away() {
+    let mut a = runner("behind-given", "a", None);
+    let key = "github:owner/repo#1";
+    let request = requested(1);
+    let id = request.id.to_string();
+    a.publish(&request);
+    let mine = json!({ "key": key, "runner": "a", "request": id });
+    let kept = json!({ "key": key, "runner": "a", "hold": "kept", "generation": 1 });
+    a.publish(&Message::new("priory.task.claimed", mine).subject(key));
+    a.publish(&Message::new("priory.task.held", kept).subject(key));
+    for at in 0..150 {
+        a.publish(&Message::new("t.event", json!({ "at": at })));
+    }
+    let gift = json!({ "key": key, "runner": "b", "request": id, "from": "a", "given": true });
+    a.publish(&Message::new("priory.task.claimed", gift).subject(key));
+
+    a.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+    until_alive(&a, "a");
+
+    assert_eq!(a.own_tasks()[0][4], "dropped");
+    assert!(a.rows("runs").is_empty());
+    let held = a
+        .rows("inbox")
+        .into_iter()
+        .filter(|row| row[1] == "priory.task.held")
+        .count();
+    assert_eq!(held, 1, "a says nothing from a log it read in part");
+    a.crash();
+}
+
+#[test]
+fn a_runner_several_ticks_behind_applies_no_line_before_it_read_the_whole_log() {
+    let mut a = runner("behind-line", "a", None);
+    let bus = a.bus();
+    for at in 0..1500 {
+        let event = Message::new("t.event", json!({ "at": at }));
+        bus.publish(OUTPUT, &event).unwrap();
+    }
+
+    a.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut socket = loop {
+        if let Ok(socket) = std::os::unix::net::UnixStream::connect(a.socket()) {
+            break socket;
+        }
+        assert!(Instant::now() < deadline, "the daemon does not listen");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    std::io::Write::write_all(&mut socket, b"{\"version\":true}\n").unwrap();
+    let mut reply = String::new();
+    std::io::Read::read_to_string(&mut socket, &mut reply).unwrap();
+
+    assert!(reply.contains("Ok"), "{reply}");
+    assert!(a.rows("inbox").len() >= 1500);
     a.crash();
 }
 

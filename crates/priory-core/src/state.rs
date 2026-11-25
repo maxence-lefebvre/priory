@@ -2198,7 +2198,7 @@ CREATE INDEX IF NOT EXISTS inbox_by_pull ON inbox ('github:' || json_extract(dat
   || coalesce(json_extract(data, '$.pull_request'), json_extract(data, '$.issue')) IS NOT NULL;
 CREATE INDEX IF NOT EXISTS inbox_by_issue ON inbox ('linear:' || json_extract(data, '$.issue'))
   WHERE 'linear:' || json_extract(data, '$.issue') IS NOT NULL;
-CREATE INDEX IF NOT EXISTS inbox_by_task ON inbox (task);
+CREATE INDEX IF NOT EXISTS inbox_by_task ON inbox (task) WHERE task IS NOT NULL;
 CREATE INDEX IF NOT EXISTS inbox_merges ON inbox (json_extract(data, '$.repo'),
   json_extract(data, '$.merge_commit')) WHERE type = 'github.pull_request.closed';
 PRAGMA user_version = 123;
@@ -5576,6 +5576,26 @@ mod inbox_lookups {
             "the scans count nothing"
         );
         assert_eq!(did(scanned), did(indexed));
+    }
+
+    #[test]
+    fn a_wait_looks_up_the_ignored_events_by_day_and_a_task_its_events_by_task() {
+        let db = memory();
+        let plan = |sql: &str| -> String {
+            db.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap()
+                .raw_query()
+                .mapped(|row| row.get::<_, String>(3))
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+                .join("; ")
+        };
+
+        let ignored = plan(crate::tools::KEEP_IGNORED);
+        let of_task = plan("SELECT data FROM inbox WHERE task = ?1 ORDER BY seq LIMIT 1");
+
+        assert!(ignored.contains("INDEX inbox_by_day "), "{ignored}");
+        assert!(of_task.contains("INDEX inbox_by_task "), "{of_task}");
     }
 
     #[test]

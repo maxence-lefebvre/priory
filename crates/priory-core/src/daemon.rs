@@ -403,6 +403,8 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut live = Live::new(factory, watch, trace.revision.clone(), server);
     let mut upgrader = Upgrader::new(factory);
     crate::watchdog::watch(&home);
+    // Until the first catch-up after a start or a lost link, the rest of the log may withdraw a task.
+    let mut catching_up = true;
     loop {
         let tick = Instant::now();
         ticks::begin();
@@ -439,7 +441,8 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
                 false => Ok(()),
             });
             metered(&*bus, tried.as_ref().copied());
-            let reached = tried.is_ok() && !behind;
+            let reached = tried.is_ok();
+            catching_up = tried.is_err() || (catching_up && behind);
             link.tried(&db, tried)?;
             // A pick's request that a lost log refused goes out once the log answers again.
             if reached && redispatch.is_none_or(|after| Instant::now() >= after) {
@@ -449,6 +452,13 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
                 }
                 redispatch = (!failed.is_empty()).then(|| Instant::now() + REDISPATCH);
             }
+        }
+        // A task that moved may still be in the rest of the log: a runner acts on none before that,
+        // not even on an answer to it.
+        if behind && trace.runner.is_some() {
+            ticks::record(tick.elapsed());
+            crate::watchdog::ended(&home);
+            continue;
         }
         ticks::phase("signals");
         while let Ok(line) = listening.lines.try_recv() {
@@ -461,8 +471,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
                 &searching,
             )?;
         }
-        // A task that moved may still be in the rest of the log: a runner acts on none before that.
-        if behind && trace.runner.is_some() {
+        if behind && catching_up {
             ticks::record(tick.elapsed());
             crate::watchdog::ended(&home);
             continue;
@@ -1183,10 +1192,7 @@ fn add(
     let consumer = runners::consumer(trace.runner.as_deref());
     // A request the log took but did not hand back yet: the loop takes it in later.
     let tried = drain_some(&*log, &consumer, db, trace, counter, false);
-    match tried.and_then(|caught_up| match caught_up {
-        true => runners::flush(db, &*log),
-        false => Ok(()),
-    }) {
+    match tried.and_then(|_| runners::flush(db, &*log)) {
         Err(error) if !log::unreachable(&*error) => return Err(error),
         _ => {}
     }
@@ -3376,11 +3382,13 @@ fn some(
     probe: bool,
     handle: &mut dyn FnMut(&log::Delivery) -> Result<(), Error>,
 ) -> Result<bool, Error> {
-    let started = Instant::now();
-    let mut probe = probe.then_some(started);
+    let mut probe = probe.then(Instant::now);
     let mut handled = 0;
+    // The clock starts after the first read, so a slow log leaves a pass its time.
+    let mut started = None;
     loop {
         let deliveries = read(bus, consumer, &mut probe)?;
+        let started = *started.get_or_insert_with(Instant::now);
         if deliveries.is_empty() {
             return Ok(true);
         }
@@ -3530,6 +3538,62 @@ mod tests {
             "{passes:?}"
         );
         assert!(seen.into_iter().eq(0..250));
+    }
+
+    /// A log whose every read takes as long as a tick's whole time.
+    struct Slow(herdr_bus::Bus);
+
+    impl Log for Slow {
+        fn declare(&self, output: &herdr_bus::Output) -> log::Result<()> {
+            Log::declare(&self.0, output)
+        }
+        fn publish(
+            &self,
+            output: &str,
+            message: &herdr_bus::Message,
+        ) -> log::Result<herdr_bus::Seq> {
+            Log::publish(&self.0, output, message)
+        }
+        fn message(&self, seq: herdr_bus::Seq) -> log::Result<herdr_bus::Stored> {
+            Log::message(&self.0, seq)
+        }
+        fn messages(
+            &self,
+            output: &str,
+            before: Option<herdr_bus::Seq>,
+            limit: usize,
+        ) -> log::Result<Vec<herdr_bus::Stored>> {
+            Log::messages(&self.0, output, before, limit)
+        }
+        fn read(
+            &self,
+            consumer: &str,
+            output: &str,
+            limit: usize,
+        ) -> log::Result<Vec<log::Delivery>> {
+            std::thread::sleep(DRAIN_FOR);
+            Log::read(&self.0, consumer, output, limit)
+        }
+        fn ack(&self, consumer: &str, delivery: &log::Delivery) -> log::Result<()> {
+            Log::ack(&self.0, consumer, delivery)
+        }
+        fn backlog(&self, output: &str) -> log::Result<Vec<(String, u64)>> {
+            Log::backlog(&self.0, output)
+        }
+    }
+
+    #[test]
+    fn a_tick_whose_read_took_its_whole_time_still_handles_what_it_read() {
+        let bus = Slow(backlog("slow-read", 3));
+        let mut handled = 0;
+
+        let drained = some(&bus, "c", false, &mut |_| {
+            handled += 1;
+            Ok(())
+        });
+
+        drained.unwrap();
+        assert_eq!(handled, 3);
     }
 
     #[test]
