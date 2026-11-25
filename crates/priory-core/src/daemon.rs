@@ -536,7 +536,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
                 limits.check(&slice, &share, &home);
             }
         }
-        let short = || room::measure(&home).is_ok_and(|room| crate::room::short_of_disk(&room));
+        // A measure from before the last removal would retire one task too many.
+        let short =
+            || room::measure_fresh(&home).is_ok_and(|room| crate::room::short_of_disk(&room));
         let ended = sweeping.tick(&db, factory, &home, short)?;
         if ended {
             sweep::measure(&home);

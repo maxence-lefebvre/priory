@@ -51,7 +51,8 @@ The file is in a new folder of the temporary folder that only its owner can ente
 refuses to run when that folder is already there. The shell checks every 50 ms that `acquire` still
 runs, and exits without running the command once `acquire` is gone. The daemon identifies a holder
 there by pid and the start time `ps` prints, to the second. When `ps` cannot run or takes more than
-5 seconds, the daemon keeps the grant.
+5 seconds, the daemon keeps the grant. It then refuses a new `acquire`, or the hand-over of step 3,
+whose process it cannot check, and that `acquire` exits 125 and never runs the command.
 
 `acquire` exits 125 and never runs the command when no daemon listens to its first request, when
 the daemon cannot measure the room or refuses the grant, or when the grant still waits after
