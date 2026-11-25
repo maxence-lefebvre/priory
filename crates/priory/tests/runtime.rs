@@ -4654,6 +4654,54 @@ fn a_run_with_no_session_start_within_60_seconds_ends_and_names_the_folders_to_t
     assert_eq!(outbox[0][3], "queued");
 }
 
+#[test]
+fn a_resume_with_no_session_start_goes_on_in_a_new_session_that_names_the_old_transcript() {
+    let mut setup = Setup::new("unresumed");
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    let session = setup.rows("runs")[0][4].clone();
+    fs::write(setup.dir.join("fake/silent-resume"), READY_PROMPT).unwrap();
+
+    let answered = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    let runs = setup.within(75, "runs", |rows| {
+        rows.get(1).is_some_and(|row| row[7] == "unresumed")
+    });
+    assert_eq!(runs[1][4], session);
+    setup.until("runs", |rows| rows.len() == 3);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let runs = setup.rows("runs");
+    assert_eq!(runs.len(), 3, "{runs:?}");
+    assert_ne!(runs[2][4], session);
+    assert!(has(&launched(&setup), ["--session-id", &runs[2][4]]));
+    let typed = setup.typed();
+    let transcript = setup.dir.join("fake/transcript.jsonl");
+    assert!(
+        typed[1].contains(&format!("resumed session {session}"))
+            && typed[1].contains(&transcript.display().to_string())
+            && typed[1].contains("Answer to ask 1 (revision 1): sqlite"),
+        "{typed:?}"
+    );
+    assert_ne!(setup.rows("tasks")[0][4], "blocked");
+    let repaired = setup.priory(&["trace"]);
+    let repaired = String::from_utf8_lossy(&repaired.stdout);
+    assert!(
+        repaired.contains("\"action\":\"new session\""),
+        "{repaired}"
+    );
+    let desk = setup.priory(&["desk"]);
+    let desk = String::from_utf8_lossy(&desk.stdout);
+    assert!(
+        desk.contains("factory.task.repaired implement: ready, new session after it did not start the resumed session"),
+        "{desk}"
+    );
+}
+
 /// Claude Code 2.1.330's folder trust dialog, as a run in a new worktree shows it.
 const TRUST_DIALOG: &str = "────────────────────────────────────────
  Accessing workspace:

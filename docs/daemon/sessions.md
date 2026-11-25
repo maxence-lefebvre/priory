@@ -147,6 +147,44 @@ An agent with `onChange = "fresh"` starts a new shared session instead of resumi
 A session recorded before Priory kept digests has none: it is resumed as unchanged, and its next
 run records them.
 
+## When a resume never starts
+
+A Claude Code run that resumes a session can show the conversation and an idle prompt without
+running Priory's hooks. Claude 2.1.330 did this on some large sessions: it kept the session id and
+wrote to the same transcript, but sent no `SessionStart`. Resuming the same session again does the
+same, while a new session starts. So the daemon does not block such a run.
+
+When a run that resumed a session sends no `SessionStart` within its window (see
+[By hand](#by-hand)), its pane shows Claude's input box and its slice was not throttled, the daemon:
+
+1. ends the run as `unresumed` and kills its tmux session,
+2. repairs the task with the action `new session` (see [health.md](health.md#repair)), which
+   appends a `factory.task.repaired` record whose `cause` names the old session's transcript, and
+3. makes the task `ready` with this prompt first, before the prompts the task already queued:
+   `Priory repaired this task after: claude showed no SessionStart within 60s when Priory resumed
+   session <id>. Cause: it did not start the resumed session; its transcript is <path>, so read its
+   end for where you were. Action: new session. Check the worktree, then continue.`
+
+The task's next run starts a new session, and later runs resume that one: a session with an
+`unresumed` run is never resumed again, by a debate either. For a `shared` agent, the new session becomes the
+agent's shared session, as for a first run. The desk lists the repair under Since you looked as
+`factory.task.repaired <step>: ready, new session after <cause>`, and the daemon log names the run.
+
+A resume whose pane shows no input box, or in a throttled slice, blocks its task instead: it may only
+be slow. A new session that also sends no `SessionStart` within its window blocks its task as described
+under Trusting the worktrees and the clone. A resume that follows a repair and stored no result,
+ask or wait fails the task instead, as a second failure after a repair does.
+
+Known limits:
+
+- A resume that would have started just past its window is replaced too. The new session reads the
+  old transcript at full price instead of reusing its prompt cache.
+- The new session has only the old transcript and the task's prompts to go on. It reads the
+  transcript itself, and a long one costs tokens.
+- A Codex run is not covered: Priory does not recognize Codex's prompt, and a resumed Codex session
+  sends no `SessionStart` before its first prompt (see [codex.md](codex.md)).
+- Priory does not know why Claude skipped the hooks.
+
 ## Attaching to a run
 
 `priory attach TASK` attaches your terminal to the tmux session of the task's live run, so you see
@@ -427,7 +465,8 @@ recorded its trust` after the window: `claude showed no SessionStart within 180s
 recorded its trust; it started too slowly`. Elsewhere, as at Codex's `Hooks need review`, the
 throttling follows the commands after `; `.
 
-The daemon never restarts the run by itself, since a restart changes nothing that made it slow.
+The daemon never restarts such a run by itself, since a restart changes nothing that made it slow.
+The exception is under [When a resume never starts](#when-a-resume-never-starts).
 `priory resume` starts it again.
 
 The daemon's `runs` metrics group counts both as starts that ended in `error`, and shows a start

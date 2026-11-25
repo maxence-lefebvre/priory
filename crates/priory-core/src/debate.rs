@@ -189,6 +189,7 @@ pub(crate) fn turn(
     let resume = tx
         .query_row(
             "SELECT session FROM runs WHERE debate = ?1 AND agent = ?2 AND ready = 1
+             AND session NOT IN (SELECT session FROM runs WHERE ended_as = 'unresumed')
              ORDER BY id DESC LIMIT 1",
             params![id, agent],
             |row| row.get(0),

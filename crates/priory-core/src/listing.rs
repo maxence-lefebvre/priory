@@ -1445,6 +1445,10 @@ fn since_you_looked(db: &Connection, person: &str) -> rusqlite::Result<Value> {
                    || ' by session ' || json_extract(event, '$.data.session')
                  WHEN 'factory.ask.session_dismissed' THEN 'ask ' || json_extract(event, '$.data.ask')
                    || ' dismissed by session ' || json_extract(event, '$.data.session')
+                 WHEN 'factory.task.repaired' THEN type || ' ' || json_extract(event, '$.data.step')
+                   || ': ' || json_extract(event, '$.data.outcome') || ', '
+                   || json_extract(event, '$.data.action') || ' after '
+                   || json_extract(event, '$.data.cause')
                  ELSE type || coalesce(' ' || json_extract(event, '$.data.step'), '')
                    || coalesce(': ' || json_extract(event, '$.data.outcome'), '') END AS what,
                0 AS source, seq

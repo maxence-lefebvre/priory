@@ -1591,11 +1591,29 @@ fn tend(
             // Committed first, so a crash before the kill leaves an ended run, not a lost one.
             state::block(db, trace, run.task, ended_as, &reason)?;
             runtime::kill(&run.tmux);
-            if overwritten {
-                // The next start writes the grant again; a second loss fails the task.
-                let repair = (!tools::spent(db, run.id)?).then(|| Repair {
-                    cause: format!("{} overwrote Priory's trust grant", harness.program()),
-                    action: "restart",
+            let repair = if overwritten {
+                let cause = format!("{} overwrote Priory's trust grant", harness.program());
+                Some((cause, "restart"))
+            } else if ended_as == "unresumed" {
+                eprintln!("priory daemon: run {}: {reason}", run.id);
+                let cause = match state::transcript(db, &run.session)? {
+                    Some(transcript) => format!(
+                        "it did not start the resumed session; its transcript is {transcript}, \
+                         so read its end for where you were"
+                    ),
+                    None => "it did not start the resumed session, and Priory recorded no \
+                             transcript of it"
+                        .to_owned(),
+                };
+                Some((cause, "new session"))
+            } else {
+                None
+            };
+            // The next start writes the grant again or starts a new session; a second failure fails the task.
+            if let Some((cause, action)) = repair {
+                let repair = (!tools::spent(db, run.id)?).then_some(Repair {
+                    cause,
+                    action,
                     gone: true,
                 });
                 tools::fail(db, trace, run.task, run.id, &reason, repair.as_ref())?;
@@ -1860,6 +1878,16 @@ fn verdict(
     });
     if let Some((within, trusted)) = late {
         let program = harness.program();
+        let ready = rows.as_deref().is_some_and(|rows| harness.at_prompt(rows));
+        let throttling = throttled();
+        // Claude 2.1.330 resumed some sessions to an idle prompt without running their hooks.
+        if run.resumes && ready && throttling.is_none() {
+            let reason = format!(
+                "{program} showed no SessionStart within {within}s when Priory resumed session {}",
+                run.session
+            );
+            return Some(("unresumed", reason, false));
+        }
         let mut reason = if run.direnv == 1 && runtime::direnv_loading(home, &run.session) {
             format!(
                 "direnv did not finish loading {}/.envrc within {within}s, so {program} never \
@@ -1867,14 +1895,13 @@ fn verdict(
                 run.worktree.as_deref().unwrap_or("its folder"),
             )
         } else {
-            let ready = rows.as_deref().is_some_and(|rows| harness.at_prompt(rows));
             let known = trusted && !harness.reviews_hooks();
             let recorded = if known {
                 " although Priory recorded its trust"
             } else {
                 ""
             };
-            let advice = match (ready || known, throttled()) {
+            let advice = match (ready || known, throttling) {
                 (true, Some(throttled)) => throttled,
                 (true, None) if ready => "its prompt is ready and asks for no trust, so its \
                                           SessionStart hook is late or never reached the daemon"
@@ -3346,6 +3373,7 @@ mod tests {
             ready: false,
             waited: Some(600),
             direnv: 1,
+            resumes: false,
             turn: None,
             prompted: None,
         };

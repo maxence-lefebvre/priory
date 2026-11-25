@@ -4265,7 +4265,9 @@ pub(crate) struct NewRun<'a> {
 pub(crate) fn shared(db: &Connection, agent: &str) -> rusqlite::Result<Option<String>> {
     db.query_row(
         "SELECT session FROM shared_sessions WHERE agent = ?1
-         AND EXISTS (SELECT 1 FROM runs WHERE runs.session = shared_sessions.session AND ready = 1)",
+         AND EXISTS (SELECT 1 FROM runs WHERE runs.session = shared_sessions.session AND ready = 1)
+         AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.session = shared_sessions.session
+           AND ended_as = 'unresumed')",
         [agent],
         |row| row.get(0),
     )
@@ -4285,8 +4287,20 @@ pub(crate) fn resumable(
         "SELECT session FROM runs WHERE task = ?1 AND agent = ?2 AND ready = 1 AND debate IS NULL
          AND session NOT IN (SELECT session FROM shared_sessions)
          AND session NOT IN (SELECT session FROM runs GROUP BY session HAVING count(DISTINCT task) > 1)
+         AND session NOT IN (SELECT session FROM runs WHERE ended_as = 'unresumed')
          ORDER BY id DESC LIMIT 1",
         params![task, agent],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
+/// The transcript an earlier run of `session` recorded, if any.
+pub(crate) fn transcript(db: &Connection, session: &str) -> rusqlite::Result<Option<String>> {
+    db.query_row(
+        "SELECT transcript FROM runs WHERE session = ?1 AND transcript IS NOT NULL
+         ORDER BY id DESC LIMIT 1",
+        [session],
         |row| row.get(0),
     )
     .optional()
@@ -4683,6 +4697,8 @@ pub(crate) struct LiveRun {
     pub waited: Option<i64>,
     /// 1 when it started under `direnv exec`, 2 once direnv failed and it started without, else 0.
     pub direnv: i64,
+    /// It resumed a session rather than starting one.
+    pub resumes: bool,
     /// How long its current turn has run, in seconds.
     pub turn: Option<i64>,
     /// Claude's message for the permission prompt it shows, if any.
@@ -4745,7 +4761,7 @@ pub(crate) fn live(db: &Connection) -> rusqlite::Result<Vec<LiveRun>> {
         "SELECT runs.id, runs.task, runs.step, tasks.workflow, runs.tmux, runs.session, tasks.worktree,
          CASE WHEN NOT runs.ready THEN unixepoch('now') - unixepoch(runs.started) END,
          unixepoch('now') - unixepoch(runs.turn), runs.prompted, coalesce(runs.agent, ''), runs.ready,
-         coalesce(runs.direnv, 0)
+         coalesce(runs.direnv, 0), coalesce(runs.resumes, 0)
          FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.ended IS NULL ORDER BY runs.id",
     )?;
     statement
@@ -4764,6 +4780,7 @@ pub(crate) fn live(db: &Connection) -> rusqlite::Result<Vec<LiveRun>> {
                 agent: row.get(10)?,
                 ready: row.get(11)?,
                 direnv: row.get(12)?,
+                resumes: row.get(13)?,
             })
         })?
         .collect()
