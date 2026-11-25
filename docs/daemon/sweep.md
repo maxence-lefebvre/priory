@@ -87,12 +87,13 @@ The daemon's loop starts runs and delivers answers, so a sweep must not hold it:
 1. The loop lists the worktrees of ended tasks and starts one thread. The thread fetches, checks each
    worktree, and walks the ignored files of one that may go. A walk has no time limit, so a large
    worktree can go too. Its answer waits for a later tick.
-2. Each tick takes one worktree. It checks again, for at most 1 second of git, that the task's state
+2. Each tick takes one worktree. It checks again, with 1.5 seconds of git for this whole tick, that the task's state
    is the same with no live run and no memory grant, that `HEAD` and the branch are those the thread
    judged, that nothing is uncommitted or untracked, that no process runs in it, that git holds no
    lock on it and no submodule in it, and that no mount is in it.
 3. The tick renames the folder to `PRIORY_HOME/reclaim/`, or beside it on another filesystem, and
-   drops its entry in the clone. When git refuses to drop the entry, the folder moves back.
+   checks it once more there, where a change by the old path no longer reaches it. Then it drops the
+   entry in the clone. When a check fails or git refuses, the folder moves back.
 4. A thread looks for mounts and repositories in the moved folder once more. One that holds either
    moves to `PRIORY_HOME/trash/`, and the daemon logs it. Otherwise the thread makes every folder
    writable by its owner, since a test run can seal one under an ignored `target/`, and deletes it.
@@ -101,16 +102,18 @@ The daemon's loop starts runs and delivers answers, so a sweep must not hold it:
 A walk that found a repository is kept until `HEAD`, the index, or a folder on the way to the
 repository changes, so a worktree that cannot go is not walked at every sweep.
 
-A thread that runs for over 10 minutes is logged once. The daemon then starts the reclaim and lets
-repairs that wait for the sweep go on. No new sweep starts until the thread that checks ends. A walk
-that never ends, such as on a hung network disk, so stops the sweeps until a restart.
+A thread that runs for over 10 minutes is logged once. The daemon then starts the reclaim, and a repair
+that waits for a sweep goes on after 10 minutes too. No new sweep starts until the thread that checks
+ends. A walk that never ends, such as on a hung network disk, so stops the sweeps until a restart.
 
 While the thread fetches a clone, a start that needs a fetch of it waits with
 `waits to fetch <owner>/<name>: the sweep fetches it`. Two fetches of one ref would make one fail.
 
 A daemon that stops during a delete leaves the folder in `PRIORY_HOME/reclaim/`, and the next sweep
-deletes it. A folder that holds what looks like a repository, tracked or not, stays there and is
-logged.
+deletes it. One that stops before the entry in the clone went leaves a worktree there, and the next
+sweep moves it back. A folder that holds what looks like a repository, tracked or not, stays there and
+is logged. On another filesystem, what a stopped daemon leaves stays beside the worktrees, listed on
+the desk as `no task`.
 
 ## What a removal never takes
 

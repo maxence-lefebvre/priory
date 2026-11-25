@@ -238,9 +238,6 @@ fn judge(home: &Path, repos: &[String], mut jobs: Vec<Job>) -> Judged {
     Judged { unfetched, answers }
 }
 
-/// How long the sweep's thread, or one walk or delete of it, runs before the loop stops waiting.
-const LATE: Duration = Duration::from_secs(10 * 60);
-
 /// A thread the loop waits for, tick by tick.
 struct Off<T> {
     thread: JoinHandle<T>,
@@ -259,9 +256,9 @@ impl<T: Send + 'static> Off<T> {
         }
     }
 
-    /// Whether it just ran past `LATE`, which is logged.
+    /// Whether it just ran past `OVERDUE`, which is logged.
     fn turns_late(&mut self) -> bool {
-        let turns = !self.late && self.started.elapsed() >= LATE;
+        let turns = !self.late && self.started.elapsed() >= OVERDUE;
         if turns {
             self.late = true;
             eprintln!("priory daemon: {} takes over 10 minutes", self.what);
@@ -307,7 +304,7 @@ pub(crate) struct Sweeping {
     asleep: VecDeque<(i64, String)>,
     retiring: Option<Retiring>,
     /// Each run that exited on a short disk, the sweep its repair waits for, and the cause.
-    repairs: HashMap<i64, (u64, String)>,
+    repairs: HashMap<i64, (u64, Instant, String)>,
 }
 
 impl Sweeping {
@@ -323,27 +320,29 @@ impl Sweeping {
         run: i64,
         short: impl FnOnce() -> rusqlite::Result<Option<String>>,
     ) -> rusqlite::Result<bool> {
-        if let Some((sweep, _)) = self.repairs.get(&run) {
-            return Ok(self.ended < *sweep);
+        if let Some((sweep, asked, _)) = self.repairs.get(&run) {
+            // A sweep that hangs lets none start after it.
+            return Ok(self.ended < *sweep && asked.elapsed() < OVERDUE);
         }
         let cause = short()?;
         let waits = cause.is_some();
         if let Some(cause) = cause {
-            self.repairs.insert(run, (self.started + 1, cause));
+            self.repairs
+                .insert(run, (self.started + 1, Instant::now(), cause));
         }
         Ok(waits)
     }
 
     /// Why `run` exited, when a sweep ran to repair it.
     pub(crate) fn repaired(&mut self, run: i64) -> Option<String> {
-        self.repairs.remove(&run).map(|(_, cause)| cause)
+        self.repairs.remove(&run).map(|(_, _, cause)| cause)
     }
 
     /// Whether a repair waits for a sweep that did not start.
     pub(crate) fn asked(&self) -> bool {
         self.repairs
             .values()
-            .any(|(sweep, _)| *sweep > self.started)
+            .any(|(sweep, _, _)| *sweep > self.started)
     }
 
     /// Starts a sweep, unless one or a retirement is under way.
@@ -472,14 +471,12 @@ impl Sweeping {
                     return Ok(());
                 }
                 // Only this thread starts runs, so none starts between these checks and the move.
-                worktrees::take(home, &entry.found, entry.tip.as_deref())
+                worktrees::take(home, &entry.found, entry.tip.as_deref(), !entry.retire)
             }
         };
         match taken {
             Ok(taken) => {
-                if !entry.retire
-                    && let Err(error) = worktrees::remove_branch(home, &entry.found)
-                {
+                if let Some(error) = &taken.branch_stays {
                     eprintln!("priory daemon: removing {}: {error}", path.display());
                 }
                 self.delete(home, taken);
@@ -621,7 +618,7 @@ impl Sweeping {
                  WHERE id = ?1",
                 [task],
             )?;
-            match worktrees::take(home, &found, None) {
+            match worktrees::take(home, &found, None, false) {
                 Ok(taken) => {
                     self.delete(home, taken);
                     return Ok(());
@@ -1051,7 +1048,7 @@ pub(crate) struct Reclaim {
     retires: bool,
 }
 
-/// How long a retirement waits for one delete.
+/// How long the loop waits for one thread of a sweep or a delete.
 const OVERDUE: Duration = Duration::from_secs(10 * 60);
 
 /// A thread that deletes `output`, moved to `home/reclaim`, or what a stopped daemon left there. It
@@ -1154,7 +1151,8 @@ impl Reclaim {
                 self.report(home.join(RECLAIM), &reason);
                 return Ok(());
             }
-            let left = leftovers(home);
+            let mut left = leftovers(home);
+            left.retain(|path| !worktrees::moved_back(home, path));
             if !left.is_empty() {
                 self.delete = Some(Delete::new(None, delete(home, left, None)));
             }
@@ -1220,6 +1218,7 @@ fn leftovers(home: &Path) -> Vec<PathBuf> {
         .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
         .filter(|entry| entry.file_name().to_str().is_some_and(named))
         .map(|entry| entry.path())
+        .filter(|path| !worktrees::in_hand(path))
         .collect()
 }
 
@@ -2224,6 +2223,11 @@ mod tests {
 
         assert!(!home.sweeping.asked());
         assert!(!home.sweeping.repairs(1, short).unwrap());
+
+        // A sweep that hangs starts no other, so the repair waits 10 minutes at most.
+        assert!(home.sweeping.repairs(2, short).unwrap());
+        home.sweeping.repairs.get_mut(&2).unwrap().1 = Instant::now() - OVERDUE;
+        assert!(!home.sweeping.repairs(2, short).unwrap());
         assert_eq!(home.sweeping.repaired(1).as_deref(), Some("disk full"));
     }
 
