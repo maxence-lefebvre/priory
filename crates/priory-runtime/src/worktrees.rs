@@ -883,7 +883,10 @@ pub fn detach(
         return Err(match fs::rename(&taken.aside, &path) {
             Ok(()) => {
                 let _ = fs::set_permissions(&path, taken.before.clone());
-                reason
+                match lost_entry(&path) {
+                    true => trashed(home, &path, reason),
+                    false => reason,
+                }
             }
             Err(error) => format!("{reason}; it stays in {}: {error}", taken.aside.display()),
         });
@@ -893,6 +896,24 @@ pub fn detach(
     }
     taken.held.release();
     Ok(())
+}
+
+/// Whether the entry that the worktree `path` names is gone, as a `git worktree prune` leaves one
+/// whose folder is elsewhere.
+fn lost_entry(path: &Path) -> bool {
+    let entry = real(path).and_then(|at| linked(&path.join(".git"), &at));
+    entry.is_some_and(|entry| fs::symlink_metadata(entry).is_err())
+}
+
+/// Moves `path` to the trash, since a run's start deletes a worktree without its entry. Returns
+/// `reason` and where it is.
+fn trashed(home: &Path, path: &Path, reason: String) -> String {
+    match move_aside(home, path) {
+        Ok(()) => {
+            format!("{reason}; its entry in the clone is gone, so it moved to the trash folder")
+        }
+        Err(error) => format!("{reason}; {error}"),
+    }
 }
 
 /// Checks the moved folder, which no later change reaches by the old path, and drops its entry in
@@ -1717,6 +1738,29 @@ mod tests {
 
         retire(&home.0, &found).unwrap();
         assert!(!found.path.exists() && !entry.exists());
+    }
+
+    #[test]
+    fn a_worktree_whose_entry_a_prune_dropped_as_it_moved_goes_to_the_trash_whole() {
+        for relative in [false, true] {
+            let (home, found) = Home::new("pruned");
+            let clone = home.0.join("repos/o/n");
+            fs::write(found.path.join("new"), "x").unwrap();
+            if relative {
+                let link = "gitdir: ../../../../repos/o/n/.git/worktrees/1\n";
+                fs::write(found.path.join(".git"), link).unwrap();
+            }
+            let mut taken = take(&home.0, &found).unwrap();
+            sh(&clone, &["worktree", "prune"]);
+
+            let refused = detach(&home.0, &mut taken, None, true).unwrap_err();
+
+            assert!(refused.contains("moved to the trash folder"), "{refused}");
+            let trash = fs::read_dir(home.0.join("trash")).unwrap().next().unwrap();
+            assert!(trash.unwrap().path().join("new").exists());
+            drop(taken);
+            crate::runtime::worktree(&home.0, "o/n", "1", None, false).unwrap();
+        }
     }
 
     #[test]

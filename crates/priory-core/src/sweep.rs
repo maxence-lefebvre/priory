@@ -57,8 +57,8 @@ type Answers = BTreeMap<PathBuf, Answer>;
 struct Judged {
     unfetched: Vec<String>,
     answers: Answers,
-    /// The worktrees that went whose branch's delete ran past its limit again.
-    cut: Vec<Found>,
+    /// The worktree that went whose branch's delete ran past its limit again.
+    cut: Option<Found>,
 }
 
 /// The task a worktree folder is named after.
@@ -240,7 +240,7 @@ fn judge(home: &Path, repos: &[String], mut jobs: Vec<Job>) -> Judged {
     Judged {
         unfetched,
         answers,
-        cut: Vec::new(),
+        cut: None,
     }
 }
 
@@ -325,7 +325,7 @@ pub(crate) struct Sweeping {
     /// The deletes the loop no longer waits for.
     overdue: Vec<Deleting>,
     /// The worktrees that went whose branch's delete ran past its limit.
-    branches: Vec<Found>,
+    branches: VecDeque<Found>,
     /// The asleep tasks that may retire, longest asleep first.
     asleep: VecDeque<(i64, String)>,
     retiring: Option<Retiring>,
@@ -392,19 +392,19 @@ impl Sweeping {
         let mut repos: Vec<_> = all.iter().map(|found| found.repo.clone()).collect();
         repos.dedup();
         let jobs = jobs(db, factory, all)?;
-        let mut branches = Vec::new();
-        for found in std::mem::take(&mut self.branches) {
+        // One per sweep: those behind it would wait for its git, in which their tasks can wake.
+        let mut branch = None;
+        while branch.is_none()
+            && let Some(found) = self.branches.pop_front()
+        {
             if ended(db, &found)?.is_ok() {
-                branches.extend(worktrees::Branch::of(home, &found));
+                branch = worktrees::Branch::of(home, &found);
             }
         }
         let home = home.to_path_buf();
         self.judging = Some(Off::new("the sweep's check of the worktrees".to_owned(), {
             move || {
-                let cut = branches
-                    .into_iter()
-                    .filter_map(|branch| branch.delete(&home))
-                    .collect();
+                let cut = branch.and_then(|branch| branch.delete(&home));
                 let judged = judge(&home, &repos, jobs);
                 Judged { cut, ..judged }
             }
@@ -607,7 +607,7 @@ impl Sweeping {
             return Ok(());
         };
         if cut {
-            self.branches.push(found);
+            self.branches.push_back(found);
             return Ok(());
         }
         match (stays, retires) {
@@ -2401,7 +2401,7 @@ mod tests {
         home.db
             .execute("UPDATE tasks SET state = 'ready' WHERE id = 2", [])
             .unwrap();
-        home.sweeping.branches = vec![found.clone(), other];
+        home.sweeping.branches = [other, found.clone()].into();
         let branch = |task| runtime::head(&clone, &format!("priory/{task}"));
 
         home.sweep();
@@ -2415,7 +2415,7 @@ mod tests {
         let read = std::fs::read(&config).unwrap();
         std::fs::remove_file(&config).unwrap();
         runtime::run(Command::new("mkfifo").arg(&config)).unwrap();
-        home.sweeping.branches = vec![found];
+        home.sweeping.branches = [found].into();
         assert!(home.start_sweep());
         let deadline = Instant::now() + Duration::from_secs(150);
         while !home.sweep_tick() {
