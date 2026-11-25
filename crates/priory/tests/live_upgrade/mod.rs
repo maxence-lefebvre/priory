@@ -176,7 +176,7 @@ fn processes_that_outlive_an_upgrade_and_its_rollback_keep_working() {
     assert_eq!(get(&address(&setup), "/api/tasks"), 200);
     let posted = setup
         .command(&path)
-        .args(["post", "upgrade", "after"])
+        .args(["post", "live", "after"])
         .output()
         .unwrap();
     assert!(posted.status.success(), "{posted:?}");
@@ -216,7 +216,7 @@ fn processes_that_outlive_an_upgrade_and_its_rollback_keep_working() {
     );
     let runs = setup.rows("runs");
     assert!(
-        runs.iter().all(|run| run[6].is_empty()),
+        runs.iter().all(|run| run[6] == "-"),
         "the run stays live: {runs:?}"
     );
     setup.release("hold-stop");
