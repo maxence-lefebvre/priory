@@ -3,7 +3,7 @@
 An ask from a session Priory did not start (see [tools.md](../reference/tools.md#asks-from-outside-priory))
 waits on a person like any ask. Its answer has no task to wake. Instead, the daemon hands it to a
 command that the factory names, which brings it to the session that asked. Core knows nothing of
-that session's terminal: the command does.
+that session's terminal: the command does. [Autopilot](waits.md#autopilot) never answers one.
 
 ```toml
 [asks]

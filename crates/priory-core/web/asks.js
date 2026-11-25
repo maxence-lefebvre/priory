@@ -104,7 +104,7 @@ export function submitted(ask) {
 }
 
 /** Who answered, as the views say it: a person, `agent:<lead>`, auto, or `session <name>` for a person's own session. Null when unrecorded. @param {string | null | undefined} by */
-export const answeredBy = (by) => (!by ? null : by.startsWith("agent:") ? by : by === "auto" ? "auto" : by.startsWith("session:") ? `session ${by.slice(8)}` : "a person");
+export const answeredBy = (by) => (!by ? null : by.startsWith("agent:") ? by : by === "auto" || by === "autopilot" ? by : by.startsWith("session:") ? `session ${by.slice(8)}` : "a person");
 
 /**
  * The option index a key press picks on an ask, or null: `1` to `9`, never a key held down, whose
@@ -163,8 +163,8 @@ export const shrunkHead = (ask) => ({
   place: [taskLabel(ask.key), ask.step, `revision ${ask.revision}`].filter(Boolean).join(", "),
 });
 
-/** Who answered, as the answered row's icon: auto, session, agent or person; null when unrecorded. @param {string | null | undefined} by */
-export const answererOf = (by) => (!by ? null : by === "auto" ? "auto" : by.startsWith("session:") ? "session" : by.startsWith("agent:") ? "agent" : "person");
+/** Who answered, as the answered row's icon: auto, autopilot, session, agent or person; null when unrecorded. @param {string | null | undefined} by */
+export const answererOf = (by) => (!by ? null : by === "auto" || by === "autopilot" ? by : by.startsWith("session:") ? "session" : by.startsWith("agent:") ? "agent" : "person");
 
 /** A confidence's bars, of three. */
 export const CONFIDENCE_BARS = { high: 3, medium: 2, low: 1 };
@@ -188,12 +188,18 @@ export const answeredAsks = (asks, task) => asks
     confidence: ask.confidence ?? null,
     bars: CONFIDENCE_BARS[ask.confidence] ?? 0,
     rationale: ask.rationale ?? null,
+    why: ask.autopilot_why ?? null,
     tradeoff: ask.tradeoff ?? null,
     recommended: ask.recommendation != null && ask.recommendation !== ask.answer ? ask.recommendation : null,
   }));
 
 /** What follows an auto answer's confidence word: whose it is, and the level its task answers at. @param {string | null} level */
 export const confidenceNote = (level) => `confidence, the agent's own.${level ? ` The task answers at ${level} and above.` : ""}`;
+
+/** How a person changes course after an answer nobody chose. Autopilot's plan answer has no confidence. @param {string} answerer @param {string | null} confidence */
+export const courseNote = (answerer, confidence) => answerer !== "autopilot" ? "The first answer stands. To change course, tell the agent."
+  : confidence ? "Until the agent gets it, priory answer replaces it. After that, tell the agent."
+  : "To change course, cancel the task, then revive it at the plan's step.";
 
 /** The longest heading of an untitled ask, in characters, before its ellipsis. */
 export const HEADING_MAX = 80;

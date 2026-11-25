@@ -60,7 +60,13 @@ The runners publish more message types on the same output, which
 `priory.runner.alive`, `priory.ask.posted`, `priory.ask.applied`, `priory.ask.answered`,
 `priory.ask.dismissed`, `priory.task.acted`, `priory.task.applied` and `priory.task.dropped`, and the memory messages
 `priory.memory.written`, `priory.memory.accepted` and `priory.memory.dropped` (see
-[skills.md](skills.md#memories-agents-write)). The daemon stores each claim,
+[skills.md](skills.md#memories-agents-write)), and `priory.autopilot.set`, which turns
+[autopilot](waits.md#autopilot) on or off on every runner. A runner applies its own setting at once
+and the others' as it reads the log, where the last one wins. Until it reads its own setting back,
+it ignores the settings it reads, which are older. After an `off` that could not tell the others, it
+ignores them until a person sets autopilot there again. A runner cut off from the log keeps its
+window until it ends or a person runs `priory autopilot off` there. A view-only machine sends the
+setting and answers nothing. The daemon stores each claim,
 hold, alive, post and applied message in its state file before it publishes it, so a crash between
 the two publishes it at the next start. A message published twice adds nothing, because the log
 keeps the first message of each id. `priory answer`, `priory dismiss`, `priory give`, an action on

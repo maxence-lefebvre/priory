@@ -2798,6 +2798,50 @@ fn a_critic_that_is_no_scorer_or_reads_a_diff_is_refused() {
 }
 
 #[test]
+fn approve_plans_names_a_workflow_that_exists_and_has_a_plan_autopilot_may_approve() {
+    let missing = with(
+        "factory.toml",
+        "name = \"demo\"\n[autopilot]\napprove_plans = [\"nothing\"]\n",
+    );
+    let groom = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/groom/workflows/groom.toml"),
+    )
+    .unwrap();
+    let mut autonomous = with(
+        "factory.toml",
+        "name = \"demo\"\ncritic = \"critic\"\n[autopilot]\napprove_plans = [\"groom\"]\n",
+    );
+    let unread = with(
+        "factory.toml",
+        "name = \"demo\"\n[autopilot]\napprove_plans = [\"implement\"]\n",
+    );
+    autonomous.push(("workflows/groom.toml", &groom));
+
+    let missing = check(&factory("approve-plans-missing", &missing));
+    let autonomous = check(&factory("approve-plans-autonomous", &autonomous));
+    let unread = check(&factory("approve-plans-unread", &unread));
+
+    assert_eq!(missing.code, 1);
+    assert_eq!(
+        missing.stderr,
+        "factory.toml:2: `approve_plans` names workflow `nothing`, which does not exist\n"
+    );
+    assert_eq!(autonomous.code, 1);
+    assert!(
+        autonomous.stderr.contains(
+            "factory.toml:3: `approve_plans` names workflow `groom`, where autopilot may approve no plan: answering it can let irreversible step open-pr run before a person decides again\n"
+        ),
+        "{}",
+        autonomous.stderr
+    );
+    assert_eq!(unread.code, 1);
+    assert_eq!(
+        unread.stderr,
+        "factory.toml:2: `approve_plans` names workflow `implement`, and the factory has no `critic` to read its plans first\n"
+    );
+}
+
+#[test]
 fn a_judge_whose_model_an_agent_also_runs_warns_and_passes() {
     let cases = labeled(5, 5);
     let mut files = valid();

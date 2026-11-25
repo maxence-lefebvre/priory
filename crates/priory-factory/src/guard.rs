@@ -142,6 +142,7 @@ pub const PERSON_VERBS: &[&str] = &[
     "say",
     "pause",
     "unpause",
+    "autopilot",
     "snooze",
     "seen",
     "subscribe",

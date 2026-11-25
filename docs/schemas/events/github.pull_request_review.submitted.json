@@ -33,7 +33,7 @@
           ]
         },
         "agent": {
-          "description": "Whether an agent wrote it: `own`, and its body holds `<!-- agent-comment -->`; absent while\n`gh` cannot say. An agent's comment starts no task. The person's unmarked one wakes its task\neven when it was written during the agent's turn.",
+          "description": "Whether an agent wrote it: `own`, and its body holds `<!-- agent-comment -->`, or its body is\nempty and every thread comment it wraps holds that; absent while `gh` cannot say. An agent's\nreview starts no task. The person's wakes its task even when it was written during the\nagent's turn.",
           "type": [
             "boolean",
             "null"

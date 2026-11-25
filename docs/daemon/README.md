@@ -103,7 +103,7 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
 - [evidence.md](evidence.md): evidence items, a step's `record` command, `priory evidence add`,
   the admission checks that keep secrets out, the pull request's Evidence section and how long
   items stay.
-- [waits.md](waits.md): asks and answers, wait conditions, and the checks gate before `done`.
+- [waits.md](waits.md): asks and answers, autopilot, wait conditions, and the checks gate before `done`.
 - [decisions.md](decisions.md): decision models, the triage model that settles feedback which asks
   the agent for nothing, `priory calibrate`, and the fallback.
 - [debates.md](debates.md): debate steps: two agents' turns, when the debate ends, the result or

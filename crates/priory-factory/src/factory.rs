@@ -77,6 +77,8 @@ pub struct Settings {
     #[serde(default)]
     pub asks: Asks,
     #[serde(default)]
+    pub autopilot: Autopilot,
+    #[serde(default)]
     pub runs: Runs,
     pub request: Option<RequestDefaults>,
     pub batch: Option<BatchDefaults>,
@@ -734,6 +736,21 @@ pub struct Asks {
     /// folder. It gets the ask's id, revision, session, `answered` or `dismissed`, and the answer
     /// as its arguments. Without it, the answer is only stored.
     pub deliver: Option<PathBuf>,
+}
+
+/// What `priory autopilot` may answer while a person has it on.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Autopilot {
+    /// The workflows whose green plans autopilot approves for a task with `intervention = "plan"`,
+    /// where a person decides again before any irreversible step.
+    #[serde(default)]
+    pub approve_plans: Vec<String>,
+    /// The IANA zone `--until HH:MM` and the default end, 08:00, are read in, such as
+    /// `Europe/Paris`; the machine's own when unset.
+    #[serde(default, deserialize_with = "time_zone")]
+    #[schemars(with = "String")]
+    pub timezone: Option<jiff::tz::TimeZone>,
 }
 
 /// What happens when a run starts.
@@ -2970,6 +2987,21 @@ impl Factory {
         self.settings
             .as_ref()
             .and_then(|settings| settings.value.critic.as_deref())
+    }
+
+    /// The workflows whose green plans autopilot approves, from `factory.toml`.
+    pub fn approve_plans(&self) -> &[String] {
+        self.settings
+            .as_ref()
+            .map_or(&[], |settings| &settings.value.autopilot.approve_plans)
+    }
+
+    /// The zone autopilot's end is read in, from `factory.toml`, or the machine's.
+    pub fn autopilot_timezone(&self) -> jiff::tz::TimeZone {
+        self.settings
+            .as_ref()
+            .and_then(|settings| settings.value.autopilot.timezone.clone())
+            .unwrap_or_else(jiff::tz::TimeZone::system)
     }
 
     /// The judge that reads an approval step's lessons before it asks a person, from `factory.toml`.

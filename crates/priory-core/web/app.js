@@ -1,6 +1,6 @@
 // Priory's web view (DESIGN.md): the frame, the Desk and the Asks, with answering through the CLI's verbs.
 // Agent text is untrusted: every value goes through `html`, which escapes it.
-import { ARM_MS, ASK_VIEWS, answeredAsks, answeredBy, askBody, askGroups, askHeading, confidenceNote, openAsksOf, planCut, planParts, planUnread, planWait, plansFirst, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, optionKey, press, runsCommand, submitted, dismissable, writeNote, writeShown } from "./asks.js";
+import { ARM_MS, ASK_VIEWS, answeredAsks, answeredBy, askBody, askGroups, askHeading, confidenceNote, courseNote, openAsksOf, planCut, planParts, planUnread, planWait, plansFirst, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, optionKey, press, runsCommand, submitted, dismissable, writeNote, writeShown } from "./asks.js";
 import { SPLITS, attentionView, costTiles, dayBars, money, scoreTable, splitTable } from "./costs.js";
 import { addBody, addOutcome, swapLine, withDefaults } from "./add.js";
 import { linked } from "./links.js";
@@ -1551,7 +1551,7 @@ function taskAsks(task) {
 }
 
 // Who answered, as the answered row's icon and what a screen reader reads of it.
-const ANSWERERS = { auto: ["cog", "Answered by auto"], agent: ["cog", "Answered by an agent"], session: ["terminal", "Answered from a session"], person: ["user", "Answered by a person"] };
+const ANSWERERS = { auto: ["cog", "Answered by auto"], autopilot: ["cog", "Answered by autopilot"], agent: ["cog", "Answered by an agent"], session: ["terminal", "Answered from a session"], person: ["user", "Answered by a person"] };
 
 const confidenceBars = (row) => html`<span class="bars" role="img" aria-label="Confidence ${row.confidence}">${[1, 2, 3].map((n) => raw(n <= row.bars ? '<i class="on"></i>' : "<i></i>"))}</span>`;
 
@@ -1567,15 +1567,15 @@ function taskAnswered(task) {
       : ask.answerer === "person" ? ` by ${ask.by}` : html` by <b>${ask.by}</b>`;
     const answered = html`<p class="said">Answered <b>${ask.answer}</b>${by}${ask.recommended == null ? "" : `. Recommended ${ask.recommended}.`}</p>`;
     const head = raw(`<svg class="ico who" viewBox="0 0 24 24" role="img" aria-label="${label}">${ICONS[name]}</svg>`);
-    if (ask.answerer !== "auto") {
+    if (ask.answerer !== "auto" && ask.answerer !== "autopilot") {
       const sure = ask.confidence ? html`<p class="sure dim">${confidenceBars(ask)}${ask.confidence}${ask.rationale ? `: ${ask.rationale}` : ""}</p>` : "";
       return html`<li>${head}<div><p class="aq">${ask.title}</p>${answered}${sure}</div>${timeTag(ask.at)}</li>`;
     }
-    const sure = ask.confidence ? html`<p class="sure">${confidenceBars(ask)}<span><b>${ask.confidence}</b> ${confidenceNote(task.auto_answer)}</span></p>` : "";
-    const why = [["Why", ask.rationale], ["Trade-off", ask.tradeoff], ["The ask", ask.question !== ask.title ? ask.question : null]].filter(([, text]) => text);
+    const sure = ask.confidence ? html`<p class="sure">${confidenceBars(ask)}<span><b>${ask.confidence}</b> ${confidenceNote(ask.answerer === "auto" ? task.auto_answer : null)}</span></p>` : "";
+    const why = [["Why", ask.rationale], ["Autopilot", ask.why], ["Trade-off", ask.tradeoff], ["The ask", ask.question !== ask.title ? ask.question : null]].filter(([, text]) => text);
     const reasons = why.length ? html`<dl class="why">${why.map(([term, text]) => html`<dt>${term}</dt><dd>${text}</dd>`)}</dl>` : "";
     return html`<li class="auto">${head}<div><p class="aq">${ask.title}</p>${answered}${sure}${reasons}
-      <p class="course"><span>The first answer stands. To change course, tell the agent.</span>${live ? html`<a href="#say">Say to the agent</a>` : ""}<a href="/asks/${encodeURIComponent(ask.id)}">Open ask ${ask.id}</a></p></div>${timeTag(ask.at)}</li>`;
+      <p class="course"><span>${courseNote(ask.answerer, ask.confidence)}</span>${live ? html`<a href="#say">Say to the agent</a>` : ""}<a href="/asks/${encodeURIComponent(ask.id)}">Open ask ${ask.id}</a></p></div>${timeTag(ask.at)}</li>`;
   };
   return html`<section class="answered" aria-labelledby="answered-head"><div class="ah"><h2 id="answered-head">Answered asks</h2><span class="meta">${rows.length}${rows.length > 1 ? ", newest first" : ""}</span></div>
     <ol class="arows">${rows.map(row)}</ol></section>`;
