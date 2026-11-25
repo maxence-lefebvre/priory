@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 123;
+pub(crate) const VERSION: i64 = 123;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -2224,6 +2224,35 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_122, SCHEMA_123,
 ];
 
+/// What a migration does to the releases before it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))]
+enum Kind {
+    /// It adds tables, indexes, and columns that are null or have a default. The release before it
+    /// also understands every value this one writes into the old columns.
+    Additive,
+    /// Anything else: no release before it may open the file.
+    Rebuild,
+}
+
+/// The last migration of the releases that know no `Kind`.
+const UNDECLARED: usize = 123;
+
+/// The kind of each migration after `UNDECLARED`, in order. One without it does not compile.
+const KINDS: [Kind; VERSION as usize - UNDECLARED] = [];
+
+/// The oldest schema that opens a file once the migrations `from` to `VERSION` ran on it, when
+/// `floor` was the oldest before, or 0 for none.
+fn floor_after(from: i64, floor: i64) -> i64 {
+    let rebuilt = KINDS.iter().rposition(|kind| *kind == Kind::Rebuild);
+    let rebuilt = rebuilt.map_or(UNDECLARED, |at| UNDECLARED + at + 1) as i64;
+    match floor {
+        _ if from < rebuilt => rebuilt,
+        0 => from,
+        floor => floor,
+    }
+}
+
 /// A task's band rank, null for a band the factory no longer has.
 macro_rules! rank {
     () => {
@@ -2555,6 +2584,9 @@ fn apply(db: &mut Connection, new: bool) -> Result<(), String> {
             "the migration to schema {VERSION} left {broken} broken references"
         ));
     }
+    let floor = floor_after(found.version, found.floor);
+    tx.pragma_update(None, "application_id", floor)
+        .map_err(at)?;
     tx.commit().map_err(at)
 }
 
@@ -5861,5 +5893,172 @@ mod ready_within {
             })
             .unwrap();
         assert_eq!(base, "clone");
+    }
+}
+
+#[cfg(test)]
+mod migrations {
+    use super::*;
+    use rusqlite::fallible_iterator::FallibleIterator as _;
+
+    /// Why `sql` is no additive change to the schema of `db`, which it is applied to.
+    fn not_additive(db: &Connection, sql: &str) -> Option<String> {
+        let names = |kind: &str| -> Vec<String> {
+            db.prepare("SELECT name FROM sqlite_schema WHERE type = ?1")
+                .unwrap()
+                .query_map([kind], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        let old = names("table");
+        let mut batch = rusqlite::Batch::new(db, sql);
+        while let Some(mut statement) = batch.next().unwrap() {
+            let text = statement.expanded_sql().unwrap();
+            let words: Vec<_> = text.split_whitespace().map(str::to_uppercase).collect();
+            let words: Vec<_> = words.iter().map(String::as_str).collect();
+            let allowed = matches!(
+                words[..],
+                ["CREATE", "TABLE" | "INDEX" | "TRIGGER", ..]
+                    | ["ALTER", "TABLE", _, "ADD", "COLUMN", ..]
+                    | ["CREATE", "UNIQUE", "INDEX", ..]
+                    | ["PRAGMA", "USER_VERSION", ..]
+            );
+            if !allowed || text.to_uppercase().contains(" AS SELECT ") {
+                return Some(format!("it runs {text}"));
+            }
+            // An added column may not refer to a table: deleting the row it names would then fail.
+            if words[0] == "ALTER" && words.contains(&"REFERENCES") {
+                return Some(format!("it runs {text}"));
+            }
+            let target = |after: &str| {
+                let at = words.iter().position(|word| *word == after);
+                let name = at.and_then(|at| words.get(at + 1)).unwrap_or(&"");
+                let name = name.split('(').next().unwrap_or_default();
+                old.iter().any(|table| table.to_uppercase() == name)
+            };
+            let unique = words[1] == "UNIQUE" && target("ON");
+            if unique || (words[1] == "TRIGGER" && target("ON")) {
+                return Some(format!(
+                    "it runs {text}, which changes writes to an old table"
+                ));
+            }
+            statement.raw_execute().unwrap();
+        }
+        for table in names("table").iter().filter(|table| !old.contains(table)) {
+            let refers: Vec<String> = db
+                .prepare("SELECT \"table\" FROM pragma_foreign_key_list(?1)")
+                .unwrap()
+                .query_map([table], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            if let Some(to) = refers.iter().find(|to| old.contains(to)) {
+                return Some(format!("its table {table} refers to {to}"));
+            }
+        }
+        None
+    }
+
+    fn at(version: usize) -> Connection {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(&MIGRATIONS[..version].concat()).unwrap();
+        db
+    }
+
+    #[test]
+    fn each_declared_additive_migration_only_adds() {
+        for (index, kind) in KINDS.iter().enumerate() {
+            let version = UNDECLARED + index;
+            if *kind == Kind::Additive {
+                let refused = not_additive(&at(version), MIGRATIONS[version]);
+                assert_eq!(refused, None, "schema {}", version + 1);
+            }
+        }
+    }
+
+    #[test]
+    fn the_check_of_an_additive_migration_refuses_every_other_change() {
+        for (sql, additive) in [
+            ("CREATE TABLE x (id INTEGER PRIMARY KEY)", true),
+            ("CREATE INDEX x ON tasks (key)", true),
+            ("ALTER TABLE inbox ADD COLUMN x TEXT", true),
+            ("ALTER TABLE inbox ADD COLUMN x INTEGER NOT NULL DEFAULT 0", true),
+            (
+                "CREATE TABLE x (id INTEGER); CREATE UNIQUE INDEX y ON x (id);
+                 CREATE TRIGGER z AFTER INSERT ON x BEGIN UPDATE revision SET value = value + 1; END",
+                true,
+            ),
+            ("CREATE UNIQUE INDEX x ON tasks (key)", false),
+            ("CREATE TRIGGER x AFTER INSERT ON tasks BEGIN SELECT 1; END", false),
+            ("CREATE TABLE x (task INTEGER REFERENCES tasks (id))", false),
+            ("ALTER TABLE inbox ADD COLUMN x INTEGER REFERENCES tasks (id)", false),
+            ("ALTER TABLE inbox RENAME COLUMN read TO seen", false),
+            ("ALTER TABLE inbox DROP COLUMN read", false),
+            ("DROP TABLE lapses", false),
+            ("CREATE TABLE x AS SELECT * FROM tasks", false),
+            ("CREATE VIEW x AS SELECT 1", false),
+            ("UPDATE inbox SET read = 1", false),
+            ("DELETE FROM inbox", false),
+        ] {
+            let refused = not_additive(&at(UNDECLARED), sql);
+            assert_eq!(refused.is_none(), additive, "{sql}: {refused:?}");
+        }
+    }
+
+    #[test]
+    fn a_migration_leaves_the_oldest_schema_that_may_open_the_file() {
+        let db = memory();
+        let found = schema(&db).unwrap();
+        assert_eq!(found.floor, floor_after(0, 0));
+        assert!(found.floor >= UNDECLARED as i64);
+        assert_eq!(floor_after(VERSION, 0), VERSION);
+        assert_eq!(floor_after(VERSION, 123), 123);
+    }
+
+    /// The other writers wait up to 5 seconds, which an additive migration must leave them.
+    #[test]
+    fn an_additive_migration_holds_the_write_lock_briefly_on_a_large_inbox() {
+        let additive = KINDS.iter().enumerate();
+        let mut sql: Vec<String> = additive
+            .filter(|(_, kind)| **kind == Kind::Additive)
+            .map(|(index, _)| MIGRATIONS[UNDECLARED + index].to_owned())
+            .collect();
+        sql.push("CREATE TABLE sample_table (id INTEGER PRIMARY KEY, note TEXT)".to_owned());
+        sql.push("ALTER TABLE inbox ADD COLUMN sample TEXT DEFAULT 'x'".to_owned());
+        sql.push("CREATE INDEX sample_index ON inbox (json_extract(data, '$.repo'))".to_owned());
+        let path = std::env::temp_dir().join(format!("priory-lock-{}.db", std::process::id()));
+        let mut db = open_at(&path).unwrap();
+        let data = serde_json::json!({ "repo": "owner/repo", "body": "x".repeat(700) }).to_string();
+        db.execute(
+            "WITH RECURSIVE n (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM n WHERE n < 30000)
+             INSERT INTO inbox (seq, id, type, subject, time, data, links, outcome)
+             SELECT n, 'm' || n, 'github.check_run.completed', 'owner/repo',
+               '2026-11-25T00:00:00Z', ?1, '[]', 'ignored' FROM n",
+            [data],
+        )
+        .unwrap();
+        for sql in sql.iter().map(String::as_str) {
+            let tx = db
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .unwrap();
+            let began = std::time::Instant::now();
+            tx.execute_batch(sql).unwrap();
+            tx.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |_| {
+                Ok(())
+            })
+            .unwrap();
+            tx.commit().unwrap();
+            let held = began.elapsed();
+            println!(
+                "held the write lock {held:?}: {}",
+                sql.lines().next().unwrap_or_default()
+            );
+            assert!(held < Duration::from_secs(5), "{held:?}: {sql}");
+        }
+        drop(db);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
     }
 }
