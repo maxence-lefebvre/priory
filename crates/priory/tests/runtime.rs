@@ -36417,6 +36417,64 @@ fn pull_comment(body: &str) -> Message {
     )
 }
 
+/// Restarts `setup`'s daemon over four comments whose triage sleeps 4 s each, so every pass of the
+/// catch-up is under the 10 s of a long tick, and asserts that it reports the whole hold.
+fn reports_a_held_catch_up(mut setup: Setup) {
+    setup.decides(ANSWERS);
+    let output = setup.calibrate();
+    assert!(output.status.success(), "{output:?}");
+    fs::write(
+        setup.dir.join("factory/answers.tsv"),
+        "Thanks\tsleep\t4\t-\n",
+    )
+    .unwrap();
+    setup.calls(&[wait(on_pull_7("review"))]);
+    setup.publish(&requested(42));
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    setup.start_with(exe, &[KEY]);
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.crash();
+    for id in 701..705 {
+        let mut comment = pull_comment("Thanks, looks good.");
+        comment.data["github_id"] = json!(id);
+        comment.data["url"] = json!(format!(
+            "https://github.com/owner/repo/pull/7#issuecomment-{id}"
+        ));
+        setup.publish(&comment);
+    }
+
+    setup.start_with(exe, &[KEY]);
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let log = loop {
+        let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+        if log.contains("a tick took") {
+            break log;
+        }
+        assert!(Instant::now() < deadline, "no long tick: {log}");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert!(log.contains("a tick runs for over 10s: messages"), "{log}");
+    let messages = log
+        .split_once("s: messages for ")
+        .and_then(|(_, rest)| rest.split_once('s'))
+        .and_then(|(seconds, _)| seconds.parse::<u64>().ok());
+    assert!(messages.is_some_and(|seconds| seconds >= 14), "{log}");
+    let noted = fs::read_to_string(setup.dir.join("home/tick.json")).unwrap();
+    assert!(noted.contains("messages for"), "{noted}");
+    setup.crash();
+}
+
+#[test]
+fn a_held_catch_up_of_short_passes_is_reported_as_one_long_tick() {
+    reports_a_held_catch_up(Setup::new("held-catch-up"));
+}
+
+#[test]
+fn a_runners_held_catch_up_of_short_passes_is_reported_as_one_long_tick() {
+    reports_a_held_catch_up(runner("held-catch-up", "a", None));
+}
+
 #[test]
 fn a_thanks_a_calibrated_model_sorts_as_nothing_to_do_wakes_no_one() {
     let setup = asleep_with_decisions("decision-settles", ANSWERS, true);
