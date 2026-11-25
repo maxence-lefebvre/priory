@@ -10343,6 +10343,9 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
     )
     .unwrap();
     drop(db);
+    let factory = setup.dir.join("factory");
+    let migrated = setup.priory(&["upgrade", "probe", factory.to_str().unwrap()]);
+    assert!(migrated.status.success(), "{migrated:?}");
 
     let asks = setup.rows("asks");
 

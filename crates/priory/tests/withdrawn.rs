@@ -29,6 +29,16 @@ fn priory(dir: &Path, args: &[&str]) -> Output {
     output
 }
 
+/// Migrates the state file, as the daemon of a newer release does.
+fn migrate(dir: &Path) {
+    std::fs::create_dir_all(dir.join("factory")).unwrap();
+    std::fs::write(dir.join("factory/factory.toml"), "name = \"demo\"").unwrap();
+    priory(
+        dir,
+        &["upgrade", "probe", dir.join("factory").to_str().unwrap()],
+    );
+}
+
 /// Sets the state file back to version 57: `withdrawn` holds the reason as a sentinel.
 fn as_version_57(db: &rusqlite::Connection) {
     let added: bool = db
@@ -102,6 +112,7 @@ fn an_upgrade_names_the_reason_each_sentinel_meant() {
     )
     .unwrap();
     drop(db);
+    migrate(&dir);
 
     let task: Value =
         serde_json::from_slice(&priory(&dir, &["task", "1", "--json"]).stdout).unwrap();
@@ -178,6 +189,7 @@ fn an_upgrade_names_the_answer_dismiss_or_stack_ask_that_withdrew_an_old_wait() 
     )
     .unwrap();
     drop(db);
+    migrate(&dir);
 
     let task: Value =
         serde_json::from_slice(&priory(&dir, &["task", "1", "--json"]).stdout).unwrap();
