@@ -51,8 +51,10 @@ revive`, `priory cancel`, `priory release`, `priory say`, `priory todo add` and 
 the verb builds and sends it to the daemon on its socket, so the daemon applies it in the same
 transaction, with the same checks and the same refusals. The server thread never opens the state
 for writing. An add goes to the daemon on its socket too, but the daemon publishes it on the bus as
-`priory add` does, then takes it in at once, so the reply names the new task. It is not one
-transaction: a failure between the two messages leaves only the source event. [serve.md](../reference/serve.md#writes) lists the
+`priory add` does, then takes in one pass of the log (see [the daemon](README.md)). The reply names
+the new task when that pass reached its request. The daemon publishes what it queued, such as a
+runner's claim, only when the pass read the log to its end, and otherwise after a later pass that
+does. An add is not one transaction: a failure between the two messages leaves only the source event. [serve.md](../reference/serve.md#writes) lists the
 bodies and status codes.
 
 `POST /api/tasks/{id}/move` sets a task's band and its place in the band, as `priory move

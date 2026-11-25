@@ -102,8 +102,8 @@ pub fn counts() -> BTreeMap<Counter, u64> {
 struct Tick {
     started: Instant,
     phase: (&'static str, Instant),
-    /// The phase that took longest so far.
-    longest: (&'static str, Duration),
+    /// The time of each phase so far, which a hold over several passes enters again.
+    phases: BTreeMap<&'static str, Duration>,
     command: Option<(String, Instant)>,
     /// The command that took longest so far.
     slowest: Option<(String, Duration)>,
@@ -127,7 +127,7 @@ pub fn begin() {
     *tick() = Some(Tick {
         started: now,
         phase: ("start", now),
-        longest: ("start", Duration::ZERO),
+        phases: BTreeMap::new(),
         command: None,
         slowest: None,
     });
@@ -147,7 +147,8 @@ pub fn end(over: Duration) -> Option<String> {
     tick.close_phase();
     let took = tick.started.elapsed();
     (took >= over).then(|| {
-        let (phase, time) = tick.longest;
+        let longest = tick.phases.into_iter().max_by_key(|(_, time)| *time);
+        let (phase, time) = longest.expect("a closed phase is counted");
         let command = tick.slowest.map_or_else(String::new, |(command, time)| {
             format!(", {command} for {}s", time.as_secs())
         });
@@ -180,10 +181,7 @@ pub fn stuck(over: Duration) -> Option<(Instant, String)> {
 impl Tick {
     fn close_phase(&mut self) {
         let (name, since) = self.phase;
-        let took = since.elapsed();
-        if took > self.longest.1 {
-            self.longest = (name, took);
-        }
+        *self.phases.entry(name).or_default() += since.elapsed();
     }
 }
 
@@ -265,5 +263,13 @@ mod tests {
         phase("runs");
         let said = end(Duration::ZERO).unwrap();
         assert_eq!(said, "a tick took 0s: sweep for 0s, git fetch for 0s");
+
+        begin();
+        for (name, millis) in [("messages", 200), ("signals", 250), ("messages", 200)] {
+            phase(name);
+            std::thread::sleep(Duration::from_millis(millis));
+        }
+        let said = end(Duration::ZERO).unwrap();
+        assert_eq!(said, "a tick took 0s: messages for 0s", "a phase sums up");
     }
 }

@@ -1,0 +1,32 @@
+{
+  "plugins": ["eslint", "oxc", "react", "jsx-a11y", "import"],
+  "categories": { "correctness": "error" },
+  "env": { "browser": true, "es2024": true },
+  "ignorePatterns": ["dist/**"],
+  "rules": {
+    "eslint/no-undef": "error",
+    "eslint/prefer-const": "error",
+    "eslint/eqeqeq": ["error", "always", { "null": "ignore" }],
+    "react/jsx-key": "error",
+    "react/no-danger": "error",
+    "react/no-unstable-nested-components": "error",
+    "react/self-closing-comp": "error",
+    "react/button-has-type": "error",
+    "react-hooks/rules-of-hooks": "error",
+    "react-hooks/exhaustive-deps": "error",
+    "import/no-duplicates": "error",
+    "import/no-self-import": "error",
+    // The port keeps the elements and roles the page had before React.
+    "jsx-a11y/prefer-tag-over-role": "off",
+    "import/named": "error",
+    "import/namespace": "error"
+  },
+  "overrides": [
+    // The patterns match a terminal's own escape sequences, which are control characters.
+    { "files": ["legacy/terminal.js", "terminal.js", "terminal.test.js"], "rules": { "eslint/no-control-regex": "off" } },
+    // The one Markdown component writes markdown()'s output, which escapes every character itself.
+    { "files": ["components/Text.jsx"], "rules": { "react/no-danger": "off" } },
+    { "files": ["*.mjs", "*.test.js", "*.test.jsx"], "env": { "node": true } },
+    { "files": ["sw.js", "sw.test.js"], "env": { "serviceworker": true } }
+  ]
+}

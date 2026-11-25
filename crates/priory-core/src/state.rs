@@ -3349,7 +3349,7 @@ pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String, u8)>> {
 /// merge commit and merge time, merged since `since` and with no check run event at the merge
 /// commit that saw every check complete: the commits the intake still reads check runs at.
 pub fn merges(db: &Connection, since: &str) -> rusqlite::Result<Vec<priory_intake::intake::Merge>> {
-    db.prepare(
+    db.prepare(&format!(
         "SELECT DISTINCT json_extract(data, '$.repo'), json_extract(data, '$.pull_request'),
            json_extract(data, '$.head_branch'), json_extract(data, '$.base_branch'),
            json_extract(data, '$.merge_commit'), time
@@ -3368,10 +3368,10 @@ pub fn merges(db: &Connection, since: &str) -> rusqlite::Result<Vec<priory_intak
            AND json_extract(data, '$.failing') <= (SELECT count(*) FROM inbox AS red
              WHERE red.type = ?3 AND json_extract(red.data, '$.repo') = json_extract(closed.data, '$.repo')
              AND json_extract(red.data, '$.head_sha') = json_extract(closed.data, '$.merge_commit')
-             AND json_extract(red.data, '$.conclusion') NOT IN ('success', 'neutral', 'skipped')
-             AND json_extract(red.data, '$.superseded_by') IS NULL))
+             AND {}))
          ORDER BY time",
-    )?
+        crate::route::COUNTED_RED
+    ))?
     .query_map(params![CLOSED, since, CHECKED], |row| {
         Ok(priory_intake::intake::Merge {
             repo: row.get(0)?,

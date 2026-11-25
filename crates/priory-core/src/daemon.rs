@@ -407,9 +407,13 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     crate::watchdog::watch(&home);
     // Until the first catch-up after a start or a lost link, the rest of the log may withdraw a task.
     let mut catching_up = true;
+    // Passes that hold work are one tick for the watchdog, which the first other pass ends.
+    let mut holding = false;
     loop {
         let tick = Instant::now();
-        ticks::begin();
+        if !std::mem::take(&mut holding) {
+            ticks::begin();
+        }
         if live.poll(&mut db, &trace, true)? {
             let factory = live.factory();
             state::bands(&mut db, &factory.bands(), factory.age())?;
@@ -460,7 +464,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         // not even on an answer to it.
         if behind && trace.runner.is_some() {
             ticks::record(tick.elapsed());
-            crate::watchdog::ended(&home);
+            holding = true;
             continue;
         }
         ticks::phase("signals");
@@ -476,7 +480,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         }
         if behind && catching_up {
             ticks::record(tick.elapsed());
-            crate::watchdog::ended(&home);
+            holding = true;
             continue;
         }
         ticks::phase("commands");
@@ -1171,9 +1175,10 @@ struct AddLine {
     add: priory_intake::request::Add,
 }
 
-/// Publishes `add` as `priory add` does, then takes it in at once, so the reply names the task and
-/// what the request did: `{"key": ..., "id": ..., "outcome": ...}`, with no id when no active task
-/// has the key. A repeated text adds `error`, which says nothing was added, in place of `outcome`.
+/// Publishes `add` as `priory add` does, then takes in one pass of the log, so the reply names the
+/// task and what the request did once the pass reached it: `{"key": ..., "id": ..., "outcome": ...}`,
+/// with no id when no active task has the key. A repeated text adds `error`, which says nothing was
+/// added, in place of `outcome`.
 fn add(
     db: &mut Connection,
     add: &priory_intake::request::Add,
@@ -1195,8 +1200,7 @@ fn add(
     let log = log::open(trace.factory.log())?;
     let consumer = runners::consumer(trace.runner.as_deref());
     // A request the log took but did not hand back yet: the loop takes it in later.
-    let tried = drain_some(&*log, &consumer, db, trace, counter, false);
-    match tried.and_then(|_| runners::flush(db, &*log)) {
+    match take_in(&*log, &consumer, db, trace, counter) {
         Err(error) if !log::unreachable(&*error) => return Err(error),
         _ => {}
     }
@@ -1209,6 +1213,21 @@ fn add(
         None => reply["outcome"] = serde_json::json!(added(db, &key)?),
     }
     Ok(Ok(reply.to_string()))
+}
+
+/// Takes in one pass of the log, and publishes what is queued only when the pass read it to its end,
+/// since the rest of the log may overrule it.
+fn take_in(
+    bus: &dyn Log,
+    consumer: &str,
+    db: &mut Connection,
+    trace: &Trace,
+    counter: Option<&embed::Counter>,
+) -> Result<(), Error> {
+    match drain_some(bus, consumer, db, trace, counter, false)? {
+        true => runners::flush(db, bus),
+        false => Ok(()),
+    }
 }
 
 /// What the newest request for `key` did: `created` its task, `said` its text to the task's agent,
@@ -3760,6 +3779,65 @@ mod tests {
 
         assert!(!first && !second);
         assert_eq!(handled, 2);
+    }
+
+    #[test]
+    fn an_add_publishes_a_claim_only_once_it_read_the_whole_log() {
+        let dir = std::env::temp_dir().join(format!("priory-take-in-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("runners")).unwrap();
+        fs::create_dir_all(dir.join("workflows")).unwrap();
+        fs::write(dir.join("factory.toml"), "name = \"t\"\n").unwrap();
+        fs::write(dir.join("workflows/w.toml"), workflow(&["a"])).unwrap();
+        for runner in ["a", "b"] {
+            let file = dir.join(format!("runners/{runner}.toml"));
+            fs::write(file, "platform = { os = \"linux\" }\n").unwrap();
+        }
+        let factory = priory_factory::rules::validated(&dir).unwrap();
+        let trace = Trace {
+            factory: &factory,
+            revision: None,
+            machine: None,
+            runner: Some("a".to_owned()),
+            usage: |_, _| None,
+        };
+        let bus = backlog("take-in-log", 0);
+        let key = "github:owner/repo#1";
+        let request = serde_json::json!({
+            "key": key, "workflow": "w", "trigger": "cli", "source": "s"
+        });
+        let request = herdr_bus::Message::new("factory.task.requested", request).subject(key);
+        Log::publish(&bus, OUTPUT, &request).unwrap();
+        for at in 0..150 {
+            let event = herdr_bus::Message::new("t.event", serde_json::json!({ "at": at }));
+            Log::publish(&bus, OUTPUT, &event).unwrap();
+        }
+        let mut db = state::memory();
+        let consumer = runners::consumer(Some("a"));
+        let claims = || {
+            let messages = Log::messages(&bus, OUTPUT, None, 1000).unwrap();
+            let claimed = |stored: &&herdr_bus::Stored| stored.message.kind == intake::TASK_CLAIMED;
+            messages.iter().filter(claimed).count()
+        };
+        let unread = || Log::read(&bus, &consumer, OUTPUT, 1000).unwrap().len();
+
+        take_in(&bus, &consumer, &mut db, &trace, None).unwrap();
+
+        let queued: i64 = db
+            .query_row("SELECT count(*) FROM sends", [], |row| row.get(0))
+            .unwrap();
+        assert!(unread() > 0);
+        assert_eq!((claims(), queued), (0, 1));
+
+        // A slow disk may need more passes. The log's own claim then waits to be read.
+        for _ in 0..200 {
+            take_in(&bus, &consumer, &mut db, &trace, None).unwrap();
+            if unread() == 0 {
+                break;
+            }
+        }
+        assert_eq!(claims(), 1);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// Writes the factory's file once `reload::EVERY` passed, then polls.

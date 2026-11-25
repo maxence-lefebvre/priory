@@ -30,8 +30,14 @@ export function backTo(from) {
   return panel ? [from, PANELS[panel][0]] : ["/tasks", "Tasks"];
 }
 
-/** The text fields a repaint gives back their focus, caret and selection, by id. */
-export const TYPED_FIELDS = ["draft", "say", "report-draft", "report-query", "term-line", "term-keys"];
+/** A part of an address as text, or as it is written when it does not decode. */
+export function decoded(part) {
+  try {
+    return decodeURIComponent(part);
+  } catch {
+    return part;
+  }
+}
 
 /**
  * The document title of the page at `path`: a task by its key, an ask by its number.
@@ -42,7 +48,7 @@ export function pageTitle(path, data) {
   const number = /^\d+$/.test(id || "");
   let name = "Page not found";
   if (first === "tasks" && number) name = taskLabel(data.tasks.find((task) => String(task.id) === id)?.key) || `Task ${id}`;
-  else if (first === "asks" && id) name = `Ask #${decodeURIComponent(id)}`;
+  else if (first === "asks" && id) name = `Ask #${decoded(id)}`;
   else if (first === "batches" && number) name = `Batch ${id}`;
   else if (first === "memories") name = "Memory candidates";
   else if (first === "more") name = "More";

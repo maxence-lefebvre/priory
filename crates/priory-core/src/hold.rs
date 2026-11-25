@@ -4,7 +4,8 @@ use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehav
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
 
 /// Holds the queued or ready `task` with `hold`, and returns its new reason. A running task is
-/// marked instead, by the hold's rows, and held once its turn ends. Any other is refused.
+/// marked instead, by the hold's rows, and held once its turn, or its step's command, ends. Any
+/// other is refused.
 pub(crate) fn hold(
     tx: &Transaction,
     task: i64,
@@ -49,23 +50,61 @@ pub(crate) fn hold(
         )?;
     }
     if state == "running" {
-        let (_, why) = open(tx, task)?;
-        let reason = format!("{AFTER_TURN}{why}");
-        tx.execute(
-            "UPDATE tasks SET reason = ?2 WHERE id = ?1",
-            params![task, reason],
-        )?;
+        show_mark(tx, task)?;
+        let reason: String =
+            tx.query_row("SELECT reason FROM tasks WHERE id = ?1", [task], |row| {
+                row.get(0)
+            })?;
         return Ok(Ok(format!("task {task} {reason}")));
     }
     park(tx, task).map(Ok)
 }
 
-/// What a running task's reason starts with while it has a hold to take at its turn end.
+/// What a marked task's reason starts with while a run of it is live.
 const AFTER_TURN: &str = "holds after this turn: ";
+
+/// What a marked task's reason starts with while it has no live run, so no turn to end.
+const ONCE_READY: &str = "holds once it is ready: ";
 
 /// Whether the task in scope is marked: it has an open hold and is not held yet.
 const MARKED: &str = "tasks.state != 'held' AND EXISTS (SELECT 1 FROM holds AS marks
   WHERE marks.task = tasks.id AND marks.released IS NULL)";
+
+/// Whether `task` is marked and has not ended.
+pub(crate) fn is_marked(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
+    tx.query_row(
+        &format!(
+            "SELECT count(*) > 0 FROM tasks
+             WHERE id = ?1 AND state NOT IN ('done', 'failed', 'dropped') AND {MARKED}"
+        ),
+        [task],
+        |row| row.get(0),
+    )
+}
+
+/// Gives the running or asleep `task` its mark's reason, if it is marked.
+pub(crate) fn show_mark(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
+    let prefix = tx
+        .query_row(
+            &format!(
+                "SELECT iif(state = 'running' AND EXISTS (SELECT 1 FROM runs
+                   WHERE runs.task = tasks.id AND runs.ended IS NULL), ?2, ?3)
+                 FROM tasks WHERE id = ?1 AND state IN ('running', 'asleep') AND {MARKED}"
+            ),
+            params![task, AFTER_TURN, ONCE_READY],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let Some(prefix) = prefix else {
+        return Ok(());
+    };
+    let (_, why) = open(tx, task)?;
+    tx.execute(
+        "UPDATE tasks SET reason = ?2 WHERE id = ?1",
+        params![task, format!("{prefix}{why}")],
+    )
+    .map(drop)
+}
 
 /// The ids of the open hold of `task`, and why it is held and until what.
 fn open(tx: &Transaction, task: i64) -> rusqlite::Result<(Vec<i64>, String)> {
@@ -102,10 +141,7 @@ pub(crate) fn park(tx: &Transaction, task: i64) -> rusqlite::Result<String> {
         "UPDATE tasks SET state = 'held', reason = ?2 WHERE id = ?1",
         params![task, reason],
     )?;
-    due_conditions(tx)?;
-    for &id in &ids {
-        judge(tx, id)?;
-    }
+    judge_open(tx, task)?;
     let released: Option<String> = tx.query_row(
         "SELECT released_as FROM holds WHERE id = ?1",
         [ids[0]],
@@ -115,6 +151,16 @@ pub(crate) fn park(tx: &Transaction, task: i64) -> rusqlite::Result<String> {
         Some(how) => format!("task {task} {reason}; released at once: {how}"),
         None => format!("task {task} {reason}"),
     })
+}
+
+/// Judges every condition of the open hold of the held `task`, which may have been met while the
+/// task was marked.
+pub(crate) fn judge_open(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
+    due_conditions(tx)?;
+    for id in open(tx, task)?.0 {
+        judge(tx, id)?;
+    }
+    Ok(())
 }
 
 /// Closes the open hold of `task`, as `how`.
@@ -189,8 +235,8 @@ pub(crate) fn forget_unprompted(tx: &Transaction, run: i64) -> rusqlite::Result<
     .map(drop)
 }
 
-/// Closes the met hold `id` of a task that another hold still holds, and gives the task that
-/// hold's reason.
+/// Closes the met hold `id` of a task that another hold still holds, gives the task that hold's
+/// reason and judges it.
 pub(crate) fn leave(tx: &Transaction, id: i64) -> rusqlite::Result<()> {
     let task: Option<i64> = tx
         .query_row(
@@ -211,8 +257,8 @@ pub(crate) fn leave(tx: &Transaction, id: i64) -> rusqlite::Result<()> {
     tx.execute(
         "UPDATE tasks SET reason = ?2 WHERE id = ?1",
         params![task, format!("held: {why}")],
-    )
-    .map(drop)
+    )?;
+    judge_open(tx, task)
 }
 
 /// Why no hold may stop the live run `run` now, as `preempt::guarded` says. A debate turn settles
@@ -818,18 +864,14 @@ pub(crate) fn release_task(
         )
         .optional()?;
     let Some(resume) = resume else {
-        let marked: bool = tx.query_row(
-            &format!("SELECT count(*) > 0 FROM tasks WHERE id = ?1 AND {MARKED}"),
-            [task],
-            |row| row.get(0),
-        )?;
-        if !marked {
+        if !is_marked(tx, task)? {
             return Ok(Err(format!("task {task} is not held")));
         }
         close(tx, task, "withdrawn by a person")?;
         tx.execute(
-            "UPDATE tasks SET reason = NULL WHERE id = ?1 AND substr(reason, 1, length(?2)) = ?2",
-            params![task, AFTER_TURN],
+            "UPDATE tasks SET reason = NULL WHERE id = ?1
+             AND (substr(reason, 1, length(?2)) = ?2 OR substr(reason, 1, length(?3)) = ?3)",
+            params![task, AFTER_TURN, ONCE_READY],
         )?;
         return Ok(Ok(format!("task {task} is no longer to be held")));
     };
