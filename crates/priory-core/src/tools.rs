@@ -1324,6 +1324,16 @@ pub(crate) fn read(db: &mut Connection, wait: i64, current: &str) -> rusqlite::R
     tx.commit()
 }
 
+/// Gives task `?1` the ignored events of resource `?3` since its wait `?2`'s prompt.
+pub(crate) const KEEP_IGNORED: &str = "UPDATE inbox SET task = ?1, outcome = 'kept'
+     WHERE outcome = 'ignored' AND task IS NULL
+     AND julianday(time) >= julianday((SELECT since FROM waits WHERE id = ?2))
+     AND ?3 = CASE
+       WHEN type LIKE 'linear.%' THEN 'linear:' || json_extract(data, '$.issue')
+       WHEN type LIKE 'slack.%' THEN 'slack:' || json_extract(data, '$.channel') || ':'
+         || coalesce(json_extract(data, '$.thread_ts'), json_extract(data, '$.ts'))
+     END";
+
 /// Stores a wait on the one condition `on` and returns its id.
 fn condition(tx: &Transaction, run: &Run, on: &Value) -> rusqlite::Result<Result<i64, String>> {
     let kind = on["type"].as_str().unwrap_or_default();
@@ -1352,17 +1362,7 @@ fn condition(tx: &Transaction, run: &Run, on: &Value) -> rusqlite::Result<Result
             )?;
             let id = tx.last_insert_rowid();
             // No task owned the resource before: its events since the last prompt were ignored.
-            tx.execute(
-                "UPDATE inbox SET task = ?1, outcome = 'kept'
-                 WHERE outcome = 'ignored' AND task IS NULL
-                 AND julianday(time) >= julianday((SELECT since FROM waits WHERE id = ?2))
-                 AND ?3 = CASE
-                   WHEN type LIKE 'linear.%' THEN 'linear:' || json_extract(data, '$.issue')
-                   WHEN type LIKE 'slack.%' THEN 'slack:' || json_extract(data, '$.channel') || ':'
-                     || coalesce(json_extract(data, '$.thread_ts'), json_extract(data, '$.ts'))
-                 END",
-                params![run.task, id, resource],
-            )?;
+            tx.execute(KEEP_IGNORED, params![run.task, id, resource])?;
             return Ok(Ok(id));
         }
         "time" => {
@@ -1776,7 +1776,9 @@ fn judge(tx: &Transaction, wait: i64, factory: &Factory) -> rusqlite::Result<Fir
         let mut statement = tx.prepare(
             "SELECT seq, type, data FROM inbox
              WHERE outcome IN ('kept', 'ignored', 'woke')
-             AND 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1
+             AND 'github:' || json_extract(data, '$.repo') || '#'
+               || coalesce(json_extract(data, '$.pull_request'), json_extract(data, '$.issue')) = ?1
+             AND json_extract(data, '$.pull_request') IS NOT NULL
              AND (json_extract(data, '$.head_sha') IS NOT NULL OR type = ?2) ORDER BY seq DESC",
         )?;
         let mut rows = statement.query(params![resource, CLOSED])?;
@@ -2314,10 +2316,10 @@ pub(crate) fn all_merged(tx: &Connection, task: i64) -> rusqlite::Result<bool> {
     };
     let merged = tx
         .query_row(
-            "SELECT json_extract(data, '$.merged') FROM inbox WHERE type = ?2
+            "SELECT json_extract(data, '$.merged') FROM inbox WHERE type = 'github.pull_request.closed'
              AND 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1
              ORDER BY seq DESC LIMIT 1",
-            params![resource, CLOSED],
+            params![resource],
             |row| row.get::<_, Option<bool>>(0),
         )
         .optional()?
@@ -2336,10 +2338,10 @@ pub(crate) fn closed_unmerged(db: &Connection, task: i64) -> rusqlite::Result<bo
     };
     let merged = db
         .query_row(
-            "SELECT json_extract(data, '$.merged') FROM inbox WHERE type = ?2
+            "SELECT json_extract(data, '$.merged') FROM inbox WHERE type = 'github.pull_request.closed'
              AND 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1
              ORDER BY seq DESC LIMIT 1",
-            params![resource, CLOSED],
+            params![resource],
             |row| row.get::<_, Option<bool>>(0),
         )
         .optional()?
@@ -5125,7 +5127,9 @@ fn last_read(tx: &Transaction, resource: &str) -> rusqlite::Result<String> {
            SELECT seq, CASE WHEN type = ?2 AND json_extract(data, '$.merged') = 1 THEN 'merged'
              WHEN type != ?2 AND json_extract(data, '$.open') = 1 THEN 'open' ELSE 'closed' END AS state
            FROM inbox
-           WHERE 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1
+           WHERE 'github:' || json_extract(data, '$.repo') || '#'
+             || coalesce(json_extract(data, '$.pull_request'), json_extract(data, '$.issue')) = ?1
+           AND json_extract(data, '$.pull_request') IS NOT NULL
            AND (type = ?2 OR json_extract(data, '$.open') IS NOT NULL))
          ORDER BY state = 'merged' DESC, seq DESC LIMIT 1",
         params![resource, CLOSED],

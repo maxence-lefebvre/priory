@@ -162,3 +162,6 @@ runs for over 10s: sweep, git fetch`, and when it ends, what took longest: `a ti
 40s, git fetch for 30s`. The line names the program and its subcommand, never an argument. The desk
 shows the last one for 24 hours, also while the tick holds the loop (see
 [desk.md](desk.md#intake-banner)).
+
+The passes of the loop that [hold work until the log is read to its end](README.md) count as one
+tick, so a long hold is reported even when each pass is short.
