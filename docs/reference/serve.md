@@ -23,7 +23,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `/api/inbox?unrouted=1` | `priory inbox --unrouted --json` | `unrouted`: the [unrouted groups](#unrouted), and `outsider`: the comments from outside the repository |
 | `/api/asks?band=BAND&risk=RISK&all=1` | `priory asks --json --band BAND --risk RISK` | an object: `asks`, an array of [asks](#asks), `bands` and `older` |
 | `/api/tasks?all=1` | `priory tasks --json` | `tasks`: an array of [tasks](#tasks), and `older` |
-| `/api/tasks?pr=RESOURCE` | | `tasks`: the active tasks that hold a pull request. See [Tasks that hold a pull request](#tasks-that-hold-a-pull-request) |
+| `/api/tasks?pr=RESOURCE` | | `tasks`: the active tasks that hold a pull request, else the done tasks `say` reopens on it. See [Tasks that hold a pull request](#tasks-that-hold-a-pull-request) |
 | `/api/tasks/{id}` | `priory task ID --json` | one [task in detail](#task-in-detail) |
 | `/api/runs?all=1` | `priory runs --json` | `runs`: an array of [runs](#runs), newest first, and `older` |
 | `/api/queue` | `priory queue --json` | an object: [Queue](#queue) |
@@ -651,7 +651,7 @@ an integer, is the number of ended runs left out. `priory runs --json` prints ev
 
 ## Tasks that hold a pull request
 
-`/api/tasks?pr=RESOURCE` returns the active tasks that hold one pull request, as `{"revision": N,
+`/api/tasks?pr=RESOURCE` returns the tasks that hold one pull request, as `{"revision": N,
 "tasks": [...]}`. `RESOURCE` is the pull request's resource, percent-encoded, such as
 `github%3Aowner%2Frepo%237` for `github:owner/repo#7`. The owner and repository match in any case,
 as GitHub's do, so `github:Owner/Repo#7` finds the same tasks. The [GitHub extension](../adapters/github.md) reads it to find the
@@ -671,7 +671,10 @@ request, in this order:
 | `owns` | none of the above, but still owns it, so its events reach the task, such as a pull request its stack later dropped |
 
 The tasks that hold it by `key` or `stack`, which own its branch, come first, then the others, each
-group by id. An empty `tasks` means no active task holds the pull request.
+group by id. When no active task holds it, `tasks` lists the done tasks that hold it and that
+[`say`](../daemon/desk.md#say) reopens while it is open, in the same two groups, newest first. A
+done task that only reviewed it is left out. An empty `tasks` means neither kind holds the pull
+request.
 
 ## Task in detail
 

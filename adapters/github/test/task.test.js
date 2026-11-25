@@ -27,9 +27,16 @@ test("a task at a human or code step, with no run yet, or ended cannot hear say,
     [{ ...TASK, step: "approve-pr" }, "Task 61 waits at approve-pr, a human step. Say reaches it once it moves."],
     [{ ...TASK, step: "merge" }, "Task 61 waits at merge, a code step. Say reaches it once it moves."],
     [{ ...TASK, runs: [], state: "queued" }, "Task 61 has no run yet. Say reaches it once its agent started."],
-    [{ ...TASK, state: "done" }, "Task 61 is done."],
+    [{ ...TASK, state: "dropped" }, "Task 61 is dropped."],
   ];
   for (const [task, note] of cases) assert.deepEqual(sayRoute(task, FLOWS), { enabled: false, note });
+});
+
+test("a done task the daemon lists reopens with say, whatever step it ended at", () => {
+  assert.deepEqual(sayRoute({ ...TASK, state: "done", step: "merge" }, FLOWS), {
+    enabled: true,
+    note: "Task 61 is done. Say reopens it: its agent resumes its session, works and pushes.",
+  });
 });
 
 test("without the factory's flows, say is off and the note does not guess the step's kind", () => {

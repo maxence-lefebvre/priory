@@ -5048,7 +5048,7 @@ fn say_reopens(
 
 /// Whether a `say` reopens the done `task`, or why not. Without `factory`, its step goes unchecked.
 pub(crate) fn says_reopens(
-    tx: &Transaction,
+    tx: &Connection,
     task: i64,
     factory: Option<&Factory>,
 ) -> rusqlite::Result<Result<(), String>> {
@@ -5063,9 +5063,9 @@ pub(crate) fn says_reopens(
 }
 
 /// The step the done `task` reopens at for `resource`, or why it cannot: an active task holds its
-/// key or a resource of it, or no agent runs that step.
+/// key or `resource`, or no agent runs that step.
 fn reopens_at(
-    tx: &Transaction,
+    tx: &Connection,
     workflows: &Workflows,
     task: i64,
     resource: &str,
@@ -5075,7 +5075,8 @@ fn reopens_at(
         [task],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )?;
-    if let Some(rival) = rival(tx, task, &key)? {
+    // Only this pull request, as for feedback: another task may hold one further up the stack.
+    if let Some(rival) = rival_on(tx, task, &key, Some(resource))? {
         return Ok(Err(rival));
     }
     let target = reentry(tx, workflows, task, &workflow, &at, resource)?;
@@ -5088,13 +5089,13 @@ fn reopens_at(
 }
 
 /// The lowest open pull request of `task`, or why it has none: it owns none, or they merged or
-/// closed.
+/// closed. One that another active task holds comes last.
 pub(crate) fn open_pull_request(
-    tx: &Transaction,
+    tx: &Connection,
     task: i64,
 ) -> rusqlite::Result<Result<String, String>> {
     let stack = crate::stack::of(tx, task)?;
-    let pulls = match stack.is_empty() {
+    let mut pulls = match stack.is_empty() {
         true => pull_request(tx, task)?
             .map(|resource| (resource, "open".to_owned()))
             .into_iter()
@@ -5104,22 +5105,43 @@ pub(crate) fn open_pull_request(
             .map(|pull| (pull.resource, pull.state))
             .collect::<Vec<_>>(),
     };
+    // A pull request it only waited on or subscribed to, on a branch it did not name.
+    let held = tx
+        .prepare(
+            "SELECT DISTINCT resource FROM owned WHERE task = ?1 AND EXISTS (SELECT 1 FROM inbox
+               WHERE 'github:' || json_extract(data, '$.repo') || '#'
+                 || json_extract(data, '$.pull_request') = owned.resource)
+             ORDER BY resource",
+        )?
+        .query_map([task], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for resource in held {
+        if !pulls.iter().any(|(known, _)| *known == resource) {
+            pulls.push((resource, "open".to_owned()));
+        }
+    }
     let mut why = "owns no pull request".to_owned();
+    let mut busy = None;
     for (resource, mut state) in pulls {
         if state == "open" {
             state = last_read(tx, &resource)?;
         }
-        if state == "open" {
+        if state != "open" {
+            why = format!("its pull request {resource} is {state}");
+        } else if crate::state::owner(tx, std::slice::from_ref(&resource))?
+            .is_some_and(|other| other.id != task)
+        {
+            busy.get_or_insert(resource);
+        } else {
             return Ok(Ok(resource));
         }
-        why = format!("its pull request {resource} is {state}");
     }
-    Ok(Err(why))
+    Ok(busy.ok_or(why))
 }
 
 /// Whether the newest event that says so read the pull request `resource` `open`, `closed` or
 /// `merged`. A merge stands whatever came after it; `open` when none says.
-fn last_read(tx: &Transaction, resource: &str) -> rusqlite::Result<String> {
+pub(crate) fn last_read(tx: &Connection, resource: &str) -> rusqlite::Result<String> {
     tx.query_row(
         "SELECT state FROM (
            SELECT seq, CASE WHEN type = ?2 AND json_extract(data, '$.merged') = 1 THEN 'merged'
@@ -5355,7 +5377,17 @@ fn revive(
 }
 
 /// The active task that holds the `key` or a resource of the ended `task`, as why it cannot restart.
-pub(crate) fn rival(tx: &Transaction, task: i64, key: &str) -> rusqlite::Result<Option<String>> {
+pub(crate) fn rival(tx: &Connection, task: i64, key: &str) -> rusqlite::Result<Option<String>> {
+    rival_on(tx, task, key, None)
+}
+
+/// As `rival`, counting of the task's resources only `resource` when it is given.
+fn rival_on(
+    tx: &Connection,
+    task: i64,
+    key: &str,
+    resource: Option<&str>,
+) -> rusqlite::Result<Option<String>> {
     let active = tx
         .query_row(
             "SELECT id FROM tasks WHERE key = ?1 AND state NOT IN ('done', 'failed', 'dropped')",
@@ -5372,8 +5404,9 @@ pub(crate) fn rival(tx: &Transaction, task: i64, key: &str) -> rusqlite::Result<
         "SELECT owned.resource, tasks.id FROM owned JOIN owned AS mine ON mine.resource = owned.resource
          JOIN tasks ON tasks.id = owned.task
          WHERE mine.task = ?1 AND owned.task != ?1 AND tasks.state NOT IN ('done', 'failed', 'dropped')
+         AND (?2 IS NULL OR owned.resource = ?2)
          ORDER BY tasks.id LIMIT 1",
-        [task],
+        params![task, resource],
         |row| {
             Ok(format!(
                 "task {} is already active on {}",
@@ -5550,7 +5583,7 @@ fn reenter(
 
 /// The step a done task reopens at.
 fn reentry(
-    tx: &Transaction,
+    tx: &Connection,
     workflows: &Workflows,
     task: i64,
     workflow: &str,
@@ -5569,7 +5602,22 @@ fn reentry(
     let named = workflows
         .get(workflow)
         .and_then(|flow| flow.value.reopen.clone());
-    Ok(named.or(opened).unwrap_or_else(|| at.to_owned()))
+    if let Some(target) = named.or(opened) {
+        return Ok(target);
+    }
+    let runs_agent =
+        |id: &str| step(workflows, workflow, id).is_some_and(|step| step.decides == Decider::Model);
+    if runs_agent(at) {
+        return Ok(at.to_owned());
+    }
+    // Done at a code or human step, which has no agent to read the feedback.
+    let last = tx
+        .prepare("SELECT step FROM results WHERE task = ?1 ORDER BY run DESC")?
+        .query_map([task], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .find(|id| runs_agent(id));
+    Ok(last.unwrap_or_else(|| at.to_owned()))
 }
 
 /// Ends the live run of `session`, whose tmux session was gone when the daemon started, as `lost`.

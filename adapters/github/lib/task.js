@@ -1,6 +1,7 @@
-// Whether say reaches a task, by the daemon's own rule in tools.rs: an active model step with a run.
+// Whether say reaches a task, by the daemon's own rule in tools.rs: an active model step with a run,
+// or a done task, which the daemon lists for an open pull request only when say reopens it.
 
-const ENDED = new Set(["done", "failed", "dropped"]);
+const ENDED = new Set(["failed", "dropped"]);
 
 const decider = (flows, task) =>
   flows?.workflows?.find((workflow) => workflow.name === task.workflow)?.steps?.find((step) => step.id === task.step)?.decides;
@@ -9,6 +10,7 @@ const decider = (flows, task) =>
 export function sayRoute(task, flows) {
   const name = `Task ${task.id}`;
   if (ENDED.has(task.state)) return { enabled: false, note: `${name} is ${task.state}.` };
+  if (task.state === "done") return { enabled: true, note: `${name} is done. Say reopens it: its agent resumes its session, works and pushes.` };
   const decides = decider(flows, task);
   if (!decides) return { enabled: false, note: `${name} is at ${task.step}. Priory has not said yet who decides that step.` };
   if (decides !== "model") return { enabled: false, note: `${name} waits at ${task.step}, a ${decides} step. Say reaches it once it moves.` };

@@ -316,8 +316,9 @@ prompts.
   prompt. Its step, session and branch are those of [feedback that reopens a done
   task](routing.md#feedback-reopens-a-done-task). It replies `task <id> reopened at <step>,
   generation <n>`. It is refused, with the reason, when the task owns no pull request, when that
-  pull request merged or closed, when another active task holds its key or a resource it owns, or
-  when no agent runs the step it would reopen at. A merge the intake has not published yet does not
+  pull request merged or closed, when another active task holds its key or every open pull request
+  it owns, or when no agent runs the step it would reopen at. The pull requests it owns include
+  those it waited on or subscribes to. It reopens on one that no other active task holds. A merge the intake has not published yet does not
   refuse it. A pick or comment on a done task's report reopens nothing.
 
 Otherwise it replies `task <id> will hear it`. It refuses a `failed` or `dropped` task, a

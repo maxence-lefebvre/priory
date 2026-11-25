@@ -535,7 +535,8 @@ When no active task owns a resource it names, it reopens the newest done task th
 - shares its key with no active task.
 
 The task goes back, as its next generation, to its workflow's `reopen` step, else the model step
-whose result led to the `open-pr` that opened the pull request, else the step it was done at. As `priory revive` does, the
+whose result led to the `open-pr` that opened the pull request, else the step it was done at, or the last
+model step that gave a result when no agent runs that one. As `priory revive` does, the
 reopen withdraws the open asks, waits and queued prompts of the earlier generation. Its first
 prompt is one line, then the event's own line:
 

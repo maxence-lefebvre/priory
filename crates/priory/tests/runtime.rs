@@ -11517,6 +11517,49 @@ fn a_say_on_a_done_task_whose_pull_request_another_active_task_owns_is_refused()
 }
 
 #[test]
+fn a_say_reopens_a_done_task_on_the_one_pull_request_of_its_stack_no_other_task_holds() {
+    let setup = done_with_open_pull_request("say-stack-rival");
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "INSERT INTO tasks (key, workflow, step, state, band, trigger, source)
+           SELECT 'cli:above', workflow, step, 'blocked', band, trigger, source FROM tasks WHERE id = 1;
+         INSERT INTO subscriptions (task, resource) VALUES (2, 'github:owner/repo#7'),
+           (1, 'github:owner/repo#8');
+         INSERT INTO inbox (id, type, subject, time, data, links, outcome) VALUES
+           ('seen', 'github.pull_request.opened', 'owner/repo#8', '2026-11-17T10:00:00Z',
+            '{\"repo\":\"owner/repo\",\"pull_request\":8}', '[]', 'ignored');",
+    )
+    .unwrap();
+
+    let said = setup.priory(&["say", "1", "Fix the empty case."]);
+
+    assert!(said.status.success(), "{said:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    assert!(
+        typed[2].contains("generation 2: github:owner/repo#8 is still open."),
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn a_say_on_a_task_done_at_a_step_no_agent_runs_reopens_its_last_model_step() {
+    let setup = done_with_open_pull_request("say-code-step");
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute("UPDATE tasks SET step = 'gate' WHERE id = 1", [])
+        .unwrap();
+
+    let said = setup.priory(&["say", "1", "Fix the empty case."]);
+
+    assert!(said.status.success(), "{said:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&said.stdout).trim(),
+        "task 1 reopened at implement, generation 2"
+    );
+}
+
+#[test]
 fn a_say_on_a_failed_or_dropped_task_with_an_open_pull_request_is_refused() {
     let setup = done_with_open_pull_request("say-failed");
     for state in ["failed", "dropped"] {
