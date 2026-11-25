@@ -378,22 +378,35 @@ fn no_repository(path: &Path, deadline: Option<Instant>) -> Result<(), String> {
     }
 }
 
-/// Lets its owner read the folder, when that is the user `own` gives and the mode refuses it.
-fn open_folder(folder: &Path, own: fn() -> u32) -> std::io::Result<()> {
+/// Whether the mode of the folder keeps the user `own` gives, its owner, from reading it.
+fn closed(folder: &Path, own: fn() -> u32) -> std::io::Result<bool> {
     let meta = fs::symlink_metadata(folder)?;
-    let mode = meta.permissions().mode();
-    if !meta.is_dir() || mode & 0o500 == 0o500 || meta.uid() != own() {
+    Ok(meta.is_dir() && meta.permissions().mode() & 0o500 != 0o500 && meta.uid() == own())
+}
+
+/// Lets its owner read the folder when it is `closed`.
+fn open_folder(folder: &Path, own: fn() -> u32) -> std::io::Result<()> {
+    if !closed(folder, own)? {
         return Ok(());
     }
+    let mode = fs::symlink_metadata(folder)?.permissions().mode();
     fs::set_permissions(folder, fs::Permissions::from_mode(mode | 0o700))
 }
 
-/// Opens every folder of the worktree, since git passes over the files of one it cannot read.
-fn open_all(worktree: &Path, own: fn() -> u32) -> Result<(), String> {
+/// Opens every folder of the worktree, since git passes over the files of one it cannot read. Returns
+/// whether it opened one, which it does only while no process runs there.
+fn open_all(worktree: &Path, own: fn() -> u32) -> Result<bool, String> {
+    let mut opened = false;
     let mut folders = vec![worktree.to_path_buf()];
     while let Some(folder) = folders.pop() {
         let unread = |error| format!("cannot read {}: {error}", folder.display());
-        open_folder(&folder, own).map_err(unread)?;
+        if closed(&folder, own).map_err(unread)? {
+            if occupied(worktree) {
+                return Err("a process runs in it".to_owned());
+            }
+            open_folder(&folder, own).map_err(unread)?;
+            opened = true;
+        }
         for entry in fs::read_dir(&folder).map_err(unread)? {
             let entry = entry.map_err(unread)?;
             if entry.file_type().map_err(unread)?.is_dir() {
@@ -401,7 +414,7 @@ fn open_all(worktree: &Path, own: fn() -> u32) -> Result<(), String> {
             }
         }
     }
-    Ok(())
+    Ok(opened)
 }
 
 /// The first folder at or under `path` with a `.git` entry or a bare repository in it, except in a
@@ -845,14 +858,14 @@ fn removable_under(home: &Path, found: &Found, mounts: Mounts) -> Result<(), Str
     if let Some(folder) = as_one(|| known(&found.path)) {
         return Err(holds_repository(&folder));
     }
-    if occupied(&found.path) {
-        return Err("a process runs in it".to_owned());
-    }
-    open_all(&found.path, uid)?;
-    let files = as_one(|| {
+    let listed = || {
         let files = files(found)?;
         refused_by_git(found, &files).map(|()| files)
-    })?;
+    };
+    let mut files = as_one(listed)?;
+    if open_all(&found.path, uid)? {
+        files = as_one(listed)?;
+    }
     if let Some(folder) = walked(&found.path, &files)? {
         return Err(holds_repository(&folder));
     }

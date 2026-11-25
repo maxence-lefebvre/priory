@@ -169,7 +169,7 @@ check, after any teardown:
   `refs`. Nor is a `.git` in a folder of tracked files. Its commits can be nowhere else, and the reclaim keeps it too. A repository in the `tmp`
   folder of a cargo target, also a nested one, does not count. A tracked folder that looks like a repository does not count
   either, since the branch holds it.
-- Every folder in it can be read. First, the daemon adds the owner's read, write and search bits to each folder
+- Every folder in it can be read. First, while no process runs in the worktree, the daemon adds the owner's read, write and search bits to each folder
   of its own user that it cannot read, such as one a test left with mode 000. git lists none of the files
   in such a folder. The bits stay when the worktree stays. A folder of another user keeps the worktree
   as `cannot read <path>: <error>`: give the daemon's user access, or delete that folder.
