@@ -1256,6 +1256,7 @@ fn a_submitted_review_and_a_completed_check_publish_once() {
             "name": "test (ubuntu)",
             "conclusion": "failure",
             "app": "github-actions",
+            "origin": "run:601",
             "pending": 1,
             "failing": 1,
             "time": "2026-11-17T12:05:00Z",
