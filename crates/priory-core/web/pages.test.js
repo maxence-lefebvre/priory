@@ -70,3 +70,7 @@ test("another ask or task page starts empty", () => {
   assert.equal(read, true);
   assert.equal(task.body, null);
 });
+
+test("an ask's title survives an address that does not decode", () => {
+  assert.equal(pageTitle("/asks/%E0%A4%A", { tasks: [] }), "Ask #%E0%A4%A · Priory");
+});
