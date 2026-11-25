@@ -39385,9 +39385,11 @@ fn a_duplicate_during_a_cloud_run_shows_its_ask_the_task_to_agree_with() {
 #[test]
 fn taking_a_cloud_push_hangs_off_the_tick() {
     let mut setup = cloud("cloud-take", CLOUD);
-    setup.calls(&[result("passed")]);
+    setup.calls(&[result("passed"), result("passed")]);
     setup.publish(&requested(42));
+    setup.local_task(43);
     setup.start();
+    setup.until("tasks", |rows| with(rows, 4, "done") == 1);
     setup.cloud_started();
     setup.crash();
     setup.cloud_push(0);
@@ -39395,10 +39397,10 @@ fn taking_a_cloud_push_hangs_off_the_tick() {
     setup.start();
     setup.written("fake/git-merging");
 
-    setup.local_task(43);
+    setup.local_task(44);
 
     let deadline = Instant::now() + Duration::from_secs(30);
-    while with(&setup.rows("tasks"), 4, "done") == 0 {
+    while with(&setup.rows("tasks"), 4, "done") < 2 {
         assert!(Instant::now() < deadline, "the local task waits for git");
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -39477,6 +39479,16 @@ fn private_terms_stop_the_push_before_a_cloud_start() {
         assert!(git(&worktree).args(args).status().unwrap().success());
     }
     setup.release("cloud-fail");
+    // The failed start holds the next one back for a minute.
+    setup.crash();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute(
+        "UPDATE runs SET ended = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 hour')",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    setup.start();
     let revived = setup.priory(&["revive", "1", "--step", "implement"]);
     assert!(revived.status.success(), "{revived:?}");
 
