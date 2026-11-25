@@ -278,6 +278,11 @@ fn an_ask_under_the_level_is_left_marked_and_medium_answers_it() {
 #[test]
 fn a_lane_it_does_not_cover_is_left() {
     let setup = asleep("pilot-lane", WORKFLOW, "high");
+    fs::write(
+        setup.dir.join("factory/lanes.toml"),
+        "[[rules]]\nkey = \"github:owner/repo#7\"\nlane = \"core/other\"\n",
+    )
+    .unwrap();
 
     setup.autopilot_on(&["--for", "1h", "--lane", "core/other"]);
 
@@ -1130,6 +1135,144 @@ fn an_off_that_told_no_runner_is_not_undone_by_an_older_on() {
     until_read(&a, 1);
     assert_eq!(status_level(&a), json!(null));
     assert_eq!(status_level(&b), json!("high"));
+}
+
+/// Runs `setup`'s daemon once: it reads the log to its end, then publishes what it queued.
+fn pass(setup: &Setup) {
+    let pass = setup.priory(&["daemon", &factory(setup), "--once"]);
+    assert!(pass.status.success(), "{pass:?}");
+}
+
+#[test]
+fn a_late_on_made_before_another_runners_off_turns_no_runner_on() {
+    let a = runner("pilot-late-on", "a", None);
+    let b = runner("pilot-late-on", "b", Some(&a));
+    a.autopilot_on(&["--for", "1h"]);
+    off(&b);
+
+    pass(&b);
+    logged(&b, "priory.autopilot.set", json!({}));
+    pass(&a);
+    let obeyed = status_level(&a);
+    logged(&a, "priory.autopilot.set", json!({ "level": "high" }));
+    pass(&b);
+    pass(&a);
+
+    assert_eq!(
+        [obeyed, status_level(&a), status_level(&b)],
+        [json!(null), json!(null), json!(null)]
+    );
+    assert_eq!(a.autopilot_report()["why"], "off");
+    let late = |setup: &Setup| setup.rows("inbox").into_iter().find(|row| row[0] == "2");
+    assert_eq!(late(&b).unwrap()[4], "ignored");
+}
+
+#[test]
+fn a_runner_whose_own_on_is_unread_ignores_an_older_off() {
+    let a = runner("pilot-older-off", "a", None);
+    let b = runner("pilot-older-off", "b", Some(&a));
+    off(&b);
+    pass(&b);
+    a.autopilot_on(&["--for", "1h"]);
+
+    pass(&a);
+    let kept = status_level(&a);
+    pass(&b);
+    pass(&a);
+
+    assert_eq!(
+        [kept, status_level(&a), status_level(&b)],
+        [json!("high"), json!("high"), json!("high")]
+    );
+}
+
+#[test]
+fn an_off_dated_far_ahead_ends_it_and_bars_no_later_on() {
+    let a = runner("pilot-far-off", "a", None);
+    let b = runner("pilot-far-off", "b", Some(&a));
+    a.autopilot_on(&["--for", "1h"]);
+    pass(&a);
+    pass(&b);
+    a.publish(
+        &Message::new("priory.autopilot.set", json!({}))
+            .time("2099-01-01T00:00:00Z".parse().unwrap()),
+    );
+    pass(&a);
+    pass(&b);
+    assert_eq!(
+        [status_level(&a), status_level(&b)],
+        [json!(null), json!(null)]
+    );
+
+    a.autopilot_on(&["--for", "1h", "--level", "medium"]);
+    pass(&a);
+    pass(&b);
+
+    assert_eq!(
+        [status_level(&a), status_level(&b)],
+        [json!("medium"), json!("medium")]
+    );
+}
+
+#[test]
+fn a_view_only_machine_whose_publish_fails_stays_off() {
+    let mut laptop = runner("pilot-view-cut", "laptop", None);
+    laptop.bus = laptop.dir.clone();
+
+    let on = laptop.autopilot(&["on", "--for", "1h"]);
+
+    assert!(!on.status.success(), "{on:?}");
+    let status = laptop.autopilot(&["status"]);
+    assert_eq!(
+        String::from_utf8_lossy(&status.stdout),
+        "autopilot is off\n"
+    );
+}
+
+#[test]
+fn asks_it_left_take_no_write_transaction_on_later_ticks() {
+    let setup = asleep("pilot-reads", WORKFLOW, "medium");
+    setup.autopilot_on(&["--for", "1h"]);
+    left(&setup, "1");
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.busy_timeout(Duration::from_secs(10)).unwrap();
+    // A judgement writes through this insert even when it changes no row.
+    db.execute_batch(
+        "CREATE TABLE judged (at TEXT);
+         CREATE TRIGGER judging BEFORE INSERT ON autopilot_asks BEGIN
+           INSERT INTO judged VALUES ('x');
+         END;",
+    )
+    .unwrap();
+
+    std::thread::sleep(Duration::from_secs(3));
+
+    let judged: i64 = db
+        .query_row("SELECT count(*) FROM judged", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(judged, 0);
+}
+
+#[test]
+fn a_lane_no_task_or_trigger_uses_is_refused() {
+    let setup = Setup::new("pilot-unused-lane");
+    let unused = setup.autopilot(&["on", "--for", "1h", "--lane", "no/where"]);
+    assert!(!unused.status.success(), "{unused:?}");
+    assert!(
+        String::from_utf8_lossy(&unused.stderr)
+            .contains("--lane `no/where`: no task or trigger uses it"),
+        "{unused:?}"
+    );
+    let trigger = fs::read_dir(setup.dir.join("factory/triggers"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let text = fs::read_to_string(&trigger).unwrap();
+    fs::write(&trigger, format!("lane = \"no/where\"\n{text}")).unwrap();
+
+    setup.autopilot_on(&["--for", "1h", "--lane", "no/where", "--lane", "none/misc"]);
 }
 
 #[test]

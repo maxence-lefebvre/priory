@@ -158,8 +158,9 @@ a group. `PRIORY_METRICS` replaces that list for one process, such as `process,l
   lets the daemon answer eligible asks with their recommendation until it ends by itself. `TIME` is
   the next `HH:MM` in [`[autopilot] timezone`](factory.md#autopilot), or an RFC 3339 instant. Without
   an end, it ends at the next 08:00. The longest is 7 days, and the default level is `high`. `LANE`
-  reads `<team>/<theme>`. See
-  [waits.md](../daemon/waits.md#autopilot).
+  reads `<team>/<theme>`, and a task, a trigger or `lanes.toml` uses it: a rule, or the fallback with
+  `{team}` as `none`. Any other is refused. On a view-only machine, a failed publish changes nothing
+  there. See [waits.md](../daemon/waits.md#autopilot).
 - `priory autopilot off [DIR]`: ends it here first, whatever the daemon, the factory or the log do.
   It then tells the other runners, and exits nonzero when it cannot: the factory does not load, this
   machine has no role in it, or a view-only machine's publish fails.

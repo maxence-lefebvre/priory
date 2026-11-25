@@ -1775,11 +1775,14 @@ fn autopilot_on(flags: &[&str]) -> ExitCode {
             lanes,
         };
         let mut db = state::open()?;
-        let message = autopilot::set(&mut db, Some(&setting), role == autopilot::Role::Runner)
-            .map_err(|error| error.to_string())?;
+        autopilot::unused(&db, &factory, &setting.lanes)?;
+        let message = autopilot::message(Some(&setting));
         if role == autopilot::Role::Viewer {
-            autopilot::publish(&factory, &message)?;
+            autopilot::publish_on(&factory, &message)?;
         }
+        let queued = role == autopilot::Role::Runner;
+        autopilot::set(&mut db, Some(&setting), &message, queued)
+            .map_err(|error| error.to_string())?;
         let status = autopilot::status(&db).map_err(|error| error.to_string())?;
         autopilot::line(&status).ok_or_else(|| "autopilot ended at once".to_owned())
     })();
@@ -1791,7 +1794,8 @@ fn autopilot_on(flags: &[&str]) -> ExitCode {
 fn autopilot_off(dir: Option<&str>) -> ExitCode {
     let turned = state::open().and_then(|mut db| {
         let on = autopilot::status(&db).map_err(|error| error.to_string())?;
-        let message = autopilot::set(&mut db, None, false).map_err(|error| error.to_string())?;
+        let message = autopilot::message(None);
+        autopilot::set(&mut db, None, &message, false).map_err(|error| error.to_string())?;
         println!(
             "{}",
             match on.is_null() {

@@ -120,7 +120,8 @@ The daemon answers an ask with its recommendation when all of these hold:
 
 1. An agent's `ask` call made it, with a confidence at or above `--level`, `high` by default.
 2. A `hands-off` lead could answer it, as [above](#answered-by-auto), at a step the workflow still has.
-3. `--lane` names its task's lane, or no lane was named.
+3. `--lane` names its task's lane, or no lane was named. A lane in use nowhere is
+   [refused](../reference/cli.md).
 4. Its task is not held, nor to be held after this turn.
 5. It is neither snoozed nor with a lead. An ask comes back to autopilot when its snooze ends or its
    lead gives up. A new ask is answered before a lead is called.

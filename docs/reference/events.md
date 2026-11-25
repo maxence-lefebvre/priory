@@ -1939,6 +1939,7 @@ Schema: [`priory.memory.dropped.json`](../schemas/events/priory.memory.dropped.j
 A person turns autopilot on or off, in a factory of several runners. Each runner applies it in log
 order. It is recorded as `refused` in a factory of one runner, and when `until` is more than 7 days
 away, `level` is not `high` or `medium`, or `lanes` is missing. An empty `data` turns it off.
+An `on` dated at or before the last `off` is recorded as `ignored`.
 Subject: `autopilot`.
 Schema: [`priory.autopilot.set.json`](../schemas/events/priory.autopilot.set.json).
 
