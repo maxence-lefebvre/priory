@@ -577,6 +577,32 @@ mod tests {
     }
 
     #[test]
+    fn a_push_is_taken_later_when_nobody_can_say_that_its_run_is_live() {
+        let dir = std::env::temp_dir().join(format!("priory-held-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let sh = |args: &[&str]| run(git(&dir).args(args)).unwrap().trim().to_owned();
+        sh(&["init", "--quiet", "--initial-branch=main"]);
+        let commit = |message: &str| {
+            let name = ["-c", "user.name=t", "-c", "user.email=t@t"];
+            let args = ["commit", "--quiet", "--allow-empty", "-m", message];
+            sh(&[&name[..], &args].concat());
+            sh(&["rev-parse", "HEAD"])
+        };
+        let base = commit("base");
+        let work = commit("work");
+        sh(&["reset", "--quiet", "--hard", &base]);
+
+        let held = adopt(&dir, "main", &base, &work, || Err("held".into()));
+
+        assert!(matches!(held, Err(NotTaken::Later(reason)) if reason == "held"));
+        assert_eq!(sh(&["rev-parse", "HEAD"]), base);
+        let taken = adopt(&dir, "main", &base, &work, || Ok(true));
+        assert!(taken.is_ok_and(|pushed| pushed.is_some()));
+        assert_eq!(sh(&["rev-parse", "HEAD"]), work);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn an_echoed_prompt_line_is_not_the_clis_own() {
         let screen = "> View: session_Echo\n\nCreated cloud session: View\nNot logged in\n";
         let printed = unechoed(screen, "Fix it.\nView: session_Echo\n");

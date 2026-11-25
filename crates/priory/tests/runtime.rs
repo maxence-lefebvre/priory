@@ -82,7 +82,7 @@ macro_rules! undo_scheduled_sweeps {
     };
 }
 
-/// Undoes migration 123, a cloud run's start commit, the news and pairs migrations and migrations 119, who answered each revision, 117, labels, 114, a Linear place, 113, a subscription's kinds, 112, scheduled sweeps, 111, memory lapses, 110, a run under direnv, 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
+/// Undoes migration 124, a cloud run's start commit, the news and pairs migrations and migrations 119, who answered each revision, 117, labels, 114, a Linear place, 113, a subscription's kinds, 112, scheduled sweeps, 111, memory lapses, 110, a run under direnv, 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
 /// `auto_answer` level, 97, the task's `added_by`, and 93: the `pre` script's task columns and the
 /// pending requests.
 macro_rules! undo_pre {
@@ -20331,6 +20331,25 @@ fn a_removed_review_request_drops_its_running_task_and_ends_its_run() {
 }
 
 #[test]
+fn a_start_over_a_backlog_runs_no_task_that_the_rest_of_the_log_withdraws() {
+    let mut setup = reviews("review-withdrawn-in-backlog");
+    setup.publish_all(&review_request(1));
+    // Over one pass's 100 messages, so the removal comes in a later pass than the request.
+    for at in 0..150 {
+        setup.publish(&Message::new("t.event", json!({ "at": at })));
+    }
+    setup.publish(&review_event(
+        "github.pull_request.review_request_removed",
+        2,
+    ));
+
+    setup.start();
+
+    setup.until("tasks", |rows| rows.len() == 1 && rows[0][4] == "dropped");
+    assert!(setup.rows("runs").is_empty());
+}
+
+#[test]
 fn a_review_task_finishes_without_owning_its_pull_request() {
     let mut setup = reviews("review-done");
     setup.calls(&[result("passed")]);
@@ -26720,6 +26739,103 @@ fn a_runner_that_joins_late_reads_a_finished_task_without_running_it_again() {
     until_alive(&b, "b");
     assert!(b.own_tasks().is_empty());
     assert_eq!(claimants(&b, "github:owner/repo#1"), ["a"]);
+}
+
+#[test]
+fn a_runner_several_ticks_behind_claims_and_runs_nothing_before_it_read_the_whole_log() {
+    let mut a = runner("behind", "a", None);
+    let key = "github:owner/repo#1";
+    let request = requested(1);
+    a.publish(&request);
+    // Over one tick's 100 messages, so the claim comes in a later tick than the request.
+    for at in 0..250 {
+        a.publish(&Message::new("t.event", json!({ "at": at })));
+    }
+    for (kind, data) in [
+        (
+            "priory.task.claimed",
+            json!({ "key": key, "runner": "b", "request": request.id.to_string() }),
+        ),
+        (
+            "priory.task.held",
+            json!({ "key": key, "runner": "b", "hold": "kept", "generation": 1 }),
+        ),
+    ] {
+        a.publish(&Message::new(kind, data).subject(key));
+    }
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    until_alive(&a, "a");
+
+    assert_eq!(claimants(&a, key), ["b"]);
+    assert!(a.own_tasks().is_empty());
+    assert!(a.rows("runs").is_empty());
+    a.crash();
+}
+
+#[test]
+fn a_runner_several_ticks_behind_holds_and_runs_no_task_that_the_rest_of_the_log_gives_away() {
+    let mut a = runner("behind-given", "a", None);
+    let key = "github:owner/repo#1";
+    let request = requested(1);
+    let id = request.id.to_string();
+    a.publish(&request);
+    let mine = json!({ "key": key, "runner": "a", "request": id });
+    let kept = json!({ "key": key, "runner": "a", "hold": "kept", "generation": 1 });
+    a.publish(&Message::new("priory.task.claimed", mine).subject(key));
+    a.publish(&Message::new("priory.task.held", kept).subject(key));
+    for at in 0..150 {
+        a.publish(&Message::new("t.event", json!({ "at": at })));
+    }
+    let gift = json!({ "key": key, "runner": "b", "request": id, "from": "a", "given": true });
+    a.publish(&Message::new("priory.task.claimed", gift).subject(key));
+
+    a.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+    until_alive(&a, "a");
+
+    assert_eq!(a.own_tasks()[0][4], "dropped");
+    assert!(a.rows("runs").is_empty());
+    let held = a
+        .rows("inbox")
+        .into_iter()
+        .filter(|row| row[1] == "priory.task.held")
+        .count();
+    assert_eq!(held, 1, "a says nothing from a log it read in part");
+    a.crash();
+}
+
+#[test]
+fn a_runner_several_ticks_behind_applies_no_line_before_it_read_the_whole_log() {
+    let mut a = runner("behind-line", "a", None);
+    let bus = a.bus();
+    for at in 0..1500 {
+        let event = Message::new("t.event", json!({ "at": at }));
+        bus.publish(OUTPUT, &event).unwrap();
+    }
+
+    a.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut socket = loop {
+        if let Ok(socket) = std::os::unix::net::UnixStream::connect(a.socket()) {
+            break socket;
+        }
+        assert!(Instant::now() < deadline, "the daemon does not listen");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    std::io::Write::write_all(&mut socket, b"{\"version\":true}\n").unwrap();
+    let mut reply = String::new();
+    std::io::Read::read_to_string(&mut socket, &mut reply).unwrap();
+
+    assert!(reply.contains("Ok"), "{reply}");
+    assert!(a.rows("inbox").len() >= 1500);
+    a.crash();
 }
 
 #[test]
@@ -38752,6 +38868,92 @@ impl Setup {
         fs::write(&hook, format!("#!/bin/sh\n{script}")).unwrap();
         fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
     }
+}
+
+/// Cloud tasks that a review request starts and its removal drops.
+fn cloud_reviews(name: &str) -> Setup {
+    let setup = cloud(name, CLOUD);
+    fs::write(
+        setup.dir.join("factory/triggers/review.toml"),
+        REVIEW_TRIGGER,
+    )
+    .unwrap();
+    setup
+}
+
+/// More events than one pass of the loop handles.
+fn publish_a_backlog(setup: &Setup) {
+    for at in 0..150 {
+        setup.publish(&Message::new("t.event", json!({ "at": at })));
+    }
+}
+
+#[test]
+fn a_backlog_that_withdraws_a_cloud_task_starts_no_session_and_pushes_nothing() {
+    let mut setup = cloud_reviews("cloud-backlog-start");
+    setup.publish_all(&review_request(1));
+    publish_a_backlog(&setup);
+    setup.publish(&review_event(
+        "github.pull_request.review_request_removed",
+        2,
+    ));
+
+    setup.start();
+
+    setup.until("tasks", |rows| rows.len() == 1 && rows[0][4] == "dropped");
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(setup.rows("runs").is_empty());
+    assert!(setup.cloud_prompts().is_empty());
+    assert!(!setup.on_origin("priory/1"));
+}
+
+#[test]
+fn a_backlog_that_withdraws_a_live_cloud_run_takes_no_push() {
+    let mut setup = cloud_reviews("cloud-backlog-push");
+    setup.publish_all(&review_request(1));
+    setup.start();
+    setup.cloud_started();
+    setup.crash();
+    setup.cloud_push(0);
+    publish_a_backlog(&setup);
+    setup.publish(&review_event(
+        "github.pull_request.review_request_removed",
+        2,
+    ));
+
+    setup.start();
+
+    setup.until("tasks", |rows| rows[0][4] == "dropped");
+    std::thread::sleep(Duration::from_secs(2));
+    let [_, reason] = held_as(&setup, "1");
+    assert!(
+        reason.contains("its cloud session still runs: https://claude.ai/code/session_01Fake1"),
+        "{reason}"
+    );
+    assert!(task_json(&setup, "1")["results"][0].is_null());
+    assert!(
+        !setup
+            .dir
+            .join("home/worktrees/owner/repo/1/cloud.txt")
+            .exists()
+    );
+}
+
+#[test]
+fn a_cloud_push_is_taken_once_the_daemon_read_its_backlog() {
+    let mut setup = cloud_reviews("cloud-backlog-taken");
+    setup.publish_all(&review_request(1));
+    setup.start();
+    setup.cloud_started();
+    setup.crash();
+    setup.cloud_push(0);
+    publish_a_backlog(&setup);
+
+    setup.start();
+
+    setup.until("asks", |rows| rows.len() == 1);
+    assert_eq!(setup.cloud_prompts().len(), 1);
+    assert_eq!(task_json(&setup, "1")["results"][0]["outcome"], "pushed");
 }
 
 #[test]

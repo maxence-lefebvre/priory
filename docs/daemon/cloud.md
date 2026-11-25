@@ -154,6 +154,27 @@ says so when that look failed or the run ended after it. A daemon that stops dur
 A cancel that the last check before `claude --cloud` sees starts none. The session itself goes on until a
 person archives it, and the branches it pushed stay on `origin`.
 
+## While the daemon is behind its log
+
+The daemon [holds work until it read the log to its end](README.md) after a start, after a lost log
+answers again and, with a runner file, whenever it is behind. The rest of the log may withdraw the
+task or give it to another runner. Meanwhile:
+
+- **Start:** no cloud run starts. A start already under way waits before its push and before
+  `claude --cloud`, with the `command_timeout` it has for a state file that cannot be read. Past that
+  it ends `failed`, and a branch it pushed stays on `origin`.
+- **Poll:** no new look begins. One under way may fetch, which moves nothing. A deadline that passes
+  ends no run: the daemon looks once more after the catch-up, and its grace counts from that look.
+- **Push:** none is taken. A look that would take one ends without it, and the next look tries again.
+
+The end of a start is stored only after the catch-up, so a daemon that stops in between blocks the
+task as one that may have started a session. A run that the backlog ends is dropped as by a cancel,
+and its reason names the session.
+
+Three windows stay. A start or look that checked just before the daemon found its backlog goes on,
+as one does that checked just before a cancel. So does one while the log is lost. A later backlog without a runner file
+holds no cloud run, as it holds no local one.
+
 ## Asks and feedback
 
 The factory's pre-review and a step's gate send a result back to its session, which a cloud session

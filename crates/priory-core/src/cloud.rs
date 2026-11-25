@@ -11,7 +11,7 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::time::{Duration, Instant};
 
@@ -47,6 +47,9 @@ static SLOW: Mutex<BTreeMap<i64, (Instant, u32)>> = Mutex::new(BTreeMap::new());
 
 /// How many polls' threads run.
 static POLLS: AtomicUsize = AtomicUsize::new(0);
+
+/// Whether the rest of the log may withdraw a live run, so no thread may act on one.
+static HELD: AtomicBool = AtomicBool::new(false);
 
 /// What the daemon knows of each live cloud run past what the state holds.
 static WATCHED: Mutex<BTreeMap<i64, Watch>> = Mutex::new(BTreeMap::new());
@@ -313,9 +316,11 @@ pub(crate) fn dispatch(
     *STARTING.lock().expect("no start panics") = Some((run, receiver));
     let patience = Cell::new(runtime::command_timeout());
     std::thread::spawn(move || {
-        let started = screen()
-            .map_err(NotStarted::Denied)
-            .and_then(|()| cloud::start(&start, || patient(&patience, || still_live(run))));
+        let started = screen().map_err(NotStarted::Denied).and_then(|()| {
+            cloud::start(&start, || {
+                patient(&patience, || unheld(&HELD, || still_live(run)))
+            })
+        });
         let none = matches!(started, Err(NotStarted::Refused(_) | NotStarted::Denied(_)));
         let left = (none && !still_live(run).unwrap_or(true)).then(|| left_on_origin(&start));
         let _ = sender.send((started, left));
@@ -722,11 +727,26 @@ fn follow(
         let poll = Poll::begin();
         std::thread::spawn(move || {
             let _poll = poll;
-            let found = look(&worktree, &pushes, &branch, &head, seen, || still_live(id));
+            let found = look(&worktree, &pushes, &branch, &head, seen, || {
+                unheld(&HELD, || still_live(id))
+            });
             let _ = sender.send(found);
         });
     }
     Ok(true)
+}
+
+/// Holds the threads under way back, or lets them go on.
+pub(crate) fn hold(held: bool) {
+    HELD.store(held, Ordering::SeqCst);
+}
+
+/// What `live` says, unless `held`. Read in this order, so `live` sees all that the catch-up stored.
+fn unheld(held: &AtomicBool, live: impl FnOnce() -> Result<bool, String>) -> Result<bool, String> {
+    match held.load(Ordering::SeqCst) {
+        true => Err("the daemon still reads the log's backlog".to_owned()),
+        false => live(),
+    }
 }
 
 /// Whether run `run` has not ended, as another thread reads it.
@@ -1006,6 +1026,40 @@ mod tests {
         });
 
         assert_eq!((said, reads.get()), (Ok(false), 2));
+    }
+
+    #[test]
+    fn a_start_waits_while_the_daemon_is_held_then_reads_what_the_catch_up_stored() {
+        let held = AtomicBool::new(true);
+        let ended = AtomicBool::new(false);
+        let patience = Cell::new(Duration::from_secs(30));
+        let check = || {
+            patient(&patience, || {
+                unheld(&held, || Ok(!ended.load(Ordering::SeqCst)))
+            })
+        };
+
+        let said = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(500));
+                ended.store(true, Ordering::SeqCst);
+                held.store(false, Ordering::SeqCst);
+            });
+            check()
+        });
+
+        assert_eq!(said, Ok(false));
+    }
+
+    #[test]
+    fn a_start_held_past_its_wait_is_not_live() {
+        let patience = Cell::new(Duration::from_millis(50));
+        let said = patient(&patience, || unheld(&AtomicBool::new(true), || Ok(true)));
+
+        assert_eq!(
+            said,
+            Err("the daemon still reads the log's backlog".to_owned())
+        );
     }
 
     #[test]

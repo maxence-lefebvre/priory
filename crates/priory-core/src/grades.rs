@@ -190,7 +190,9 @@ fn merged(
 fn pushed_after_review(tx: &Transaction, pull: &str) -> rusqlite::Result<Option<String>> {
     tx.query_row(
         "WITH events AS (SELECT time, type, data FROM inbox
-           WHERE 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1),
+           WHERE 'github:' || json_extract(data, '$.repo') || '#'
+             || coalesce(json_extract(data, '$.pull_request'), json_extract(data, '$.issue')) = ?1
+           AND json_extract(data, '$.pull_request') IS NOT NULL),
          reviewed AS (SELECT coalesce(json_extract(data, '$.commit'), json_extract(data, '$.head_sha')) AS head
            FROM events WHERE type = ?2 AND coalesce(json_extract(data, '$.actor'), '') NOT LIKE '%[bot]'
            AND coalesce(json_extract(data, '$.commit'), json_extract(data, '$.head_sha')) IS NOT NULL
@@ -214,12 +216,10 @@ fn merged_at(
     tx.prepare(
         "SELECT DISTINCT json_extract(data, '$.pull_request'), json_extract(data, '$.head_branch')
          FROM inbox
-         WHERE type = ?1 AND json_extract(data, '$.merged') = 1
-         AND json_extract(data, '$.repo') = ?2 AND json_extract(data, '$.merge_commit') = ?3",
+         WHERE type = 'github.pull_request.closed' AND json_extract(data, '$.merged') = 1
+         AND json_extract(data, '$.repo') = ?1 AND json_extract(data, '$.merge_commit') = ?2",
     )?
-    .query_map(params![PR_CLOSED, repo, head], |row| {
-        Ok((row.get(0)?, row.get(1)?))
-    })?
+    .query_map(params![repo, head], |row| Ok((row.get(0)?, row.get(1)?)))?
     .collect()
 }
 
@@ -240,6 +240,9 @@ fn reverts(
         data["body"].as_str().unwrap_or_default()
     )
     .to_lowercase();
+    if !text.contains("reverts ") {
+        return Ok(());
+    }
     let earlier: Vec<(i64, Option<String>, Option<String>)> = tx
         .prepare(
             "SELECT DISTINCT json_extract(data, '$.pull_request'), json_extract(data, '$.merge_commit'),

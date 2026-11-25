@@ -34,3 +34,4 @@ model = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tok
 
 [dev-dependencies]
 proptest.workspace = true
+rusqlite = { workspace = true, features = ["trace"] }

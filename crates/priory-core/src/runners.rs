@@ -977,10 +977,12 @@ fn claimed(
     // let this runner claim, are this task's.
     let mut pending: Vec<String> = tx
         .prepare(
-            "SELECT id FROM inbox WHERE subject = ?1 AND id != ?2
-               AND (outcome IN ('claiming', 'elsewhere')
-                   AND seq > (SELECT seq FROM inbox WHERE id = ?2)
-                 OR outcome = 'unaccepted')
+            // Two queries, since each seeks in an index and an `OR` of them scans the inbox.
+            "SELECT id, seq FROM inbox WHERE subject = ?1 AND id != ?2
+               AND outcome IN ('claiming', 'elsewhere')
+               AND seq > (SELECT seq FROM inbox WHERE id = ?2)
+             UNION ALL
+             SELECT id, seq FROM inbox WHERE subject = ?1 AND id != ?2 AND outcome = 'unaccepted'
              ORDER BY seq",
         )?
         .query_map([key, request], |row| row.get(0))?
