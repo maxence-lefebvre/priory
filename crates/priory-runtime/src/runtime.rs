@@ -72,12 +72,7 @@ thread_local! {
 
 /// Runs `work`, whose `soon` commands share one `loop_timeout`.
 pub(crate) fn as_one<T>(work: impl FnOnce() -> T) -> T {
-    as_one_within(loop_timeout(), work)
-}
-
-/// As `as_one`, with `limit` for all of them.
-pub(crate) fn as_one_within<T>(limit: Duration, work: impl FnOnce() -> T) -> T {
-    let before = ENDS.replace(Some(Instant::now() + limit));
+    let before = ENDS.replace(Some(Instant::now() + loop_timeout()));
     let done = work();
     ENDS.set(before);
     done
@@ -752,6 +747,10 @@ pub fn worktree(
     }
     // A revived task whose worktree the sweep removed carries on from the branch it left.
     if head(&clone, &branch).is_some() {
+        // The prune would drop the entry of a worktree the sweep moved aside.
+        if crate::worktrees::removes_in(&clone) {
+            return Err(sweep_removes(repo));
+        }
         phased("checkout", || {
             // A worktree folder a person deleted stays registered, and git refuses to add it again.
             run(git(&clone).args(["worktree", "prune"]))?;
@@ -863,23 +862,31 @@ fn sweep_fetches(repo: &str) -> String {
     format!("{FETCH_WAITS}{repo}: the sweep fetches it")
 }
 
-/// Why worktree `name` of `repo`, which a fetch would make, waits: the last fetch timed out a short
-/// while ago, or the sweep runs one.
+fn sweep_removes(repo: &str) -> String {
+    format!("{FETCH_WAITS}{repo}: the sweep removes a worktree of it")
+}
+
+/// Why worktree `name` of `repo` waits. The last fetch timed out a short while ago or the sweep runs
+/// one, when a fetch would make it. Else the sweep removes a worktree, when it would be added back.
 pub fn fetch_waits(home: &Path, repo: &str, name: &str) -> Option<String> {
     let waits = slow()
         .get(repo)
         .is_some_and(|(again, _)| *again > Instant::now());
-    let made = || {
-        home.join("worktrees").join(repo).join(name).exists()
-            || soon(git(&home.join("repos").join(repo)).args([
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                &format!("refs/heads/priory/{name}^{{commit}}"),
-            ]))
-            .is_ok()
+    let clone = home.join("repos").join(repo);
+    let exists = home.join("worktrees").join(repo).join(name).exists();
+    let branch = || {
+        soon(git(&clone).args([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/priory/{name}^{{commit}}"),
+        ]))
+        .is_ok()
     };
-    let fetching = fetching(&home.join("repos").join(repo));
+    if !exists && crate::worktrees::removes_in(&clone) && branch() {
+        return Some(sweep_removes(repo));
+    }
+    let fetching = fetching(&clone);
     let swept = matches!(fetching.try_lock(), Err(TryLockError::WouldBlock));
     let reason = if waits {
         fetch_reason(repo)
@@ -888,7 +895,7 @@ pub fn fetch_waits(home: &Path, repo: &str, name: &str) -> Option<String> {
     } else {
         return None;
     };
-    (!made()).then_some(reason)
+    (!exists && !branch()).then_some(reason)
 }
 
 /// The head of `repo`'s default branch as GitHub has it. It runs outside the clone, whose refs and
@@ -4147,6 +4154,7 @@ mod tests {
             path: home.tree(),
             repo: "o/n".to_owned(),
             name: "1".to_owned(),
+            entry: None,
         };
 
         crate::worktrees::retire(&home.home(), &found).unwrap();

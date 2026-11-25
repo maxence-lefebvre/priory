@@ -238,6 +238,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         Some(listening) => listening,
         None => runtime::listen(&home)?,
     };
+    sweep::move_back(&home);
     let headers = otlp::header_file(factory, &home, "otlp-headers")?;
     let server = match factory.serve() {
         Some(config) => Some(crate::serve::start(factory, config.listen)?),
@@ -1504,6 +1505,7 @@ fn tend(
 ) -> Result<(), Error> {
     let factory = trace.factory;
     let live = state::live(db)?;
+    sweeping.forget_repairs(|id| live.iter().any(|run| run.id == id));
     for folder in ["direnv", "news"] {
         priory_runtime::trust::forget(&home.join(folder), &|session| {
             live.iter().any(|run| run.session == session)

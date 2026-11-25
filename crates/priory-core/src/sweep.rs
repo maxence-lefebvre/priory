@@ -57,6 +57,8 @@ type Answers = BTreeMap<PathBuf, Answer>;
 struct Judged {
     unfetched: Vec<String>,
     answers: Answers,
+    /// The worktrees that went whose branch's delete ran past its limit again.
+    cut: Vec<Found>,
 }
 
 /// The task a worktree folder is named after.
@@ -235,7 +237,11 @@ fn judge(home: &Path, repos: &[String], mut jobs: Vec<Job>) -> Judged {
             break;
         }
     }
-    Judged { unfetched, answers }
+    Judged {
+        unfetched,
+        answers,
+        cut: Vec::new(),
+    }
 }
 
 /// A thread the loop waits for, tick by tick.
@@ -285,10 +291,26 @@ struct Retiring {
     walk: Off<Result<(), String>>,
 }
 
+/// Removes a worktree moved aside.
+struct Deleting {
+    found: Found,
+    /// The asleep task it retires.
+    retires: Option<i64>,
+    thread: Off<Removed>,
+}
+
+/// What became of a worktree moved aside.
+struct Removed {
+    /// Why it stays.
+    stays: Option<String>,
+    /// The delete of its branch ran past its limit.
+    cut: bool,
+}
+
 /// Removes the worktree and branch of every ended task that nothing keeps, after fetching each clone
 /// (see `fetch`), and after the repository's teardown succeeded in it. A teardown owed here starts
-/// at the daemon's next tick. A thread fetches, judges and walks, and another deletes. The tick
-/// checks one worktree again and moves it aside.
+/// at the daemon's next tick. A thread fetches, judges and walks. The tick
+/// moves one worktree aside, and another thread checks it again and deletes it.
 #[derive(Default)]
 pub(crate) struct Sweeping {
     /// The sweeps started, and the last one that ended or was late.
@@ -299,7 +321,11 @@ pub(crate) struct Sweeping {
     /// What may go, as indexes of `entries`.
     next: VecDeque<usize>,
     open: bool,
-    deleting: Option<Off<()>>,
+    deleting: Option<Deleting>,
+    /// The deletes the loop no longer waits for.
+    overdue: Vec<Deleting>,
+    /// The worktrees that went whose branch's delete ran past its limit.
+    branches: Vec<Found>,
     /// The asleep tasks that may retire, longest asleep first.
     asleep: VecDeque<(i64, String)>,
     retiring: Option<Retiring>,
@@ -333,6 +359,11 @@ impl Sweeping {
         Ok(waits)
     }
 
+    /// Forgets the repairs of the runs that are not `live`.
+    pub(crate) fn forget_repairs(&mut self, live: impl Fn(i64) -> bool) {
+        self.repairs.retain(|run, _| live(*run));
+    }
+
     /// Why `run` exited, when a sweep ran to repair it.
     pub(crate) fn repaired(&mut self, run: i64) -> Option<String> {
         self.repairs.remove(&run).map(|(_, _, cause)| cause)
@@ -361,9 +392,22 @@ impl Sweeping {
         let mut repos: Vec<_> = all.iter().map(|found| found.repo.clone()).collect();
         repos.dedup();
         let jobs = jobs(db, factory, all)?;
+        let mut branches = Vec::new();
+        for found in std::mem::take(&mut self.branches) {
+            if ended(db, &found)?.is_ok() {
+                branches.extend(worktrees::Branch::of(home, &found));
+            }
+        }
         let home = home.to_path_buf();
         self.judging = Some(Off::new("the sweep's check of the worktrees".to_owned(), {
-            move || judge(&home, &repos, jobs)
+            move || {
+                let cut = branches
+                    .into_iter()
+                    .filter_map(|branch| branch.delete(&home))
+                    .collect();
+                let judged = judge(&home, &repos, jobs);
+                Judged { cut, ..judged }
+            }
         }));
         self.started += 1;
         self.open = true;
@@ -380,10 +424,16 @@ impl Sweeping {
         home: &Path,
         short: impl FnOnce() -> bool,
     ) -> rusqlite::Result<bool> {
+        let ended = |deleting: &mut Deleting| deleting.thread.thread.is_finished();
+        for deleting in self.overdue.extract_if(.., ended).collect::<Vec<_>>() {
+            self.removed(db, home, deleting)?;
+        }
         if let Some(mut deleting) = self.deleting.take() {
-            if deleting.thread.is_finished() {
-                deleting.join();
-            } else if !deleting.turns_late() {
+            if ended(&mut deleting) {
+                self.removed(db, home, deleting)?;
+            } else if deleting.thread.turns_late() {
+                self.overdue.push(deleting);
+            } else {
                 self.deleting = Some(deleting);
                 return Ok(false);
             }
@@ -423,6 +473,7 @@ impl Sweeping {
         home: &Path,
         judged: Judged,
     ) -> rusqlite::Result<()> {
+        self.branches.extend(judged.cut);
         self.entries = assess(db, home, Judge::Answers(&judged.answers))?;
         record(home, &self.entries);
         let mut next: Vec<usize> = Vec::new();
@@ -471,44 +522,102 @@ impl Sweeping {
                     return Ok(());
                 }
                 // Only this thread starts runs, so none starts between these checks and the move.
-                worktrees::take(home, &entry.found, entry.tip.as_deref(), !entry.retire)
+                worktrees::take(home, &entry.found)
             }
         };
         match taken {
             Ok(taken) => {
-                if let Some(error) = &taken.branch_stays {
-                    eprintln!("priory daemon: removing {}: {error}", path.display());
-                }
-                self.delete(home, taken);
+                let (found, tip) = (entry.found.clone(), entry.tip.clone());
+                let branch = !entry.retire;
+                self.delete(home, taken, found, tip, branch, None);
             }
-            Err(error) => {
-                tried().insert(removing(&path), Instant::now());
-                eprintln!("priory daemon: removing {}: {error}", path.display());
-                if timed_out(&error) {
-                    self.next.clear();
-                }
-                if path.exists() {
-                    let entry = &mut self.entries[at];
-                    entry.stays = Some(error.clone());
-                    entry.judged = Some(error);
-                    record(home, &self.entries);
-                }
-            }
+            Err(error) => self.stayed(home, &path, error),
         }
         Ok(())
     }
 
-    /// Deletes what a tick moved aside, on a thread.
-    fn delete(&mut self, home: &Path, taken: worktrees::Taken) {
+    /// Records why a worktree that was to go stays.
+    fn stayed(&mut self, home: &Path, path: &Path, error: String) {
+        tried().insert(removing(path), Instant::now());
+        eprintln!("priory daemon: removing {}: {error}", path.display());
+        if !path.exists() {
+            return;
+        }
+        let entry = self
+            .entries
+            .iter_mut()
+            .find(|entry| entry.found.path == path);
+        if let Some(entry) = entry {
+            entry.stays = Some(error.clone());
+            entry.judged = Some(error);
+            record(home, &self.entries);
+        }
+    }
+
+    /// Checks what a tick moved aside and deletes it, on a thread.
+    fn delete(
+        &mut self,
+        home: &Path,
+        mut taken: worktrees::Taken,
+        found: Found,
+        tip: Option<String>,
+        branch: bool,
+        retires: Option<i64>,
+    ) {
         let home = home.to_path_buf();
-        self.deleting = Some(Off::new(
-            "deleting a removed worktree".to_owned(),
-            move || {
-                if let Err(error) = worktrees::dispose(&home, &taken) {
-                    eprintln!("priory daemon: removing {error}");
-                }
-            },
-        ));
+        let path = found.path.clone();
+        let remove = move || {
+            if let Err(stays) = worktrees::detach(&home, &mut taken, tip.as_deref(), branch) {
+                return Removed {
+                    stays: Some(stays),
+                    cut: false,
+                };
+            }
+            if let Some(error) = &taken.branch_stays {
+                eprintln!("priory daemon: removing {}: {error}", path.display());
+            }
+            if let Err(error) = worktrees::dispose(&home, &taken) {
+                eprintln!("priory daemon: removing {error}");
+            }
+            Removed {
+                stays: None,
+                cut: taken.branch_stays.as_deref().is_some_and(timed_out),
+            }
+        };
+        self.deleting = Some(Deleting {
+            found,
+            retires,
+            thread: Off::new("deleting a removed worktree".to_owned(), remove),
+        });
+    }
+
+    /// Takes the answer of a thread that removed a worktree.
+    fn removed(
+        &mut self,
+        db: &Connection,
+        home: &Path,
+        deleting: Deleting,
+    ) -> rusqlite::Result<()> {
+        let Deleting {
+            found,
+            retires,
+            thread,
+        } = deleting;
+        let Some(Removed { stays, cut }) = thread.join() else {
+            return Ok(());
+        };
+        if cut {
+            self.branches.push(found);
+            return Ok(());
+        }
+        match (stays, retires) {
+            (Some(stays), Some(task)) => unretired(db, task, &found, &stays),
+            (Some(stays), None) => {
+                self.stayed(home, &found.path, stays);
+                Ok(())
+            }
+            (None, _) => Ok(()),
+        }
     }
 
     /// Retires asleep tasks, longest asleep first, while the disk is short: removes each clean
@@ -618,33 +727,35 @@ impl Sweeping {
                  WHERE id = ?1",
                 [task],
             )?;
-            match worktrees::take(home, &found, None, false) {
+            match worktrees::take(home, &found) {
                 Ok(taken) => {
-                    self.delete(home, taken);
+                    self.delete(home, taken, found, None, false, Some(task));
                     return Ok(());
                 }
-                Err(reason) => {
-                    db.execute("UPDATE tasks SET retired = NULL WHERE id = ?1", [task])?;
-                    stays = Some(reason);
-                }
+                Err(reason) => stays = Some(reason),
             }
         }
         let stays = stays.expect("a task that did not retire has a reason");
-        tried().insert(removing(&found.path), Instant::now());
-        if timed_out(&stays) {
-            self.asleep.clear();
-        }
-        let reason = format!("cannot retire: {stays}");
-        // A task that woke during the walk keeps its own reason.
-        let reported = db.execute(
-            "UPDATE tasks SET reason = ?2 WHERE id = ?1 AND state = 'asleep' AND reason IS NOT ?2",
-            rusqlite::params![task, reason],
-        )?;
-        if reported > 0 {
-            eprintln!("priory daemon: task {task} {reason}");
-        }
-        Ok(())
+        unretired(db, task, &found, &stays)
     }
+}
+
+/// Says why `task` keeps its worktree, after a retirement was to take it.
+fn unretired(db: &Connection, task: i64, found: &Found, stays: &str) -> rusqlite::Result<()> {
+    tried().insert(removing(&found.path), Instant::now());
+    if found.path.exists() {
+        db.execute("UPDATE tasks SET retired = NULL WHERE id = ?1", [task])?;
+    }
+    let reason = format!("cannot retire: {stays}");
+    // A task that woke during the walk keeps its own reason.
+    let reported = db.execute(
+        "UPDATE tasks SET reason = ?2 WHERE id = ?1 AND state = 'asleep' AND reason IS NOT ?2",
+        rusqlite::params![task, reason],
+    )?;
+    if reported > 0 {
+        eprintln!("priory daemon: task {task} {reason}");
+    }
+    Ok(())
 }
 
 /// What the sweep recorded of a folder that stays: why git keeps it, and its size in bytes.
@@ -1153,6 +1264,7 @@ impl Reclaim {
             }
             let mut left = leftovers(home);
             left.retain(|path| !worktrees::moved_back(home, path));
+            worktrees::drop_links(home);
             if !left.is_empty() {
                 self.delete = Some(Delete::new(None, delete(home, left, None)));
             }
@@ -1202,12 +1314,6 @@ impl Reclaim {
 /// The folders a stopped daemon left under `home/reclaim`: real ones the daemon named, a task and
 /// nanoseconds, which have 18 digits or more.
 fn leftovers(home: &Path) -> Vec<PathBuf> {
-    let digits =
-        |part: &str, least| part.len() >= least && part.bytes().all(|byte| byte.is_ascii_digit());
-    let named = |name: &str| {
-        name.split_once('-')
-            .is_some_and(|(task, nanoseconds)| digits(task, 1) && digits(nanoseconds, 18))
-    };
     let Ok(folder) = reclaim_folder(home) else {
         return Vec::new();
     };
@@ -1216,10 +1322,23 @@ fn leftovers(home: &Path) -> Vec<PathBuf> {
         .flatten()
         .flatten()
         .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-        .filter(|entry| entry.file_name().to_str().is_some_and(named))
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(worktrees::reclaim_name)
+        })
         .map(|entry| entry.path())
         .filter(|path| !worktrees::in_hand(path))
         .collect()
+}
+
+/// Moves back the worktrees a stopped daemon left under `home/reclaim`, before a start can prune
+/// their entries.
+pub(crate) fn move_back(home: &Path) {
+    for path in leftovers(home) {
+        worktrees::moved_back(home, &path);
+    }
 }
 
 /// Deletes each of `paths`, folders under `home/reclaim`, on a thread. One that must stay after all
@@ -2139,14 +2258,14 @@ mod tests {
                 let tick = Instant::now();
                 let ended = home.sweep_tick();
                 longest = longest.max(tick.elapsed());
-                assert!(before - left(&trees) <= 1, "one worktree per tick");
+                assert!(before <= left(&trees) + 1, "one worktree per tick");
                 if ended {
                     break;
                 }
                 if hung.is_none() && left(&trees) == 20 {
                     let next = home.sweeping.next[0];
                     let name = &home.sweeping.entries[next].found.name;
-                    // Git blocks on a fifo in place of the index, in the tick's own check.
+                    // Git blocks on a fifo in place of the index, in the check of the moved folder.
                     let index = home
                         .dir
                         .join(format!("repos/o/r/.git/worktrees/{name}/index"));
@@ -2159,7 +2278,7 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(5));
             }
             if sweep < 3 {
-                assert!(left(&trees) > 0, "the hung check keeps its worktree");
+                assert_eq!(left(&trees), 1, "the hung check keeps its own worktree");
             }
         }
 
@@ -2204,6 +2323,119 @@ mod tests {
             .unwrap();
         while !home.sweep_tick() {}
         assert!(tree.exists());
+    }
+
+    #[test]
+    fn a_retirement_that_hangs_leaves_the_next_task_its_turn() {
+        let mut home = ignoring_target("hung-retirement");
+        let trees = [home.task(1, "asleep"), home.task(2, "asleep")];
+        let index = home.dir.join("repos/o/r/.git/worktrees/1/index");
+        std::fs::remove_file(&index).unwrap();
+        runtime::run(Command::new("mkfifo").arg(&index)).unwrap();
+
+        home.retire();
+
+        assert!(trees[0].exists() && !trees[1].exists());
+    }
+
+    #[test]
+    fn a_task_whose_worktree_changed_as_it_moved_is_not_retired() {
+        let mut home = ignoring_target("moved-changed");
+        let tree = home.task(1, "asleep");
+        home.sweeping.retire(&home.db).unwrap();
+        home.sweep_tick();
+        let walk = &home.sweeping.retiring.as_ref().unwrap().walk;
+        until(|| walk.thread.is_finished());
+        std::fs::write(tree.join("late"), "x").unwrap();
+        home.sweep_tick();
+        assert!(home.sweeping.deleting.is_some(), "the tick runs no git");
+        while home.sweeping.busy() {
+            home.sweep_tick();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        assert!(tree.join("late").exists());
+        let (reason, retired): (String, Option<String>) = home
+            .db
+            .query_row("SELECT reason, retired FROM tasks", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(
+            (reason.as_str(), retired),
+            ("cannot retire: untracked files", None)
+        );
+    }
+
+    #[test]
+    fn a_worktree_a_stopped_daemon_moved_goes_back_and_one_in_hand_waits() {
+        let mut home = ignoring_target("moved");
+        let tree = home.task(1, "done");
+        let found = worktrees::found(&home.dir).remove(0);
+        let taken = worktrees::take(&home.dir, &found).unwrap();
+        assert!(leftovers(&home.dir).is_empty(), "a thread has it");
+        move_back(&home.dir);
+        assert!(!tree.exists());
+
+        drop(taken);
+        home.tick(true, false);
+        assert!(tree.join("a.txt").exists());
+
+        drop(worktrees::take(&home.dir, &found).unwrap());
+        move_back(&home.dir);
+        assert!(tree.join("a.txt").exists());
+    }
+
+    #[test]
+    fn a_sweep_deletes_the_branch_the_last_one_had_no_time_for() {
+        let mut home = ignoring_target("cut-branch");
+        let tree = home.task(1, "done");
+        home.task(2, "done");
+        let mut all = worktrees::found(&home.dir);
+        let (other, found) = (all.remove(1), all.remove(0));
+        let clone = home.dir.join("repos/o/r");
+        git(
+            &clone,
+            &["worktree", "remove", "--force", tree.to_str().unwrap()],
+        );
+        home.db
+            .execute("UPDATE tasks SET state = 'ready' WHERE id = 2", [])
+            .unwrap();
+        home.sweeping.branches = vec![found.clone(), other];
+        let branch = |task| runtime::head(&clone, &format!("priory/{task}"));
+
+        home.sweep();
+
+        assert!(home.sweeping.branches.is_empty());
+        assert_eq!(branch(1), None);
+        assert!(branch(2).is_some(), "its task woke");
+
+        // A delete that hangs is tried at the sweep after it.
+        let config = clone.join(".git/config");
+        let read = std::fs::read(&config).unwrap();
+        std::fs::remove_file(&config).unwrap();
+        runtime::run(Command::new("mkfifo").arg(&config)).unwrap();
+        home.sweeping.branches = vec![found];
+        assert!(home.start_sweep());
+        let deadline = Instant::now() + Duration::from_secs(150);
+        while !home.sweep_tick() {
+            assert!(Instant::now() < deadline, "the sweep does not end");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::fs::remove_file(&config).unwrap();
+        std::fs::write(&config, read).unwrap();
+        assert_eq!(home.sweeping.branches.len(), 1);
+    }
+
+    #[test]
+    fn a_repair_goes_with_its_run() {
+        let mut sweeping = Sweeping::default();
+        let short = || Ok(Some("disk full".to_owned()));
+        assert!(sweeping.repairs(1, short).unwrap());
+        assert!(sweeping.repairs(2, short).unwrap());
+        sweeping.forget_repairs(|run| run == 2);
+        assert_eq!(sweeping.repaired(1), None);
+        assert!(sweeping.repaired(2).is_some());
     }
 
     #[test]

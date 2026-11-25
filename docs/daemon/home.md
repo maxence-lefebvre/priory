@@ -148,7 +148,7 @@ Some commands on the daemon's one thread wait 30 seconds at most, or `command_ti
 shorter: the fetch and `ls-remote` before a new worktree, the sweep's git, `systemctl`, and the check
 whether a commit is another's ancestor. `git clone`, `git worktree add`, `git worktree remove`,
 `git push` and `gh` keep `command_timeout`, since one cut short can leave its work half done.
-The sweep's `git worktree remove` is bound with its tick's checks (see [sweep.md](sweep.md#off-the-tick)).
+The sweep runs its `git worktree remove` on a thread (see [sweep.md](sweep.md#off-the-tick)).
 
 A task whose fetch times out stays `queued` or `ready` with `waits to fetch <owner>/<name>: timed out
 after 30s`. The daemon fetches again after 1 minute, then waits twice as long after each timeout, up
