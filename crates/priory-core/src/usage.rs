@@ -35,12 +35,14 @@ pub(crate) fn memory(run: i64, tmux: &str, session: &str) -> Option<u64> {
     let key = (run, session.to_owned());
     let cached = panes().get(&key).copied();
     let pid = match cached {
-        Some(Pane::Found { pid, started }) if crate::memory::started(pid) == Some(started) => pid,
+        Some(Pane::Found { pid, started }) if crate::memory::start_time(pid) == Some(started) => {
+            pid
+        }
         Some(Pane::Missing { at }) if at.elapsed() < RETRY => return None,
         // The lock is not held while tmux runs.
         _ => {
             let found = runtime::pane_pid(tmux, session)
-                .and_then(|pid| Some((pid, crate::memory::started(pid)?)));
+                .and_then(|pid| Some((pid, crate::memory::start_time(pid)?)));
             let pane = match found {
                 Some((pid, started)) => Pane::Found { pid, started },
                 None => Pane::Missing { at: Instant::now() },

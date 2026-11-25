@@ -462,7 +462,7 @@ fn stable(unit: &str, seconds: u64) -> Result<bool, String> {
         return Ok(false);
     }
     let pid = journal::property(unit, "MainPID")?.parse().ok();
-    let started = pid.and_then(memory::started);
+    let started = pid.and_then(memory::start_time);
     let up = fs::read_to_string("/proc/uptime").ok();
     let up: Option<f64> = up.and_then(|text| text.split_whitespace().next()?.parse().ok());
     // Linux reports 100 ticks a second to every process.
