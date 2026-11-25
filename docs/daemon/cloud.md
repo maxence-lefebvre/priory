@@ -29,13 +29,15 @@ When a task reaches a step whose agent runs in the cloud, the daemon:
 2. checks that the repository opted in with `cloud = true`, and that the worktree is on that branch
    with no staged, unstaged or untracked file, since the session would not see it. Otherwise the
    task blocks and says which. When git runs past 30 seconds here, the task waits a minute, twice
-   as long after each further timeout, and blocks after the fifth in a row;
+   as long after each further timeout, and blocks after the fifth in a row.
+   A daemon restart starts the count again;
 3. records the run, with a harness session id of its own and the commit the branch is at;
 4. records Claude's trust of the folder below, when the factory sets `trust_worktrees`, since
    `claude --cloud` shows Claude's trust dialog in a folder it does not trust;
 5. writes the prompt: the agent's prompt, the step's prompt, the task's event, everything queued
    for the task, and the rules below in place of the line that names the `result` tool. It leaves out the lines
-   about a duplicate that tell an agent to use the `message`, `hand_over` or `ask` tool.
+   about a duplicate that tell an agent to use the `message`, `hand_over` or `ask` tool, and holds them with the message
+   they answer for the next ask and the next local run.
 
 Some tasks start no cloud run:
 
@@ -138,8 +140,8 @@ effect once the run ends.
 
 `priory cancel`, a review request's removal and a move to another runner drop the task, and its
 reason names the session's page, which `priory cancel` prints too. During a start it says that a session
-may still start, and the dropped task's reason then names the session that did. A cancel before
-`claude --cloud` runs starts none. The session itself goes on until a
+may still start, and the dropped task's reason then names the session that did. A cancel that
+the last check before `claude --cloud` sees starts none. The session itself goes on until a
 person archives it, and the branches it pushed stay on `origin`.
 
 ## Asks and feedback

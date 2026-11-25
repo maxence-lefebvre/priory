@@ -39047,7 +39047,7 @@ fn a_cancel_during_the_push_of_a_cloud_start_starts_no_session() {
     person(&setup, "cancel", &["1"]);
     fs::write(&go, "").unwrap();
 
-    std::thread::sleep(Duration::from_secs(5));
+    setup.logged("ended before its session started");
     assert_eq!(setup.cloud_prompts(), [""; 0]);
     assert_eq!(held_as(&setup, "1")[0], "dropped");
 }
@@ -39066,7 +39066,7 @@ fn a_cancel_during_the_private_terms_screen_of_a_cloud_start_pushes_nothing() {
     person(&setup, "cancel", &["1"]);
     setup.release("git-hang-log");
 
-    std::thread::sleep(Duration::from_secs(5));
+    setup.logged("ended before its session started");
     let bare = setup.dir.join("origin/owner/repo.git");
     let pushed = git(&bare)
         .args(["branch", "--list", "priory/1"])

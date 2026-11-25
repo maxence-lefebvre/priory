@@ -355,7 +355,10 @@ fn collect(db: &mut Connection, trace: &Trace, kit: crate::kit::Current<'_>) -> 
             Err(NotStarted::Uncertain(reason)) => format!(
                 "it may have started a cloud session: {reason}. Look for it at https://claude.ai/code"
             ),
-            Err(NotStarted::Refused(_) | NotStarted::Denied(_)) => return Ok(()),
+            Err(NotStarted::Refused(_) | NotStarted::Denied(_)) => {
+                eprintln!("priory daemon: cloud run {run} ended before its session started");
+                return Ok(());
+            }
         };
         eprintln!("priory daemon: cloud run {run} ended during its start: {left}");
         db.execute(
@@ -452,8 +455,10 @@ fn give_back(
         .query_map([run], |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
     for (id, text) in claimed {
-        // `dispatch` held these lines for the next run already.
-        let text = crate::news::untold(&text);
+        // `dispatch` held these for the next run already.
+        let text = crate::news::pair_texts(&text)
+            .iter()
+            .fold(text, |text, held| without(&text, held));
         let text = match step {
             Some(step) => unended(&text, step),
             None => text,

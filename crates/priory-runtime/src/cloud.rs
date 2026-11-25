@@ -148,8 +148,7 @@ pub fn start(
         "origin",
         &target,
     ];
-    goes_on()?;
-    remote(&start.worktree, &pushed, command_timeout())?;
+    remote_if(&start.worktree, &pushed, command_timeout(), goes_on)?;
     let found = remote_head(&start.worktree, &start.branch, command_timeout())?;
     if found.as_deref() != Some(&start.head) {
         return Err(NotStarted::Refused(format!(
@@ -161,9 +160,8 @@ pub fn start(
     }
     let dir = folder(&start.home, &start.repo);
     let started = isolate(start, &dir)
-        .and_then(|()| goes_on())
         .map_err(NotStarted::Refused)
-        .and_then(|()| create(start, &dir));
+        .and_then(|()| create(start, &dir, goes_on));
     let _ = fs::remove_dir_all(&dir);
     started
 }
@@ -192,7 +190,11 @@ fn isolate(start: &Start, dir: &Path) -> Result<(), String> {
 
 /// Runs `claude --cloud PROMPT` in `dir` inside a detached tmux session, since the CLI creates a
 /// cloud session only in a terminal, and waits up to the command timeout for it to exit.
-fn create(start: &Start, dir: &Path) -> Result<Started, NotStarted> {
+fn create(
+    start: &Start,
+    dir: &Path,
+    goes_on: impl Fn() -> Result<(), String>,
+) -> Result<Started, NotStarted> {
     tmux_socket_fits(&tmux_socket())?;
     let name = start.tmux.as_str();
     // tmux refuses a command over about 16 KiB, so the prompt reaches the CLI through a file.
@@ -220,6 +222,9 @@ fn create(start: &Start, dir: &Path) -> Result<Started, NotStarted> {
         )
         .args(["claude", "--cloud"]);
     let late = || NotStarted::Uncertain("tmux did not start claude --cloud in time".into());
+    goes_on().inspect_err(|_| {
+        let _ = fs::remove_file(&file);
+    })?;
     let opened = fed_within(&mut new, None, command_timeout())
         .map_err(|error| format!("tmux new-session: {error}"))?
         .ok_or_else(|| {
@@ -383,6 +388,16 @@ pub fn session(printed: &str) -> Option<String> {
 
 /// Runs git against `origin` in `dir`, where nothing may prompt: the daemon has no terminal.
 fn remote(dir: &Path, args: &[&str], timeout: Duration) -> Result<String, String> {
+    remote_if(dir, args, timeout, || Ok(()))
+}
+
+/// As `remote`, unless `goes_on` refuses right before git runs.
+fn remote_if(
+    dir: &Path,
+    args: &[&str],
+    timeout: Duration,
+    goes_on: impl Fn() -> Result<(), String>,
+) -> Result<String, String> {
     let ssh = std::env::var("GIT_SSH_COMMAND")
         .ok()
         .or_else(|| {
@@ -398,6 +413,7 @@ fn remote(dir: &Path, args: &[&str], timeout: Duration) -> Result<String, String
         .env("GIT_SSH_COMMAND", format!("{ssh} -oBatchMode=yes"))
         .args(args);
     let said = format!("git {}", args.join(" "));
+    goes_on()?;
     let output = fed_within(&mut command, None, timeout)
         .map_err(|error| format!("{said}: {error}"))?
         .ok_or_else(|| format!("{said}: timed out after {}s", timeout.as_secs()))?;

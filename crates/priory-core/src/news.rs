@@ -246,22 +246,32 @@ fn named(line: &str) -> Option<i64> {
     })
 }
 
-/// Holds the lines that `untold` takes from `text` for the next ask and agent run of `task`.
+/// The pair's lines of `text` that `untold` drops, an answer's with the message it answers.
+pub(crate) fn pair_texts(text: &str) -> Vec<String> {
+    let lines: Vec<_> = text.lines().collect();
+    let mut found = Vec::new();
+    for (at, line) in lines.iter().enumerate().filter(|(_, line)| instructs(line)) {
+        let quoted = lines[..at]
+            .iter()
+            .rev()
+            .take_while(|line| line.starts_with("> "))
+            .count();
+        // The quote stands under two lines: who said it, and that it is data.
+        let message = line.starts_with(ANSWER) && quoted > 0 && at >= quoted + 2;
+        let from = if message { at - quoted - 2 } else { at };
+        found.push(lines[from..=at].join("\n"));
+    }
+    found
+}
+
+/// Holds `pair_texts` of `text` for the next ask and agent run of `task`.
 pub(crate) fn hold_back(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<()> {
-    for line in text.lines().filter(|line| instructs(line)) {
-        let pair = match named(line) {
+    for held in pair_texts(text) {
+        let pair = match held.lines().last().and_then(named) {
             Some(other) if paired(tx, task, other)? => Some(other),
             _ => None,
         };
-        // Alone on an ask, this line would not say what it answers.
-        let line = match line.strip_prefix(ANSWER) {
-            Some(from) => format!(
-                "A cloud session read what task {} said and cannot answer it. {line}",
-                from.trim_end_matches('.')
-            ),
-            None => line.to_owned(),
-        };
-        later(tx, task, pair, &line)?;
+        later(tx, task, pair, &held)?;
     }
     Ok(())
 }
@@ -428,7 +438,10 @@ mod tests {
                VALUES (1, 2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));",
         )
         .unwrap();
-        let said = format!("Task 2 (b) says:\n> {ANSWER}7.\n> Yours.");
+        let said = format!(
+            "Task 2 (b) says:\n{}\n> {ANSWER}7.\n> Yours.",
+            crate::consult::DATA
+        );
         let text = format!("{said}\n{ANSWER}2.\nAna moved it. {}", agreement(3));
         let tx = db.transaction().unwrap();
 
@@ -443,8 +456,7 @@ mod tests {
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();
-        let unanswered =
-            format!("A cloud session read what task 2 said and cannot answer it. {ANSWER}2.");
+        let unanswered = format!("{said}\n{ANSWER}2.");
         // Task 3 is no pair of task 1, so no pair's end withdraws its line.
         let agree = format!("Ana moved it. {}", agreement(3));
         assert_eq!(held, [(unanswered, Some(2)), (agree, None)]);
@@ -452,13 +464,14 @@ mod tests {
 
     proptest! {
         #[test]
-        fn no_line_for_a_cloud_run_keeps_an_instruction_or_panics(
-            lines in proptest::collection::vec(
-                "(> )?.{0,9}( which of you continues: send it a message with the message tool|Agree with task |Answer it with the message tool, giving task |)[0-9é]{0,30}.{0,9}", 0..4)
+        fn only_a_pairs_lines_leave_a_cloud_prompt(
+            said in "(> )?[a-zé0-9 ]{1,20}", other in 0..9i64, text in "(.|\n){0,60}"
         ) {
-            let text = lines.join("\n");
-            let _ = text.lines().map(named).collect::<Vec<_>>();
-            prop_assert!(untold(&text).lines().all(|line| !instructs(line)));
+            let queued = format!("{said}\n{}\n{ANSWER}{other}.\n{said}", agreement(other));
+            prop_assert_eq!(untold(&queued), format!("{said}\n{said}"));
+            prop_assert_eq!(pair_texts(&queued).len(), 2);
+            let _ = pair_texts(&format!("{text}\n{ANSWER}{text}"));
+            let _ = named(&format!("{AGREE}{text}"));
         }
     }
 
