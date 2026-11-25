@@ -43,6 +43,20 @@ test("no wait while signed out, hidden or before the first read", async () => {
   assert.deepEqual(await run({ ready: () => undefined, answers: [5] }), ["sleep 1000"]);
 });
 
+// The tab hides, or the person signs out, once the wait is out.
+const leaves = () => {
+  let asked = 0;
+  return () => (asked++ ? undefined : 4);
+};
+
+test("a wait that answers after the tab hid reads nothing", async () => {
+  assert.deepEqual(await run({ ready: leaves(), held: () => 4, answers: [5] }), ["wait 4"]);
+});
+
+test("a wait that fails after the tab hid reads nothing", async () => {
+  assert.deepEqual(await run({ ready: leaves(), held: () => 4, answers: [new TypeError("offline")] }), ["wait 4"]);
+});
+
 test("a revision that a refresh took during the wait reads nothing again", async () => {
   assert.deepEqual(await run({ held: () => 5, answers: [5] }), ["wait 4"]);
 });

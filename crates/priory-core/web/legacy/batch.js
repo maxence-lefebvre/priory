@@ -5,7 +5,7 @@ import { plural } from "../desk.js";
 import { backTo } from "../pages.js";
 import { taskLabel } from "../tasks.js";
 import { api, refresh } from "./data.js";
-import { age, ago, autolinked, focusId, html, icon, layout, post, role, state, tile, timeTag, track, writeRefusal } from "./shared.js";
+import { age, ago, autolinked, focusId, html, icon, layout, place, post, role, state, tile, timeTag, track, writeRefusal } from "./shared.js";
 
 
 // A batch as /api/batches/{id} serves it: by id on its page, by its planning task's key in a go ask.
@@ -120,7 +120,7 @@ export function splitsSection(batch) {
 
 // The batch page (DESIGN.md, Batch page): /batches/<id>.
 export function batchPage(id) {
-  const [href, label] = backTo(history.state?.from ?? null);
+  const [href, label] = backTo(place.entry.from ?? null);
   const back = html`<div class="top"><a class="back" href="${href}">${icon("chevron-left", "s22")}${label}</a></div>`;
   const batch = batchOf(id);
   if (!batch) {

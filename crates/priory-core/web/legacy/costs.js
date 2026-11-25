@@ -2,9 +2,10 @@
 import { render } from "../app.js";
 import { SPLITS, attentionView, costTiles, dayBars, money, scoreTable, splitTable } from "../costs.js";
 import { taskLabel } from "../tasks.js";
-import { api, keep, refresh, signOut } from "./data.js";
+import { searchOf } from "../frame.js";
+import { api, cache, refresh, signOut } from "./data.js";
 import { connection } from "./frame.js";
-import { date, html, icon, layout, raw, savedViews, state, timeTag } from "./shared.js";
+import { date, html, icon, layout, place, raw, savedViews, state, timeTag } from "./shared.js";
 
 
 // Costs (DESIGN.md, Costs panel): what the factory spent this week against last week, and what it
@@ -22,7 +23,7 @@ export async function loadCosts() {
     if (view !== state.costs) return;
     state.data.spend = { costs, attention, updated: Date.now() };
     view.error = null;
-    keep();
+    cache.setQueryData(["spend"], state.data.spend);
   } catch (error) {
     if (view !== state.costs) return;
     if (error.status === 401) return signOut("The daemon refused this token. Paste the current one.");
@@ -40,7 +41,7 @@ export async function loadCosts() {
 export function costsPage(compact) {
   const spend = state.data.spend;
   const wide = layout() === "wide";
-  const shown = new URLSearchParams(location.search).get("view") === "attention" ? "attention" : "costs";
+  const shown = new URLSearchParams(searchOf(place.href)).get("view") === "attention" ? "attention" : "costs";
   const head = compact ? html`<div class="top"><h1>Costs</h1><span class="sp"></span>${connection()}</div>` : html`<div class="lhead"><h1>Costs</h1></div>`;
   const chips = wide ? "" : savedViews([["costs", "Costs", null, shown === "costs"], ["attention", "Attention", null, shown === "attention"]], "/costs");
   const failed = state.costs.error

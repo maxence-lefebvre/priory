@@ -3,7 +3,7 @@ import { plural } from "../desk.js";
 import { taskLabel } from "../tasks.js";
 import { EARLIER_CAP, KEYS, keyboardSession, paintRows, sayLine, screenRows, screenWatch } from "../terminal.js";
 import { api, signOut } from "./data.js";
-import { STATES, clock, html, icon, post, raw, state, stateWord, tile, track } from "./shared.js";
+import { STATES, clock, html, icon, post, raw, state, tile } from "./shared.js";
 
 
 // The run's terminal: its screen polled while shown (terminal.js), never kept on this device.
@@ -33,19 +33,10 @@ export const keyboard = keyboardSession({
 export const screenText = (screen) => screenRows(screen.lines).map((parts) => parts.map((part) => part.text).join("")).join("\n").trimEnd();
 
 // The live run, else the run whose last screen this page still holds.
-function terminalRun(task) {
+export function terminalRun(task) {
   const runs = task.runs || [];
   const kept = watch.state();
   return runs.findLast((run) => !run.ended) || runs.find((run) => run.id === kept.run && kept.screen) || null;
-}
-
-// An empty box that paintTerminal fills, so a new screen repaints only the pane.
-export function terminalSection(task) {
-  const run = terminalRun(task);
-  if (!run) return "";
-  const end = run.ended ? run.end || "moved" : "";
-  return html`<section class="sect" id="terminal"><div class="sh">${icon("terminal", "s15")}Terminal<span class="meta">${stateWord(end || "running")}</span></div>
-    <div class="termbox" data-term="${run.id}" data-task="${task.id}" data-tmux="${run.tmux}" data-end="${end}"></div></section>`;
 }
 
 function terminalBody({ term, task, tmux, end }) {
@@ -55,7 +46,7 @@ function terminalBody({ term, task, tmux, end }) {
   const notes = [];
   if (screen?.redacted) notes.push(["warn", "shield", `${plural(screen.redacted, "secret")} hidden on this screen`]);
   if (stale && !end && !gone) notes.push(["warn", "unplug", screen ? `Reconnecting. Screen from ${clock(new Date(at).toISOString())}, ${Math.round((Date.now() - at) / 1000)} s ago.` : "Reconnecting. The screen could not be read yet."]);
-  if (end) notes.push(["", (STATES[end] || [, "circle-help"])[1], screen ? `Run ${run} ended as ${end}. This is the last screen this page saw.` : `Run ${run} ended as ${end}.`]);
+  if (end) notes.push(["", (STATES[end] || ["muted", "circle-help"])[1], screen ? `Run ${run} ended as ${end}. This is the last screen this page saw.` : `Run ${run} ended as ${end}.`]);
   else if (gone) notes.push(["warn", "unplug", `This server reads no screen of run ${run}. Run priory screen ${task} on the runner to see why.`]);
   else if (!screen && !stale) notes.push(["", "clock", "Loading the screen…"]);
   const keys = keyboard.state();
@@ -214,17 +205,6 @@ export function syncTerminal(app) {
   watch.show(Number(box.dataset.term));
 }
 
-// Tells syncTerminal whether the pane is on screen; render disconnects the observer.
-export function observeTerminal(app) {
-  const box = app.querySelector("[data-term]");
-  terminal.onScreen = false;
-  if (!box) return watch.hide();
-  track(new IntersectionObserver(([entry]) => {
-    terminal.onScreen = entry.isIntersecting;
-    syncTerminal(app);
-  })).observe(box);
-}
-
 export function copyTerminal(text, what) {
   navigator.clipboard?.writeText(text).then(() => {
     terminal.copied = what;
@@ -245,16 +225,21 @@ export function terminalsPanel() {
 
 // Each event function of a page returns true once it acted.
 export function terminalClick(action, target) {
-  if (action === "term-fit") (terminal.fit = !terminal.fit), paintTerminal(document.getElementById("app"));
-  else if (action === "term-copy") watch.state().screen && copyTerminal(screenText(watch.state().screen), "screen");
-  else if (action === "term-earlier") watch.earlier();
+  if (action === "term-fit") {
+    terminal.fit = !terminal.fit;
+    paintTerminal(document.getElementById("app"));
+  } else if (action === "term-copy") {
+    if (watch.state().screen) copyTerminal(screenText(watch.state().screen), "screen");
+  } else if (action === "term-earlier") watch.earlier();
   else if (action === "term-type") {
     Object.assign(terminal, { typing: !terminal.typing, said: null });
     paintTerminal(document.getElementById("app"), true);
     if (terminal.typing) document.getElementById("term-line")?.focus();
   } else if (action === "term-attach") copyTerminal(`priory attach ${target.dataset.task} --read-only`, "attach");
-  else if (action === "term-menu") (terminal.menu = !terminal.menu), paintTerminal(document.getElementById("app"), true);
-  else if (action === "term-take-ask" || action === "term-give-ask") {
+  else if (action === "term-menu") {
+    terminal.menu = !terminal.menu;
+    paintTerminal(document.getElementById("app"), true);
+  } else if (action === "term-take-ask" || action === "term-give-ask") {
     terminal.menu = false;
     paintTerminal(document.getElementById("app"), true);
     openKeyboardSheet(action === "term-take-ask" ? "take" : "give");
@@ -275,8 +260,9 @@ export function terminalInput(target) {
 }
 
 export function terminalSubmit(action, form) {
-  if (action === "term-paste") terminal.keys && sendInput({ text: terminal.keys });
-  else if (action === "term-say") sayFromPane(Number(form.dataset.task));
+  if (action === "term-paste") {
+    if (terminal.keys) sendInput({ text: terminal.keys });
+  } else if (action === "term-say") sayFromPane(Number(form.dataset.task));
   else return false;
   return true;
 }

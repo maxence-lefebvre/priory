@@ -417,8 +417,10 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .drawer .pinned + .scroll .jump { border-top: 0; }
 .preview .scroll { overflow: hidden; }
 .wide.no-drawer { grid-template-columns: var(--rail) minmax(0, 1fr); }
-#app > * { order: 2; }
-#app > .top, #app > .wtop, #app > .ahead { order: 0; }
+/* A legacy page draws in an element with no box: its children lay out as the frame's own. */
+.legacy { display: contents; }
+#app > *, #app > .legacy > * { order: 2; }
+#app > .top, #app > .wtop, #app > .ahead, #app > .legacy > .top, #app > .legacy > .ahead { order: 0; }
 #app > .stale { order: 1; }
 .rec .then { display: flex; gap: 6px; color: var(--text-2); }
 .rec .then .ico { margin-top: 2px; color: var(--text-3); }

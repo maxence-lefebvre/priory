@@ -1,7 +1,8 @@
 // The reports page's legacy drawing and actions.
 import { render } from "../app.js";
 import { around, dossier, nextPick, refusal } from "../reports.js";
-import { refresh, signOut } from "./data.js";
+import { keyOf } from "../queries.js";
+import { askFor, asked, cache, refresh, signOut } from "./data.js";
 import { connection } from "./frame.js";
 import { autolinked, focusId, html, icon, post, state, taskName, tile, writeRefusal } from "./shared.js";
 
@@ -77,7 +78,7 @@ function reportThread(row, thread) {
     <p class="racts"><button id="reply-${thread.id}" class="ghost" data-action="reply" data-row="${row.id}" data-comment="${thread.id}" aria-disabled="${off}">Reply</button><button id="resolve-${thread.id}" class="ghost" data-action="resolve" data-row="${row.id}" data-comment="${thread.id}" aria-disabled="${off}">Resolve</button></p></div>`;
 }
 
-const onNewest = () => state.reportShown == null && state.data.report?.report.task === state.data.reports?.[0]?.task;
+const onNewest = () => asked.get().reportShown == null && state.data.report?.report.task === state.data.reports?.[0]?.task;
 
 // A row without its own id takes no comments. Priory gives a row id's new thread to the newest
 // report holding it, so an older report takes replies only.
@@ -200,9 +201,11 @@ export async function submitRemark() {
 
 // The newest report is followed as it changes; an older one stays until an arrow moves on.
 async function showReport(task) {
-  state.reportShown = task === state.data.reports?.[0]?.task ? null : task;
+  const reportShown = task === state.data.reports?.[0]?.task ? null : task;
+  askFor({ reportShown });
   state.reportChanging = null;
   state.reportAt = null;
+  await cache.fetchQuery({ queryKey: keyOf("report", asked.get()) }).catch(() => {});
   await refresh();
   render();
   document.querySelector(".report .scroll")?.scrollTo({ top: 0 });

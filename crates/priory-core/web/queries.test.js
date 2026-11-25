@@ -1,149 +1,268 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { QueryObserver, notifyManager } from "@tanstack/react-query";
-import { client, land, params, readAll, sameListings } from "./queries.js";
-
-// A refresh: a read, then its landing.
-const refresh = async (cache, api, wanted = params()) => land(cache, await readAll(cache, api, wanted), wanted);
-
-// A cache that drops its queries, and their timers, once the test ends.
-function fresh(t) {
-  const cache = client();
-  t.after(() => cache.clear());
-  return cache;
-}
+import { QueriesObserver, QueryObserver } from "@tanstack/react-query";
+import { client, heldRevision, keyOf, moved, oldestRead, params, refreshMounted, restore, snapshot, staleAll } from "./queries.js";
 
 // A server whose listings the test changes, which records each path read.
 function server() {
-  const body = { desk: { revision: 1, since_you_looked: [] }, asks: { asks: [{ id: 1 }], revision: 1 }, queue: { waiting: [], revision: 1 }, tasks: { tasks: [{ id: 1, title: "a" }], revision: 1 }, runs: { runs: [], revision: 1 } };
+  const body = { desk: { revision: 1, items: [] }, asks: { asks: [{ id: 1 }], revision: 1 }, queue: { waiting: [], revision: 1 }, tasks: { tasks: [{ id: 1, title: "a" }], revision: 1 }, runs: { runs: [], revision: 1 } };
   const paths = [];
-  const failing = new Set();
+  const failing = new Map();
   let held = null;
   const api = async (path) => {
     paths.push(path);
     if (held) await held;
     const name = path.split("?")[0].replace("/api/", "");
-    if (failing.has(name)) throw Object.assign(new Error(`${path} answered 500`), { status: 500 });
+    if (failing.has(name)) throw Object.assign(new Error(`${path} answered ${failing.get(name)}`), { status: failing.get(name) });
     if (name === "views") return { factory: "shop" };
     if (name === "links") return { links: [] };
-    if (name.startsWith("reports/")) return { report: null };
     if (name === "reports") return { reports: [] };
+    if (name.startsWith("reports/")) return { report: null };
+    if (name.startsWith("tasks/")) return { id: Number(name.slice(6)), revision: body.tasks.revision };
     return structuredClone(body[name]);
   };
   return { api, body, paths, failing, hold: () => { let release; held = new Promise((resolve) => (release = resolve)); return () => { held = null; release(); }; } };
 }
 
-test("a read with nothing new keeps every listing the same object", async (t) => {
-  const { api } = server();
-  const cache = fresh(t);
-  const first = await refresh(cache, api);
-  const second = await refresh(cache, api);
-  assert.ok(sameListings(first, second));
+// A client over a server, which drops its queries once the test ends, and what it reported.
+function start(t) {
+  const heard = { failed: [], refused: 0 };
+  const from = server();
+  const cache = client({ api: from.api, failed: (error) => heard.failed.push(error?.message ?? null), refused: () => heard.refused++ });
+  t.after(() => cache.clear());
+  return { ...from, cache, heard };
+}
+
+// A page that shows `keys`, as a component that observes them does, once they landed.
+async function mount(t, cache, keys, options = {}) {
+  const observer = new QueriesObserver(cache, keys.map((queryKey) => ({ queryKey, ...options })));
+  const leave = observer.subscribe(() => {});
+  t.after(leave);
+  await settled(cache);
+  return { observer, leave };
+}
+
+async function settled(cache) {
+  for (let i = 0; i < 100; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    if (!cache.isFetching()) return;
+  }
+  throw new Error("still reading");
+}
+
+const FRAME = [["views"], ["links"], ["desk"]];
+
+test("a page reads its own listings and no other", async (t) => {
+  const { cache, paths } = start(t);
+  await mount(t, cache, [...FRAME, keyOf("runs")]);
+  assert.deepEqual(paths.sort(), ["/api/desk", "/api/links", "/api/runs", "/api/views"]);
 });
 
-test("a read keeps the listings that did not change and replaces the one that did", async (t) => {
-  const { api, body } = server();
-  const cache = fresh(t);
-  const first = await refresh(cache, api);
+test("a moved revision reads the mounted queries again, and the views and links no more", async (t) => {
+  const { cache, paths } = start(t);
+  await mount(t, cache, [...FRAME, ["task", 7]]);
+  paths.length = 0;
+  assert.equal(await moved(cache), true);
+  assert.deepEqual(paths.sort(), ["/api/desk", "/api/tasks/7"]);
+});
+
+test("a query no page shows reads nothing until a page shows it again", async (t) => {
+  const { cache, paths } = start(t);
+  await mount(t, cache, FRAME);
+  const runs = await mount(t, cache, [keyOf("runs")]);
+  runs.leave();
+  paths.length = 0;
+  await moved(cache);
+  assert.deepEqual(paths, ["/api/desk"]);
+  await mount(t, cache, [keyOf("runs")]);
+  assert.deepEqual(paths, ["/api/desk", "/api/runs"]);
+});
+
+test("a page shown again with no move since reads nothing", async (t) => {
+  const { cache, paths } = start(t);
+  const runs = await mount(t, cache, [keyOf("runs")]);
+  runs.leave();
+  paths.length = 0;
+  await mount(t, cache, [keyOf("runs")]);
+  assert.deepEqual(paths, []);
+});
+
+test("moves during a read join it: at most one read of each is in flight", async (t) => {
+  const { cache, paths, hold } = start(t);
+  await mount(t, cache, [["desk"]]);
+  paths.length = 0;
+  const release = hold();
+  const all = Promise.all([moved(cache), moved(cache), moved(cache)]);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.deepEqual(paths, ["/api/desk"]);
+  release();
+  assert.deepEqual(await all, [true, true, true]);
+});
+
+test("a person's refresh supersedes the read in flight, whose answer never lands", async (t) => {
+  const { cache, body, paths, hold } = start(t);
+  await mount(t, cache, [keyOf("tasks")]);
+  paths.length = 0;
+  body.tasks.tasks[0].title = "late";
+  const release = hold();
+  const late = moved(cache);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const asked = refreshMounted(cache);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(paths.length, 2);
   body.tasks.tasks[0].title = "b";
-  const second = await refresh(cache, api);
-  assert.equal(second.asks, first.asks);
-  assert.notEqual(second.tasks, first.tasks);
-  assert.equal(second.tasks.tasks[0].title, "b");
-  assert.ok(!sameListings(first, second));
+  release();
+  await Promise.all([late, asked]);
+  assert.equal(cache.getQueryData(keyOf("tasks")).tasks[0].title, "b");
 });
 
-test("the cache shows the last listings until a re-read lands", async (t) => {
-  const { api, body, hold } = server();
-  const cache = fresh(t);
-  await refresh(cache, api);
+test("a hidden tab reads nothing, and reads once when it is shown", async (t) => {
+  const { cache, paths } = start(t);
+  const { observer } = await mount(t, cache, [["desk"]]);
+  paths.length = 0;
+  observer.setQueries([{ queryKey: ["desk"], enabled: false }]);
+  await moved(cache);
+  await refreshMounted(cache);
+  assert.deepEqual(paths, []);
+  await staleAll(cache);
+  observer.setQueries([{ queryKey: ["desk"], enabled: true }]);
+  await settled(cache);
+  assert.deepEqual(paths, ["/api/desk"]);
+});
+
+test("the last data stays on screen until a re-read lands", async (t) => {
+  const { cache, body, hold } = start(t);
+  await mount(t, cache, [keyOf("tasks")]);
   body.tasks.tasks[0].title = "b";
   const release = hold();
-  const reading = refresh(cache, api);
-  assert.equal(cache.getQueryData(["tasks", false]).tasks[0].title, "a");
+  const reading = moved(cache);
+  assert.equal(cache.getQueryData(keyOf("tasks")).tasks[0].title, "a");
   release();
   await reading;
-  assert.equal(cache.getQueryData(["tasks", false]).tasks[0].title, "b");
+  assert.equal(cache.getQueryData(keyOf("tasks")).tasks[0].title, "b");
 });
 
-test("a failed re-read throws and keeps the last listings", async (t) => {
-  const { api, failing } = server();
-  const cache = fresh(t);
-  const first = await refresh(cache, api);
-  failing.add("desk");
-  await assert.rejects(refresh(cache, api), /answered 500/);
-  assert.equal(cache.getQueryData(["desk"]), first.desk);
-  assert.ok(sameListings(Object.fromEntries(Object.keys(first).map((name) => [name, cache.getQueryCache().findAll({ queryKey: [name] })[0].state.data])), first));
+test("a failed re-read keeps the last data, says why, and a later read says it is over", async (t) => {
+  const { cache, failing, heard } = start(t);
+  await mount(t, cache, FRAME);
+  const desk = cache.getQueryData(["desk"]);
+  failing.set("desk", 500);
+  assert.equal(await moved(cache), false);
+  assert.equal(cache.getQueryData(["desk"]), desk);
+  assert.equal(heard.failed.at(-1), "/api/desk answered 500");
+  failing.clear();
+  assert.equal(await moved(cache), true);
+  assert.equal(heard.failed.at(-1), null);
 });
 
-test("the views and links are read once, the listings every time", async (t) => {
-  const { api, paths } = server();
-  const cache = fresh(t);
-  await refresh(cache, api);
-  paths.length = 0;
-  await refresh(cache, api);
-  assert.deepEqual(paths.sort(), ["/api/asks", "/api/desk", "/api/queue", "/api/reports", "/api/reports/latest", "/api/runs", "/api/tasks"]);
+test("one listing that lands does not say another's failure is over", async (t) => {
+  const { cache, failing, heard } = start(t);
+  await mount(t, cache, [["desk"], keyOf("runs")]);
+  failing.set("runs", 500);
+  await moved(cache);
+  heard.failed.length = 0;
+  await moved(cache);
+  assert.deepEqual(heard.failed, ["/api/runs answered 500"]);
+});
+
+test("a detail that fails is its page's to say", async (t) => {
+  const { cache, failing, heard } = start(t);
+  failing.set("tasks/9", 404);
+  await mount(t, cache, [["desk"], ["task", 9]]);
+  assert.deepEqual(heard.failed.filter(Boolean), []);
+});
+
+test("a refused token is heard from any read", async (t) => {
+  const { cache, failing, heard } = start(t);
+  failing.set("tasks/9", 401);
+  await mount(t, cache, [["task", 9]]);
+  assert.equal(heard.refused, 1);
+});
+
+test("a read that the cache dropped, such as one from before a sign-out, is not heard", async (t) => {
+  const { cache, failing, heard, hold } = start(t);
+  const observer = new QueryObserver(cache, { queryKey: ["desk"] });
+  t.after(observer.subscribe(() => {}));
+  const release = hold();
+  failing.set("desk", 401);
+  cache.clear();
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(heard.refused, 0);
+});
+
+test("a read with nothing new keeps the listing the same object, and one with a change replaces only it", async (t) => {
+  const { cache, body } = start(t);
+  await mount(t, cache, [keyOf("asks"), keyOf("tasks")]);
+  const before = ["asks", "tasks"].map((name) => cache.getQueryData(keyOf(name)));
+  await moved(cache);
+  assert.deepEqual(["asks", "tasks"].map((name, at) => cache.getQueryData(keyOf(name)) === before[at]), [true, true]);
+  body.tasks.tasks[0].title = "b";
+  await moved(cache);
+  assert.deepEqual(["asks", "tasks"].map((name, at) => cache.getQueryData(keyOf(name)) === before[at]), [true, false]);
 });
 
 test("older rows read the listing in full, under a key of its own", async (t) => {
-  const { api, paths } = server();
-  const cache = fresh(t);
-  await refresh(cache, api, params({ asks: false, tasks: true, runs: false }, 7));
-  assert.ok(paths.includes("/api/tasks?all=1"));
-  assert.ok(paths.includes("/api/reports/7"));
-  assert.ok(cache.getQueryData(["tasks", true]));
-  assert.equal(cache.getQueryData(["tasks", false]), undefined);
+  const { cache, paths } = start(t);
+  const wanted = params({ asks: false, tasks: true, runs: false }, 7);
+  await mount(t, cache, [keyOf("tasks", wanted), keyOf("report", wanted), keyOf("asks", wanted)]);
+  assert.deepEqual(paths.sort(), ["/api/asks", "/api/reports/7", "/api/tasks?all=1"]);
+  assert.equal(cache.getQueryData(keyOf("tasks")), undefined);
 });
 
 test("a report the arrows reached that is gone reads as none", async (t) => {
-  const cache = fresh(t);
-  const api = async (path) => {
-    if (path === "/api/reports/9") throw Object.assign(new Error("gone"), { status: 404 });
-    return path === "/api/links" ? { links: [] } : path === "/api/reports" ? { reports: [] } : { revision: 1 };
-  };
-  const read = await refresh(cache, api, params(undefined, 9));
-  assert.equal(read.report, null);
+  const { cache, failing, heard } = start(t);
+  failing.set("reports/9", 404);
+  await mount(t, cache, [["report", 9]]);
+  assert.equal(cache.getQueryData(["report", 9]), null);
+  assert.deepEqual(heard.failed.filter(Boolean), []);
 });
 
-test("a read lands all its listings in one notification", async (t) => {
-  const { api, body } = server();
-  const cache = fresh(t);
-  await refresh(cache, api);
-  for (const listing of Object.values(body)) listing.revision = 2;
-  const read = await readAll(cache, api, params());
-  let heard = 0;
-  for (const name of ["asks", "tasks"]) t.after(new QueryObserver(cache, { queryKey: [name, false], enabled: false }).subscribe(notifyManager.batchCalls(() => heard++)));
-  let flushes = 0;
-  notifyManager.setBatchNotifyFunction((flush) => (flushes++, flush()));
-  t.after(() => notifyManager.setBatchNotifyFunction((flush) => flush()));
-  land(cache, read, params());
-  await new Promise((resolve) => setTimeout(resolve, 5));
-  assert.equal(heard, 2);
-  assert.equal(flushes, 1);
+test("the next wait starts at the oldest revision on screen, once every listing landed", async (t) => {
+  const { cache, body } = start(t);
+  assert.equal(heldRevision(cache), undefined);
+  await mount(t, cache, FRAME);
+  body.runs.revision = 4;
+  await mount(t, cache, [keyOf("runs")]);
+  assert.equal(heldRevision(cache), 1);
+  restore(cache, { reads: [[["queue"], { waiting: [], revision: 9 }, 5]] });
+  const observer = new QueryObserver(cache, { queryKey: ["queue"], enabled: true, staleTime: "static" });
+  t.after(observer.subscribe(() => {}));
+  assert.equal(heldRevision(cache), undefined, "data kept on the device names no revision");
 });
 
-test("overlapping reads each ask the server, and write nothing until they land", async (t) => {
-  const { api, body, paths, hold } = server();
-  const cache = fresh(t);
-  const first = await refresh(cache, api);
-  paths.length = 0;
-  const release = hold();
-  const superseded = readAll(cache, api, params());
-  const latest = readAll(cache, api, params());
-  assert.equal(paths.length, 14);
-  body.tasks.tasks[0].title = "b";
-  release();
-  await Promise.all([superseded, latest]);
-  assert.equal(cache.getQueryData(["tasks", false]), first.tasks);
-  assert.equal(land(cache, await latest, params()).tasks.tasks[0].title, "b");
+test("a kept snapshot draws at once and is read again when a page shows it", async (t) => {
+  const { cache, paths } = start(t);
+  await mount(t, cache, [...FRAME, keyOf("tasks", params({ asks: false, tasks: true, runs: false }))]);
+  const kept = JSON.parse(JSON.stringify(snapshot(cache)));
+  const later = start(t);
+  restore(later.cache, kept);
+  assert.deepEqual(later.cache.getQueryData(keyOf("tasks")), { tasks: [{ id: 1, title: "a" }] });
+  await mount(t, later.cache, [["desk"], ["views"]]);
+  assert.deepEqual(later.paths.sort(), ["/api/desk", "/api/views"]);
+  assert.ok(paths.length);
 });
 
-test("a listing read at another revision with the same rows draws nothing", async (t) => {
-  const { api, body } = server();
-  const cache = fresh(t);
-  const first = await refresh(cache, api);
-  for (const listing of [body.asks, body.tasks, body.runs]) listing.revision = 2;
-  assert.ok(sameListings(first, await refresh(cache, api)));
-  body.desk.revision = 2;
-  assert.ok(!sameListings(first, await refresh(cache, api)));
+test("each kept listing keeps its own age, and the strip names the oldest one on screen", async (t) => {
+  const { cache } = start(t);
+  restore(cache, { reads: [[["desk"], { items: [] }, 100], [["runs", false], { runs: [] }, 50], [["queue"], {}, 10]] });
+  for (const queryKey of [["desk"], ["runs", false]]) t.after(new QueryObserver(cache, { queryKey, staleTime: "static" }).subscribe(() => {}));
+  assert.equal(oldestRead(cache), 50);
+});
+
+test("a snapshot an earlier version kept still draws", (t) => {
+  const { cache } = start(t);
+  restore(cache, { updated: 77, data: { views: { factory: "shop" }, links: [], desk: { items: [], revision: 3 }, asks: [{ id: 1 }], bands: ["now"], queue: { waiting: [] }, tasks: [{ id: 2 }], runs: [], older: { tasks: 4 }, report: null, reports: [], spend: null, flows: null } });
+  assert.deepEqual(cache.getQueryData(keyOf("asks")), { asks: [{ id: 1 }], bands: ["now"], older: undefined });
+  assert.deepEqual(cache.getQueryData(keyOf("tasks")), { tasks: [{ id: 2 }], older: 4 });
+  assert.deepEqual(cache.getQueryData(["desk"]), { items: [] });
+  assert.equal(cache.getQueryState(["desk"]).dataUpdatedAt, 77);
+  assert.equal(cache.getQueryData(["spend"]), undefined);
+});
+
+test("no snapshot, and one that is not ours, restore nothing", (t) => {
+  const { cache } = start(t);
+  restore(cache, null);
+  restore(cache, {});
+  assert.deepEqual(cache.getQueryCache().getAll(), []);
 });

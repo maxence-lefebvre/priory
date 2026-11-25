@@ -1,9 +1,12 @@
-// The legacy pages' reads, their snapshot and signing out.
-import { render } from "../app.js";
+// What the legacy pages draw from: the listings of the page on screen, landed together.
+import { draw } from "../app.js";
+import { cache, refresh as refreshQueries } from "../data.js";
 import { mergeSince } from "../desk.js";
-import { client, land, params, readAll, sameListings } from "../queries.js";
+import { keyOf, params } from "../queries.js";
+import { onSignOut, session } from "../session.js";
+import { store } from "../store.js";
 import { RUN_VIEWS } from "../runs.js";
-import { TASK_VIEWS, taskLabel } from "../tasks.js";
+import { TASK_VIEWS } from "../tasks.js";
 import { askView } from "./asks.js";
 import { loadCosts } from "./costs.js";
 import { deskView } from "./desk.js";
@@ -12,116 +15,107 @@ import { acceptReport } from "./reports.js";
 import { current, listView, selectedAsk, state } from "./shared.js";
 import { keyboard, watch } from "./terminal.js";
 
+// Which rows and which report the page asks the server for.
+export const asked = store(params());
+export const askFor = (part) => asked.set({ ...asked.get(), ...part });
 
-// Data
-export async function api(path) {
-  const response = await fetch(path, { headers: { Authorization: `Bearer ${state.token}` }, cache: "no-store" });
-  if (response.status === 401) throw Object.assign(new Error("the token was refused"), { status: 401 });
-  if (!response.ok) throw Object.assign(new Error(`${path} answered ${response.status}`), { status: response.status });
-  return response.json();
-}
+// The listings the page on screen shows, and those landed last, by name.
+const page = { names: [], landed: {}, stamp: null, opened: null };
 
-// The server data lives in one QueryClient; refresh() reads it again.
-export const cache = client();
-// What the long poll waits on: none while signed out or before the first read.
-export const revision = () => (state.token ? state.revision : undefined);
-export const revisionMoved = () => watch.revision();
-
-export async function refresh() {
-  if (!state.token) return render();
-  const failed = state.failed;
-  const call = ++state.refreshes;
+export function openPage(names) {
+  page.names = names;
   // Older rows load again when the person scrolls back to them.
   const history = {
     asks: Boolean(selectedAsk()) || (current() === "asks" && ["answered", "all"].includes(askView())),
     tasks: (current() === "desk" && deskView() === "all") || (current() === "tasks" && listView(TASK_VIEWS) === "ended"),
     runs: current() === "runs" && listView(RUN_VIEWS) === "recent",
   };
-  for (const listing of ["asks", "tasks", "runs"]) state.all[listing] &&= history[listing];
-  const asked = params(state.all, state.reportShown);
-  try {
-    // Taken before the read, so an event between that read and the visit still shows next time.
-    const read = new Date().toISOString().replace(/\.\d+Z$/, "Z");
-    const listings = await readAll(cache, api, asked);
-    // A later call, such as the one that loads older rows, supersedes this one.
-    if (call !== state.refreshes) return true;
-    if (!accept(land(cache, listings, asked), { read, failed })) return true;
-  } catch (error) {
-    // A superseded call, such as one from before a sign-out, must not sign the new session out.
-    if (call !== state.refreshes) return true;
-    if (error.status === 401) return signOut("The daemon refused this token. Paste the current one.");
-    state.failed = error instanceof TypeError ? "the connection dropped" : error.message;
-    render();
-    return false;
+  const { all } = asked.get();
+  const left = Object.fromEntries(Object.entries(all).map(([name, on]) => [name, on && history[name]]));
+  if (Object.keys(all).some((name) => all[name] !== left[name])) askFor({ all: left });
+  land();
+}
+
+// Whether every listing of the page has data: the page draws a loading line until then.
+export const ready = () => page.names.every((name) => name in page.landed);
+
+const drawn = ({ desk, queue, report, reports, asks, tasks, runs, older }) => [desk, queue, report, reports, asks, tasks, runs, older.asks, older.tasks, older.runs];
+
+// Lands the page's listings in one step, once none of them is being read: a draw never mixes two reads.
+export function land() {
+  const queries = cache.getQueryCache();
+  const held = [...new Set(["views", "links", "desk", ...page.names])].map((name) => [name, queries.find({ queryKey: keyOf(name, asked.get()), exact: true })]);
+  if (held.some(([, query]) => query?.state.fetchStatus === "fetching")) return;
+  // A failed read changes nothing.
+  if (held.some(([name, query]) => query?.state.status === "error" && name in page.landed)) return;
+  for (const query of queries.getAll()) {
+    const [name] = query.queryKey;
+    if (query.state.data === undefined) continue;
+    const key = keyOf(name, asked.get());
+    // A listing this page does not show keeps its last read, whichever rows that held.
+    if (!page.names.includes(name) ? !(name in page.landed) || query.state.dataUpdatedAt >= page.landed[name].at : JSON.stringify(key) === JSON.stringify(query.queryKey)) page.landed[name] = { data: query.state.data, at: query.state.dataUpdatedAt };
   }
-  render();
-  return true;
+  const of = (name) => page.landed[name]?.data;
+  if (!of("views") || !of("desk")) return;
+  const stamp = JSON.stringify([page.names, held.map(([, query]) => query?.state.dataUpdatedAt)]);
+  const fresh = stamp !== page.stamp;
+  page.stamp = stamp;
+  accept({ of, fresh });
 }
 
-// Takes a read's listings into state, and says whether to draw them. A listing that did not change
-// is the same object, so a read with nothing new only repaints the ages, once a minute at most.
-export function accept(listings, { read, failed }) {
-  const { views, links, desk, asks: asksList, queue, tasks: tasksList, runs: runsList, report, reports } = listings;
-  if (!state.since.opened) Object.assign(state.since, { opened: read, from: desk.last_visit });
-  state.since.events = mergeSince(state.since.events, desk.since_you_looked);
-  // The listings are read one after another; the oldest revision makes the next wait catch what they missed.
-  state.revision = Math.min(desk.revision, asksList.revision, queue.revision, tasksList.revision, runsList.revision, report?.revision ?? Infinity);
-  state.updated = Date.now();
-  state.failed = null;
-  state.cached = false;
-  if (current() === "costs") loadCosts();
-  if (current() === "inbox") loadUnrouted();
-  if (state.data && sameListings(listings, state.listings) && !failed && Date.now() - state.rendered < 60000) return keep(), false;
-  const before = state.data ? new Set(state.data.asks.filter((ask) => ask.state === "open").map((ask) => ask.id)) : null;
-  const [asks, tasks, runs] = [asksList.asks, tasksList.tasks, runsList.runs];
-  const older = { asks: asksList.older, tasks: tasksList.older, runs: runsList.older };
-  // The Costs panel reads its own reports; a refresh keeps the last ones.
-  state.data = { views, links, desk, asks, bands: asksList.bands, queue, tasks, runs, older, report, reports, spend: state.data?.spend ?? null, flows: state.data?.flows ?? null };
-  acceptReport();
-  if (state.task) state.task.stale = true;
-  if (state.batch) state.batch.stale = true;
-  state.listings = listings;
-  keep();
-  announce(before);
-  return true;
+// Takes the landed listings into state, and draws them when one changed. A listing that did not
+// change is the same object, so a read with nothing new only repaints the ages, once a minute at most.
+function accept({ of, fresh }) {
+  const desk = of("desk");
+  // A desk kept on this device names no revision: the visit opens on the first live read.
+  if (desk.revision !== undefined) {
+    if (!state.since.opened) Object.assign(state.since, { opened: deskReadAt(), from: desk.last_visit });
+    state.since.events = mergeSince(state.since.events, desk.since_you_looked);
+  }
+  const [asksList, tasksList, runsList] = ["asks", "tasks", "runs"].map(of);
+  const before = state.data;
+  state.data = {
+    views: of("views"), links: of("links") ?? [], desk,
+    asks: asksList?.asks ?? NONE, bands: asksList?.bands,
+    queue: of("queue") ?? EMPTY_QUEUE,
+    tasks: tasksList?.tasks ?? NONE, runs: runsList?.runs ?? NONE,
+    older: { asks: asksList?.older, tasks: tasksList?.older, runs: runsList?.older },
+    report: of("report") ?? null, reports: of("reports") ?? null,
+    // The Costs and Flows panels read their own; a refresh keeps the last ones.
+    spend: of("spend") ?? null, flows: of("flows") ?? null,
+  };
+  if (fresh && ready()) {
+    acceptReport();
+    if (state.task) state.task.stale = true;
+    if (state.batch) state.batch.stale = true;
+    if (current() === "costs") loadCosts();
+    if (current() === "inbox") loadUnrouted();
+  }
+  const same = before && drawn(before).every((part, i) => part === drawn(state.data)[i]);
+  if (!same || Date.now() - state.rendered >= 60000) draw();
 }
 
-function announce(before) {
-  if (!before) return;
-  const fresh = state.data.asks.find((ask) => ask.state === "open" && !before.has(ask.id));
-  if (fresh) document.getElementById("announce").textContent = `New ask from ${fresh.key ? taskLabel(fresh.key) : `task ${fresh.task}`}.`;
+const NONE = [];
+const EMPTY_QUEUE = { waiting: [], ended: [], asleep: [], running: [], up_next: [], bands: [], lanes: [] };
+
+// When the first live read of the desk began, so an event between that read and the visit still shows next time.
+const deskReadAt = () => page.opened ?? new Date().toISOString().replace(/\.\d+Z$/, "Z");
+export const opening = () => { page.opened ??= new Date().toISOString().replace(/\.\d+Z$/, "Z"); };
+
+export async function refresh() {
+  const ok = await refreshQueries();
+  land();
+  return ok;
 }
+export { cache };
+export { api, refuse, signOut, KEPT_KINDS } from "../session.js";
 
-// The listings and their time go in one value, so a full storage never pairs old data with a new time.
-export function keep() {
-  try {
-    localStorage.setItem("priory.snapshot", JSON.stringify({ data: state.data, updated: state.updated }));
-  } catch {}
-}
-
-// The service worker reads the same copy when the push service replaces the subscription.
-export const KEPT_KINDS = "/api/worker/kinds";
-
-// The service worker cannot read local storage, so it gets its own copy of the token to tell the
-// daemon about a subscription the push service replaced. Signing out drops it, and the kept kinds.
-export function keepTokenForWorker(token) {
-  if (!("caches" in window)) return;
-  caches.open("priory-push")
-    .then((cache) => token
-      ? cache.put("/api/worker/token", new Response(token))
-      : Promise.all(["/api/worker/token", KEPT_KINDS].map((key) => cache.delete(key))))
-    .catch(() => {});
-}
-
-export function signOut(reason) {
-  for (const key of ["priory.token", "priory.snapshot"]) localStorage.removeItem(key);
-  keepTokenForWorker(null);
-  // A refresh still in flight must not store what this device just dropped.
-  state.refreshes++;
+onSignOut(() => {
   watch.stop();
   // Before the token goes: giving the keyboard back needs it.
   keyboard.leave();
-  cache.clear();
-  Object.assign(state, { token: null, data: null, listings: null, revision: undefined, signInError: reason, drawn: null, flowsError: null, all: { asks: false, tasks: false, runs: false }, costs: { by: "workflow", loading: false, slow: false, error: null } });
-  render();
-}
+  Object.assign(page, { landed: {}, stamp: null });
+  Object.assign(state, { data: null, flowsError: null, costs: { by: "workflow", loading: false, slow: false, error: null } });
+  asked.set(params());
+});
+session.subscribe(draw);

@@ -1,58 +1,57 @@
-// The React shell: it owns the root, the route, the server data's cache and the events long poll.
-// Pages not ported yet draw inside LegacyPage, with app.js.
-import { useEffect, useLayoutEffect, useSyncExternalStore } from "react";
+// The React app: it owns the root, the router, the server data's cache and the events long poll.
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { QueryClientProvider } from "@tanstack/react-query";
-import * as legacy from "./app.js";
+import { RouterProvider } from "@tanstack/react-router";
+import { cache, refresh, reread, revision } from "./data.js";
 import { follow } from "./events.js";
-import { followBack, route } from "./router.js";
+import { watch } from "./legacy/terminal.js";
+import { staleAll } from "./queries.js";
+import { followLink } from "./router.js";
+import { makeRouter } from "./routes.jsx";
+import { api, keepTokenForWorker, session } from "./session.js";
+import { shown } from "./shown.js";
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const { token } = session.get();
+if (token) keepTokenForWorker(token);
+document.addEventListener("click", followLink);
 
-// React unmounts the root when an effect throws, so a failed draw is reported and the page stays.
-function draw() {
-  try {
-    legacy.render();
-  } catch (error) {
-    reportError(error);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden || shown.get()) {
+    shown.set(!document.hidden);
+    if (!document.hidden) refresh();
+    return;
   }
-}
+  // The mounted queries read once, as the shown tab enables them.
+  staleAll(cache);
+  shown.set(true);
+});
 
-// app.js draws #app with innerHTML. React renders the element once and never its children.
-function LegacyPage({ visit }) {
-  useLayoutEffect(draw, [visit]);
-  return <div id="app" />;
-}
+// Ages move and a snooze ends with no new revision, so what is on screen reads again once a minute.
+setInterval(() => { if (shown.get()) reread(); }, 60000);
 
-function Shell() {
-  const visit = useSyncExternalStore(route.subscribe, route.get);
-  useEffect(followBack, []);
-  useEffect(() => {
-    let live = true;
-    legacy.refresh();
-    follow({
-      live: () => live,
-      ready: () => (document.hidden ? undefined : legacy.revision()),
-      held: legacy.revision,
-      wait: (since) => legacy.api(`/api/events?since=${since}`),
-      moved: legacy.revisionMoved,
-      refresh: legacy.refresh,
-      sleep,
-    });
-    return () => { live = false; };
-  }, []);
-  return <LegacyPage visit={visit} />;
-}
+follow({
+  live: () => true,
+  ready: () => (shown.get() ? revision() : undefined),
+  held: revision,
+  wait: (since) => api(`/api/events?since=${since}`),
+  moved: () => watch.revision(),
+  refresh: reread,
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+});
+
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
 
 // The page keeps the id the earlier app.js draws in: an offline start or a restart mid-load can pair
 // an old index with a new bundle, or the reverse, and neither may draw a blank page.
 const root = document.getElementById("app");
 root.id = "root";
 
-// The desk can take seconds: the kept listing or the loading line shows before this returns.
+const router = makeRouter();
+// The first page's route is known before the first draw, so the kept data or the loading line shows at once.
+router.load();
 flushSync(() => createRoot(root).render(
-  <QueryClientProvider client={legacy.cache}>
-    <Shell />
+  <QueryClientProvider client={cache}>
+    <RouterProvider router={router} />
   </QueryClientProvider>,
 ));

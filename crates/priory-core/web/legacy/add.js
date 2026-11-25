@@ -1,7 +1,8 @@
 // The add page's legacy drawing and actions.
 import { addBody, addOutcome, swapLine, withDefaults } from "../add.js";
 import { taskLabel, workStep } from "../tasks.js";
-import { api, refresh, signOut } from "./data.js";
+import { keyOf } from "../queries.js";
+import { api, cache, land, refresh, signOut } from "./data.js";
 import { focusKey, html, icon, post, raw, state, tile } from "./shared.js";
 
 
@@ -25,7 +26,8 @@ export async function openAdd() {
   if (!state.data || addSheet().open) return;
   if (state.add.phase === "added") Object.assign(state.add, { phase: "empty", task: null });
   const before = state.add.defaults;
-  const read = readAddDefaults();
+  // The Lane chip offers the lanes these two list, which the page may not show.
+  const read = Promise.all([readAddDefaults(), ...["tasks", "queue"].map((name) => cache.ensureQueryData({ queryKey: keyOf(name) }).catch(() => {}))]).then(land);
   if (!before) await read;
   const { defaults } = state.add;
   if (addSheet().open) return renderAdd();
