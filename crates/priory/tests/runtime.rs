@@ -18125,15 +18125,23 @@ fn a_clean_asleep_task_retires_when_disk_runs_short_and_resurrects_with_its_work
 
     setup.removed(1);
 
-    let statuses = fs::read_to_string(setup.dir.join("fake/git-statuses")).unwrap();
-    let checks = statuses
-        .lines()
-        .filter(|line| line.contains("/1 ") || line.contains("/reclaim/1-"))
-        .filter(|line| line.contains("--ignore-submodules=none"));
+    // The tick's own check runs on the folder it just moved.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let checks = loop {
+        let statuses = fs::read_to_string(setup.dir.join("fake/git-statuses")).unwrap();
+        let checks = statuses
+            .lines()
+            .filter(|line| line.contains("/1 ") || line.contains("/reclaim/1-"))
+            .filter(|line| line.contains("--ignore-submodules=none"))
+            .count();
+        if checks >= 2 || Instant::now() > deadline {
+            break checks;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
     assert_eq!(
-        checks.count(),
-        2,
-        "a retirement checks on its thread and on the tick: {statuses}"
+        checks, 2,
+        "a retirement checks on its thread and on the tick"
     );
     let tasks = setup.until("tasks", |rows| rows[0][10] != "-");
     assert_eq!(tasks[0][4], "asleep");
