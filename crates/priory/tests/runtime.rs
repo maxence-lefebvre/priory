@@ -5379,33 +5379,68 @@ fn an_object_forged_under_the_bases_id_vouches_for_no_envrc() {
 
 #[test]
 fn a_git_that_crashes_in_the_envrcs_check_is_the_reason_and_not_a_difference() {
-    for (command, why) in [
+    for (command, change, why) in [
         (
             "hash-object -t blob",
+            "",
             ".envrc could not be checked: git hash-object: exit 139",
         ),
         (
             "hash-object -t tree",
+            "",
             ".envrc could not be checked against the commit the task started from (git \
              hash-object: exit 139), and the default branch could not be checked (git \
              hash-object: exit 139)",
         ),
         (
             "ls-files",
+            "",
             ".envrc could not be checked: git ls-files: exit 139",
+        ),
+        (
+            "hash-object -t tree",
+            "untracked",
+            ".envrc is untracked, and it could not be checked against the commit the task started \
+             from (git hash-object: exit 139)",
+        ),
+        (
+            "cat-file commit",
+            "",
+            ".envrc could not be checked against the commit the task started from (git cat-file: \
+             exit 139), and the default branch could not be checked (git cat-file: exit 139)",
+        ),
+        (
+            "",
+            "no base",
+            "no commit the task started from is known to check .envrc against, and it differs from \
+             the default branch",
         ),
     ] {
         let setup = blocked_under_direnv("envrc-git-crash");
         let worktree = setup.dir.join("home/worktrees/owner/repo/1");
         fs::write(worktree.join(".envrc"), "touch /tmp/agent\n").unwrap();
-        fs::write(setup.dir.join("fake/git-crash"), command).unwrap();
+        if change == "untracked" {
+            git_out(&worktree, &["rm", "-q", "--cached", ".envrc"]);
+        }
+        if change == "no base" {
+            let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+            db.busy_timeout(Duration::from_secs(10)).unwrap();
+            assert_eq!(db.execute("DELETE FROM envrc_bases", []).unwrap(), 1);
+        }
+        if !command.is_empty() {
+            fs::write(setup.dir.join("fake/git-crash"), command).unwrap();
+        }
 
         let resumed = setup.priory(&["resume", "1"]);
 
-        assert!(resumed.status.success(), "{command}: {resumed:?}");
+        assert!(resumed.status.success(), "{command} {change}: {resumed:?}");
         setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
-        assert_eq!(outcomes_of(&setup, "2"), ["refused"], "{command}");
-        assert_eq!(direnv_records(&setup)[1]["data"]["why"], why, "{command}");
+        assert_eq!(outcomes_of(&setup, "2"), ["refused"], "{command} {change}");
+        assert_eq!(
+            direnv_records(&setup)[1]["data"]["why"],
+            why,
+            "{command} {change}"
+        );
     }
 }
 
@@ -5527,6 +5562,17 @@ fn an_envrc_changed_on_a_kept_worktree_starts_the_next_run_without_direnv_and_sa
     }
 }
 
+/// Puts a new `.envrc` on the origin's `main`, which the clone lacks, and in task 1's worktree.
+fn merge_new_envrc(setup: &Setup) {
+    let work = setup.dir.join("work");
+    fs::write(work.join(".envrc"), "use flake .#new\n").unwrap();
+    committed(&work, ".envrc");
+    let origin = setup.dir.join("origin/owner/repo.git");
+    git_out(&work, &["push", "-q", origin.to_str().unwrap(), "main"]);
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+    fs::write(worktree.join(".envrc"), "use flake .#new\n").unwrap();
+}
+
 #[test]
 fn an_unchanged_envrc_or_the_default_branchs_new_one_starts_a_kept_worktree_under_direnv() {
     for (name, merged) in [("envrc-unchanged", false), ("envrc-merged", true)] {
@@ -5539,23 +5585,7 @@ fn an_unchanged_envrc_or_the_default_branchs_new_one_starts_a_kept_worktree_unde
             std::thread::sleep(Duration::from_millis(50));
         }
         if merged {
-            let work = setup.dir.join("work");
-            fs::write(work.join(".envrc"), "use flake .#new\n").unwrap();
-            committed(&work, ".envrc");
-            assert!(
-                git(&work)
-                    .args(["push", "-q"])
-                    .arg(setup.dir.join("origin/owner/repo.git"))
-                    .arg("main")
-                    .status()
-                    .unwrap()
-                    .success()
-            );
-            fs::write(
-                setup.dir.join("home/worktrees/owner/repo/1/.envrc"),
-                "use flake .#new\n",
-            )
-            .unwrap();
+            merge_new_envrc(&setup);
         }
 
         let resumed = setup.priory(&["resume", "1"]);
@@ -5565,7 +5595,29 @@ fn an_unchanged_envrc_or_the_default_branchs_new_one_starts_a_kept_worktree_unde
         assert_eq!(outcomes_of(&setup, "2"), ["granted"], "{name}");
         assert_eq!(under_direnv(&setup), 2, "{name}");
         assert!(folder.join("direnv.toml").exists(), "{name}");
+        let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+        assert!(!log.contains("git cat-file"), "{name}: {log}");
     }
+}
+
+#[test]
+fn a_clone_that_lacks_the_default_branchs_new_head_is_no_failed_check_when_its_fetch_fails() {
+    let setup = blocked_under_direnv("envrc-fetch-crash");
+    merge_new_envrc(&setup);
+    fs::write(setup.dir.join("fake/git-crash"), "fetch").unwrap();
+
+    let resumed = setup.priory(&["resume", "1"]);
+
+    assert!(resumed.status.success(), "{resumed:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert_eq!(outcomes_of(&setup, "2"), ["refused"]);
+    assert_eq!(
+        direnv_records(&setup)[1]["data"]["why"],
+        ".envrc differs from the commit the task started from, and the default branch could not \
+         be read"
+    );
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    assert!(!log.contains("git cat-file"), "{log}");
 }
 
 #[test]
