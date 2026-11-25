@@ -124,12 +124,15 @@ fn view(factory: &Factory) -> Result<(), Error> {
     loop {
         live.poll(&mut db, &trace, false)?;
         let trace = live.trace(&trace);
+        let mut behind = false;
         if link.due() {
             let drained = view_drain(&*bus, &consumer, &mut db, &viewer, &trace);
-            metered(&*bus, drained.as_ref());
-            link.tried(&db, drained)?;
+            metered(&*bus, drained.as_ref().map(|_| ()));
+            behind = matches!(drained, Ok(false));
+            link.tried(&db, drained.map(drop))?;
         }
-        match listening.lines.recv_timeout(EVERY) {
+        let wait = if behind { Duration::ZERO } else { EVERY };
+        match listening.lines.recv_timeout(wait) {
             Ok(line) => {
                 let reply = match serde_json::from_str::<Input>(&line.text) {
                     // Since you looked is this machine's own.
@@ -146,26 +149,19 @@ fn view(factory: &Factory) -> Result<(), Error> {
     }
 }
 
-/// Reads every message past the view's cursor into its mirrors.
+/// Reads the messages past the view's cursor into its mirrors, as `drain_some` does, and returns
+/// whether none is left.
 fn view_drain(
     bus: &dyn Log,
     consumer: &str,
     db: &mut Connection,
     viewer: &str,
     trace: &Trace,
-) -> Result<(), Error> {
-    let mut probe = Some(Instant::now());
-    loop {
-        let deliveries = read(bus, consumer, &mut probe)?;
-        if deliveries.is_empty() {
-            return Ok(());
-        }
-        for delivery in deliveries {
-            let message = runners::clocked(delivery.message.clone(), delivery.logged);
-            runners::view(db, &message, viewer, trace)?;
-            bus.ack(consumer, &delivery)?;
-        }
-    }
+) -> Result<bool, Error> {
+    some(bus, consumer, true, &mut |delivery| {
+        let message = runners::clocked(delivery.message.clone(), delivery.logged);
+        runners::view(db, &message, viewer, trace)
+    })
 }
 
 fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
@@ -407,6 +403,8 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut live = Live::new(factory, watch, trace.revision.clone(), server);
     let mut upgrader = Upgrader::new(factory);
     crate::watchdog::watch(&home);
+    // Until the first catch-up after a start or a lost link, the rest of the log may withdraw a task.
+    let mut catching_up = true;
     loop {
         let tick = Instant::now();
         ticks::begin();
@@ -428,15 +426,23 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         // and before it publishes what it queued meanwhile.
         let drained = link.due().then(|| {
             let counter = counting.get(&home);
-            drain_probed(&*bus, &consumer, &mut db, &trace, counter, true)
+            drain_some(&*bus, &consumer, &mut db, &trace, counter, true)
         });
-        if let Some(me) = &trace.runner {
+        // What a runner says follows from the whole log, so it says nothing before it read it.
+        let behind = matches!(drained, Some(Ok(false)));
+        if let Some(me) = &trace.runner
+            && !behind
+        {
             runners::tick(&mut db, me, factory, intake::now()?, &mut alive)?;
         }
         if let Some(drained) = drained {
-            let tried = drained.and_then(|()| runners::flush(&db, &*bus));
-            metered(&*bus, tried.as_ref());
+            let tried = drained.and_then(|caught_up| match caught_up {
+                true => runners::flush(&db, &*bus),
+                false => Ok(()),
+            });
+            metered(&*bus, tried.as_ref().copied());
             let reached = tried.is_ok();
+            catching_up = tried.is_err() || (catching_up && behind);
             link.tried(&db, tried)?;
             // A pick's request that a lost log refused goes out once the log answers again.
             if reached && redispatch.is_none_or(|after| Instant::now() >= after) {
@@ -446,6 +452,13 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
                 }
                 redispatch = (!failed.is_empty()).then(|| Instant::now() + REDISPATCH);
             }
+        }
+        // A task that moved may still be in the rest of the log: a runner acts on none before that,
+        // not even on an answer to it.
+        if behind && trace.runner.is_some() {
+            ticks::record(tick.elapsed());
+            crate::watchdog::ended(&home);
+            continue;
         }
         ticks::phase("signals");
         while let Ok(line) = listening.lines.try_recv() {
@@ -457,6 +470,11 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
                 kit.current(),
                 &searching,
             )?;
+        }
+        if behind && catching_up {
+            ticks::record(tick.elapsed());
+            crate::watchdog::ended(&home);
+            continue;
         }
         ticks::phase("commands");
         // After the socket's lines, so an answer a person sent before this tick comes first.
@@ -564,7 +582,10 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         ticks::record(tick.elapsed());
         crate::watchdog::ended(&home);
         // A pasted prompt's Enter is due before the next whole tick.
-        let wait = entering.due().map_or(EVERY, |due| due.min(EVERY));
+        let wait = match behind {
+            true => Duration::ZERO,
+            false => entering.due().map_or(EVERY, |due| due.min(EVERY)),
+        };
         match listening.lines.recv_timeout(wait) {
             Ok(line) => {
                 ticks::begin();
@@ -1169,8 +1190,9 @@ fn add(
     };
     let log = log::open(trace.factory.log())?;
     let consumer = runners::consumer(trace.runner.as_deref());
-    // A request the log took but did not hand back yet: the loop takes it in once the log answers.
-    match drain(&*log, &consumer, db, trace, counter).and_then(|()| runners::flush(db, &*log)) {
+    // A request the log took but did not hand back yet: the loop takes it in later.
+    let tried = drain_some(&*log, &consumer, db, trace, counter, false);
+    match tried.and_then(|_| runners::flush(db, &*log)) {
         Err(error) if !log::unreachable(&*error) => return Err(error),
         _ => {}
     }
@@ -3316,6 +3338,11 @@ fn harness(harness: &Harness) -> &'static dyn runtime::Harness {
     }
 }
 
+/// How many messages, and how long, one tick's drain takes before the loop does its other work.
+const DRAIN: usize = 100;
+const DRAIN_FOR: Duration = Duration::from_secs(1);
+
+/// Handles every message past `consumer`'s cursor.
 fn drain(
     bus: &dyn Log,
     consumer: &str,
@@ -3323,44 +3350,67 @@ fn drain(
     trace: &Trace,
     counter: Option<&embed::Counter>,
 ) -> Result<(), Error> {
-    drain_probed(bus, consumer, db, trace, counter, false)
+    while !drain_some(bus, consumer, db, trace, counter, false)? {}
+    Ok(())
 }
 
-/// Handles every message past `consumer`'s cursor. With `probe`, times the first read as the
-/// tick's probe of the log.
-fn drain_probed(
+/// Handles the oldest messages past `consumer`'s cursor, up to the bounds of one tick, and returns
+/// whether none is left. With `probe`, times the first read as the tick's probe of the log.
+fn drain_some(
     bus: &dyn Log,
     consumer: &str,
     db: &mut Connection,
     trace: &Trace,
     counter: Option<&embed::Counter>,
     probe: bool,
-) -> Result<(), Error> {
+) -> Result<bool, Error> {
+    some(bus, consumer, probe, &mut |delivery| {
+        let mut message = runners::clocked(delivery.message.clone(), delivery.logged);
+        crate::decision::triage(db, trace, &mut message)?;
+        let ended = state::handle(db, &message, trace, counter)?;
+        // Before the ack, which can fail on a lost link: a redelivered message kills nothing.
+        ended.iter().for_each(|tmux| runtime::kill(tmux));
+        Ok(())
+    })
+}
+
+/// Hands `handle` each message past `consumer`'s cursor and acknowledges it, until none is left
+/// (`true`) or a bound of one tick's drain is reached.
+fn some(
+    bus: &dyn Log,
+    consumer: &str,
+    probe: bool,
+    handle: &mut dyn FnMut(&log::Delivery) -> Result<(), Error>,
+) -> Result<bool, Error> {
     let mut probe = probe.then(Instant::now);
+    let mut handled = 0;
+    // The clock starts after the first read, so a slow log leaves a pass its time.
+    let mut started = None;
     loop {
         let deliveries = read(bus, consumer, &mut probe)?;
+        let started = *started.get_or_insert_with(Instant::now);
         if deliveries.is_empty() {
-            return Ok(());
+            return Ok(true);
         }
         for delivery in deliveries {
-            let mut message = runners::clocked(delivery.message.clone(), delivery.logged);
-            crate::decision::triage(db, trace, &mut message)?;
-            let ended = state::handle(db, &message, trace, counter)?;
-            // Before the ack, which can fail on a lost link: a redelivered message kills nothing.
-            ended.iter().for_each(|tmux| runtime::kill(tmux));
+            handle(&delivery)?;
             bus.ack(consumer, &delivery)?;
+            handled += 1;
+            if handled == DRAIN || started.elapsed() >= DRAIN_FOR {
+                return Ok(false);
+            }
         }
     }
 }
 
-/// Reads up to 100 messages past `consumer`'s cursor, timing the read as the log's probe when
+/// Reads up to `DRAIN` messages past `consumer`'s cursor, timing the read as the log's probe when
 /// `probe` holds when it started, and then clearing it.
 fn read(
     bus: &dyn Log,
     consumer: &str,
     probe: &mut Option<Instant>,
 ) -> Result<Vec<log::Delivery>, Error> {
-    let read = bus.read(consumer, OUTPUT, 100);
+    let read = bus.read(consumer, OUTPUT, DRAIN);
     if let Some(started) = probe.take() {
         metrics::probed(
             started.elapsed(),
@@ -3372,7 +3422,7 @@ fn read(
 
 /// Samples the log's backlog for the metrics once a try on the log reached it, and forgets the
 /// last one when it did not.
-fn metered(bus: &dyn Log, tried: Result<&(), &Error>) {
+fn metered(bus: &dyn Log, tried: Result<(), &Error>) {
     match tried {
         Ok(()) => metrics::sample_backlog(bus),
         Err(_) => metrics::unreached(),
@@ -3449,6 +3499,121 @@ mod tests {
         assert!(shown.ends_with("exit 1"), "{shown}");
         let split = "first-\u{200b}half\n  second-half";
         assert_eq!(envrc_error(split, &secrets), "[redacted]");
+    }
+
+    /// A log of `count` messages the consumer `c` has yet to read, in the folder `name`.
+    fn backlog(name: &str, count: usize) -> herdr_bus::Bus {
+        let home = std::env::temp_dir().join(format!("priory-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        let bus = herdr_bus::Bus::open(&home.join("bus.db")).unwrap();
+        Log::declare(&bus, &herdr_bus::Output::new(OUTPUT)).unwrap();
+        for at in 0..count {
+            let message = herdr_bus::Message::new("t.event", serde_json::json!({ "at": at }));
+            Log::publish(&bus, OUTPUT, &message).unwrap();
+        }
+        bus
+    }
+
+    #[test]
+    fn a_tick_handles_100_messages_at_most_and_the_next_ones_go_on_in_order() {
+        let bus = backlog("bounded-drain", 250);
+        let mut seen = Vec::new();
+
+        let mut passes = vec![0];
+        loop {
+            let caught_up = some(&bus, "c", false, &mut |delivery| {
+                seen.push(delivery.message.data["at"].as_u64().unwrap());
+                Ok(())
+            });
+            passes.push(seen.len());
+            if caught_up.unwrap() {
+                break;
+            }
+        }
+
+        // A slow disk may end a pass sooner, so only the most is certain.
+        assert!(
+            passes.windows(2).all(|pass| pass[1] - pass[0] <= 100),
+            "{passes:?}"
+        );
+        assert!(seen.into_iter().eq(0..250));
+    }
+
+    /// A log whose every read takes as long as a tick's whole time.
+    struct Slow(herdr_bus::Bus);
+
+    impl Log for Slow {
+        fn declare(&self, output: &herdr_bus::Output) -> log::Result<()> {
+            Log::declare(&self.0, output)
+        }
+        fn publish(
+            &self,
+            output: &str,
+            message: &herdr_bus::Message,
+        ) -> log::Result<herdr_bus::Seq> {
+            Log::publish(&self.0, output, message)
+        }
+        fn message(&self, seq: herdr_bus::Seq) -> log::Result<herdr_bus::Stored> {
+            Log::message(&self.0, seq)
+        }
+        fn messages(
+            &self,
+            output: &str,
+            before: Option<herdr_bus::Seq>,
+            limit: usize,
+        ) -> log::Result<Vec<herdr_bus::Stored>> {
+            Log::messages(&self.0, output, before, limit)
+        }
+        fn read(
+            &self,
+            consumer: &str,
+            output: &str,
+            limit: usize,
+        ) -> log::Result<Vec<log::Delivery>> {
+            std::thread::sleep(DRAIN_FOR);
+            Log::read(&self.0, consumer, output, limit)
+        }
+        fn ack(&self, consumer: &str, delivery: &log::Delivery) -> log::Result<()> {
+            Log::ack(&self.0, consumer, delivery)
+        }
+        fn backlog(&self, output: &str) -> log::Result<Vec<(String, u64)>> {
+            Log::backlog(&self.0, output)
+        }
+    }
+
+    #[test]
+    fn a_tick_whose_read_took_its_whole_time_still_handles_what_it_read() {
+        let bus = Slow(backlog("slow-read", 3));
+        let mut handled = 0;
+
+        let drained = some(&bus, "c", false, &mut |_| {
+            handled += 1;
+            Ok(())
+        });
+
+        drained.unwrap();
+        assert_eq!(handled, 3);
+    }
+
+    #[test]
+    fn a_tick_past_its_time_stops_after_the_message_it_handles() {
+        let bus = backlog("slow-drain", 3);
+        let mut handled = 0;
+        let mut slow = || {
+            some(&bus, "c", false, &mut |_| {
+                handled += 1;
+                std::thread::sleep(DRAIN_FOR);
+                Ok(())
+            })
+            .unwrap()
+        };
+
+        let first = slow();
+        let second = slow();
+
+        assert!(!first && !second);
+        assert_eq!(handled, 2);
     }
 
     /// Writes the factory's file once `reload::EVERY` passed, then polls.
