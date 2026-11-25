@@ -478,14 +478,23 @@ but ends as `held`:
 - A turn that ended with an ask or a wait puts the task to sleep. The task is held once it is ready.
 - A result that ends the task closes the hold.
 
-The daemon judges the hold's conditions from when the task is held. A condition met by then releases
-it at once. The task keeps its worktree, branch, uncommitted files and session. Once released, its
-next run resumes the session, with a prompt that names the hold ahead of any other queued prompt.
+A running task with no live run, such as one that runs a code step's `run` command, has no turn to
+end. The mark then waits for the command: the task is held before its next run, or the hold closes
+when the task ends. Its reason reads `holds once it is ready: <reason>, <condition>`, as a marked task's does
+while it sleeps. `--now` refuses it, since it has no live run.
+
+The daemon judges the hold's conditions from when the task is held, at its turn end or at a spend
+cap. A condition met by then no longer holds it, and the hold releases at once when all are met.
+The task keeps its worktree, branch, uncommitted files and session. Once released, its next run
+resumes the session, with a prompt that names the hold ahead of any other queued prompt.
 
 `--now` does not wait for the turn's end, for an emergency such as a full disk. It ends the run at
 once and kills its process. The worktree is left as it is, so a file the agent was writing may be
 incomplete, and the prompt of the next run tells the agent to check. A result, ask or wait the turn
-already sent still counts. While a gate grades the result, the run goes on, since ending it would drop the result: the task is
+already sent still counts. After an ask, a wait or a result whose next step the same agent would not
+carry on in the same session, no prompt tells the agent to check. When the task is not held at once,
+the reply ends with `the hold still applies` or `the hold no longer applies`.
+While a gate grades the result, the run goes on, since ending it would drop the result: the task is
 held after the verdict, and the reply says whether the turn still runs. A prompt typed but not
 confirmed when the run ends stays on the desk as `uncertain`. A run that never took a prompt gives it
 back to the queue, and the next run starts a new session with it. The first prompt of a resumed Codex

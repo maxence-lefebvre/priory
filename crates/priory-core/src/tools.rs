@@ -2982,14 +2982,14 @@ fn hold_now(
         .optional()?;
     if state.as_deref() == Some("running") {
         let refused = match &live {
-            None => Some(format!("task {task} has no live run to interrupt")),
-            Some((run, _)) => crate::hold::guarded(tx, *run, trace.factory)?,
+            None => Some(format!(
+                "task {task} has no live run to interrupt: leave out --now to hold it once its command ends"
+            )),
+            Some((run, _)) => crate::hold::guarded(tx, *run, trace.factory)?
+                .map(|why| format!("{why}: leave out --now to hold it after its turn")),
         };
         if let Some(why) = refused {
-            return Ok((
-                Err(format!("{why}: leave out --now to hold it after its turn")),
-                None,
-            ));
+            return Ok((Err(why), None));
         }
     }
     let marked = crate::hold::hold(tx, task, hold, trace.factory)?;
@@ -3016,7 +3016,10 @@ fn hold_now(
     )?;
     let reply = match (state.as_str(), reason) {
         ("held", Some(reason)) => format!("task {task} {reason}"),
-        _ => format!("task {task} is {state}"),
+        _ if crate::hold::is_marked(tx, task)? => {
+            format!("task {task} is {state}; the hold still applies")
+        }
+        _ => format!("task {task} is {state}; the hold no longer applies"),
     };
     Ok((Ok(reply), kill))
 }
@@ -3170,6 +3173,7 @@ pub(crate) fn sleep(tx: &Transaction, run: i64) -> rusqlite::Result<Option<Strin
         "UPDATE tasks SET state = 'asleep' WHERE id = ?1 AND state = 'running'",
         [task],
     )?;
+    crate::hold::show_mark(tx, task)?;
     Ok(Some(tmux))
 }
 
@@ -3324,6 +3328,7 @@ pub(crate) fn settle(
     // `running`, so the sweep leaves its worktree alone.
     if commanding(tx, run.task)? {
         end(tx, run.id, "asleep")?;
+        crate::hold::show_mark(tx, run.task)?;
         return Ok(Some(Some(run.tmux.clone())));
     }
     let asked = tx
@@ -3742,8 +3747,11 @@ fn set(
          entered = iif(?3 IS NULL, entered, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
          tokens = iif(?3 IS NULL, tokens, NULL), model = iif(?3 IS NULL, model, NULL) WHERE id = ?1",
         params![task, state, step, reason],
-    )
-    .map(drop)
+    )?;
+    if reason.is_some() {
+        return Ok(());
+    }
+    crate::hold::show_mark(tx, task)
 }
 
 /// The first line of `text` with no tab, for a task's reason or a question: a tab would split it
