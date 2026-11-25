@@ -3075,34 +3075,58 @@ fn held_without_proc(
     rest: &[OsString],
     grant: i64,
 ) -> Result<std::io::Result<std::process::ExitStatus>, String> {
-    let go = std::env::temp_dir().join(format!("priory-go-{}-{grant}", std::process::id()));
-    let _ = std::fs::remove_file(&go);
-    let wait = "while [ ! -e \"$1\" ]; do kill -0 \"$2\" 2>/dev/null || exit 125; sleep 0.05; done; \
-                rm -f \"$1\"; shift 2; exec \"$@\"";
-    let mut child = match Command::new("sh")
-        .args(["-c", wait, "sh"])
-        .arg(&go)
-        .arg(std::process::id().to_string())
-        .arg(program)
-        .args(rest)
-        .spawn()
-    {
+    let now = std::time::SystemTime::now();
+    let nanos = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    let name = format!("{grant}-{nanos}");
+    let folder = go_ahead_folder(&std::env::temp_dir(), &name)?;
+    let mut child = match waiting(&folder, std::process::id(), program, rest).spawn() {
         Ok(child) => child,
-        Err(error) => return Ok(Err(error)),
+        Err(error) => {
+            let _ = std::fs::remove_dir(&folder);
+            return Ok(Err(error));
+        }
     };
     let taken = take(&mut child, grant);
     if let Err(error) = taken.and_then(|_| {
-        std::fs::File::create_new(&go)
+        std::fs::File::create_new(folder.join("go"))
             .map(drop)
-            .map_err(|error| format!("{}: {error}", go.display()))
+            .map_err(|error| format!("{}: {error}", folder.display()))
     }) {
         let _ = child.kill();
         let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&folder);
         return Err(error);
     }
-    let status = child.wait();
-    let _ = std::fs::remove_file(&go);
-    Ok(status)
+    Ok(child.wait())
+}
+
+/// Makes the folder of a go-ahead file, which only its owner can enter, and never takes one that is
+/// already there: another user may have planted it.
+fn go_ahead_folder(parent: &Path, name: &str) -> Result<PathBuf, String> {
+    use std::os::unix::fs::DirBuilderExt;
+    let folder = parent.join(format!("priory-go-{}-{name}", std::process::id()));
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&folder)
+        .map_err(|error| format!("{}: {error}", folder.display()))?;
+    Ok(folder)
+}
+
+/// A shell that runs the command once `go` is in `folder`, or exits once process `holder` is gone.
+fn waiting(folder: &Path, holder: u32, program: &OsString, rest: &[OsString]) -> Command {
+    let wait = "while [ ! -f \"$1/go\" ]; do \
+                kill -0 \"$2\" 2>/dev/null || { rm -rf \"$1\"; exit 125; }; sleep 0.05; done; \
+                rm -rf \"$1\"; shift 2; exec \"$@\"";
+    let mut command = Command::new("sh");
+    command
+        .args(["-c", wait, "sh"])
+        .arg(folder)
+        .arg(holder.to_string())
+        .arg(program)
+        .args(rest);
+    command
 }
 
 /// Runs a leased command in the process group of a guard that stops the group once its pipe from
@@ -5226,5 +5250,75 @@ fn hook(event: &str) -> ExitCode {
             eprintln!("priory hook: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// A fresh folder, removed when the test ends.
+    struct Dir(PathBuf);
+
+    impl Dir {
+        fn new(name: &str) -> Dir {
+            let dir = std::env::temp_dir().join(format!("priory-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir(&dir).unwrap();
+            Dir(dir)
+        }
+    }
+
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn touch(file: &Path, dir: &Dir, holder: u32) -> Command {
+        waiting(&dir.0.join("f"), holder, &"touch".into(), &[file.into()])
+    }
+
+    #[test]
+    fn only_its_owner_enters_a_go_ahead_folder_and_a_planted_one_is_refused() {
+        let dir = Dir::new("go-folder");
+        let folder = go_ahead_folder(&dir.0, "1").unwrap();
+        let mode = std::fs::metadata(&folder).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+        assert!(go_ahead_folder(&dir.0, "1").is_err());
+        std::fs::write(folder.with_file_name("planted"), "").unwrap();
+        std::os::unix::fs::symlink(
+            "planted",
+            folder.with_file_name(format!("priory-go-{}-2", std::process::id())),
+        )
+        .unwrap();
+        assert!(go_ahead_folder(&dir.0, "2").is_err());
+    }
+
+    #[test]
+    fn a_command_runs_after_its_go_ahead_file_and_not_for_a_folder_of_that_name() {
+        let dir = Dir::new("go-runs");
+        let (folder, ran) = (dir.0.join("f"), dir.0.join("ran"));
+        std::fs::create_dir_all(folder.join("go")).unwrap();
+        let mut child = touch(&ran, &dir, std::process::id()).spawn().unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(child.try_wait().unwrap().is_none() && !ran.exists());
+        std::fs::remove_dir(folder.join("go")).unwrap();
+        std::fs::write(folder.join("go"), "").unwrap();
+        assert!(child.wait().unwrap().success());
+        assert!(ran.exists() && !folder.exists());
+    }
+
+    #[test]
+    fn a_command_whose_holder_is_gone_never_runs() {
+        let dir = Dir::new("go-gone");
+        let (folder, ran) = (dir.0.join("f"), dir.0.join("ran"));
+        std::fs::create_dir(&folder).unwrap();
+        let mut holder = Command::new("true").spawn().unwrap();
+        holder.wait().unwrap();
+        let status = touch(&ran, &dir, holder.id()).status().unwrap();
+        assert_eq!(status.code(), Some(125));
+        assert!(!ran.exists() && !folder.exists());
     }
 }
