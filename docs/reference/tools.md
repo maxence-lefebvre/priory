@@ -478,11 +478,13 @@ The other task gets the branch as origin has it. So `hand_over` is refused while
 | Refusal | When |
 | ------- | ---- |
 | `the worktree has 1 untracked file: commit and push ...` | the worktree has staged, unstaged or untracked files |
-| `branch priory/3 has commits origin lacks: ...` | no branch of origin reaches a commit of the task's branch, or of the branch of an open pull request of its stack |
+| `branch priory/3 has commits origin lacks: ...` | no branch of origin reaches a commit of the task's branch, of a branch named after it, such as `priory/3-api`, or of the branch of an open pull request of its stack |
 | `the checkout has commits origin lacks: ...` | the same, for a detached HEAD or another branch |
 | `branch priory/3 is gone, here and on origin: ...` | that branch exists nowhere |
 | `task <id> is held, so it would not continue the work: ...` | the other task is held or blocked |
 | `task <id> already ended its step with <outcome>, ...` | the other task's live run stored a result |
+
+Priory reads origin's branches as its clone last fetched or pushed them.
 
 A task with no commits can hand over. It takes the same refusals as `message`, except the hourly cap,
 and those of `result`: during a debate turn, over an open ask, wait or consult, over queued feedback

@@ -731,20 +731,33 @@ pub fn pushed_head(home: &Path, worktree: &Path, branch: &str) -> Option<String>
         .map(|head| head.trim().to_owned())
 }
 
+/// `worktree`, or Priory's clone of its repository under `home` when it is gone.
+fn repository(home: &Path, worktree: &Path) -> Result<PathBuf, String> {
+    if worktree.exists() {
+        return Ok(worktree.to_path_buf());
+    }
+    worktree
+        .parent()
+        .and_then(|parent| parent.strip_prefix(home.join("worktrees")).ok())
+        .map(|repo| home.join("repos").join(repo))
+        .ok_or_else(|| format!("{} is gone", worktree.display()))
+}
+
+/// The branches a task stacks on its own, `own`, named after it: `priory/7-api` for `priory/7`.
+pub fn stacked(home: &Path, worktree: &Path, own: &str) -> Result<Vec<String>, String> {
+    let dir = repository(home, worktree)?;
+    let named = format!("refs/heads/{own}-*");
+    let found = run(git(&dir).args(["for-each-ref", "--format=%(refname:strip=2)", &named]))?;
+    Ok(found.lines().map(str::to_owned).collect())
+}
+
 /// The ones of `branches` that origin has, or why another task could not take over all the work of
 /// `worktree` from origin: a changed or untracked file, a commit of the checkout or of a branch that
 /// no branch of origin reaches, or a branch that is gone. Read from Priory's clone under `home` when
 /// the worktree is gone.
 pub fn unpushed(home: &Path, worktree: &Path, branches: &[String]) -> Result<Vec<String>, String> {
     let live = worktree.exists();
-    let dir = match live {
-        true => worktree.to_path_buf(),
-        false => worktree
-            .parent()
-            .and_then(|parent| parent.strip_prefix(home.join("worktrees")).ok())
-            .map(|repo| home.join("repos").join(repo))
-            .ok_or_else(|| format!("{} is gone", worktree.display()))?,
-    };
+    let dir = repository(home, worktree)?;
     let mut heads = Vec::new();
     if live {
         let status = run(git(&dir).args(["status", "--porcelain=v1", "--untracked-files=all"]))?;
@@ -3572,7 +3585,12 @@ mod tests {
         sh(&tree, &["push", "--quiet", "origin", "priory/1"]);
         assert_eq!(of(&["priory/1"]), Ok(vec!["priory/1".to_owned()]));
 
+        sh(&tree, &["branch", "--quiet", "priory/10-api"]);
         sh(&tree, &["checkout", "--quiet", "-b", "priory/1-api"]);
+        assert_eq!(
+            stacked(&home.dir, &tree, "priory/1"),
+            Ok(vec!["priory/1-api".to_owned()])
+        );
         commit(&tree, "api.txt", "a\n");
         sh(&tree, &["checkout", "--quiet", "priory/1"]);
         assert_eq!(
@@ -3586,7 +3604,7 @@ mod tests {
         assert_eq!(of(&["priory/1", "priory/1-api"]).unwrap().len(), 2);
 
         sh(&tree, &["checkout", "--quiet", "--detach"]);
-        let detached = commit(&tree, "lost.txt", "l\n");
+        commit(&tree, "lost.txt", "l\n");
         assert!(
             of(&["priory/1"])
                 .unwrap_err()
@@ -3594,7 +3612,6 @@ mod tests {
         );
         sh(&tree, &["checkout", "--quiet", "--detach", "priory/1"]);
         assert!(of(&["priory/1"]).is_ok());
-        assert!(!detached.is_empty());
 
         sh(&tree, &["branch", "--quiet", "-D", "priory/1-api"]);
         assert!(of(&["priory/1-api"]).is_ok(), "origin still has it");

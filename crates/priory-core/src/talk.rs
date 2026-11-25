@@ -189,7 +189,8 @@ pub(crate) fn message(
     Ok(Ok(format!("task {to} has your message")))
 }
 
-/// The branches of `task`, its own first and then those of its open pull requests, and why the other
+/// The branches of `task`, its own first, then those named after it and those of
+/// its open pull requests, and why the other
 /// task could not take them all over from origin, if it could not.
 fn branches(tx: &Transaction, task: i64) -> rusqlite::Result<Result<Vec<String>, String>> {
     let found: (Option<String>, Option<String>) = tx.query_row(
@@ -200,20 +201,26 @@ fn branches(tx: &Transaction, task: i64) -> rusqlite::Result<Result<Vec<String>,
     let (Some(worktree), Some(own)) = found else {
         return Ok(Ok(Vec::new()));
     };
+    let (home, worktree) = (runtime::home(), Path::new(&worktree));
+    let pulls = crate::stack::of(tx, task)?;
+    // A merged or closed pull request's branch may be gone from origin for good.
+    let over = |branch: &String| {
+        pulls
+            .iter()
+            .any(|pull| pull.branch == *branch && pull.state != "open")
+    };
+    let stacked = match runtime::stacked(&home, worktree, &own) {
+        Ok(stacked) => stacked,
+        Err(error) => return Ok(Err(error)),
+    };
     let mut branches = vec![own];
-    for pull in crate::stack::of(tx, task)? {
-        if pull.state == "open" && !branches.contains(&pull.branch) {
-            branches.push(pull.branch);
+    branches.extend(stacked.into_iter().filter(|branch| !over(branch)));
+    for pull in pulls.iter().filter(|pull| pull.state == "open") {
+        if !branches.contains(&pull.branch) {
+            branches.push(pull.branch.clone());
         }
     }
-    Ok(
-        runtime::unpushed(&runtime::home(), Path::new(&worktree), &branches).map(|pushed| {
-            branches
-                .into_iter()
-                .filter(|branch| pushed.contains(branch))
-                .collect()
-        }),
-    )
+    Ok(runtime::unpushed(&home, worktree, &branches))
 }
 
 /// The `hand_over` tool: tells the related task what it takes over, records that it takes up the
