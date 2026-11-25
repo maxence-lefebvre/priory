@@ -24,14 +24,14 @@ reading each task.
 | `report` | the report's inbox sequence number | `<source>: <line>`, for an unread report | it was posted |
 | `todo` | the to-do | its text, then `, due <time>` when it has one (see To-dos). `priory desk` prints the time in UTC; the web and Herdr Desks show it in local time | it was added |
 | `retired` | the task | `its worktree was removed to free disk; it resurrects from <branch> when its wait fires` | it retired |
-| `worktree` | the worktree's path | why it stays, then its size: see Sweep | `-` |
+| `worktree` | the worktree's path | why it stays, then its size: see Sweep. Also each folder in the trash: see [The trash](sweep.md#the-trash) | `-` |
 
 The lane column is the task's lane, or `-` for a `worktree` row.
 
 In `priory desk --json`, an `ask` item carries `routed_to`: the lead it is routed to, or null. The
 web Desk and the Herdr Desk show it as "with <lead>" on the ask's row and in the next thing.
 
-It lists only asks and prompts of active tasks, holds of held tasks and of tasks marked to be held, and waiting or long-held memory grants. Then the `queue` rows in start order, then one `worktree` row per worktree the sweep keeps. `priory asks` prints every open ask. Both leave snoozed items out, unless you pass `--all` (see Snooze).
+It lists only asks and prompts of active tasks, holds of held tasks and of tasks marked to be held, and waiting or long-held memory grants. Then the `queue` rows in start order, then one `worktree` row per worktree the sweep keeps and per folder in the trash. `priory asks` prints every open ask. Both leave snoozed items out, unless you pass `--all` (see Snooze).
 
 ## Batches
 

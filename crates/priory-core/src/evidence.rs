@@ -635,6 +635,7 @@ impl Job {
             .arg(&self.scratch)
             .arg(&self.commit)
             .output();
+        let checked_out = matches!(&added, Ok(output) if output.status.success());
         let recorded = match added {
             Ok(output) if output.status.success() => self.in_checkout(),
             Ok(output) => Recorded::Ended(
@@ -647,7 +648,7 @@ impl Job {
             ),
             Err(why) => Recorded::Ended("failed", format!("cannot run git: {why}")),
         };
-        if self.scratch.exists()
+        if (checked_out || self.scratch.exists())
             && let Err(why) = worktrees::remove_checkout(&self.clone, &self.scratch)
         {
             eprintln!(
