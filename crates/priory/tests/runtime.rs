@@ -20325,6 +20325,27 @@ fn a_removed_review_request_drops_its_running_task_and_ends_its_run() {
 }
 
 #[test]
+fn a_start_over_a_backlog_runs_no_task_that_the_rest_of_the_log_withdraws() {
+    let mut setup = reviews("review-withdrawn-in-backlog");
+    setup.publish_all(&review_request(1));
+    // Over one pass's 100 messages, so the removal comes in a later pass than the request.
+    for at in 0..150 {
+        setup.publish(&Message::new("t.event", json!({ "at": at })));
+    }
+    setup.publish(&review_event(
+        "github.pull_request.review_request_removed",
+        2,
+    ));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.len() == 1 && rows[0][4] == "dropped"
+    });
+    assert!(setup.rows("runs").is_empty());
+}
+
+#[test]
 fn a_review_task_finishes_without_owning_its_pull_request() {
     let mut setup = reviews("review-done");
     setup.calls(&[result("passed")]);
