@@ -854,6 +854,29 @@ fn signed(body: &str) -> String {
     format!("sha256={hex}")
 }
 
+impl Setup {
+    /// Starts `priory serve` and returns the address it listens on.
+    fn start_serve(&mut self) -> String {
+        let mut server = self
+            .process("serve", &[])
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stderr = BufReader::new(server.stderr.take().unwrap());
+        self.daemon = Some(server);
+        let address = loop {
+            let mut line = String::new();
+            assert!(stderr.read_line(&mut line).unwrap() > 0, "serve exited");
+            if let Some(address) = line.trim().strip_prefix("priory: serving on http://") {
+                break address.to_owned();
+            }
+        };
+        let mut log = fs::File::create(self.dir.join("daemon.log")).unwrap();
+        std::thread::spawn(move || std::io::copy(&mut stderr, &mut log));
+        address
+    }
+}
+
 /// POSTs an `issues` delivery to `<address>/hooks/github` and returns the status.
 fn deliver(address: &str, delivery: &str, signature: &str, body: &str) -> u16 {
     let mut stream = TcpStream::connect(address).unwrap();
@@ -880,22 +903,7 @@ fn the_server_counts_a_delivery_published_then_redelivered_and_one_whose_signatu
         &collector,
         &format!("metrics = [\"intake\"]\nmetrics_every = \"10s\"\n{HOOKS}"),
     );
-    let mut server = setup
-        .process("serve", &[])
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut stderr = BufReader::new(server.stderr.take().unwrap());
-    setup.daemon = Some(server);
-    let address = loop {
-        let mut line = String::new();
-        assert!(stderr.read_line(&mut line).unwrap() > 0, "serve exited");
-        if let Some(address) = line.trim().strip_prefix("priory: serving on http://") {
-            break address.to_owned();
-        }
-    };
-    let mut log = fs::File::create(setup.dir.join("daemon.log")).unwrap();
-    std::thread::spawn(move || std::io::copy(&mut stderr, &mut log));
+    let address = setup.start_serve();
     let now = herdr_bus::Timestamp::now().to_string();
     let body = json!({
         "action": "labeled",
@@ -932,6 +940,28 @@ fn the_server_counts_a_delivery_published_then_redelivered_and_one_whose_signatu
     assert_eq!(service(request), "serve");
     assert!(points(request, "priory.intake.poll.age").is_empty());
     assert!(points(request, "priory.intake.poll.missed").is_empty());
+}
+
+#[test]
+fn a_web_request_is_no_tick() {
+    let collector = Collector::start();
+    let mut setup = Setup::new("metrics-request-tick");
+    setup.metrics(
+        &collector,
+        &format!("metrics = [\"process\"]\nmetrics_every = \"10s\"\n{HOOKS}"),
+    );
+    let address = setup.start_serve();
+    let before = collector.until_count(&setup, 1).len();
+
+    assert_eq!(deliver(&address, "d-1", "sha256=00", "{}"), 401);
+
+    // The request falls in the interval the next request reports; one more allows for a race.
+    let requests = collector.until_count(&setup, before + 2);
+    for request in &requests {
+        assert_eq!(service(request), "serve");
+        assert!(!points(request, "process.uptime").is_empty());
+        assert!(points(request, "priory.process.tick.duration").is_empty());
+    }
 }
 
 /// Dollars per million tokens of the fake `claude`'s model.

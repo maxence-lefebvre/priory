@@ -161,7 +161,7 @@ From `/proc/self`, or `PRIORY_PROC`'s `self` as the tests use, and the process's
 
 | Metric | Type | Attributes | Source |
 | ------ | ---- | ---------- | ------ |
-| `priory.process.tick.duration` | gauge, s | `stat` = `avg`, `p95`, `max` | each loop tick in the interval, timed around the whole tick: the daemon's 1-second tick, the intake's poll, a server request |
+| `priory.process.tick.duration` | gauge, s | `stat` = `avg`, `p95`, `max` | each loop tick in the interval, timed around the whole tick: the daemon's 1-second tick or the intake's poll. A web request is none, so `priory serve` sends no tick |
 | `process.memory.usage` | gauge, bytes | | `VmRSS` in `/proc/self/status` |
 | `process.cpu.time` | counter, s | `cpu.mode` = `user`, `system` | `utime` and `stime` in `/proc/self/stat` |
 | `process.uptime` | gauge, s | | since the process started |
