@@ -17,8 +17,7 @@ The drawing follows one ask, from the agent's `ask` call to the prompt that carr
 `priory answer <ask> <option-or-text> --revision <n>` sends the answer to the daemon. `--expected`
 is the same flag, and `--` ends the flags, as in `priory answer --expected 2 -- cache.ship ship`.
 The first answer to the ask's revision stands. Refused: an answer to another revision, a second
-answer, or, for a step's ask, a text that is neither one of its options nor `OPTION: NOTE` (see
-below). In a factory of several
+answer, or a text the ask does not take (see below). In a factory of several
 runners, `priory answer <runner>:<ask>` answers another runner's ask through the log (see
 [runners.md](runners.md#answering-another-runners-ask)).
 
@@ -26,7 +25,7 @@ runners, `priory answer <runner>:<ask>` answers another runner's ask through the
 changed question refuses it, as it refuses an answer. A dismissed ask is withdrawn: an answer to
 it is refused with `ask <id> was dismissed`. An agent's ask wakes its task with one prompt:
 `A person dismissed ask <id> without an answer. Continue your task.` A step's ask and a hold's
-ask are refused, since only one of their options moves the task on.
+ask are refused, since they need an answer.
 `priory dismiss --revision <n> [DIR] <runner>:<ask>` dismisses another runner's ask through the log
 (see [runners.md](runners.md#answering-another-runners-ask)).
 
@@ -40,8 +39,28 @@ ask are refused, since only one of their options moves the task on.
   dropped task's reason, both with tabs as spaces. At a step with `approves`, a note on an option
   that stops the task or leads to a model step also proposes a lesson for that step (see
   [score.md](score.md#pre-review)). An option
-  that leads anywhere else, such as `done` or a code step, or that runs a command, refuses a note:
+  that leads anywhere else, such as `done`, a code step or a debate, or that runs a command, refuses a note:
   `ask 12 answered approved leads to done, which reads no note: answer approved alone`.
+- A human step's ask also takes a written answer: text that is neither one of its options nor
+  `OPTION: NOTE`. The ask keeps the text as its answer, and the task goes back to the
+  model step it ran last in its current generation that is neither irreversible nor a debate, with `A person answered step <step> in writing: <text>` queued as that step's prompt.
+  Its next run resumes that agent's session. The step's trace record has the outcome `written`.
+  When the task ran no such step, the answer is refused:
+  `ask 12 takes one of: approved, rejected; no earlier model step reads a written answer`.
+  A written answer voids every approval of the task's current generation, so each irreversible step
+  that is not `autonomous` asks again before it runs (see [tools.md](tools.md#approvals)).
+- Every ask refuses a blank answer and one over 16 KiB. A human step's ask and a hold's
+  ask also refuse text that looks like a mistyped option: the text, or its part before a colon,
+  differs from an option only by case or whitespace, or is one word a letter or two away from an
+  option of 5 letters or more.
+  The error says which: `ask 12 takes one of: approved, rejected; did you mean approved?`. A plan's
+  approval and a debate's pick take only their options.
+- A hold's ask takes a written answer too. The hold and its ask stay open, and the text waits as
+  the task's next prompt, `A person wrote on ask <id>: <text>`, which its first run after the
+  release types. At a debate step, the step after the debate reads it. The text also voids the
+  task's approvals, as a written answer to a step does, so a task held at an approved irreversible
+  step asks again after the release. Release or drop the hold with one of its options. A dropped task never gets the
+  text.
 - An agent's ask queues the answer as the task's next prompt, after fixed words such as
   `Answer to ask 12 (revision 2): `, so an answer starting with `/` never runs as a slash command.
   An asleep task becomes `ready`. A task whose run has not stopped yet stays `running`, and the
@@ -61,8 +80,10 @@ all of these hold:
    task's level. A human step's ask, a plan's ask, a hold's ask, an approval asked again at a new
    commit and an outside ask never qualify.
 2. A `hands-off` lead could answer it: it runs no command, its step has no `approves`, and its
-   answer cannot let an irreversible step run before a person decides again. The workflow's shape
-   decides this, never the confidence.
+   answer cannot let an irreversible step run before a person decides again. An ask made inside an
+   irreversible step also qualifies only when the step is `autonomous`: the factory grants that
+   step, and a person approved any other, which an answer can steer. The workflow's shape decides
+   this, never the confidence.
 
 The answer is recorded as answered by `auto` and queued as the task's next prompt, as a person's
 answer would be. The run's turn still ends, and the answer is typed after its `Stop`, so the task
@@ -83,6 +104,48 @@ its confidence, its rationale, its trade-off and the question. The Herdr Task pa
 answerer on each ask, and an auto answer's confidence and rationale. The first answer stands, so
 a person who wants another course tells the agent with `priory say`. `priory check --explain`
 lists the same irreversible steps and paths with no human decision whatever the level.
+
+### Autopilot
+
+`priory autopilot on` lets the daemon answer for a while, such as a night. It covers the asks open
+now and each new one. A task's own `auto_answer` acts first and stays recorded as `auto`, whatever
+autopilot's level. Only a person turns it on: it is a [person verb](guard.md).
+
+It always ends: after `--for`, at `--until`, or at the next 08:00 in `[autopilot] timezone`, and at
+most 7 days later. The end is stored in the state file and read before each answer, so neither a
+restart nor a stopped daemon extends it. A clock set back by more than a minute ends it. A second
+`on` ends the first window and starts another.
+
+The daemon answers an ask with its recommendation when all of these hold:
+
+1. An agent's `ask` call made it, with a confidence at or above `--level`, `high` by default.
+2. A `hands-off` lead could answer it, as [above](#answered-by-auto), at a step the workflow still has.
+3. `--lane` names its task's lane, or no lane was named.
+4. Its task is not held, nor to be held after this turn.
+5. It is neither snoozed nor with a lead. An ask comes back to autopilot when its snooze ends or its
+   lead gives up. A new ask is answered before a lead is called.
+
+Every other open ask stays for the person. Its desk row starts with `autopilot left this (<why>): `,
+and its JSON carries the reason as `autopilot_left`. A pause changes nothing: an answered task goes
+on as after a person's answer.
+
+A factory can let autopilot approve plans with
+[`approve_plans`](../reference/factory.md#autopilot). It then approves the plan of a task with
+`intervention = "plan"`, in a workflow that the list names, when the plan is green and a person
+decides again before any irreversible step. The factory's `critic` grades such a plan first, and
+`priory check` refuses `approve_plans` without one. Autopilot leaves a plan the critic did not read, and one whose ask changed after it was graded.
+
+An answer is recorded as answered by `autopilot`, with a
+[`factory.ask.autopilot_answered`](../trace-schema.md#factoryaskautopilot_answered) trace record
+that says why it was eligible. The first answer stands, with one exception. Until the agent gets
+autopilot's answer, a person's `priory answer` on the same revision replaces it, from any machine,
+and appends [`factory.ask.autopilot_replaced`](../trace-schema.md#factoryaskautopilot_replaced).
+After that, the refusal names `priory say`.
+
+`priory autopilot report` lists what a window answered and why, what it left and why, and the command
+that reverses each answer. A done task with no open pull request has none, and the report says so. The report checks that a
+revive's step still exists when `PRIORY_FACTORY`, or the current folder, holds the factory.
+When a window ends, the daemon posts one report line to the desk.
 
 ## Waits
 
@@ -149,9 +212,9 @@ wait 3 fired: Ana commented on linear:ENG-7: Also handle the empty case. https:/
 ```
 
 A comment fires a wait only when its `time` is at or after the wait was stored, to the second. So
-the agent's own comment, posted in the turn that stored the wait, fires nothing. Reviews fire at any
-time, since GitHub keeps an author from approving or rejecting their own pull request. The intake
-publishes no bot's comment (see [pull-requests.md](../intake/pull-requests.md)).
+the agent's own comment, posted in the turn that stored the wait, fires nothing. An agent's review,
+`agent: true`, obeys the same rule: GitHub wraps each reply in a thread in one. Any other review
+fires at any time. The intake publishes no bot's comment (see [pull-requests.md](../intake/pull-requests.md)).
 
 ### An ask beside a wait
 

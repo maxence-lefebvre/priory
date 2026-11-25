@@ -35,6 +35,13 @@
             "null"
           ]
         },
+        "duplicate_of": {
+          "description": "The identifier of the issue it duplicates, as its `duplicate` relation names it; null\nwithout one and from a webhook.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "from": {
           "description": "The state it moved from; null from a webhook, whose payload names only its id.",
           "type": [
@@ -92,6 +99,13 @@
           "description": "The state it moved to.",
           "type": "string"
         },
+        "to_type": {
+          "description": "The type of the state it moved to: `triage`, `backlog`, `unstarted`, `started`,\n`completed` or `canceled`. Linear's Duplicate state is of type `canceled`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "triggers": {
           "description": "The triggers the event matched, so the triggers it requests tasks for; may be empty.",
           "items": {
@@ -116,6 +130,8 @@
         "labels",
         "from",
         "to",
+        "to_type",
+        "duplicate_of",
         "actor",
         "blockers",
         "time",

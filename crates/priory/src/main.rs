@@ -1,7 +1,8 @@
-use priory_core::memory::Gate;
+use priory_core::memory::{GAVE_UP, Gate};
 use priory_core::{
-    daemon, deliver, embed, evidence, grades, label, listing, post, progress, proof, relate,
-    reload, report, risk, runners, search, sections, serve, snooze, state, subscribe, todo, tools,
+    autopilot, daemon, deliver, embed, evidence, grades, label, listing, post, progress, proof,
+    relate, reload, report, risk, runners, search, sections, serve, snooze, state, subscribe, todo,
+    tools,
 };
 use priory_factory::{explain, factory, plural, readiness, rules};
 use priory_intake::{intake, request};
@@ -59,18 +60,39 @@ fn main() -> ExitCode {
                 [dir] => PathBuf::from(dir),
                 _ => return usage(),
             };
+            if verb == "intake"
+                && once.is_empty()
+                && let Err(error) = priory_runtime::upgrade::admit(&runtime::home(), false)
+            {
+                return exit("intake", Err(error));
+            }
             let run = if verb == "intake" {
                 |factory: &factory::Factory, once| {
-                    intake::run(factory, once, watched, merged, health, ended, pre_ran)
+                    intake::run(
+                        factory, once, watched, merged, red, recovered, health, ended, pre_ran,
+                    )
                 }
             } else {
                 daemon::run
             };
             serve(verb, &dir, run, !once.is_empty())
         }
+        Some("upgrade") => {
+            let args: Vec<String> = args.map(|arg| arg.to_string_lossy().into_owned()).collect();
+            let done = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+                ["resume"] => priory_core::swap::resume(&priory_core::swap::genuine),
+                ["retry", version] => priory_core::upgrade::retry(version),
+                ["probe", dir] => upgrade_probe(Path::new(dir)),
+                ["startable", dir] => upgrade_startable(Path::new(dir), None),
+                ["startable", dir, bound] => upgrade_startable(Path::new(dir), Some(bound)),
+                _ => return usage(),
+            };
+            exit("upgrade", done)
+        }
         Some("batch") => batch(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("add") => add(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("request") => request(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
+        Some("adopt") => adopt(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("post") => match (args.next(), args.next(), args.next()) {
             (Some(source), Some(line), None) => {
                 post(&source.to_string_lossy(), &line.to_string_lossy())
@@ -126,6 +148,7 @@ fn main() -> ExitCode {
             verb,
             args.map(|arg| arg.to_string_lossy().into_owned()).collect(),
             None,
+            false,
         ),
         Some("pause") => match (args.next(), args.next()) {
             (reason, None) => {
@@ -137,6 +160,9 @@ fn main() -> ExitCode {
             }
             _ => usage(),
         },
+        Some("autopilot") => {
+            autopilot(args.map(|arg| arg.to_string_lossy().into_owned()).collect())
+        }
         Some("seen") => seen(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("unpause") => match args.next() {
             None => {
@@ -215,16 +241,19 @@ fn main() -> ExitCode {
             (Some(flag), None, None) if flag == "--outside" => outside_mcp(),
             (Some(flag), Some(session), first) if flag == "--session" => {
                 let mut debate = false;
+                let mut gives_up = false;
                 let mut set = mcp::Tools::Worker;
                 for flag in first.into_iter().chain(args.by_ref()) {
                     let flag = flag.to_string_lossy();
                     match mcp::Tools::of_flag(&flag) {
                         _ if flag == "--debate" && !debate => debate = true,
+                        _ if flag == "--gives-up" && !gives_up => gives_up = true,
                         Some(picked) if set == mcp::Tools::Worker => set = picked,
                         _ => return usage(),
                     }
                 }
-                exit("mcp", mcp::serve(&session.to_string_lossy(), set, debate))
+                let session = session.to_string_lossy();
+                exit("mcp", mcp::serve(&session, set, debate, gives_up))
             }
             (Some(flag), Some(log), describe) if flag == "--eval" => {
                 let rest: Vec<String> = describe
@@ -255,7 +284,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory --version\n       priory check [DIR] [--explain [--json]]\n       priory check [DIR] --repo PATH [--json]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory intake pre [DIR] TRIGGER < EVENT.json    runs the trigger's pre script on one event, publishes nothing\n       priory daemon [DIR] [--once]    --once routes pending events, starts no task and exits\n       priory daemon --view-only [DIR]    mirrors every runner's asks and tasks and serves them, runs nothing\n       priory batch add [DIR] ISSUE... [--repo <owner/name>] [--entries <workflow>] [--band <band>] [--lane <lane>]\n       priory batch show [BATCH] [--json]\n       priory batch edit BATCH --expected REVISION (--drop ENTRY [--with-successors] | --move ENTRY (--top | --before OTHER | --after OTHER) | --moment ENTRY OTHER MOMENT)\n       priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... <text>\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--unrouted] [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory tasks --graph [TASK] [--mermaid]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory links [DIR] [--json]\n       priory flows [DIR] --json\n       priory views [DIR] --json\n       priory runs [--json]\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory screen [DIR] (TASK | --run RUN) [--history N] [--json]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory todo add TEXT [--band B] [--due TIME]\n       priory todo done ID\n       priory todo list [--json]\n       priory trace\n       priory recap [--since <instant-or-duration>] [--max-bytes N]\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report list [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report comment ROW --expected REVISION TEXT\n       priory report (reply COMMENT TEXT | resolve COMMENT | reopen COMMENT)\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory report risk [DIR] [--workflow <name>] [--since <instant-or-duration>] [--by lane] [--json]\n       priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]\n       priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo|lane] [--json]\n       priory grades [--since <instant-or-duration>] [--by lane] [--json]\n       priory score [DIR] TASK [--scorer NAME] [--budget USD] [--json]\n       priory score [DIR] --calibrate SCORER --budget USD [--json]\n       priory calibrate triage [DIR] [--json]\n       priory bench capture [DIR] TASK --into FOLDER\n       priory bench replay [DIR] CASE --budget USD [--turn-timeout DURATION]\n       priory bench FILE --base REF --head REF --budget USD [--runs N] [--case NAME] [--turn-timeout DURATION] [--post OWNER/NAME#N]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory (resume | cancel | release | revive [--step STEP]) [--generation N] [DIR] RUNNER:KEY\n       priory say [--generation N] [DIR] RUNNER:KEY TEXT\n       priory task TASK [--json]\n       priory label [DIR] TASK wrong (--evidence URL [--happened DATE] | --clear)\n       priory patterns [--all] [--json]\n       priory patterns find [DIR] [--since <instant-or-duration>]\n       priory patterns show ID [--json]\n       priory patterns (close | dismiss) [DIR] ID\n       priory patterns capture [DIR] ID --into FOLDER\n       priory relate TASK builds-on|fixes|takes-up|relates OTHER [--remove]\n       priory subscribe TASK RESOURCE [--expected REVISION]\n       priory unsubscribe TASK RESOURCE\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory gate\n       priory evidence add FILE --caption TEXT\n       priory evidence TASK [--json]\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory memories [DIR] [--all] [--json]\n       priory memories (accept | drop) [DIR] CANDIDATE\n       priory answer [--revision N | --expected N] [--run] [--] [DIR] [RUNNER:]ASK OPTION-OR-TEXT\n       priory give [DIR] KEY RUNNER [--force]\n       priory ask ID JSON\n       priory dismiss [--revision N | --expected N] [DIR] [RUNNER:]ASK\n       priory deliver ASK (--retry | --clear)\n       priory mcp --session ID [--debate] [--consult | --investigator]\n       priory mcp --outside\n       priory mcp --eval LOG [--describe TOOL TEXT]\n       priory eval FILE --budget USD [--case NAME] [--runs N] [--model MODEL]\n       priory hook EVENT\n       priory hook PreToolUse --outside"
+        "usage: priory --version\n       priory check [DIR] [--explain [--json]]\n       priory check [DIR] --repo PATH [--json]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory intake pre [DIR] TRIGGER < EVENT.json    runs the trigger's pre script on one event, publishes nothing\n       priory daemon [DIR] [--once]    --once routes pending events, starts no task and exits\n       priory daemon --view-only [DIR]    mirrors every runner's asks and tasks and serves them, runs nothing\n       priory batch add [DIR] ISSUE... [--repo <owner/name>] [--entries <workflow>] [--band <band>] [--lane <lane>]\n       priory batch show [BATCH] [--json]\n       priory batch edit BATCH --expected REVISION (--drop ENTRY [--with-successors] | --move ENTRY (--top | --before OTHER | --after OTHER) | --moment ENTRY OTHER MOMENT)\n       priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... [--label KEY=VALUE]... <text>\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... [--label KEY=VALUE]... [--hold <reason> [CONDITION]...] <text>\n       priory adopt [DIR] TRIGGER [PR...]\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--unrouted] [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--all] [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory tasks --graph [TASK] [--mermaid]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory links [DIR] [--json]\n       priory flows [DIR] --json\n       priory views [DIR] --json\n       priory runs [--json]\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory screen [DIR] (TASK | --run RUN) [--history N] [--json]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory todo add TEXT [--band B] [--due TIME]\n       priory todo done ID\n       priory todo list [--json]\n       priory trace\n       priory recap [--since <instant-or-duration>] [--max-bytes N]\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report list [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report comment ROW --expected REVISION TEXT\n       priory report (reply COMMENT TEXT | resolve COMMENT | reopen COMMENT)\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory report risk [DIR] [--workflow <name>] [--since <instant-or-duration>] [--by lane] [--json]\n       priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]\n       priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo|lane] [--json]\n       priory grades [--since <instant-or-duration>] [--by lane] [--json]\n       priory score [DIR] TASK [--scorer NAME] [--budget USD] [--json]\n       priory score [DIR] --calibrate SCORER --budget USD [--json]\n       priory calibrate triage [DIR] [--json]\n       priory bench capture [DIR] TASK --into FOLDER\n       priory bench replay [DIR] CASE --budget USD [--turn-timeout DURATION]\n       priory bench FILE --base REF --head REF --budget USD [--runs N] [--case NAME] [--turn-timeout DURATION] [--post OWNER/NAME#N]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory autopilot on [DIR] [--until TIME | --for DURATION] [--level high|medium] [--lane LANE]...\n       priory autopilot off [DIR]\n       priory autopilot [status [--json]]\n       priory autopilot report [WINDOW] [--json]\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--now] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory (resume | cancel | release | revive [--step STEP]) [--generation N] [DIR] RUNNER:KEY\n       priory cancel [DIR] KEY\n       priory say [--generation N] [DIR] RUNNER:KEY TEXT\n       priory task TASK [--json]\n       priory label [DIR] TASK wrong (--evidence URL [--happened DATE] | --clear)\n       priory patterns [--all] [--json]\n       priory patterns find [DIR] [--since <instant-or-duration>]\n       priory patterns show ID [--json]\n       priory patterns (close | dismiss) [DIR] ID\n       priory patterns capture [DIR] ID --into FOLDER\n       priory relate TASK builds-on|fixes|takes-up|relates OTHER [--remove]\n       priory subscribe TASK RESOURCE [--expected REVISION]\n       priory unsubscribe TASK RESOURCE\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory gate\n       priory evidence add FILE --caption TEXT\n       priory evidence TASK [--json]\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory memories [DIR] [--all] [--json]\n       priory memories (accept | drop) [DIR] CANDIDATE\n       priory answer [--revision N | --expected N] [--run] [--] [DIR] [RUNNER:]ASK OPTION-OR-TEXT\n       priory give [DIR] KEY RUNNER [--force]\n       priory ask ID JSON\n       priory dismiss [--revision N | --expected N] [DIR] [RUNNER:]ASK\n       priory deliver ASK (--retry | --clear)\n       priory mcp --session ID [--debate] [--gives-up] [--consult | --investigator]\n       priory mcp --outside\n       priory mcp --eval LOG [--describe TOOL TEXT]\n       priory eval FILE --budget USD [--case NAME] [--runs N] [--model MODEL]\n       priory upgrade retry VERSION\n       priory upgrade resume\n       priory upgrade probe DIR\n       priory upgrade startable DIR [ADDR]\n       priory hook EVENT\n       priory hook PreToolUse --outside"
     );
     ExitCode::from(2)
 }
@@ -303,6 +332,20 @@ fn merged(since: &str) -> Result<Vec<intake::Merge>, String> {
     }
     let db = state::open()?;
     state::merges(&db, since).map_err(|error| format!("merged pull requests: {error}"))
+}
+
+/// The unread reports of merges since `since` that are red; none when the intake runs without a state file.
+fn red(since: &str) -> Result<Vec<intake::Red>, String> {
+    if std::env::var_os("PRIORY_DB").is_none() {
+        return Ok(Vec::new());
+    }
+    let db = state::open()?;
+    grades::red(&db, since).map_err(|error| format!("red merges: {error}"))
+}
+
+/// Marks read the report of a red merge whose checks passed again.
+fn recovered(report: i64) -> Result<(), String> {
+    post::read(&state::open()?, report)
 }
 
 /// How many tasks with `key` ended, from `PRIORY_DB`; none when the intake runs without a state
@@ -415,6 +458,27 @@ fn serve(
             ExitCode::FAILURE
         }
     }
+}
+
+/// Migrates the state and opens the log the environment names, which an upgrade's rehearsal runs on
+/// copies, and prints nothing.
+fn upgrade_probe(dir: &Path) -> Result<(), String> {
+    let factory = load(dir).ok_or("the factory does not load")?;
+    drop(state::open()?);
+    priory_intake::log::open(factory.log())
+        .map(drop)
+        .map_err(|error| error.to_string())
+}
+
+/// Whether a daemon on `dir` could start in this environment, where the one that runs holds `bound`.
+fn upgrade_startable(dir: &Path, bound: Option<&str>) -> Result<(), String> {
+    let factory = load(dir).ok_or("the factory does not load")?;
+    let bound = bound.map(str::parse).transpose();
+    let bound = bound.map_err(|error| format!("ADDR does not parse: {error}"))?;
+    if std::env::var_os("PRIORY_DB").is_none() {
+        return Err("PRIORY_DB is unset".to_owned());
+    }
+    serve::startable(&factory, bound)
 }
 
 /// Starts sending this process's metrics as `service`, unless `once`. Refuses a `PRIORY_METRICS`
@@ -1605,6 +1669,148 @@ fn seen(args: Vec<String>) -> ExitCode {
     exit("seen", done.map(|text| println!("{text}")))
 }
 
+/// `priory autopilot on|off|status|report`: what a person lets the daemon answer for a while.
+fn autopilot(args: Vec<String>) -> ExitCode {
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    match &args[..] {
+        ["on", flags @ ..] => autopilot_on(flags),
+        ["off"] => autopilot_off(None),
+        ["off", dir] if !dir.starts_with('-') => autopilot_off(Some(dir)),
+        [] | ["status"] | ["status", "--json"] => exit(
+            "autopilot",
+            state::read_only()
+                .and_then(|db| autopilot::status(&db).map_err(|error| error.to_string()))
+                .map(|status| match args.len() {
+                    2 => state::emit(&status.to_string()),
+                    _ => state::emit(
+                        &autopilot::line(&status).unwrap_or_else(|| "autopilot is off".to_owned()),
+                    ),
+                }),
+        ),
+        ["report", rest @ ..] => {
+            let json = rest.contains(&"--json");
+            let rest: Vec<_> = rest.iter().filter(|arg| **arg != "--json").collect();
+            let window = match &rest[..] {
+                [] => None,
+                [id] => match id.parse() {
+                    Ok(id) => Some(id),
+                    Err(_) => return usage(),
+                },
+                _ => return usage(),
+            };
+            // The report needs no factory: one that loads lets it check each command's step.
+            let (found, problems) = factory::load(&factory::folder(None));
+            let known =
+                Some(found).filter(|found| problems.is_empty() && !found.workflows.is_empty());
+            let report = state::read_only()
+                .and_then(|db| {
+                    autopilot::report(&db, window, known.as_ref())
+                        .map_err(|error| error.to_string())
+                })
+                .and_then(|found| {
+                    found.ok_or_else(|| match window {
+                        Some(id) => format!("there is no autopilot window {id}"),
+                        None => "autopilot was never on".to_owned(),
+                    })
+                });
+            exit(
+                "autopilot",
+                report.map(|report| match json {
+                    true => state::emit(&report.to_string()),
+                    false => autopilot::print(&report),
+                }),
+            )
+        }
+        _ => usage(),
+    }
+}
+
+fn autopilot_on(flags: &[&str]) -> ExitCode {
+    let (mut span, mut at, mut level, mut lanes, mut dir) = (None, None, None, Vec::new(), None);
+    let mut flags = flags.iter().copied();
+    while let Some(flag) = flags.next() {
+        let slot = match flag {
+            "--for" => &mut span,
+            "--until" => &mut at,
+            "--level" => &mut level,
+            "--lane" => match flags.next() {
+                Some(lane) if priory_factory::lanes::well_formed(lane) => {
+                    lanes.push(lane.to_owned());
+                    continue;
+                }
+                Some(lane) => {
+                    let why = format!("--lane `{lane}` is not a lane such as `team/theme`");
+                    return exit("autopilot on", Err(why));
+                }
+                None => return usage(),
+            },
+            _ if dir.is_none() && !flag.starts_with('-') => {
+                dir = Some(flag);
+                continue;
+            }
+            _ => return usage(),
+        };
+        match flags.next() {
+            Some(value) if slot.is_none() => *slot = Some(value),
+            _ => return usage(),
+        }
+    }
+    let level = match level.unwrap_or("high") {
+        "high" => factory::Confidence::High,
+        "medium" => factory::Confidence::Medium,
+        _ => return usage(),
+    };
+    if span.is_some() && at.is_some() {
+        return usage();
+    }
+    let Some(factory) = load(&factory::folder(dir)) else {
+        return ExitCode::FAILURE;
+    };
+    let turned = (|| {
+        let role = autopilot::role(&factory, priory_runtime::room::hostname().as_deref())?;
+        let now = jiff::Timestamp::now();
+        let setting = autopilot::Setting {
+            until: autopilot::until(span, at, now, factory.autopilot_timezone())?,
+            level,
+            lanes,
+        };
+        let mut db = state::open()?;
+        let message = autopilot::set(&mut db, Some(&setting), role == autopilot::Role::Runner)
+            .map_err(|error| error.to_string())?;
+        if role == autopilot::Role::Viewer {
+            autopilot::publish(&factory, &message)?;
+        }
+        let status = autopilot::status(&db).map_err(|error| error.to_string())?;
+        autopilot::line(&status).ok_or_else(|| "autopilot ended at once".to_owned())
+    })();
+    exit("autopilot on", turned.map(|line| println!("{line}")))
+}
+
+/// Off takes effect in this state file first, whatever the factory or the log, so neither keeps
+/// autopilot on. Other runners that cannot be told fail the command.
+fn autopilot_off(dir: Option<&str>) -> ExitCode {
+    let turned = state::open().and_then(|mut db| {
+        let on = autopilot::status(&db).map_err(|error| error.to_string())?;
+        let message = autopilot::set(&mut db, None, false).map_err(|error| error.to_string())?;
+        println!(
+            "{}",
+            match on.is_null() {
+                true => "autopilot was not on",
+                false => "autopilot is off: see `priory autopilot report`",
+            }
+        );
+        let told = load(&factory::folder(dir))
+            .ok_or_else(|| "the factory does not load".to_owned())
+            .and_then(|factory| {
+                let host = priory_runtime::room::hostname();
+                let role = autopilot::role(&factory, host.as_deref())?;
+                autopilot::tell(&mut db, &factory, role, &message)
+            });
+        told.map_err(|why| format!("it is off here, and no other runner was told: {why}"))
+    });
+    exit("autopilot off", turned)
+}
+
 /// `priory todo add TEXT [--band B] [--due TIME]` and `priory todo done ID` go to the daemon;
 /// `priory todo list [--json]` reads the state.
 fn todo(args: Vec<String>) -> ExitCode {
@@ -1682,8 +1888,15 @@ fn snooze(args: Vec<String>) -> ExitCode {
     let [kind, id, rest @ ..] = &args[..] else {
         return usage();
     };
-    let Ok(id) = id.parse() else {
-        return usage();
+    let id = match kind.as_str() {
+        "ask" => match ask_id(id) {
+            Ok(id) => id,
+            Err(error) => return exit("snooze", Err(error)),
+        },
+        _ => match id.parse() {
+            Ok(id) => id,
+            Err(_) => return usage(),
+        },
     };
     let until = match rest {
         [flag] if flag == "--clear" => snooze::until(None, None),
@@ -1730,7 +1943,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
         .map(|at| args.remove(at));
     let all = args
         .iter()
-        .position(|arg| arg == "--all" && ["asks", "desk"].contains(&verb))
+        .position(|arg| arg == "--all" && ["asks", "desk", "tasks"].contains(&verb))
         .map(|at| args.remove(at))
         .is_some();
     let unrouted = verb == "inbox"
@@ -1740,7 +1953,8 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
             .map(|at| args.remove(at))
             .is_some();
     // Without the factory folder, the queue knows no schedules or workflows, so up next lists none.
-    let (mut schedules, mut workflows, mut now) = (Vec::new(), Vec::new(), jiff::Timestamp::now());
+    let (mut schedules, mut offered, mut now) = (Vec::new(), None, jiff::Timestamp::now());
+    let mut default_workflow = None;
     if ["queue", "desk"].contains(&verb) || unrouted {
         now = match intake::now() {
             Ok(now) => now,
@@ -1758,7 +1972,8 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                 return ExitCode::FAILURE;
             };
             schedules = listing::schedule_triggers(&factory);
-            workflows = factory.workflows.into_keys().collect();
+            default_workflow = factory.request().map(|defaults| defaults.workflow.clone());
+            offered = Some((factory.requestable(), factory.not_requestable()));
         }
         args.clear();
     }
@@ -1803,10 +2018,13 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
             match verb {
                 "inbox" if unrouted => listing::unrouted(db, since.unwrap_or(0), now),
                 "inbox" => listing::inbox(db, since.unwrap_or(0)),
-                "tasks" => listing::tasks(db, lane, grade),
+                "tasks" => listing::tasks(db, lane, grade, all),
                 "asks" => listing::asks(db, &bands, &risks),
                 "desk" => listing::desk(db, &home, all, person.unwrap_or(listing::ME), now),
-                _ => listing::queue(db, &schedules, &workflows, now),
+                _ => {
+                    let offered = offered.as_ref().map(|(yes, no)| (&yes[..], &no[..]));
+                    listing::queue(db, &schedules, offered, default_workflow.as_deref(), now)
+                }
             }
             .map(Some)
         })
@@ -1898,6 +2116,9 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                 if let Some(paused) = value["paused"].as_str() {
                     state::emit(paused);
                 }
+                if let Some(line) = autopilot::line(&value["autopilot"]) {
+                    state::emit(&line);
+                }
                 for cap in value["caps"].as_array().into_iter().flatten() {
                     state::emit(cap.as_str().unwrap_or_default());
                 }
@@ -1909,6 +2130,9 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                 }
                 if let Some(intake) = value["intake"].as_str() {
                     state::emit(intake);
+                }
+                if let Some(reclaim) = value["reclaim"].as_str() {
+                    state::emit(reclaim);
                 }
                 if let Some(unrouted) = value["counts"]["unrouted"].as_u64().filter(|n| *n > 0) {
                     let events = if unrouted == 1 { "event" } else { "events" };
@@ -2217,6 +2441,10 @@ fn serve_http(args: Vec<String>) -> ExitCode {
     if let Err(error) = metrics(&factory, "serve", false) {
         return exit("serve", Err(error));
     }
+    // A worker keeps the log it opened, or failed to open, at its start.
+    if let Err(error) = priory_runtime::upgrade::barrier() {
+        return exit("serve", Err(error));
+    }
     let mut watch = reload::Watch::new(&factory);
     let server = match serve::start(&factory, listen.unwrap_or(config.listen)) {
         Ok(server) => server,
@@ -2270,6 +2498,112 @@ fn request(args: Vec<String>) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `priory adopt [DIR] TRIGGER [PR...]` parks a task on each open pull request of the comment or
+/// review trigger `TRIGGER`'s author that no task in any state owns, or on the ones `PR...` names.
+fn adopt(args: Vec<String>) -> ExitCode {
+    let mut args = args.into_iter().peekable();
+    let dir = match args.peek() {
+        Some(dir) if Path::new(dir).is_dir() => PathBuf::from(args.next().unwrap_or_default()),
+        _ => factory::folder(None),
+    };
+    let Some(name) = args.next().filter(|name| !name.starts_with("--")) else {
+        return usage();
+    };
+    let named: Vec<String> = args.collect();
+    let Some(factory) = load(&dir) else {
+        return ExitCode::FAILURE;
+    };
+    let fail = |error: &str| {
+        eprintln!("priory adopt: {error}");
+        ExitCode::FAILURE
+    };
+    let Some(trigger) = factory.triggers.get(&name).map(|trigger| &trigger.value) else {
+        return fail(&format!("the factory has no trigger {name}"));
+    };
+    let (Some(repo), Some(author)) = (
+        trigger.repo.as_deref(),
+        trigger
+            .filter
+            .as_ref()
+            .and_then(|filter| filter.get("author"))
+            .and_then(factory::FilterValue::one),
+    ) else {
+        return fail(&format!(
+            "trigger {name} is not a pull request comment or review trigger"
+        ));
+    };
+    if trigger.source != "github" || !rules::FEEDBACK.contains(&trigger.on.as_str()) {
+        return fail(&format!(
+            "trigger {name} is not a pull request comment or review trigger"
+        ));
+    }
+    let mut numbers = vec![];
+    for pr in &named {
+        match pull_request_number(pr, repo) {
+            Some(number) => numbers.push(number),
+            None => return fail(&format!("{pr} is not a pull request of {repo}")),
+        }
+    }
+    let open = match runtime::open_pull_requests(repo, Some(author)) {
+        Ok(open) => open,
+        Err(error) => return fail(&error),
+    };
+    let listed = |number: u64| {
+        open.iter()
+            .find(|pull| pull["number"].as_u64() == Some(number))
+    };
+    if let Some(number) = numbers.iter().find(|&&number| listed(number).is_none()) {
+        return fail(&format!(
+            "{repo}#{number} is not an open pull request by {author}"
+        ));
+    }
+    let db = match state::open() {
+        Ok(db) => db,
+        Err(error) => return fail(&error),
+    };
+    for pull in &open {
+        let Some(number) = pull["number"].as_u64() else {
+            continue;
+        };
+        if !numbers.is_empty() && !numbers.contains(&number) {
+            continue;
+        }
+        let key = format!("github:{repo}#{number}");
+        // A fork's branch of the same name is someone else's.
+        let branch = pull["headRefName"]
+            .as_str()
+            .filter(|_| pull["isCrossRepository"] == false)
+            .map(|head| format!("github:{repo}@{head}"));
+        match state::any_owner(&db, &key, branch.as_deref()) {
+            Ok(Some(task)) => {
+                println!("{key}: task {task} owns it");
+                continue;
+            }
+            Ok(None) => {}
+            Err(error) => return fail(&error.to_string()),
+        }
+        let title = pull["title"].as_str().unwrap_or_default();
+        let url = pull["url"].as_str().unwrap_or_default();
+        match request::adopt(&factory, &name, trigger, number, title, url) {
+            Ok(key) => println!("adopted {key}"),
+            Err(error) => return fail(&error),
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// The number of the pull request `pr` names in `repo`: `42`, `owner/name#42` or its URL.
+fn pull_request_number(pr: &str, repo: &str) -> Option<u64> {
+    let url = format!("https://github.com/{repo}/pull/");
+    let number = match (pr.strip_prefix(&url), pr.split_once('#')) {
+        (Some(number), _) => number,
+        (None, Some((named, number))) if named == repo => number,
+        (None, None) => pr,
+        _ => return None,
+    };
+    number.parse().ok()
 }
 
 fn add(args: Vec<String>) -> ExitCode {
@@ -2464,11 +2798,8 @@ fn prompt_eval(args: Vec<String>) -> ExitCode {
 fn memory(args: Vec<OsString>) -> ExitCode {
     match args.split_first() {
         None => list(
-            "id\ttask\tstate\tgb\tcommand\tage\tpid",
-            "SELECT id, task, state, printf('%.1f', bytes / 1073741824.0),
-             replace(command, char(10), '\\n'),
-             (strftime('%s', 'now') - strftime('%s', coalesce(granted, created))) || 's', pid
-             FROM grants ORDER BY id",
+            "id\ttask\tstate\tgb\tcommand\tage\tpid\tflag",
+            priory_core::memory::LIST,
         ),
         Some((verb, args)) if verb == "acquire" => acquire(args, false),
         Some((verb, args)) if verb == "lease" => acquire(args, true),
@@ -2478,8 +2809,13 @@ fn memory(args: Vec<OsString>) -> ExitCode {
 
 /// The exit code of `priory memory acquire` when the gate itself fails, as `env` and `timeout` use.
 const GATE_FAILED: u8 = 125;
+/// The exit code when the wait passes the factory's `[memory] give_up_after`: `EX_TEMPFAIL`.
+const GATE_GAVE_UP: u8 = 75;
 /// How long a grant waits without `--timeout`: two runs' grants can wait on each other's promises.
 const GATE_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+/// Names the file that tells `priory gate` that a command it ran gave up its wait: a gate can exit 75
+/// by itself, and a wrapper such as `make` turns 75 into another code.
+const GATE_MARKER: &str = "PRIORY_GATE_GAVE_UP";
 /// The GB a grant asks for without `--gb`, as Fleet's gate did and agents' instructions assume.
 const GATE_GB: f64 = 10.0;
 
@@ -2524,36 +2860,86 @@ fn acquire(args: &[OsString], lease: bool) -> ExitCode {
         eprintln!("priory memory: {error}; the command did not run");
         ExitCode::from(GATE_FAILED)
     };
-    let acquired = gate(&Gate::Acquire {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    // A name without `/` is looked up on PATH; check it before the command waits for its grant.
+    if !program.as_encoded_bytes().contains(&b'/')
+        && !std::env::split_paths(&path).any(|dir| executable(&dir.join(program)))
+    {
+        eprintln!(
+            "priory memory: {} is not on PATH ({}); the command did not run",
+            program.to_string_lossy(),
+            path.to_string_lossy()
+        );
+        return ExitCode::from(127);
+    }
+    let acquire = Gate::Acquire {
         bytes: (gb * f64::from(1u32 << 30)) as u64,
         pid: std::process::id(),
         session: std::env::var("PRIORY_SESSION").ok(),
         command: command.join(" ".as_ref()).to_string_lossy().into_owned(),
-    });
-    let mut reply = match acquired {
-        Ok(reply) => reply,
-        Err(error) => return failed(error),
     };
-    let (id, _) = reply.split_once(' ').unwrap_or_default();
-    let grant: i64 = id.parse().expect("the daemon replies with the grant id");
+    // CI cannot replace a leased server, and `--timeout` wins over the factory's limit.
+    let gives_up = !lease && timeout.is_none();
     let timeout = timeout.unwrap_or(GATE_TIMEOUT);
-    let deadline = Instant::now() + timeout;
-    let mut said = String::new();
-    while !reply.ends_with(" held") {
+    let began = Instant::now();
+    let deadline = began + timeout;
+    let (mut grant, mut said, mut sent) = (None, String::new(), false);
+    // The daemon keeps a waiting grant while this process lives, so a lost reply or a daemon
+    // restart only delays the next poll of the same grant.
+    let grant = loop {
+        let asked = match grant {
+            Some(grant) => call(
+                &Gate::Poll {
+                    grant,
+                    waited: gives_up.then(|| began.elapsed().as_secs()),
+                },
+                runtime::call_through_restart,
+            ),
+            // Until a daemon took the request, none may be coming back: fail at once.
+            None if !sent => call(&acquire, runtime::call),
+            None => call(&acquire, runtime::call_through_restart),
+        };
+        sent |= !matches!(&asked, Err(error) if error.starts_with(runtime::NO_DAEMON));
+        let reply = match asked {
+            Ok(Ok(reply)) => {
+                let (id, _) = reply.split_once(' ').unwrap_or_default();
+                grant = Some(id.parse().expect("the daemon replies with the grant id"));
+                reply
+            }
+            Ok(Err(error)) => return failed(error),
+            // Only an `Acquire` no daemon ever read is safe to give up: one that may have
+            // arrived has a grant that lives while this process does.
+            Err(error) if !sent && error.starts_with(runtime::NO_DAEMON) => {
+                return failed(error);
+            }
+            Err(error) => format!(
+                "{} waits: {error}",
+                grant.map_or("?".into(), |id| id.to_string())
+            ),
+        };
+        if let (Some(grant), true) = (grant, reply.ends_with(" held")) {
+            break grant;
+        }
+        if let Some((_, why)) = reply.split_once(GAVE_UP) {
+            eprintln!("priory memory: {why}; the command did not run: let CI run it");
+            if let Some(marker) = std::env::var_os(GATE_MARKER) {
+                let _ = std::fs::File::create_new(marker);
+            }
+            return ExitCode::from(GATE_GAVE_UP);
+        }
         if said != reply {
             eprintln!("priory memory: grant {reply} for {gb} GB");
-            said = reply.clone();
+            said = reply;
         }
         if Instant::now() >= deadline {
+            let Some(grant) = grant else {
+                return failed(format!("no grant after {timeout:?}"));
+            };
             let _ = gate(&Gate::Release { grant });
             return failed(format!("grant {grant} still waits after {timeout:?}"));
         }
         std::thread::sleep(Duration::from_millis(250));
-        reply = match gate(&Gate::Poll { grant }) {
-            Ok(reply) => reply,
-            Err(error) => return failed(error),
-        };
-    }
+    };
     let status = if lease {
         leased(program, rest)
     } else {
@@ -2585,6 +2971,12 @@ fn acquire(args: &[OsString], lease: bool) -> ExitCode {
     }
 }
 
+fn executable(file: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(file)
+        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+}
+
 /// Runs a command that holds `grant` from before it starts: a shell waits for a go-ahead on a pipe,
 /// the daemon takes its pid, and only then it execs the command. A holder that dies first closes
 /// the pipe, so the command never runs without its grant.
@@ -2611,10 +3003,24 @@ fn held(
         Ok(child) => child,
         Err(error) => return Ok(Err(error)),
     };
-    let taken = gate(&Gate::Run {
+    let run = Gate::Run {
         grant,
         pid: child.id(),
-    });
+    };
+    // The daemon takes the same pid again, so a lost reply only delays the hand-over.
+    let mut said = String::new();
+    let taken = loop {
+        match call(&run, runtime::call_through_restart) {
+            Err(error) if matches!(child.try_wait(), Ok(None)) => {
+                if said != error {
+                    eprintln!("priory memory: grant {grant} waits to start its command: {error}");
+                    said = error;
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            taken => break taken.flatten(),
+        }
+    };
     if let Err(error) =
         taken.and_then(|_| writer.write_all(b"\n").map_err(|error| error.to_string()))
     {
@@ -2655,15 +3061,21 @@ fn leased(program: &OsString, rest: &[OsString]) -> std::io::Result<std::process
 
 /// Sends `gate` to the daemon and returns its reply.
 fn gate(gate: &Gate) -> Result<String, String> {
+    call(gate, runtime::call_through_restart)?
+}
+
+/// Sends `gate` to the daemon with `send` and returns its reply, or why none came.
+fn call(
+    gate: &Gate,
+    send: fn(&Path, &str, Duration) -> Result<String, String>,
+) -> Result<Result<String, String>, String> {
     let line = serde_json::to_string(gate).expect("a gate message serializes");
-    runtime::call(&runtime::home(), &line, runtime::REPLY).and_then(|reply| {
-        serde_json::from_str::<Result<String, String>>(&reply)
-            .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
-    })
+    let reply = send(&runtime::home(), &line, runtime::REPLY)?;
+    serde_json::from_str(&reply).map_err(|error| format!("unreadable reply {reply:?}: {error}"))
 }
 
 /// `priory gate`, from a run's pane: runs the factory's gate in the run's task worktree at its head,
-/// records the run with the daemon, and exits with the gate's code, or 1 when a signal killed it.
+/// records the run with the daemon unless a command in it gave up its wait for memory, and exits with the gate's code, or 1 when a signal killed it.
 fn project_gate() -> ExitCode {
     let Some(session) = std::env::var("PRIORY_SESSION")
         .ok()
@@ -2713,11 +3125,15 @@ fn project_gate() -> ExitCode {
     if at != started.commit {
         return away(at);
     }
+    let nanos = jiff::Timestamp::now().as_nanosecond();
+    let marker = std::env::temp_dir().join(format!("priory-gate-{}-{nanos}", std::process::id()));
     let clock = Instant::now();
     let status = Command::new("sh")
         .args(["-c", &started.command])
+        .env(GATE_MARKER, &marker)
         .current_dir(&started.worktree)
         .status();
+    let gave_up = std::fs::remove_file(&marker).is_ok();
     let exit = match status {
         // shortcut: a gate killed by a signal records -1, the way a shell would not; fine for a proof.
         Ok(status) => status.code().unwrap_or(-1),
@@ -2729,6 +3145,10 @@ fn project_gate() -> ExitCode {
     let at = checked_out();
     if at != started.commit {
         return away(at);
+    }
+    if gave_up && exit != 0 {
+        eprintln!("priory gate: not recorded: a command in the gate gave up its wait for memory");
+        return ExitCode::from(u8::try_from(exit).unwrap_or(1));
     }
     let recorded = call(&proof::Line::Ran {
         session,
@@ -2879,7 +3299,7 @@ fn answer(mut args: Vec<String>) -> ExitCode {
             return ExitCode::FAILURE;
         };
         let label = format!("{runner}:{}", answer.ask);
-        let mirrored = match remote_ask(runner, answer.ask, answer.revision) {
+        let mirrored = match remote_ask(runner, answer.ask, answer.revision, true) {
             Ok(mirrored) => mirrored,
             Err(refused) => return exit("answer", Err(refused)),
         };
@@ -2911,16 +3331,21 @@ fn answer(mut args: Vec<String>) -> ExitCode {
 }
 
 /// Another runner's ask as this machine's mirror holds it, refused when the mirror shows it closed
-/// or at another revision. An ask the mirror lacks, or a machine without a state file, goes to its
+/// or at another revision, for one that `answers` it or dismisses it. An ask the mirror lacks, or a machine without a state file, goes to its
 /// runner unchecked, which checks it again anyway.
-fn remote_ask(runner: &str, ask: i64, revision: i64) -> Result<Option<serde_json::Value>, String> {
+fn remote_ask(
+    runner: &str,
+    ask: i64,
+    revision: i64,
+    answers: bool,
+) -> Result<Option<serde_json::Value>, String> {
     let Ok(db) = state::open() else {
         return Ok(None);
     };
     let mirrored = runners::mirrored(&db, runner, ask).map_err(|error| error.to_string())?;
     if let Some(stale) = mirrored
         .as_ref()
-        .and_then(|ask| runners::stale(ask, revision))
+        .and_then(|ask| runners::stale(ask, revision, answers))
     {
         return Err(stale);
     }
@@ -3059,7 +3484,7 @@ fn dismiss(args: Vec<String>) -> ExitCode {
         let Some(factory) = load(&factory::folder(dir)) else {
             return ExitCode::FAILURE;
         };
-        let sent = remote_ask(&runner, id, revision)
+        let sent = remote_ask(&runner, id, revision, false)
             .and_then(|_| runners::dismiss(&factory, &runner, id, revision))
             .map(|submission| {
                 format!(
@@ -3636,7 +4061,12 @@ fn hold(args: Vec<String>) -> ExitCode {
     };
     let mut hold = factory::Hold::default();
     let (mut reason, mut task) = (None, vec![task]);
+    let mut now = false;
     while let Some(flag) = args.next() {
+        if flag == "--now" {
+            now = true;
+            continue;
+        }
         if flag == "--blockers" {
             hold.blockers = true;
             continue;
@@ -3664,13 +4094,13 @@ fn hold(args: Vec<String>) -> ExitCode {
         return usage();
     };
     hold.reason = reason;
-    act("hold", task, Some(hold))
+    act("hold", task, Some(hold), now)
 }
 
 /// Sends `priory resume`, `cancel`, `revive TASK [--step STEP]`, `release`, `say TASK TEXT` or `hold` for one task to
 /// the daemon, which applies it. Each but `hold` also takes `[DIR] RUNNER:KEY [--generation N]`,
 /// another runner's task, which it publishes on the log for that runner to apply.
-fn act(act: &str, mut args: Vec<String>, hold: Option<factory::Hold>) -> ExitCode {
+fn act(act: &str, mut args: Vec<String>, hold: Option<factory::Hold>, now: bool) -> ExitCode {
     // Taken first, so a text such as `--step` stays text.
     let text = match act {
         "say" if (2..=5).contains(&args.len()) => args.pop(),
@@ -3709,6 +4139,17 @@ fn act(act: &str, mut args: Vec<String>, hold: Option<factory::Hold>) -> ExitCod
         let Some((runner, key)) = task.split_once(':') else {
             return usage();
         };
+        if act == "cancel" && generation.is_none() && expected.is_none() {
+            let Some(factory) = load(&factory::folder(dir)) else {
+                return ExitCode::FAILURE;
+            };
+            // A key's source can be a runner's name too.
+            let waits =
+                state::read_only().is_ok_and(|db| runners::waits(&db, task).unwrap_or(false));
+            if waits || !factory.runners.contains_key(runner) {
+                return reply(act, drop_waiting(&factory, task));
+            }
+        }
         if expected.is_some() {
             return exit(
                 act,
@@ -3757,9 +4198,22 @@ fn act(act: &str, mut args: Vec<String>, hold: Option<factory::Hold>) -> ExitCod
         hold,
         text,
         expected,
+        now,
     })
     .expect("an action serializes");
     send(act, &line)
+}
+
+/// Drops the request of `key` that no runner claimed.
+fn drop_waiting(factory: &factory::Factory, key: &str) -> Result<String, String> {
+    let db = state::read_only()?;
+    if !runners::waits(&db, key).map_err(|error| error.to_string())? {
+        let runner = key.split(':').next().unwrap_or_default();
+        return Err(format!(
+            "no runner is named {runner}, and no request of {key} waits for a runner"
+        ));
+    }
+    runners::drop_request(factory, &db, key)
 }
 
 /// Sends `line` to the daemon and prints its reply.
@@ -4186,9 +4640,9 @@ const GUARD_DEADLINE: Duration = Duration::from_secs(8);
 
 /// The `PreToolUse` hook's reason to deny the call, if any: none for a call no guard matches, and
 /// the daemon's answer for one that matches. Anything but the daemon's yes denies, since a hook
-/// that fails lets the call through.
-fn guard(input: &Value) -> Option<String> {
-    let deny = |reason: &str| Some(reason.to_owned());
+/// that fails lets the call through. Also whether a guard matched it.
+fn guard(input: &Value) -> (Option<String>, bool) {
+    let deny = |reason: &str| (Some(reason.to_owned()), true);
     let guards: priory_factory::guard::Guards = match std::env::var("PRIORY_GUARD") {
         Ok(json) if !json.is_empty() => match serde_json::from_str(&json) {
             Ok(guards) => guards,
@@ -4223,6 +4677,7 @@ fn guard(input: &Value) -> Option<String> {
         Some(String::from_utf8_lossy(&output.stdout).trim().to_owned())
     };
     let hits = guards.hits(tool, command.as_deref(), &git);
+    let guarded = !hits.is_empty();
     let moves_head = command
         .as_deref()
         .is_some_and(priory_factory::guard::moves_head);
@@ -4255,8 +4710,54 @@ fn guard(input: &Value) -> Option<String> {
             }
         }
     }
+    if let Some(reason) = private_terms(input, tool, command.as_deref(), &session) {
+        return deny(&reason);
+    }
     report_connector_use(tool);
-    None
+    (None, guarded)
+}
+
+/// Why the call may not publish, when the factory has private terms: one is in what it would
+/// publish to a repository the factory lists, or Priory cannot read what it would publish.
+fn private_terms(
+    input: &Value,
+    tool: &str,
+    command: Option<&str>,
+    session: &str,
+) -> Option<String> {
+    std::env::var_os("PRIORY_PRIVATE").filter(|flag| !flag.is_empty())?;
+    let publishes = priory_factory::publish::calls(tool, command, &input["tool_input"]);
+    if publishes.is_empty() {
+        return None;
+    }
+    let asked = runtime::call(&runtime::home(), r#"{"private":{}}"#, GUARD_WAIT)
+        .and_then(|reply| {
+            serde_json::from_str::<Result<String, String>>(&reply)
+                .map_err(|_| "unreadable reply".to_owned())
+        })
+        .and_then(|rules| rules)
+        .and_then(|rules| serde_json::from_str(&rules).map_err(|_| "unreadable rules".to_owned()));
+    let rules: priory_factory::private::Private = match asked {
+        Ok(rules) => rules,
+        Err(error) => {
+            return Some(format!(
+                "Priory denied this call: it publishes, and the daemon did not give the factory's private terms ({error}). Try again."
+            ));
+        }
+    };
+    let cwd = input["cwd"]
+        .as_str()
+        .map_or_else(|| PathBuf::from("."), PathBuf::from);
+    publishes.iter().find_map(|publish| {
+        let reason = priory_core::private::screen(&rules, &cwd, publish).err()?;
+        let line = serde_json::json!({ "guard": {
+            "session": session, "guard": priory_factory::guard::PRIVATE,
+            "call": publish.call, "tool": tool, "moves_head": false,
+        } });
+        // Best effort: the daemon records the denial, which stands either way.
+        let _ = runtime::call(&runtime::home(), &line.to_string(), Duration::from_secs(1));
+        Some(reason)
+    })
 }
 
 /// The denial of an MCP tool whose server is none of `servers`, the comma-separated servers a run
@@ -4346,6 +4847,63 @@ fn outside_mcp() -> ExitCode {
         return ExitCode::from(2);
     }
     exit("mcp", mcp::serve_outside(asking_session().as_deref()))
+}
+
+/// How long a call that news cannot hold waits for the daemon to show it.
+const NEWS_WAIT: Duration = Duration::from_secs(1);
+
+/// What the hook keeps of its deadline to print its answer.
+const NEWS_MARGIN: Duration = Duration::from_millis(500);
+
+/// One unread news item: its id, whether no call showed it yet, and its text.
+type News = (i64, bool, String);
+
+/// The run's session, as the pane or the hook's input names it.
+fn hook_session(input: &Value) -> Option<String> {
+    std::env::var("PRIORY_SESSION")
+        .ok()
+        .filter(|id| !id.is_empty())
+        .or_else(|| input["session_id"].as_str().map(str::to_owned))
+}
+
+/// `wait`, or what is left of the hook's deadline `by` when less.
+fn within(wait: Duration, by: std::time::Instant) -> Duration {
+    wait.min(by.saturating_duration_since(std::time::Instant::now()))
+}
+
+/// The unread news of `session`, waiting `wait` for the daemon: none without the marker the daemon
+/// writes, or when the daemon does not answer, since news is no approval and must not stop a call.
+fn news(session: &str, wait: Duration) -> Vec<News> {
+    let marker = priory_runtime::jail::news_dir(&runtime::home(), session).join("news");
+    if wait.is_zero() || session.is_empty() || !marker.exists() {
+        return Vec::new();
+    }
+    let line = serde_json::json!({ "news": { "session": session } });
+    runtime::call(&runtime::home(), &line.to_string(), wait)
+        .ok()
+        .and_then(|reply| serde_json::from_str::<Result<String, String>>(&reply).ok())
+        .and_then(Result::ok)
+        .and_then(|news| serde_json::from_str(&news).ok())
+        .unwrap_or_default()
+}
+
+/// Tells the daemon that the hook has `news`, as `mark`: `shown`, or `read` when it refuses the call
+/// with it. Returns the texts. Best effort: news left unmarked comes with the next call too.
+fn got_news(session: &str, mark: &str, news: Vec<News>, by: std::time::Instant) -> Option<String> {
+    if news.is_empty() {
+        return None;
+    }
+    let ids: Vec<i64> = news.iter().map(|(id, ..)| *id).collect();
+    let line = serde_json::json!({ "news": { "session": session, mark: ids } });
+    let _ = runtime::call(&runtime::home(), &line.to_string(), within(NEWS_WAIT, by));
+    let texts: Vec<String> = news.into_iter().map(|(.., text)| text).collect();
+    Some(texts.join("\n"))
+}
+
+/// Whether the call opens a pull request, pushes, or ends or sleeps the run.
+fn holds_for_news(input: &Value) -> bool {
+    let tool = input["tool_name"].as_str().unwrap_or_default();
+    priory_factory::guard::holds_for_news(tool, shell_command(input).as_deref())
 }
 
 /// How long the hook waits for the daemon to say which matching files a run has not got yet.
@@ -4490,33 +5048,69 @@ fn hook(event: &str) -> ExitCode {
         // A hook that fails or that Claude kills lets the call through, so a guard that panics or
         // hangs anywhere, in git, the connect or the reply, denies before Claude's timeout.
         let (sender, receiver) = std::sync::mpsc::channel();
+        // News takes only what the guard leaves, so a slow daemon never denies a call over it.
+        let by = std::time::Instant::now() + GUARD_DEADLINE - NEWS_MARGIN;
         std::thread::spawn(move || {
             let checked = match serde_json::from_reader::<_, Value>(std::io::stdin()) {
-                Ok(input) => (guard(&input), Some(input)),
+                Ok(input) => match guard(&input) {
+                    (None, guarded) => {
+                        let hold = guarded || holds_for_news(&input);
+                        let session = hook_session(&input).unwrap_or_default();
+                        let wait = if hold { GUARD_WAIT } else { NEWS_WAIT };
+                        // A subagent's call must not use up the main agent's news.
+                        let subagent = input["agent_id"].as_str().is_some_and(|id| !id.is_empty());
+                        // The acknowledgement keeps its own second of what is left.
+                        let mut news = match subagent && !hold {
+                            true => Vec::new(),
+                            false => news(&session, within(wait, by - NEWS_WAIT)),
+                        };
+                        if subagent && !news.is_empty() {
+                            let held = priory_core::news::SUBAGENT.to_owned();
+                            let _ = sender.send((Some(held), None, None));
+                            return;
+                        }
+                        let mark = if hold { "read" } else { "shown" };
+                        news.retain(|(_, new, _)| hold || *new);
+                        match got_news(&session, mark, news, by) {
+                            Some(lines) if hold => {
+                                (Some(priory_core::news::held(&lines)), None, None)
+                            }
+                            lines => (None, lines, Some(input)),
+                        }
+                    }
+                    (denied, _) => (denied, None, None),
+                },
                 Err(error) => (
                     Some(format!(
                         "Priory's tool guard could not read this call ({error}), so it denied it."
                     )),
                     None,
+                    None,
                 ),
             };
-            sender.send(checked)
+            let _ = sender.send(checked);
         });
-        let (denied, input) = receiver.recv_timeout(GUARD_DEADLINE).unwrap_or_else(|_| {
+        let (denied, news, input) = receiver.recv_timeout(GUARD_DEADLINE).unwrap_or_else(|_| {
             let reason = format!(
-                "Priory's tool guard failed or did not finish within {}s on this call, so it denied it.",
+                "Priory's tool guard failed or did not finish within {}s on this call, so it denied it. If it pushes, fetch the remote first, or push fewer commits at a time.",
                 GUARD_DEADLINE.as_secs()
             );
-            (Some(reason), None)
+            (Some(reason), None, None)
         });
-        if let Some(reason) = denied {
-            print_deny(&reason);
-        } else if let Some(context) = input.and_then(|input| {
+        let scoped = input.and_then(|input| {
             // Best effort: a lookup that fails or hangs adds nothing and never holds the call.
             let (sender, receiver) = std::sync::mpsc::channel();
             std::thread::spawn(move || sender.send(scoped_context(&input)));
             receiver.recv_timeout(SCOPED_DEADLINE).ok().flatten()
-        }) {
+        });
+        let news = news.map(|news| {
+            format!("Priory news for this task, which may end its work. {}\n{news}\nDecide with it before you open a pull request, push or end the step.", priory_core::news::DATA)
+        });
+        let context: Vec<String> = news.into_iter().chain(scoped).collect();
+        if let Some(reason) = denied {
+            print_deny(&reason);
+        } else if !context.is_empty() {
+            let context = context.join("\n\n");
             let output = serde_json::json!({ "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "additionalContext": context,

@@ -16,7 +16,8 @@ A call is guarded when a guard matches it. A guarded call runs only when one of 
 
 - the task's current step is an irreversible model step that lists the guard in its own
   `guard.allow`, and either a person approved the step in the task's current generation and the
-  task's branch is still at the commit the approval was given for, or the step is `autonomous`;
+  task's branch is still at the commit the approval was given for, or the step is `autonomous`. A
+  [written answer](waits.md#asks-and-answers) voids the approval;
 - the task's workflow lists the guard in `guard.allow`.
 
 An approved or `autonomous` step grants only the guards it names. A step that names none may make
@@ -71,7 +72,7 @@ A run with no task step, such as the stall handler, is denied every guarded call
 | `linear-write` | `curl` or `wget` to `api.linear.app` with a body that holds `mutation` or comes from a file, and `linear issue create`, `update`, `delete` or `comment` |
 | `mcp-write` | MCP tools named `add_issue_comment`, `send_message`, `slack_send_message`, `schedule_message`, `slack_schedule_message`, `save_comment`, `create_comment`, `save_issue`, `create_issue` or `update_issue`, on any server but `priory` |
 | `connector-sign-in` | MCP tools named `authenticate` or `complete_authentication`, on any server but `priory`. See [Connector sign-in](#connector-sign-in) |
-| `priory-person` | `priory answer`, `dismiss`, `deliver`, `resume`, `revive`, `cancel`, `release`, `hold`, `move`, `say`, `pause`, `unpause`, `snooze`, `seen`, `subscribe`, `unsubscribe`, `give`, `eval`, `bench`, `label`, `report pick`, `memories accept`, `memories drop`, `batch edit`, `score --calibrate` and `mcp --outside`. `priory add`, `request`, `gate`, `batch add`, `score TASK` and the `memories` listing stay open to agents |
+| `priory-person` | `priory answer`, `dismiss`, `deliver`, `resume`, `revive`, `cancel`, `release`, `hold`, `move`, `say`, `pause`, `unpause`, `autopilot`, `snooze`, `seen`, `subscribe`, `unsubscribe`, `give`, `eval`, `bench`, `label`, `report pick`, `memories accept`, `memories drop`, `batch edit`, `score --calibrate` and `mcp --outside`. `priory add`, `request`, `gate`, `batch add`, `score TASK` and the `memories` listing stay open to agents |
 | `unreadable` | A script nested more than 16 levels deep, through `bash -c`, `$(...)`, `eval`, `find -exec` and the like. The guard cannot read it, so the daemon denies it: "too deeply nested for the guard to read". It also covers an `env -S` string that expands a variable, such as `${VERB}`, or that `env` refuses, such as one with an unknown escape. Nothing grants it |
 
 An MCP tool's server is the part of its name before the last `__`, so a server named `my__srv`
@@ -86,6 +87,97 @@ guarded. A factory adds its own guards with `[guard]` in
 `factory.toml` (see [factory.md](../reference/factory.md#guard)). A factory guard that matches the
 same call as `gh-pr-merge` or `gh-pr-approve`, such as one on `gh pr` or `mcp__github__*`, does not
 rename it: the call keeps its built-in guard.
+
+## News before a pull request
+
+The hook also delivers news that may end the task's work, such as its Linear issue moved to
+Duplicate, during the turn (see [News during a turn](routing.md#news-during-a-turn)). This is no
+approval rule: it holds a call once, and the call passes when the agent makes it again.
+
+When `news/<session>/news` exists in Priory home, the hook asks the daemon for the unread news.
+The hook refuses the call once, with the news as its reason, when the call:
+
+- runs `gh pr create`, or `git push` that is no dry run, as the guard reads a command: the last of
+  `--dry-run` and `--no-dry-run` decides;
+- is an MCP tool named `create_pull_request`, or the `priory` server's `result`, `ask`, `wait` or
+  `consult`;
+- matches a guard, and the guard let it through.
+
+After such a refusal, the hook tells the daemon which news it showed, and the daemon marks that
+news read. A refusal whose acknowledgement is lost leaves the news unread, so the next such call is
+held again.
+
+Any other call runs, with news that no call showed yet added to its context. That leaves the news
+unread. Without the marker the hook asks nothing.
+
+A subagent's call never shows or reads the news. When it is one that news holds, it is refused each
+time, and the refusal tells the subagent to report to the main agent. Its other calls run with
+nothing added. The `result`, `ask`, `wait` and `consult` tools cannot tell a subagent's call from
+the main agent's, for a harness whose hook does not reach them.
+
+The hook waits up to 5 seconds for the daemon on a call that news holds, as it does for a guard, and
+up to one second on any other call. Both fit in what the guard left of the hook's 8 seconds, so
+news never makes the hook deny a call for lack of time. When the daemon does not answer in time, the call runs and the
+news stays unread for the next call: unlike an approval, news must not stop a run while the daemon
+restarts.
+
+## Private terms
+
+A factory with [`[private]`](../reference/factory.md#private) keeps its private terms out of the
+repositories it lists. The hook screens each call that publishes to one:
+
+- `git push`: the author, the committer, the message, the file paths and the added lines of every commit the remote lacks, so a
+  line that a later commit removes still counts. A merge shows only what it resolved;
+- `gh pr create`, `gh pr edit` and `gh pr merge`: the arguments, the body file and text elsewhere in the call, such
+  as a heredoc or a file `cat` prints, and, for `create`, the branch's commits;
+- `gh api` writes to a repository's pull requests, issues, contents, merges and git data, or
+  to `graphql`;
+- MCP tools named `create_pull_request`, `update_pull_request`, `push_files`,
+  `create_or_update_file`, `merge_pull_request` or `delete_file`, whose path is not read.
+
+A hit denies the call with each rule's label and location, such as
+`rule ticket-id: commit 1a2b3c4 src/x.rs:40`, and tells the agent to rewrite it. The denial never
+holds the term. Nothing grants the call. It is on the trace as `factory.tool.denied` with the guard
+`private-terms` and the call's name without its arguments. An `open-pr` step screens the same way
+before it pushes any branch, and fails on a hit.
+
+A `gh api graphql` call whose `query` is literal text without the word `mutation` writes nothing, so it
+is not screened. `gh pr create` and `open-pr` leave out what the stated base already holds on the
+remote.
+
+The destination is the push's remote, `-R`, the endpoint, the MCP tool's arguments, or the folder's
+remotes. One Priory cannot read counts as listed, as does one that a `GH_REPO`, `GH_HOST`, `GIT_DIR`,
+`GIT_WORK_TREE` or `GIT_CONFIG*` assignment in the call, or `git -c` with a `remote`, `branch`, `url` or
+`include` key, may change. In the endpoint, `cd` and `git -C`, a variable that the call sets once, to
+literal text, earlier in the call, is read. That holds even when the assignment may not run.
+
+A `cd` that opens the call moves the folder. A `cd` later in the call, or in a subshell, a pipe or `bash -c`, may not last, so the hook checks the folder
+before it too, and drops a folder that is not a repository when another is one, unless the call may
+create one, as `git clone` or `cp` does. A script that creates a repository is not seen. When the hook
+cannot tell the folder, and no `-R` names the repository, it denies the call.
+
+On a listed repository, the hook also denies what it cannot read:
+
+- a push or a `gh pr create` after a command in the same call that moves what it sends. In a call with
+  a loop or a function, the order does not count;
+- a push to a URL that no remote has, and a revision that does not resolve or
+  that holds a variable or a command's output;
+- a title, a body or a `gh api` argument that holds a command's output, or a variable the call does
+  not set to literal text. `$(cat FILE)` and a literal heredoc are read;
+- a body from stdin, a missing body file, and one that the same call writes other than with a literal
+  `echo`, `printf` or heredoc.
+
+A push leaves out what the pushed remote, and every remote whose URLs are all listed, already holds.
+
+The hook asks the daemon for the terms at each such call, so they are never in the run's
+environment, which holds only `PRIORY_PRIVATE=1`. The daemon answers any process that reaches its
+socket, and a jailed run reaches it, so a run that sets out to learn the terms can. The screen stops
+terms that a run copies by accident, not a run that works around it. The hook denies the call when
+the daemon does not answer.
+
+These are not screened: `curl`, `gh issue` commands, `gh pr comment` and `gh pr review`, MCP tools
+that write issues or comments, a repository's description and releases, branch names and tag
+messages. A script file that publishes is not seen.
 
 ## Connector sign-in
 

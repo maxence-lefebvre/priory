@@ -1324,6 +1324,85 @@ fn a_linear_trigger_uses_a_supported_event_filter_and_key() {
 }
 
 #[test]
+fn a_linear_project_trigger_names_its_project_event_and_filter() {
+    let trigger =
+        |rest: &str| format!("source = \"linear.project\"\nworkflow = \"implement\"\n{rest}");
+    let good = trigger(
+        "project = \"3f0c9a52-6d1b-4e8f-a7c4-b1d2e3f40516\"\non = \"issue.entered\"\nbackfill = true\nfilter = { assignee = \"ada@example.com\", state = [\"triage\", \"backlog\"] }\n",
+    );
+    let one =
+        trigger("project = \"a1b2c3\"\non = \"issue.left\"\nfilter = { state = \"started\" }\n");
+    let mut files = with("triggers/agent-label.toml", &good);
+    files.push(("triggers/one.toml", &one));
+    let ok = check(&factory("linear-project", &files));
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+
+    let project = "a `linear.project` trigger names a `project`: its UUID or its slug id";
+    let assignee = "filter `assignee` is a Linear user's id or email";
+    let states = "filter `state` lists state types: `triage`, `backlog`, `unstarted`, `started`, `completed`, `canceled`, `duplicate`";
+    for (index, (rest, expected)) in [
+        ("on = \"issue.entered\"\n", project),
+        ("project = \"a:b\"\non = \"issue.entered\"\n", project),
+        (
+            "project = \"p\"\non = \"issue.created\"\n",
+            "a `linear.project` trigger handles `issue.entered`, `issue.left`, not `issue.created`",
+        ),
+        (
+            "project = \"p\"\non = \"issue.left\"\nfilter = { label = \"x\" }\n",
+            "a `linear.project` trigger filters on `assignee` or `state`",
+        ),
+        (
+            "project = \"p\"\non = \"issue.left\"\nfilter = { assignee = \"\" }\n",
+            assignee,
+        ),
+        (
+            "project = \"p\"\non = \"issue.left\"\nfilter = { assignee = \"ada\" }\n",
+            assignee,
+        ),
+        (
+            "project = \"p\"\non = \"issue.left\"\nfilter = { assignee = [\"a@b.c\"] }\n",
+            "filter `assignee` is a string, not a list",
+        ),
+        (
+            "project = \"p\"\non = \"issue.left\"\nfilter = { state = [] }\n",
+            states,
+        ),
+        (
+            "project = \"p\"\non = \"issue.left\"\nfilter = { state = [\"Todo\"] }\n",
+            states,
+        ),
+        (
+            "project = \"p\"\non = \"issue.left\"\nfilter = { state = 3 }\n",
+            "expected a string or a list of strings",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let bad = trigger(rest);
+        let files = with("triggers/agent-label.toml", &bad);
+        let outcome = check(&factory(&format!("linear-project-{index}"), &files));
+        assert_eq!(outcome.code, 1, "{rest}");
+        assert!(
+            outcome.stderr.contains(expected),
+            "{rest}: {}",
+            outcome.stderr
+        );
+    }
+
+    let list = "source = \"linear\"\non = \"issue.created\"\nproject = \"p\"\nfilter = { state = [\"Todo\"] }\nworkflow = \"implement\"\n";
+    let outcome = check(&factory(
+        "linear-list",
+        &with("triggers/agent-label.toml", list),
+    ));
+    assert_eq!(
+        outcome.stderr,
+        "triggers/agent-label.toml:3: only a `linear.project` trigger names a `project`\n\
+         triggers/agent-label.toml:4: filter `state` is a string, not a list\n"
+    );
+}
+
+#[test]
 fn a_linear_or_slack_trigger_may_name_the_repo_its_tasks_work_in() {
     let linear = "source = \"linear\"\nrepo = \"owner/repo\"\non = \"issue.created\"\nworkflow = \"implement\"\n";
     let slack = "source = \"slack\"\nchannel = \"C0123\"\nrepo = \"owner/repo\"\non = \"message.posted\"\nworkflow = \"implement\"\n";
@@ -1662,6 +1741,154 @@ fn a_sweep_table_passes_and_a_bad_one_names_its_line() {
 }
 
 #[test]
+fn build_output_paths_must_stay_inside_the_worktree() {
+    let text = |build: &str| {
+        format!(
+            "name = \"demo\"\n\n[sweep]\nreclaim = \"60GB\"\n\n[repos.\"owner/repo\"]\nbuild = [{build}]\n"
+        )
+    };
+    let ok = check(&factory(
+        "build-ok",
+        &with("factory.toml", &text("\"target\", \"web/dist\"")),
+    ));
+    let up = check(&factory(
+        "build-up",
+        &with("factory.toml", &text("\"../x\"")),
+    ));
+    let root = check(&factory(
+        "build-root",
+        &with("factory.toml", &text("\"/tmp\"")),
+    ));
+    let empty = check(&factory(
+        "build-empty",
+        &with("factory.toml", &text("\"\"")),
+    ));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    for (path, out) in [("../x", up), ("/tmp", root), ("", empty)] {
+        assert_eq!(
+            (out.code, out.stderr.as_str()),
+            (
+                1,
+                format!("factory.toml:6: `[repos.\"owner/repo\"] build` path `{path}` needs to be a folder inside the worktree, with no `..`\n").as_str()
+            )
+        );
+    }
+}
+
+#[test]
+fn a_sweep_script_needs_when_or_every_and_a_valid_every() {
+    let good = "name = \"demo\"\n\n[sweep]\nscripts = [\n  { run = \"nh clean all\", every = \"4h\" },\n  { run = \"cargo-prune\", every = \"7d\", when = \"disk\" },\n]\n";
+    let ok = check(&factory("sweep-every-ok", &with("factory.toml", good)));
+    let neither = good.replace(", every = \"4h\"", "");
+    let bad_neither = check(&factory("sweep-neither", &with("factory.toml", &neither)));
+    let malformed = good.replace("\"4h\"", "\"soon\"");
+    let bad_every = check(&factory(
+        "sweep-every-bad",
+        &with("factory.toml", &malformed),
+    ));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(
+        (bad_neither.code, bad_neither.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: the sweep script `nh clean all` needs `when`, `every` or both\n"
+        )
+    );
+    assert_eq!(bad_every.code, 1);
+    assert!(
+        bad_every
+            .stderr
+            .starts_with("factory.toml:5:35: \"soon\" is not a duration such as 90s, 15m or 2h"),
+        "{}",
+        bad_every.stderr
+    );
+}
+
+#[test]
+fn a_sweep_script_runs_every_10_seconds_at_most_and_every_36500_days_at_least() {
+    let least =
+        "name = \"demo\"\n\n[sweep]\nscripts = [{ run = \"nh clean all\", every = \"10s\" }]\n";
+    let ok = check(&factory("sweep-least", &with("factory.toml", least)));
+    let under = least.replace("\"10s\"", "\"9s\"");
+    let refused = check(&factory("sweep-under", &with("factory.toml", &under)));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(
+        (refused.code, refused.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: the sweep script `nh clean all` has `every` 9s: it needs to be 10s or more\n"
+        )
+    );
+
+    let most = least.replace("\"10s\"", "\"36500d\"");
+    let ok = check(&factory("sweep-most", &with("factory.toml", &most)));
+    let over = least.replace("\"10s\"", "\"36501d\"");
+    let refused = check(&factory("sweep-over", &with("factory.toml", &over)));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(
+        (refused.code, refused.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: the sweep script `nh clean all` has `every` 3153686400s: it needs to be 36500d or less\n"
+        )
+    );
+}
+
+#[test]
+fn a_memory_gate_limit_passes_in_both_files_and_a_bad_one_names_its_line() {
+    let gate = |file: &str, line: &str| match file {
+        "factory.toml" => format!("name = \"demo\"\n\n[memory]\n{line}\n"),
+        _ => format!("platform = {{ os = \"linux\" }}\n\n[memory]\n{line}\n"),
+    };
+    for (file, name) in [
+        ("factory.toml", "factory"),
+        ("runners/laptop.toml", "runner"),
+    ] {
+        let run = |case: &str, line: &str| {
+            let text = gate(file, line);
+            let mut files = valid();
+            files.retain(|(path, _)| *path != file);
+            files.push((file, &text));
+            check(&factory(&format!("give-up-{name}-{case}"), &files))
+        };
+
+        for limit in ["10m", "59m"] {
+            let ok = run("ok", &format!("give_up_after = \"{limit}\""));
+            assert_eq!((ok.code, ok.stderr.as_str()), (0, ""), "{file}");
+        }
+        let long = run("long", "give_up_after = \"1h\"");
+        assert_eq!(
+            (long.code, long.stderr),
+            (
+                1,
+                format!(
+                    "{file}:3: `[memory] give_up_after` is below 1h, the default timeout of a gated command\n"
+                )
+            )
+        );
+        let bad = run("bad", "give_up_after = \"soon\"");
+        assert_eq!(bad.code, 1);
+        assert!(
+            bad.stderr
+                .contains("\"soon\" is not a duration such as 90s, 15m or 2h"),
+            "{}",
+            bad.stderr
+        );
+        let unknown = run("unknown", "give_up = \"10m\"");
+        assert_eq!(unknown.code, 1);
+        assert!(
+            unknown.stderr.contains("unknown field `give_up`"),
+            "{}",
+            unknown.stderr
+        );
+    }
+}
+
+#[test]
 fn repository_recipes_pass_and_a_bad_one_names_its_line() {
     let good = "name = \"demo\"\n\n[repos.\"owner/repo\"]\nsetup = { argv = [\"npm\", \"ci\"], timeout = \"15m\" }\nresume = { shell = \"npm ci --prefer-offline\" }\nteardown = { shell = \"docker compose down\" }\n";
     let ok = check(&factory("recipes-ok", &with("factory.toml", good)));
@@ -1898,6 +2125,19 @@ fn a_request_table_passes_and_an_unknown_workflow_or_band_is_refused() {
 }
 
 #[test]
+fn a_request_default_passes_even_when_its_workflow_opts_out() {
+    let good = "name = \"demo\"\n\n[request]\nworkflow = \"implement\"\n";
+    let opted_out = format!("requestable = false\n{WORKFLOW}");
+    let mut files = with("factory.toml", good);
+    files.retain(|(path, _)| *path != "workflows/implement.toml");
+    files.push(("workflows/implement.toml", &opted_out));
+
+    let outcome = check(&factory("request-opted-out", &files));
+
+    assert_eq!((outcome.code, outcome.stderr.as_str()), (0, ""));
+}
+
+#[test]
 fn a_batch_workflow_needs_a_human_step_after_a_model_step() {
     let good = "name = \"demo\"\n\n[batch]\nworkflow = \"implement\"\nentries = \"implement\"\n";
     let ok = check(&factory("batch-ok", &with("factory.toml", good)));
@@ -2070,7 +2310,7 @@ fn telemetry_headers_env_names_a_variable_and_never_holds_the_headers() {
 fn check_refuses_an_unknown_metrics_group_a_short_interval_and_a_zero_cap_naming_each_value() {
     let telemetry = "name = \"demo\"\n\n[telemetry]\notlp = \"http://127.0.0.1:4318\"\n";
     let ok = format!(
-        "{telemetry}metrics = [\"process\", \"log\", \"runs\", \"intake\"]\nmetrics_every = \"10s\"\nmetrics_cap = 1\n"
+        "{telemetry}metrics = [\"process\", \"log\", \"runs\", \"intake\", \"work\", \"room\"]\nmetrics_every = \"10s\"\nmetrics_cap = 1\n"
     );
     let refused = format!(
         "{telemetry}metrics = [\"process\", \"nope\"]\nmetrics_every = \"9s\"\nmetrics_cap = 0\n"
@@ -2084,7 +2324,7 @@ fn check_refuses_an_unknown_metrics_group_a_short_interval_and_a_zero_cap_naming
     assert_eq!(
         refused.stderr,
         "factory.toml:3: `metrics` names `nope`, which is not a metrics group: the groups are \
-         process, log, runs, intake, work\n\
+         process, log, runs, intake, work, room\n\
          factory.toml:3: `metrics_every` is 9s: it needs to be 10s or more\n\
          factory.toml:3: `metrics_cap` is 0: it needs to be 1 or more\n"
     );
@@ -2148,6 +2388,58 @@ fn the_deliver_command_is_an_executable_file_in_the_factory() {
         (
             1,
             "factory.toml:3: `[asks] deliver`: bin/deliver is not executable: chmod +x it\n"
+        )
+    );
+    assert_eq!((runnable.code, runnable.stderr.as_str()), (0, ""));
+}
+
+#[test]
+fn attach_runs_on_model_steps_only_and_needs_an_executable_runs_attach_command() {
+    use std::os::unix::fs::PermissionsExt;
+    let workflow = WORKFLOW
+        .replace(
+            "prompt = \"Implement the issue.\"\n",
+            "prompt = \"Implement the issue.\"\nattach = true\n",
+        )
+        .replace(
+            "approves = [\"open-pr\"]\n",
+            "approves = [\"open-pr\"]\nattach = true\n",
+        );
+    let mut files = valid();
+    files[3] = ("workflows/implement.toml", &workflow);
+    let without = check(&factory("attach-without", &files));
+    let toml = "name = \"demo\"\n\n[runs]\nattach = \"bin/attach\"\n";
+    files[0] = ("factory.toml", toml);
+    files[3] = ("workflows/implement.toml", WORKFLOW);
+    let missing = check(&factory("attach-missing", &files));
+    files.push(("bin/attach", "#!/bin/sh\nexit 0\n"));
+    let dir = factory("attach-runnable", &files);
+    fs::set_permissions(dir.join("bin/attach"), fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(
+        dir.join("workflows/implement.toml"),
+        WORKFLOW.replace(
+            "prompt = \"Implement the issue.\"\n",
+            "prompt = \"Implement the issue.\"\nattach = true\n",
+        ),
+    )
+    .unwrap();
+
+    let runnable = check(&dir);
+
+    assert_eq!(
+        (without.code, without.stderr.as_str()),
+        (
+            1,
+            "workflows/implement.toml:4: step `implement`: `attach = true` needs `[runs] attach` \
+             in the factory's settings\n\
+             workflows/implement.toml:13: step `approve-pr`: only a model step has `attach = true`\n"
+        )
+    );
+    assert_eq!(
+        (missing.code, missing.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: `[runs] attach`: bin/attach is not a file in the factory folder\n"
         )
     );
     assert_eq!((runnable.code, runnable.stderr.as_str()), (0, ""));
@@ -2502,6 +2794,50 @@ fn a_critic_that_is_no_scorer_or_reads_a_diff_is_refused() {
     assert_eq!(
         on_diff.stderr,
         "factory.toml:2: the critic `critic` reads on = \"diff\": a critic reads a plan, which names no commit, so use one on result\n"
+    );
+}
+
+#[test]
+fn approve_plans_names_a_workflow_that_exists_and_has_a_plan_autopilot_may_approve() {
+    let missing = with(
+        "factory.toml",
+        "name = \"demo\"\n[autopilot]\napprove_plans = [\"nothing\"]\n",
+    );
+    let groom = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/groom/workflows/groom.toml"),
+    )
+    .unwrap();
+    let mut autonomous = with(
+        "factory.toml",
+        "name = \"demo\"\ncritic = \"critic\"\n[autopilot]\napprove_plans = [\"groom\"]\n",
+    );
+    let unread = with(
+        "factory.toml",
+        "name = \"demo\"\n[autopilot]\napprove_plans = [\"implement\"]\n",
+    );
+    autonomous.push(("workflows/groom.toml", &groom));
+
+    let missing = check(&factory("approve-plans-missing", &missing));
+    let autonomous = check(&factory("approve-plans-autonomous", &autonomous));
+    let unread = check(&factory("approve-plans-unread", &unread));
+
+    assert_eq!(missing.code, 1);
+    assert_eq!(
+        missing.stderr,
+        "factory.toml:2: `approve_plans` names workflow `nothing`, which does not exist\n"
+    );
+    assert_eq!(autonomous.code, 1);
+    assert!(
+        autonomous.stderr.contains(
+            "factory.toml:3: `approve_plans` names workflow `groom`, where autopilot may approve no plan: answering it can let irreversible step open-pr run before a person decides again\n"
+        ),
+        "{}",
+        autonomous.stderr
+    );
+    assert_eq!(unread.code, 1);
+    assert_eq!(
+        unread.stderr,
+        "factory.toml:2: `approve_plans` names workflow `implement`, and the factory has no `critic` to read its plans first\n"
     );
 }
 
@@ -4715,4 +5051,95 @@ fn a_sandbox_kind_other_than_bwrap_is_refused_with_its_line() {
         "{}",
         outcome.stderr
     );
+}
+
+#[test]
+fn a_filter_window_names_its_timezone_in_a_factory_of_several_runners() {
+    let runner = format!(
+        "{RUNNER}\n[[filters]]\nmatch = \"!project=oss\"\nwhen = {{ hours = \"08:00-18:00\" }}\n"
+    );
+    let mut files = with("runners/server.toml", RUNNER);
+    files.retain(|(path, _)| *path != "runners/desktop.toml");
+    files.push(("runners/desktop.toml", &runner));
+
+    let several = check(&factory("filter-zone-several", &files));
+    files.retain(|(path, _)| *path != "runners/server.toml");
+    let one = check(&factory("filter-zone-one", &files));
+
+    assert_eq!(
+        (several.code, several.stderr.as_str()),
+        (
+            1,
+            "runners/desktop.toml:2: filter `!project=oss` has a window with no `timezone`, which a factory of 2 runners needs\n"
+        )
+    );
+    assert_eq!(one.code, 0, "{}", one.stderr);
+}
+
+#[test]
+fn trigger_labels_and_runner_filters_pass_and_each_bad_one_names_its_line() {
+    let trigger = format!("{TRIGGER}labels = {{ project = \"oss\" }}\n");
+    let runner = format!(
+        "{RUNNER}\n[[filters]]\nmatch = \"!project=oss\"\n\
+         when = {{ days = [\"mon\", \"fri\"], hours = \"08:00-18:00\", timezone = \"Europe/Paris\" }}\n"
+    );
+    let mut files = with("triggers/agent-label.toml", &trigger);
+    files.retain(|(path, _)| *path != "runners/desktop.toml");
+    files.push(("runners/desktop.toml", &runner));
+    let outcome = check(&factory("filters-valid", &files));
+    assert_eq!(outcome.code, 0, "{}", outcome.stderr);
+
+    let cases = [
+        (
+            "triggers/agent-label.toml",
+            "\"oss\" }",
+            "\"o s\" }",
+            "triggers/agent-label.toml:8:10: label project has value \"o s\": use letters, digits, `_`, `.`, `:`, `/` or `-`\n",
+        ),
+        (
+            "runners/desktop.toml",
+            "\"!project=oss\"",
+            "\"project\"",
+            "runners/desktop.toml:3:9: \"project\" is not a match such as \"project=oss\" or \"!project=oss\"\n",
+        ),
+        (
+            "runners/desktop.toml",
+            "\"08:00-18:00\"",
+            "\"8am-6pm\"",
+            "runners/desktop.toml:4:41: \"8am-6pm\" is not hours such as \"08:00-18:00\"\n",
+        ),
+        (
+            "runners/desktop.toml",
+            "\"fri\"",
+            "\"fry\"",
+            "runners/desktop.toml:4:17: \"fry\" is not a day: use mon, tue, wed, thu, fri, sat or sun\n",
+        ),
+        (
+            "runners/desktop.toml",
+            "[\"mon\", \"fri\"]",
+            "\"mon-fri\"",
+            "runners/desktop.toml:4:17: `days` is not a list such as [\"mon\", \"fri\"]\n",
+        ),
+        (
+            "runners/desktop.toml",
+            "Europe/Paris",
+            "Europe/Atlantis",
+            "runners/desktop.toml:4:67: \"Europe/Atlantis\" is not a time zone such as \"Europe/Paris\"\n",
+        ),
+    ];
+    for (index, (path, from, to, error)) in cases.into_iter().enumerate() {
+        let (trigger, runner) = match path {
+            "triggers/agent-label.toml" => (trigger.replace(from, to), runner.clone()),
+            _ => (trigger.clone(), runner.replace(from, to)),
+        };
+        let mut files = with("triggers/agent-label.toml", &trigger);
+        files.retain(|(path, _)| *path != "runners/desktop.toml");
+        files.push(("runners/desktop.toml", &runner));
+        let outcome = check(&factory(&format!("filters-bad-{index}"), &files));
+        assert_eq!(
+            (outcome.code, outcome.stderr.as_str()),
+            (1, error),
+            "{to:?}"
+        );
+    }
 }

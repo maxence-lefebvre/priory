@@ -24,6 +24,21 @@
       ],
       "type": "string"
     },
+    "FilterValue": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "description": "Any of these. Only the `state` of a `linear.project` trigger takes a list.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "What a trigger's filter takes for one key."
+    },
     "Hold": {
       "additionalProperties": false,
       "description": "Why a task is held, and the conditions that release it once all of them hold. With none, a\nperson does.",
@@ -60,6 +75,10 @@
             }
           ],
           "description": "Pull requests, `owner/name#42` or `42` in the task's repository: until each merges. One\nvalue or a list."
+        },
+        "parked": {
+          "description": "Parks a task keyed by a pull request: a comment or review trigger's request for that pull\nrequest releases it, and the pull request's merge or close ends it.",
+          "type": "boolean"
         },
         "reason": {
           "description": "Why the task waits, shown to a person.",
@@ -204,7 +223,7 @@
         "timeout": {
           "default": null,
           "description": "How long it may run, at most `60s`; 10 seconds when unset.",
-          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
           "type": "string"
         }
       },
@@ -284,14 +303,14 @@
     "every": {
       "default": null,
       "description": "How often a schedule fires again after `at`, the same day; once a day when unset.",
-      "pattern": "^0*[1-9][0-9]*[smh]$",
+      "pattern": "^0*[1-9][0-9]*[smhd]$",
       "type": "string"
     },
     "filter": {
       "additionalProperties": {
-        "type": "string"
+        "$ref": "#/definitions/FilterValue"
       },
-      "description": "Values an event must have: `label` for GitHub, or `author` and `commenter` for a comment or\nreview; `team`, `project` (its name or id), `label`, `state` for Linear; `text` for Slack.",
+      "description": "Values an event must have: `label` for GitHub, or `author` and `commenter` for a comment or\nreview; `team`, `project` (its name or id), `label`, `state` for Linear; `assignee` (a user id or email)\nand `state` (a list of state types) for `linear.project`; `text` for Slack.",
       "type": [
         "object",
         "null"
@@ -333,6 +352,18 @@
         "string",
         "null"
       ]
+    },
+    "labels": {
+      "additionalProperties": {
+        "pattern": "^[A-Za-z0-9_.:/-]+$",
+        "type": "string"
+      },
+      "default": null,
+      "description": "The labels of its tasks, such as `{ project = \"oss\" }`, which runner filters match.",
+      "propertyNames": {
+        "pattern": "^[a-z0-9][a-z0-9_.-]*$"
+      },
+      "type": "object"
     },
     "lane": {
       "description": "The lane of its tasks, `<team>/<theme>`; `lanes.toml` derives it when unset.",
@@ -382,6 +413,13 @@
       ],
       "description": "A script of the factory that runs on each matching event before it becomes a task request,\nand can drop the request or change it."
     },
+    "project": {
+      "description": "The Linear project a `linear.project` trigger reads: its UUID or its slug id.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "prompt": {
       "description": "What a schedule's firing tells the task it wakes.",
       "type": [
@@ -404,7 +442,7 @@
       ]
     },
     "source": {
-      "description": "`github`, `linear`, `linear.view`, `sentry`, `honeycomb`, `intercom`, `cloudwatch`, `figma`, `slack` or `schedule`.",
+      "description": "`github`, `linear`, `linear.view`, `linear.project`, `sentry`, `honeycomb`, `intercom`, `cloudwatch`, `figma`, `slack` or `schedule`.",
       "type": "string"
     },
     "staged": {
@@ -430,7 +468,7 @@
     },
     "until": {
       "description": "When a schedule's day of firings ends; the end of the day when unset.",
-      "pattern": "^(([01]?[0-9]|2[0-3]):[0-5][0-9]|0*[1-9][0-9]*[smh])$",
+      "pattern": "^(([01]?[0-9]|2[0-3]):[0-5][0-9]|0*[1-9][0-9]*[smhd])$",
       "type": "string"
     },
     "view": {

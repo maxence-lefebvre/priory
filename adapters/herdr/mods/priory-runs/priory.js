@@ -98,7 +98,7 @@ export function priory({ exec, binary = "priory-oss", on = null, factory = null 
       ...(top ? ["--top"] : before != null ? ["--before", String(before)] : after != null ? ["--after", String(after)] : []),
       ...expected(revision)]),
     // The shell command line that attaches a tmux client to the task's live run, quoted by priory.
-    // A read-only client watches: it cannot type, and leaves the agent's window size alone.
+    // A read-only client cannot type, and sizes the window only while no client that can type is attached.
     attach: async (/** @type {Id} */ task, { readOnly = false } = {}) => (await call(["attach", String(task), ...(readOnly ? ["--read-only"] : []), "--print"])).trim(),
   };
 }
@@ -151,12 +151,14 @@ export function autolink(text, links, repo) {
     const regex = /https:\/\/[^\s<>"`\]]+/gu;
     regex.lastIndex = from;
     for (let match = regex.exec(text); match; match = regex.exec(text)) {
-      let url = match[0];
-      for (let last = ""; last !== url;) {
-        last = url;
-        url = url.replace(/[.,;:!?'…]+$/u, "");
-        if (url.endsWith(")") && url.split(")").length > url.split("(").length) url = url.slice(0, -1);
+      let end = match[0].length;
+      let unclosed = match[0].split(")").length - match[0].split("(").length;
+      for (; end > 0; end -= 1) {
+        const last = match[0][end - 1];
+        if (last === ")" && unclosed > 0) unclosed -= 1;
+        else if (!".,;:!?'…".includes(last)) break;
       }
+      const url = match[0].slice(0, end);
       try {
         if (new URL(url).protocol === "https:") return { index: match.index, text: url, url };
       } catch {
@@ -357,6 +359,28 @@ export const routedMark = (ask) => (ask?.routed_to && (ask.state ?? "open") === 
 /** What an open ask's detail says of its lead, else null. @param {any} ask */
 export const routedNote = (ask) => (routedMark(ask) ? `${ask.routed_to} is answering. You can still answer first: the first answer stands.` : null);
 
+/** A plan file's path from its worktree, such as `.priory/brief.md`. @param {string} path */
+export const planName = (path) => path.slice(path.lastIndexOf("/.priory/") + 1);
+
+/** Whether an open ask of this runner approves its task's plan. Its Plan section then leads. @param {any} ask */
+export const plansFirst = (ask) => ask.state === "open" && Boolean(ask.approves_plan) && !runnerOf(ask);
+
+/** Whether `task`, as last read, lacks the plan this revision of the ask approves: no answer goes until it is read. @param {any} ask @param {any} task */
+export const planUnread = (ask, task) => plansFirst(ask) && !(task?.plan_file?.ask === ask.id && task.plan_file.revision === ask.revision);
+
+/** Each part of a plan: its file, else its result, with its text. @param {any} plan */
+export const planParts = (plan) => plan.files.map((/** @type {any} */ file) => ({ ...file, from: file.path ? planName(file.path) : `${plan.step}, run ${plan.run}` }));
+
+/** What stands beside the options of an ask whose plan, as read, is cut, else null. @param {any} ask @param {any} task */
+export const planCut = (ask, task) => {
+  if (!plansFirst(ask) || planUnread(ask, task)) return null;
+  const cut = planParts(task.plan_file).filter((/** @type {any} */ part) => part.truncated);
+  return cut.length ? `The plan is cut at 64 KB. Read the rest at ${cut.map((/** @type {any} */ part) => part.path || part.from).join(" and ")} before you answer.` : null;
+};
+
+/** Why an ask's options wait for its plan. @param {any} ask @param {string | null | undefined} error why the read failed */
+export const planWait = (ask, error) => (error ? `Could not read the plan: ${error}. It must load before you answer.` : `Reading the plan of revision ${ask.revision} before you answer.`);
+
 /** The runner of another runner's ask, which alone lists `submissions`, else null. @param {any} ask */
 export const runnerOf = (ask) => (Array.isArray(ask?.submissions) ? ask.runner : null);
 
@@ -401,7 +425,7 @@ export function submitted(ask) {
 }
 
 /** Who answered, as the views say it: a person, `agent:<lead>`, auto, or `session <name>` for a person's own session. Null when unrecorded. @param {string | null | undefined} by */
-export const answeredBy = (by) => (!by ? null : by.startsWith("agent:") ? by : by === "auto" ? "auto" : by.startsWith("session:") ? `session ${by.slice(8)}` : "a person");
+export const answeredBy = (by) => (!by ? null : by.startsWith("agent:") ? by : by === "auto" || by === "autopilot" ? by : by.startsWith("session:") ? `session ${by.slice(8)}` : "a person");
 
 const date = (/** @type {string} */ iso) => new Date(iso).toLocaleString("en", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 

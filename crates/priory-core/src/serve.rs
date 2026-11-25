@@ -151,6 +151,107 @@ const WEB_HEADERS: &str = "Content-Security-Policy: default-src 'none'; script-s
     worker-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'\r\nX-Content-Type-Options: nosniff\r\n\
     Referrer-Policy: no-referrer\r\n";
 
+/// What the server reads from the environment when it starts.
+struct Secrets {
+    token: String,
+    github: Option<Arc<Github>>,
+    linear: Option<Arc<LinearWebhook>>,
+    sentry: Option<Arc<SentryWebhook>>,
+    figma: Option<Arc<FigmaWebhook>>,
+    cloudwatch: Option<Arc<CloudwatchWebhook>>,
+    honeycomb: Option<Arc<HoneycombWebhook>>,
+    intercom: Option<Arc<IntercomWebhook>>,
+}
+
+impl Secrets {
+    fn read(factory: &Factory, config: &priory_factory::factory::Serve) -> Result<Secrets, String> {
+        let token = env(&config.token_env, "the token clients send")?;
+        let github = factory
+            .github_webhook()
+            .map(|hook| env(&hook.secret_env, "the GitHub webhook's secret"))
+            .transpose()?
+            .map(|secret| Github::new(secret, factory))
+            .transpose()?
+            .map(Arc::new);
+        let linear = factory
+            .linear_webhook()
+            .map(|hook| env(&hook.secret_env, "the Linear webhook's signing secret"))
+            .transpose()?
+            .map(|secret| LinearWebhook::new(secret, factory))
+            .transpose()?
+            .map(Arc::new);
+        let sentry = factory
+            .sentry_webhook()
+            .map(|hook| env(&hook.secret_env, "the Sentry integration's Client Secret"))
+            .transpose()?
+            .map(|secret| SentryWebhook::new(secret, factory))
+            .transpose()?
+            .map(Arc::new);
+        let figma = factory
+            .figma_webhook()
+            .map(|hook| env(&hook.secret_env, "the Figma webhook's passcode"))
+            .transpose()?
+            .map(|passcode| FigmaWebhook::new(passcode, factory))
+            .transpose()?
+            .map(Arc::new);
+        let cloudwatch = factory
+            .cloudwatch_webhook()
+            .map(|hook| {
+                env(
+                    &hook.secret_env,
+                    "the EventBridge connection's API key value",
+                )
+            })
+            .transpose()?
+            .map(|secret| CloudwatchWebhook::new(secret, factory))
+            .transpose()?
+            .map(Arc::new);
+        let honeycomb = factory
+            .honeycomb_webhook()
+            .map(|hook| env(&hook.secret_env, "the Honeycomb webhook's Shared Secret"))
+            .transpose()?
+            .map(|secret| HoneycombWebhook::new(secret, factory))
+            .transpose()?
+            .map(Arc::new);
+        let intercom = factory
+            .intercom_webhook()
+            .map(|hook| {
+                env(&hook.secret_env, "the Intercom app's client secret").and_then(|secret| {
+                    IntercomWebhook::new(secret, hook.workspace.clone(), factory)
+                })
+            })
+            .transpose()?
+            .map(Arc::new);
+        Ok(Secrets {
+            token,
+            github,
+            linear,
+            sentry,
+            figma,
+            cloudwatch,
+            honeycomb,
+            intercom,
+        })
+    }
+}
+
+/// Whether a daemon could start in this environment, where the one that runs holds `bound`.
+pub fn startable(factory: &Factory, bound: Option<SocketAddr>) -> Result<(), String> {
+    crate::metrics::groups(factory)?;
+    crate::otlp::headers(factory)?;
+    let Some(config) = factory.serve() else {
+        return Ok(());
+    };
+    config.allows(config.listen)?;
+    Secrets::read(factory, config)?;
+    if bound == Some(config.listen) {
+        return Ok(());
+    }
+    TcpListener::bind(config.listen)
+        .map(drop)
+        .map_err(|error| format!("listen on {}: {error}", config.listen))
+}
+
 /// Listens on `listen` and serves the state from a pool of threads, each with its own read-only
 /// connection. Refuses to start without the token or a state file it can read.
 pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Server, String> {
@@ -158,62 +259,16 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Server, String> {
         .serve()
         .ok_or("factory.toml has no [serve] table, so nothing listens")?;
     config.allows(listen)?;
-    let token = env(&config.token_env, "the token clients send")?;
-    let github = factory
-        .github_webhook()
-        .map(|hook| env(&hook.secret_env, "the GitHub webhook's secret"))
-        .transpose()?
-        .map(|secret| Github::new(secret, factory))
-        .transpose()?
-        .map(Arc::new);
-    let linear = factory
-        .linear_webhook()
-        .map(|hook| env(&hook.secret_env, "the Linear webhook's signing secret"))
-        .transpose()?
-        .map(|secret| LinearWebhook::new(secret, factory))
-        .transpose()?
-        .map(Arc::new);
-    let sentry = factory
-        .sentry_webhook()
-        .map(|hook| env(&hook.secret_env, "the Sentry integration's Client Secret"))
-        .transpose()?
-        .map(|secret| SentryWebhook::new(secret, factory))
-        .transpose()?
-        .map(Arc::new);
-    let figma = factory
-        .figma_webhook()
-        .map(|hook| env(&hook.secret_env, "the Figma webhook's passcode"))
-        .transpose()?
-        .map(|passcode| FigmaWebhook::new(passcode, factory))
-        .transpose()?
-        .map(Arc::new);
-    let cloudwatch = factory
-        .cloudwatch_webhook()
-        .map(|hook| {
-            env(
-                &hook.secret_env,
-                "the EventBridge connection's API key value",
-            )
-        })
-        .transpose()?
-        .map(|secret| CloudwatchWebhook::new(secret, factory))
-        .transpose()?
-        .map(Arc::new);
-    let honeycomb = factory
-        .honeycomb_webhook()
-        .map(|hook| env(&hook.secret_env, "the Honeycomb webhook's Shared Secret"))
-        .transpose()?
-        .map(|secret| HoneycombWebhook::new(secret, factory))
-        .transpose()?
-        .map(Arc::new);
-    let intercom = factory
-        .intercom_webhook()
-        .map(|hook| {
-            env(&hook.secret_env, "the Intercom app's client secret")
-                .and_then(|secret| IntercomWebhook::new(secret, hook.workspace.clone(), factory))
-        })
-        .transpose()?
-        .map(Arc::new);
+    let Secrets {
+        token,
+        github,
+        linear,
+        sentry,
+        figma,
+        cloudwatch,
+        honeycomb,
+        intercom,
+    } = Secrets::read(factory, config)?;
     drop(state::read_only()?);
     crate::pending::start(factory);
     let listener =
@@ -394,7 +449,11 @@ struct Served {
     /// The gates of each irreversible step, for the flows' `risk_estimate`.
     gates: crate::risk::Gates,
     schedules: Vec<(String, Trigger)>,
+    /// The requestable workflows: the Add controls' choices.
     workflows: Vec<String>,
+    /// The workflows `POST /api/request` refuses.
+    opted_out: Vec<String>,
+    default_workflow: Option<String>,
     /// `GET /api/request`: what the Add control prefills and offers.
     request: String,
     prices: BTreeMap<String, Price>,
@@ -421,11 +480,14 @@ impl Served {
             flows: listing::flows(factory),
             gates: crate::risk::Gates::of(factory),
             schedules: listing::schedule_triggers(factory),
-            workflows: factory.workflows.keys().cloned().collect(),
+            workflows: factory.requestable(),
+            opted_out: factory.not_requestable(),
+            default_workflow: factory.request().map(|defaults| defaults.workflow.clone()),
             request: serde_json::json!({
                 "workflow": factory.request().map(|defaults| &defaults.workflow),
                 "band": factory.request().and_then(|defaults| defaults.band.as_ref()),
-                "workflows": factory.workflows.keys().collect::<Vec<_>>(),
+                "workflows": factory.requestable(),
+                "opted_out": factory.not_requestable(),
                 "bands": factory.bands(),
             })
             .to_string(),
@@ -613,7 +675,9 @@ fn route(
         },
         "/api/queue" => match intake::now() {
             Ok(now) => listing::revised(db, "queue", |db| {
-                listing::queue(db, &served.schedules, &served.workflows, now).map(Some)
+                let offered = Some((&served.workflows[..], &served.opted_out[..]));
+                let default_workflow = served.default_workflow.as_deref();
+                listing::queue(db, &served.schedules, offered, default_workflow, now).map(Some)
             }),
             Err(error) => return Reply::error(500, &error),
         },
@@ -986,7 +1050,7 @@ fn write(
     if let Write::Memory(id, accept) = write {
         return decide_memory(db, remote, id, accept, request.body);
     }
-    let (line, sent) = match write_line(db, &write, request.body) {
+    let (line, sent) = match write_line(db, &write, request.body, &served.opted_out) {
         Ok(line) => line,
         Err(reply) => return reply,
     };
@@ -1001,6 +1065,7 @@ fn write(
                 .is_ok_and(|reply| reply.get("error").is_some());
             Reply::json(if repeated { 409 } else { 200 }, added)
         }
+        Ok(Ok(subscribed)) if matches!(write, Write::Subscribe) => Reply::json(200, subscribed),
         Ok(Ok(done)) => Reply::json(200, serde_json::json!({ "ok": done }).to_string()),
         Ok(Err(refused)) => refusal(db, sent, &refused),
         Err(error) => Reply::error(500, &format!("unreadable reply {reply:?}: {error}")),
@@ -1221,7 +1286,7 @@ fn remote_write(db: &Connection, remote: &Remote, write: &Write, body: &[u8]) ->
         let mirrored = runners::mirrored(db, runner, id)
             .map_err(|error| Reply::error(500, &error.to_string()))?
             .ok_or_else(gone)?;
-        if let Some(stale) = runners::stale(&mirrored, revision) {
+        if let Some(stale) = runners::stale(&mirrored, revision, kind == ASK_ANSWERED) {
             let body = serde_json::json!({ "error": stale, "ask": mirrored });
             return Err(Reply::json(409, body.to_string()));
         }
@@ -1366,7 +1431,12 @@ enum Sent {
 }
 
 /// The socket line of `write`, and the revision it was made on.
-fn write_line(db: &Connection, write: &Write, body: &[u8]) -> Result<(String, Sent), Reply> {
+fn write_line(
+    db: &Connection,
+    write: &Write,
+    body: &[u8],
+    opted_out: &[String],
+) -> Result<(String, Sent), Reply> {
     let bad = |error: serde_json::Error| Reply::error(400, &error.to_string());
     match write {
         Write::Answer(ask) => {
@@ -1453,6 +1523,12 @@ fn write_line(db: &Connection, write: &Write, body: &[u8]) -> Result<(String, Se
         }
         Write::Add => {
             let add: priory_intake::request::Add = serde_json::from_slice(body).map_err(bad)?;
+            if let Some(workflow) = add.workflow.as_ref().filter(|w| opted_out.contains(w)) {
+                let message = format!(
+                    "workflow `{workflow}` is not requestable: its file under workflows/ sets `requestable = false`"
+                );
+                return Err(Reply::error(400, &message));
+            }
             Ok((line(&serde_json::json!({ "add": add })), Sent::Nothing))
         }
         Write::Act(task, act) => {
@@ -1482,6 +1558,7 @@ fn write_line(db: &Connection, write: &Write, body: &[u8]) -> Result<(String, Se
                 hold: None,
                 text: body.text,
                 expected: body.revision,
+                now: false,
             };
             Ok((line(&act), Sent::Task(act.task, act.expected)))
         }
@@ -1951,7 +2028,7 @@ mod tests {
             body in r#"\{("revision": ?[0-9]{1,3}|"band": ?"[a-z]{0,6}"|"top": ?(true|false)|"before": ?[0-9]|"after": ?[0-9]|"x": ?1)(, ?("band": ?"[a-z]{0,6}"|"top": ?(true|false)|"before": ?[0-9]|"after": ?[0-9])){0,3}\}|.{0,40}"#
         ) {
             // A move reads nothing, so one migrated state serves every case.
-            let written = DB.with(|db| write_line(db, &Write::Move("2"), body.as_bytes()));
+            let written = DB.with(|db| write_line(db, &Write::Move("2"), body.as_bytes(), &[]));
             if let Ok((line, _)) = written {
                 let line: crate::state::MoveLine = serde_json::from_str(&line).unwrap();
                 prop_assert!(line.r#move.band.is_some() || line.r#move.place.is_some());
@@ -1963,7 +2040,7 @@ mod tests {
         fn a_label_body_becomes_one_mark_or_one_clear_or_is_refused(
             body in r#"\{("evidence": ?"[a-z:/.]{0,12}"|"happened": ?"[0-9-]{0,10}"|"clear": ?(true|false)|"x": ?1)(, ?("evidence": ?"[a-z:/]{0,8}"|"happened": ?"[0-9-]{0,10}"|"clear": ?(true|false))){0,2}\}|.{0,40}"#
         ) {
-            let written = DB.with(|db| write_line(db, &Write::Label("3"), body.as_bytes()));
+            let written = DB.with(|db| write_line(db, &Write::Label("3"), body.as_bytes(), &[]));
             if let Ok((line, _)) = written {
                 let line: crate::label::Line = serde_json::from_str(&line).unwrap();
                 prop_assert_eq!(line.label.clear, line.label.evidence.is_none());

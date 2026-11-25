@@ -1,21 +1,24 @@
 // Priory's web view (DESIGN.md): the frame, the Desk and the Asks, with answering through the CLI's verbs.
 // Agent text is untrusted: every value goes through `html`, which escapes it.
-import { ARM_MS, ASK_VIEWS, answeredAsks, answeredBy, askBody, askGroups, askHeading, confidenceNote, openAsksOf, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, optionKey, press, runsCommand, submitted, takesText, writeNote } from "./asks.js";
+import { ARM_MS, ASK_VIEWS, answeredAsks, answeredBy, askBody, askGroups, askHeading, confidenceNote, courseNote, openAsksOf, planCut, planParts, planUnread, planWait, plansFirst, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, optionKey, press, runsCommand, submitted, dismissable, writeNote, writeShown } from "./asks.js";
 import { SPLITS, attentionView, costTiles, dayBars, money, scoreTable, splitTable } from "./costs.js";
-import { addBody, addOutcome } from "./add.js";
+import { addBody, addOutcome, swapLine, withDefaults } from "./add.js";
 import { linked } from "./links.js";
 import { markdown } from "./markdown.js";
 import { around, dossier, nextPick, refusal } from "./reports.js";
 import { checkState, prStack, stateWords } from "./stack.js";
 import { KINDS, edgeStyle, historyRows, lockBadge, nodeShape, timeline, ungatedPairs } from "./flows.js";
-import { droppedNote, droppedWhy, emptyDetail, eventWords, handled, neverOwned, sinceWords, routeAction, unheardActs, unheardNote, unroutedNote } from "./inbox.js";
+import { droppedNote, droppedWhy, emptyDetail, eventWords, handled, neverOwned, requestedWorkflow, sinceWords, routeAction, unheardActs, unheardNote, unroutedNote } from "./inbox.js";
 import { editBody, issueName, laneLayout, momentWords, stages, successors } from "./batches.js";
 import { EARLIER_CAP, KEYS, keyboardSession, paintRows, sayLine, screenRows, screenWatch } from "./terminal.js";
 import { actionNote, arrivalAsk, batchParts, capsuleWords, countHead, countWords, deskBanners, dueParts, plural, memoryNote, memoryTag, mergeSince, nextLink, onRoom, progressView, rowAction, sectionInView, sinceGroups, taskRepo } from "./desk.js";
 import { TASK_VIEWS, elsewhere, filtered, olderPart, remoteActs, remoteId, remoteSent, taskFacets, taskLabel, taskViews, triageWords, workStep } from "./tasks.js";
 import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "./runs.js";
 import { PANELS, TYPED_FIELDS, backTo, pageTitle, taskRead } from "./pages.js";
+import { confirmPush, kindBoxes, saveKinds } from "./push.js";
 import { QUEUE_VIEWS, moveOptions, queueBands, waitReason } from "./queue.js";
+import { client, land, params, readAll, sameListings } from "./queries.js";
+import { go } from "./router.js";
 
 const ICONS = {
   check: '<path d="M20 6 9 17l-5-5"/>',
@@ -148,7 +151,8 @@ const state = {
   drawn: null,
   // The last list the person opened; a task or batch page opened next keeps it in its history entry.
   from: null,
-  snapshot: null,
+  // The listings drawn last, as the query cache holds them.
+  listings: null,
   rendered: 0,
   scrolls: new Map(),
   observers: [],
@@ -209,7 +213,7 @@ const state = {
   // The Add sheet: its draft and chips, the server's defaults, and where the last send got to.
   // Notifications on this device: its status, a request in flight, and why the last one failed.
   // check counts status reads, so a read that a tap or a newer read overtook is dropped.
-  push: { status: null, busy: false, error: null, check: 0, checking: false },
+  push: { status: null, kinds: null, busy: false, error: null, check: 0, checking: false },
   // The browser's install prompt, kept until the person taps Install.
   install: null,
   // Since you looked: the events the Desk opened on and each newer one, the visit they start
@@ -241,7 +245,14 @@ async function api(path) {
   return response.json();
 }
 
-async function refresh() {
+// The server data lives in one QueryClient; refresh() reads it again.
+export const cache = client();
+// What the long poll waits on: none while signed out or before the first read.
+export const revision = () => (state.token ? state.revision : undefined);
+export const revisionMoved = () => watch.revision();
+export { api, render };
+
+export async function refresh() {
   if (!state.token) return render();
   const failed = state.failed;
   const call = ++state.refreshes;
@@ -252,44 +263,14 @@ async function refresh() {
     runs: current() === "runs" && listView(RUN_VIEWS) === "recent",
   };
   for (const listing of ["asks", "tasks", "runs"]) state.all[listing] &&= history[listing];
+  const asked = params(state.all, state.reportShown);
   try {
-    // The server reads the views once, when it starts.
-    const views = (!state.cached && state.data?.views) || (await api("/api/views"));
-    const links = (!state.cached && state.data?.links) || (await api("/api/links")).links;
-    const full = (listing) => (state.all[listing] ? `/api/${listing}?all=1` : `/api/${listing}`);
     // Taken before the read, so an event between that read and the visit still shows next time.
     const read = new Date().toISOString().replace(/\.\d+Z$/, "Z");
-    // `report` is null until the first `priory report put`; a report the arrows reached may be gone.
-    const shown = api(state.reportShown == null ? "/api/reports/latest" : `/api/reports/${state.reportShown}`)
-      .then((found) => (found.report ? found : null))
-      .catch((error) => (error.status === 404 ? null : Promise.reject(error)));
-    const listed = api("/api/reports").then((read) => read.reports);
-    const [desk, asksList, queue, tasksList, runsList, report, reports] = await Promise.all([...["/api/desk", full("asks"), "/api/queue", full("tasks"), full("runs")].map(api), shown, listed]);
+    const listings = await readAll(cache, api, asked);
     // A later call, such as the one that loads older rows, supersedes this one.
     if (call !== state.refreshes) return true;
-    const [asks, tasks, runs] = [asksList.asks, tasksList.tasks, runsList.runs];
-    const older = { asks: asksList.older, tasks: tasksList.older, runs: runsList.older };
-    if (!state.since.opened) Object.assign(state.since, { opened: read, from: desk.last_visit });
-    state.since.events = mergeSince(state.since.events, desk.since_you_looked);
-    // The listings are read one after another; the oldest revision makes the next wait catch what they missed.
-    state.revision = Math.min(desk.revision, asksList.revision, queue.revision, tasksList.revision, runsList.revision, report?.revision ?? Infinity);
-    const snapshot = JSON.stringify([desk, asks, queue, tasks, runs, older, report, reports]);
-    state.updated = Date.now();
-    state.failed = null;
-    state.cached = false;
-    if (current() === "costs") loadCosts();
-    if (current() === "inbox") loadUnrouted();
-    // Ages read in minutes, so an unchanged state needs a new paint once a minute at most.
-    if (state.data && snapshot === state.snapshot && !failed && Date.now() - state.rendered < 60000) return keep(), true;
-    const before = state.data ? new Set(state.data.asks.filter((ask) => ask.state === "open").map((ask) => ask.id)) : null;
-    // The Costs panel reads its own reports; a refresh keeps the last ones.
-    state.data = { views, links, desk, asks, bands: asksList.bands, queue, tasks, runs, older, report, reports, spend: state.data?.spend ?? null, flows: state.data?.flows ?? null };
-    acceptReport();
-    if (state.task) state.task.stale = true;
-    if (state.batch) state.batch.stale = true;
-    state.snapshot = snapshot;
-    keep();
-    announce(before);
+    if (!accept(land(cache, listings, asked), { read, failed })) return true;
   } catch (error) {
     // A superseded call, such as one from before a sign-out, must not sign the new session out.
     if (call !== state.refreshes) return true;
@@ -299,6 +280,34 @@ async function refresh() {
     return false;
   }
   render();
+  return true;
+}
+
+// Takes a read's listings into state, and says whether to draw them. A listing that did not change
+// is the same object, so a read with nothing new only repaints the ages, once a minute at most.
+function accept(listings, { read, failed }) {
+  const { views, links, desk, asks: asksList, queue, tasks: tasksList, runs: runsList, report, reports } = listings;
+  if (!state.since.opened) Object.assign(state.since, { opened: read, from: desk.last_visit });
+  state.since.events = mergeSince(state.since.events, desk.since_you_looked);
+  // The listings are read one after another; the oldest revision makes the next wait catch what they missed.
+  state.revision = Math.min(desk.revision, asksList.revision, queue.revision, tasksList.revision, runsList.revision, report?.revision ?? Infinity);
+  state.updated = Date.now();
+  state.failed = null;
+  state.cached = false;
+  if (current() === "costs") loadCosts();
+  if (current() === "inbox") loadUnrouted();
+  if (state.data && sameListings(listings, state.listings) && !failed && Date.now() - state.rendered < 60000) return keep(), false;
+  const before = state.data ? new Set(state.data.asks.filter((ask) => ask.state === "open").map((ask) => ask.id)) : null;
+  const [asks, tasks, runs] = [asksList.asks, tasksList.tasks, runsList.runs];
+  const older = { asks: asksList.older, tasks: tasksList.older, runs: runsList.older };
+  // The Costs panel reads its own reports; a refresh keeps the last ones.
+  state.data = { views, links, desk, asks, bands: asksList.bands, queue, tasks, runs, older, report, reports, spend: state.data?.spend ?? null, flows: state.data?.flows ?? null };
+  acceptReport();
+  if (state.task) state.task.stale = true;
+  if (state.batch) state.batch.stale = true;
+  state.listings = listings;
+  keep();
+  announce(before);
   return true;
 }
 
@@ -315,12 +324,17 @@ function keep() {
   } catch {}
 }
 
+// The service worker reads the same copy when the push service replaces the subscription.
+const KEPT_KINDS = "/api/worker/kinds";
+
 // The service worker cannot read local storage, so it gets its own copy of the token to tell the
-// daemon about a subscription the push service replaced. Signing out drops it.
+// daemon about a subscription the push service replaced. Signing out drops it, and the kept kinds.
 function keepTokenForWorker(token) {
   if (!("caches" in window)) return;
   caches.open("priory-push")
-    .then((cache) => (token ? cache.put("/api/worker/token", new Response(token)) : cache.delete("/api/worker/token")))
+    .then((cache) => token
+      ? cache.put("/api/worker/token", new Response(token))
+      : Promise.all(["/api/worker/token", KEPT_KINDS].map((key) => cache.delete(key))))
     .catch(() => {});
 }
 if (state.token) keepTokenForWorker(state.token);
@@ -333,16 +347,14 @@ function signOut(reason) {
   watch.stop();
   // Before the token goes: giving the keyboard back needs it.
   keyboard.leave();
-  Object.assign(state, { token: null, data: null, snapshot: null, revision: undefined, signInError: reason, drawn: null, flowsError: null, all: { asks: false, tasks: false, runs: false }, costs: { by: "workflow", loading: false, slow: false, error: null } });
+  cache.clear();
+  Object.assign(state, { token: null, data: null, listings: null, revision: undefined, signInError: reason, drawn: null, flowsError: null, all: { asks: false, tasks: false, runs: false }, costs: { by: "workflow", loading: false, slow: false, error: null } });
   render();
 }
 
 // Routes: /, /asks, /asks/42, /tasks, /more, /settings/appearance
+// go() moves the route main.jsx renders.
 const route = () => location.pathname.split("/").filter(Boolean);
-function go(path) {
-  history.pushState(null, "", path);
-  render();
-}
 
 const layout = () => (matchMedia("(min-width: 1024px)").matches ? "wide" : matchMedia("(min-width: 600px)").matches ? "medium" : "compact");
 
@@ -810,9 +822,16 @@ async function subscribeTask(resource, task) {
 }
 
 // The Add sheet with the server's text, whose URL keys the new task by the group's resource.
-function requestTask(text, workflow) {
-  state.add.draft.text = text;
-  if (workflow) state.add.draft.workflow = workflow;
+async function requestTask(text, workflow) {
+  await readAddDefaults();
+  // The person may have opened the sheet and typed while the read ran.
+  if (addSheet().open) return renderAdd();
+  const { draft, defaults } = state.add;
+  draft.text = text;
+  const offered = requestedWorkflow(workflow, defaults?.opted_out);
+  if (offered === undefined) delete draft.workflow;
+  else draft.workflow = offered;
+  state.add.swapped = offered === undefined ? workflow : null;
   keepDraft();
   openAdd();
 }
@@ -1148,14 +1167,13 @@ function askDetail(id, wide) {
   const bound = `${runnerOf(ask) ? `Runs on ${runnerOf(ask)}. ` : ""}Bound to revision ${ask.revision}.`;
   const optionButtons = optionList(ask, wide);
   const notice = state.notices.get(ask.id);
+  const planError = planErrorOf(ask);
   const lockedNote = locked === "offline" ? html`<p class="note" id="answer-locked">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>`
-    : locked ? html`<p class="note" id="answer-locked">${icon("layers", "s15")}<span>${state.batch?.error ? `Could not read the plan: ${state.batch.error}. It must load before you answer.` : `Reading the plan of revision ${ask.revision} before you answer.`}</span></p>` : "";
-  const writing = state.writing.has(ask.id) && !locked;
-  const write = !takesText(ask)
-    ? ""
-    : writing
+    : locked ? html`<p class="note" id="answer-locked">${icon("layers", "s15")}<span>${planWait(ask, planError)}</span></p>` : cutNote(ask);
+  const shown = writeShown(state.writing.has(ask.id), locked, Boolean(pending));
+  const write = shown === "form"
     ? html`<form class="writeform" data-action="send-text"><label class="sr" for="draft">Your answer</label><textarea id="draft" name="text" rows="3">${state.drafts.get(ask.id) || ""}</textarea><button class="btn primary" ${pending ? raw('aria-disabled="true"') : ""}>Send</button></form>`
-    : html`<button class="ghost write" data-action="write" aria-disabled="${locked || pending ? "true" : "false"}">${icon("pencil", "s15")}Write an answer</button>`;
+    : html`<button class="ghost write" data-action="write" aria-disabled="${shown === "disabled" ? "true" : "false"}">${icon("pencil", "s15")}Write an answer</button>`;
   const busy = pending ? "true" : "false";
   const snoozeButtons = !ask.task || runnerOf(ask) || locked === "offline"
     ? ""
@@ -1164,7 +1182,7 @@ function askDetail(id, wide) {
       : html`<button class="ghost" data-action="snooze" data-for="1h" aria-disabled="${busy}">Snooze 1 h</button><button class="ghost" data-action="snooze" data-tomorrow="9" aria-disabled="${busy}">Snooze until tomorrow 09:00</button>`;
   const editable = Boolean(batch) && ask.state === "open" && batch.state === "asked" && !locked;
   const editPlanLink = editable ? html`<a class="ghost" href="#batchplan">${icon("pencil", "s15")}Edit the plan</a>` : "";
-  const more = html`<div class="more">${editPlanLink}${write}${locked || !takesText(ask) ? "" : html`<button class="ghost" data-action="dismiss" aria-disabled="${busy}">Dismiss</button>`}${snoozeButtons}</div>`;
+  const more = html`<div class="more">${editPlanLink}${write}${locked || !dismissable(ask) ? "" : html`<button class="ghost" data-action="dismiss" aria-disabled="${busy}">Dismiss</button>`}${snoozeButtons}</div>`;
   const owner = runnerOf(ask);
   const away = seenAgo(ask, Date.now(), age);
   const sent = sentNote(ask);
@@ -1191,8 +1209,11 @@ function askDetail(id, wide) {
     ...(batch.closes?.length ? [["closes", "Closes", closesSection(batch)]] : []),
     ...(splitsOf(batch).length ? [["splits", "Splits", splitsSection(batch)]] : []),
   ] : [];
-  const read = taskSections(taskOf(ask)).filter(([key]) => !batch || key !== "plan");
-  const sections = [...planned.map(([key, label]) => [key, label]), ["why", "Why"], ...read.map(([key, label]) => [key, label]), ["history", "History"], ...(ask.command ? [["command", "Command"]] : [])];
+  const task = taskOf(ask);
+  const sectionsRead = taskSections(task).filter(([key]) => key !== "plan" || (!batch && !planUnread(ask, task)));
+  const lead = batch || !plansFirst(ask) ? [] : sectionsRead.filter(([key]) => key === "plan");
+  const read = sectionsRead.filter((section) => !lead.includes(section));
+  const sections = [...planned.map(([key, label]) => [key, label]), ...lead.map(([key, label]) => [key, label]), ["why", "Why"], ...read.map(([key, label]) => [key, label]), ["history", "History"], ...(ask.command ? [["command", "Command"]] : [])];
   const jump = html`<nav class="jump" aria-label="Sections">${sections.map(([key, label], i) => html`<a href="#${key}" aria-current="${i === 0 ? "true" : "false"}">${label}</a>`)}</nav>`;
   const why = html`<section class="sect" id="why"><div class="sh">${icon("message-text", "s15")}What the agent asks<span class="meta">${ask.run ? html`run <span class="mono">${ask.run}</span>` : ""}</span></div>
     ${body ? html`<p class="asked">${autolinked(body, ask.repo)}</p>` : ""}
@@ -1227,10 +1248,10 @@ function askDetail(id, wide) {
       <button id="bar-answer" class="btn primary ${barArmed ? "armed" : ""}" data-answer="${options.indexOf(recommended)}" aria-disabled="${locked ? "true" : "false"}">${barArmed
         ? armedLabel(recommended, runsCommand(ask, recommended))
         : html`<span>${recommended}</span><small>${[recommended === ask.recommendation ? "Recommended" : "First option", runsCommand(ask, recommended) && "Runs a command"].filter(Boolean).join(". ")}</small>`}</button>
-      ${locked === "offline" ? html`<p class="note">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>` : ""}</div>`
+      ${locked === "offline" ? html`<p class="note">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>` : locked ? html`<p class="note">${icon("layers", "s15")}<span>${planWait(ask, planError)}</span></p>` : cutNote(ask)}</div>`
     : "";
   const reading = read.map(([, , section]) => section);
-  const plan = planned.map(([, , section]) => section);
+  const plan = [...planned, ...lead].map(([, , section]) => section);
   if (wide) return html`<div class="pinned">${header}${top}${sending}</div><div class="scroll" data-sections>${jump}${plan}${why}${reading}${history}${command}</div>`;
   return html`${header}<div class="scroll" data-sections>${top}${jump}${plan}${why}${reading}${history}${command}</div>${bar}${sending}`;
 }
@@ -1277,11 +1298,19 @@ function batchOf(which, version = null) {
   return state.batch.body;
 }
 
-// Why the options of an ask are disabled: offline, or a batch's ask whose plan is not read yet for
-// this revision, so a Go never answers a plan the page did not show.
+const planErrorOf = (ask) => (ask.approves_plan ? taskRead(state.task, ask.task).task : state.batch)?.error;
+
+const cutNote = (ask) => {
+  const cut = planCut(ask, state.task?.id === ask.task ? state.task.body : null);
+  return cut ? html`<p class="note warn">${icon("file-text", "s15")}<span>${cut}</span></p>` : "";
+};
+
+// Why the options of an ask are disabled: offline, or an ask whose plan is not read yet for this
+// revision, so no answer approves a plan the page did not show.
 function lockOf(ask) {
   if (state.failed) return "offline";
   if (runnerOf(ask)) return null;
+  if (planUnread(ask, state.task?.id === ask.task ? state.task.body : null)) return "plan";
   const read = state.batch?.which === ask.key && state.batch.version === ask.revision && state.batch.body;
   return ask.state === "open" && ask.key?.startsWith("batch:") && !read ? "plan" : null;
 }
@@ -1522,7 +1551,7 @@ function taskAsks(task) {
 }
 
 // Who answered, as the answered row's icon and what a screen reader reads of it.
-const ANSWERERS = { auto: ["cog", "Answered by auto"], agent: ["cog", "Answered by an agent"], session: ["terminal", "Answered from a session"], person: ["user", "Answered by a person"] };
+const ANSWERERS = { auto: ["cog", "Answered by auto"], autopilot: ["cog", "Answered by autopilot"], agent: ["cog", "Answered by an agent"], session: ["terminal", "Answered from a session"], person: ["user", "Answered by a person"] };
 
 const confidenceBars = (row) => html`<span class="bars" role="img" aria-label="Confidence ${row.confidence}">${[1, 2, 3].map((n) => raw(n <= row.bars ? '<i class="on"></i>' : "<i></i>"))}</span>`;
 
@@ -1538,15 +1567,15 @@ function taskAnswered(task) {
       : ask.answerer === "person" ? ` by ${ask.by}` : html` by <b>${ask.by}</b>`;
     const answered = html`<p class="said">Answered <b>${ask.answer}</b>${by}${ask.recommended == null ? "" : `. Recommended ${ask.recommended}.`}</p>`;
     const head = raw(`<svg class="ico who" viewBox="0 0 24 24" role="img" aria-label="${label}">${ICONS[name]}</svg>`);
-    if (ask.answerer !== "auto") {
+    if (ask.answerer !== "auto" && ask.answerer !== "autopilot") {
       const sure = ask.confidence ? html`<p class="sure dim">${confidenceBars(ask)}${ask.confidence}${ask.rationale ? `: ${ask.rationale}` : ""}</p>` : "";
       return html`<li>${head}<div><p class="aq">${ask.title}</p>${answered}${sure}</div>${timeTag(ask.at)}</li>`;
     }
-    const sure = ask.confidence ? html`<p class="sure">${confidenceBars(ask)}<span><b>${ask.confidence}</b> ${confidenceNote(task.auto_answer)}</span></p>` : "";
-    const why = [["Why", ask.rationale], ["Trade-off", ask.tradeoff], ["The ask", ask.question !== ask.title ? ask.question : null]].filter(([, text]) => text);
+    const sure = ask.confidence ? html`<p class="sure">${confidenceBars(ask)}<span><b>${ask.confidence}</b> ${confidenceNote(ask.answerer === "auto" ? task.auto_answer : null)}</span></p>` : "";
+    const why = [["Why", ask.rationale], ["Autopilot", ask.why], ["Trade-off", ask.tradeoff], ["The ask", ask.question !== ask.title ? ask.question : null]].filter(([, text]) => text);
     const reasons = why.length ? html`<dl class="why">${why.map(([term, text]) => html`<dt>${term}</dt><dd>${text}</dd>`)}</dl>` : "";
     return html`<li class="auto">${head}<div><p class="aq">${ask.title}</p>${answered}${sure}${reasons}
-      <p class="course"><span>The first answer stands. To change course, tell the agent.</span>${live ? html`<a href="#say">Say to the agent</a>` : ""}<a href="/asks/${encodeURIComponent(ask.id)}">Open ask ${ask.id}</a></p></div>${timeTag(ask.at)}</li>`;
+      <p class="course"><span>${courseNote(ask.answerer, ask.confidence)}</span>${live ? html`<a href="#say">Say to the agent</a>` : ""}<a href="/asks/${encodeURIComponent(ask.id)}">Open ask ${ask.id}</a></p></div>${timeTag(ask.at)}</li>`;
   };
   return html`<section class="answered" aria-labelledby="answered-head"><div class="ah"><h2 id="answered-head">Answered asks</h2><span class="meta">${rows.length}${rows.length > 1 ? ", newest first" : ""}</span></div>
     <ol class="arows">${rows.map(row)}</ol></section>`;
@@ -1568,7 +1597,14 @@ function taskSections(task) {
     const criteria = progress.criteria.length ? html`<p class="meta">Acceptance criteria</p><ol class="hist crit">${progress.criteria.map((criterion) => html`<li><span class="mono">${criterion.id}</span><span>${autolinked(criterion.description, task.repo)}</span><span class="tag">${criterion.state}</span></li>`)}</ol>` : "";
     sections.push(["progress", "Progress", sect("progress", "check", "Progress", "", html`${line("Goal", progress.goal)}${criteria}${line("Latest change", progress.latestChange)}${line("Next", progress.nextAction)}`)]);
   }
-  if (task.plan) sections.push(["plan", "Plan", sect("plan", "check", "Plan", `${task.plan.step}, run ${task.plan.run}`, md(task.plan.summary, task.repo))]);
+  const file = task.plan_file;
+  if (file) {
+    const [first, ...others] = planParts(file).map((part) => ({
+      meta: html`<span class="mono" title="${part.path || ""}">${part.from}</span>`,
+      body: html`${md(part.text, task.repo)}${part.truncated ? html`<p class="note">${icon("file-text", "s15")}<span>Showing the first 64 KB. Read the rest at ${part.path || part.from}.</span></p>` : ""}`,
+    }));
+    sections.push(["plan", "Plan", sect("plan", "check", "Plan", first.meta, html`${first.body}${others.map(({ meta, body }) => html`<div class="sh">${icon("check", "s15")}Plan<span class="meta">${meta}</span></div>${body}`)}`)]);
+  } else if (task.plan) sections.push(["plan", "Plan", sect("plan", "check", "Plan", `${task.plan.step}, run ${task.plan.run}`, md(task.plan.summary, task.repo))]);
   const pr = task.pull_request;
   if (pr) {
     sections.push(["pr", "PR", sect("pr", "workflow", `#${pr.number} ${pr.title || ""}`, stateWords(pr.review),
@@ -2380,17 +2416,25 @@ const keepDraft = () => localStorage.setItem(DRAFT_KEY, JSON.stringify({ draft: 
 // Lanes have no list of their own: the chip offers each lane a listed task carries.
 const knownLanes = () => [...new Set([...state.data.tasks, ...state.data.queue.waiting].map((task) => task.lane).filter(Boolean))].sort();
 
+// The factory may reload while the page is open; a read that fails keeps the last one.
+async function readAddDefaults() {
+  state.add.defaults = await api("/api/request").catch(() => state.add.defaults);
+}
+
 async function openAdd() {
   if (!state.data || addSheet().open) return;
   if (state.add.phase === "added") Object.assign(state.add, { phase: "empty", task: null });
-  if (!state.add.defaults) {
-    state.add.defaults = await api("/api/request").catch(() => null);
-    const { draft, defaults } = state.add;
-    if (defaults && draft.workflow === undefined) Object.assign(draft, { workflow: defaults.workflow || "", band: defaults.band || "" });
-  }
+  const before = state.add.defaults;
+  const read = readAddDefaults();
+  if (!before) await read;
+  const { defaults } = state.add;
+  if (addSheet().open) return renderAdd();
   renderAdd();
   addSheet().showModal();
   document.getElementById("add-text")?.focus();
+  await read;
+  // A redraw closes an open picker, so only a changed list draws again.
+  if (addSheet().open && JSON.stringify(state.add.defaults) !== JSON.stringify(defaults)) renderAdd();
 }
 
 function closeAdd() {
@@ -2413,7 +2457,7 @@ function renderSheet() {
   if (!ask || ask.state !== "open" || state.pending) return sheet.close();
   const focused = document.activeElement?.closest?.("#answer") ? focusKey(document.activeElement) : null;
   sheet.innerHTML = html`<div class="shead"><h2 id="answer-title">Answer ask #${ask.id}<small>revision ${ask.revision}</small></h2><button class="iconbtn" data-action="sheet-close" aria-label="Close">${icon("x", "s20")}</button></div>
-    <div class="opts" role="group" aria-label="Options">${optionList(ask, false)}</div>`.text;
+    <div class="opts" role="group" aria-label="Options">${optionList(ask, false)}</div>${cutNote(ask)}`.text;
   if (focused) sheet.querySelector(focused)?.focus();
 }
 
@@ -2444,7 +2488,8 @@ const ADD_LINES = {
 function renderAdd() {
   const sheet = addSheet();
   if (!sheet) return;
-  const { draft, phase, error, defaults } = state.add;
+  const { phase, error, defaults, swapped } = state.add;
+  const draft = withDefaults(state.add.draft, defaults);
   const sending = phase === "sending";
   const back = !state.failed && ["offline", "unsure"].includes(phase);
   const status = phase === "refused"
@@ -2458,8 +2503,8 @@ function renderAdd() {
   const label = sending ? "Adding…" : back ? "Send" : state.failed ? "Keep draft" : "Add";
   const body = phase === "added" ? addedTask() : html`<form data-action="add" ${sending ? raw('aria-busy="true"') : ""}>
     <label class="sr" for="add-text">What should the factory do?</label>
-    <input id="add-text" name="text" autocomplete="off" enterkeyhint="send" placeholder="What should the factory do?" value="${draft.text}" ${sending ? raw("readonly") : ""} ${status ? raw('aria-describedby="add-status"') : ""}>
-    ${status}
+    <input id="add-text" name="text" autocomplete="off" enterkeyhint="send" placeholder="What should the factory do?" value="${draft.text}" ${sending ? raw("readonly") : ""} ${status || swapped ? raw('aria-describedby="add-status add-swapped"') : ""}>
+    ${status}${swapped ? html`<p class="warnline" id="add-swapped">${icon("circle-alert", "s15")}<span>${swapLine(swapped, defaults?.workflow)}</span></p>` : ""}
     <div class="chips">${chip("workflow", "Workflow", draft.workflow, defaults?.workflows || [], defaults?.workflow ? `default (${defaults.workflow})` : "pick one")}
       ${chip("band", "Band", draft.band, defaults?.bands || state.data?.bands || [], "default")}
       ${chip("lane", "Lane", draft.lane, state.data ? knownLanes() : [], "routed")}</div>
@@ -2475,7 +2520,7 @@ function renderAdd() {
 
 async function submitAdd() {
   const { draft, phase } = state.add;
-  const body = addBody(draft);
+  const body = addBody(withDefaults(draft, state.add.defaults));
   if (!body || phase === "sending") return;
   // Offline, Enter only keeps the draft; it goes once the person confirms it after reconnecting.
   if (state.failed) {
@@ -2496,8 +2541,8 @@ async function submitAdd() {
     return signOut("The daemon refused this token. Paste the current one.");
   }
   if (outcome.state === "added") {
-    const { defaults } = state.add;
-    state.add.draft = { text: "", workflow: defaults?.workflow || "", band: defaults?.band || "", lane: "" };
+    state.add.draft = { text: "" };
+    state.add.swapped = null;
     state.add.task = { key: outcome.key, id: outcome.id, body: null };
     localStorage.removeItem(DRAFT_KEY);
     if (outcome.id !== null) api(`/api/tasks/${outcome.id}`).then((task) => { if (state.add.task?.id === outcome.id) { state.add.task.body = task; renderAdd(); } }, () => {});
@@ -2510,8 +2555,7 @@ async function submitAdd() {
 }
 
 function discardAdd() {
-  const { defaults } = state.add;
-  Object.assign(state.add, { phase: "empty", error: null, draft: { text: "", workflow: defaults?.workflow || "", band: defaults?.band || "", lane: "" } });
+  Object.assign(state.add, { phase: "empty", error: null, swapped: null, draft: { text: "" } });
   localStorage.removeItem(DRAFT_KEY);
   renderAdd();
   document.getElementById("add-text")?.focus();
@@ -2675,20 +2719,36 @@ const settingsScreen = () => (route()[1] === "notifications" ? notifications() :
 // iOS lets only a Home Screen web app subscribe, so Safari in a tab lacks PushManager.
 const iosTab = () => /iPhone|iPad|iPod/.test(navigator.userAgent) && !navigator.standalone;
 
+const pushIo = {
+  send: (body) => post("/api/push/subscribe", body),
+  async kept() {
+    const hit = await (await caches.open("priory-push")).match(KEPT_KINDS);
+    return hit ? hit.json().catch(() => null) : null;
+  },
+  async keep(kinds) {
+    const cache = await caches.open("priory-push");
+    if (!kinds) return cache.delete(KEPT_KINDS);
+    return cache.put(KEPT_KINDS, new Response(JSON.stringify(kinds)));
+  },
+};
+
 async function pushStatus() {
-  if (!window.isSecureContext) return "insecure";
-  if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) return iosTab() ? "install" : "unsupported";
-  if (Notification.permission === "denied") return "blocked";
+  if (!window.isSecureContext) return { status: "insecure" };
+  if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
+    return { status: iosTab() ? "install" : "unsupported" };
+  }
+  if (Notification.permission === "denied") return { status: "blocked" };
   const registration = await navigator.serviceWorker.ready;
   const subscription = await registration.pushManager.getSubscription();
-  if (!subscription) return "off";
+  if (!subscription) return { status: "off" };
   // The browser keeps a subscription the daemon may have dropped or never stored: send it again.
   // Only the daemon's refusal ends it; a dropped connection or a stopped daemon proves nothing.
-  const { status } = await post("/api/push/subscribe", subscription.toJSON()).catch(() => ({ status: 0 }));
-  if (status === 200) return "on";
-  if (status !== 422) return "unconfirmed";
+  const { status, kinds, confirmed } = await confirmPush(subscription.toJSON(), pushIo)
+    .catch(() => ({ status: 0, kinds: null, confirmed: false }));
+  if (status === 200) return { status: confirmed ? "on" : "unconfirmed", kinds };
+  if (status !== 422) return { status: "unconfirmed" };
   await subscription.unsubscribe().catch(() => {});
-  return "off";
+  return { status: "off" };
 }
 
 const PUSH_NOTES = {
@@ -2705,12 +2765,12 @@ function notifications() {
   if (status === null && !state.push.checking) {
     const check = ++state.push.check;
     state.push.checking = true;
-    const settle = (found) => {
+    const settle = ({ status, kinds = null }) => {
       if (check !== state.push.check) return;
-      Object.assign(state.push, { status: found, checking: false });
+      Object.assign(state.push, { status, kinds, checking: false });
       render();
     };
-    pushStatus().then(settle, () => settle("unsupported"));
+    pushStatus().then(settle, () => settle({ status: "unsupported" }));
   }
   const button = status === "on" || status === "unconfirmed"
     ? html`<button class="btn secondary" data-action="push-off" aria-disabled="${busy}">Turn off notifications</button>`
@@ -2721,9 +2781,10 @@ function notifications() {
     : "";
   return html`<div class="scroll"><div class="screen">
     <h1>Notifications</h1>
-    <p>Get a notification on this device when an agent asks you something, or when a task is blocked or failed. It shows the ask's title and opens the ask. A snoozed item sends nothing.</p>
+    <p>Get a notification on this device when something waits on you. It shows a title and opens the item. A snoozed item sends nothing.</p>
     ${PUSH_NOTES[status] ? html`<p class="note" role="status">${icon(status === "on" ? "check" : "unplug", "s15")}<span>${PUSH_NOTES[status]}</span></p>` : ""}
     ${error ? html`<p class="note warn" role="alert">${icon("unplug", "s15")}<span>${error}</span></p>` : ""}
+    ${status === "on" ? raw(kindBoxes(state.push.kinds, busy)) : ""}
     ${button ? html`<div class="push-row">${button}</div>` : ""}
     ${install}</div></div>`;
 }
@@ -2746,13 +2807,13 @@ async function turnPush(on) {
       const subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(key) });
       // A browser subscription the daemon never stored would read "On" and get nothing.
       try {
-        const { status, body } = await post("/api/push/subscribe", subscription.toJSON());
+        const { status, body, kinds, confirmed } = await confirmPush(subscription.toJSON(), pushIo);
         if (status !== 200) throw new Error(body.error || `the server answered ${status}`);
+        Object.assign(state.push, { kinds, status: confirmed ? "on" : "unconfirmed" });
       } catch (error) {
         await subscription.unsubscribe().catch(() => {});
         throw error;
       }
-      state.push.status = "on";
       return;
     }
     const subscription = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
@@ -2766,6 +2827,27 @@ async function turnPush(on) {
     const verb = on ? "turn on" : "turn off";
     const why = error instanceof TypeError ? "the connection dropped" : error.message;
     state.push.error = `Could not ${verb} notifications: ${why}. Check that the daemon runs, then try again.`;
+  } finally {
+    state.push.busy = false;
+    render();
+  }
+}
+
+// A refused save shows the choice as it was. A lost reply proves nothing, so the boxes hide until the
+// next status read.
+async function chooseKind(kind, on) {
+  if (state.push.busy) return render();
+  const before = state.push.kinds;
+  Object.assign(state.push, { busy: true, error: null, kinds: { ...before, [kind]: on } });
+  render();
+  try {
+    const subscription = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
+    if (!subscription) throw new Error("this browser is no longer subscribed");
+    const kinds = await saveKinds(subscription.toJSON(), { [kind]: on }, before, pushIo);
+    Object.assign(state.push, { kinds, status: kinds ? "on" : "unconfirmed" });
+  } catch (error) {
+    const why = `Could not save what this device gets: ${error.message}.`;
+    Object.assign(state.push, { kinds: before, error: `${why} Check that the daemon runs, then try again.` });
   } finally {
     state.push.busy = false;
     render();
@@ -2922,7 +3004,7 @@ function signIn() {
 function loading() {
   return state.failed
     ? html`${staleStrip()}<p class="empty">Could not load the desk: ${state.failed}. Check that <code>priory serve</code> or the daemon runs, then retry.</p>`
-    : "";
+    : html`<p class="empty" role="status">Loading the desk…</p>`;
 }
 
 const routeKey = () => location.pathname + location.search;
@@ -2935,6 +3017,7 @@ function focusKey(element) {
 
 function render() {
   const app = document.getElementById("app");
+  if (!app) return;
   if (state.reportPending && !state.reportPending.sending && (!state.token || current() !== "reports")) {
     clearTimeout(state.reportPending.timer);
     state.reportPending = null;
@@ -3215,6 +3298,8 @@ document.addEventListener("toggle", (event) => {
 }, true);
 
 document.addEventListener("change", (event) => {
+  const kind = event.target.dataset.pushKind;
+  if (kind) return chooseKind(kind, event.target.checked);
   if (event.target.dataset.action !== "costs-by") return;
   state.costs.by = event.target.value;
   loadCosts();
@@ -3224,6 +3309,10 @@ document.addEventListener("input", (event) => {
   if (event.target.id === "add-text" || event.target.dataset.addChip) {
     state.add.draft[event.target.dataset.addChip || "text"] = event.target.value;
     keepDraft();
+    if (event.target.dataset.addChip === "workflow") {
+      state.add.swapped = null;
+      document.getElementById("add-swapped")?.remove();
+    }
     // Only the button's state changes; a full redraw would reset the caret on every letter.
     addSheet().querySelector("form .btn.primary")?.setAttribute("aria-disabled", String(!state.add.draft.text.trim() || state.add.phase === "sending"));
     return;
@@ -3254,7 +3343,7 @@ document.addEventListener("submit", (event) => {
     event.preventDefault();
     const ask = askOnScreen();
     const text = (state.drafts.get(ask?.id) || "").trim();
-    if (ask && text) answer(ask, text, true);
+    if (ask && text && writeShown(state.writing.has(ask.id), lockOf(ask), Boolean(state.pending)) === "form") answer(ask, text, true);
     return;
   }
   if (event.target.dataset.action === "remark") {
@@ -3337,32 +3426,12 @@ addEventListener("pagehide", () => keyboard.leave());
 keyboardSheet().addEventListener("click", (event) => { if (event.target === keyboardSheet()) keyboardSheet().close(); });
 keyboardSheet().addEventListener("close", () => document.querySelector("#app [data-action='term-menu']")?.focus());
 addSheet().addEventListener("close", () => document.querySelector("#app [data-action='add-open']")?.focus());
-addEventListener("popstate", render);
 for (const query of ["(min-width: 600px)", "(min-width: 1024px)"]) matchMedia(query).addEventListener("change", render);
 addEventListener("resize", () => { if (terminal.fit) paintTerminal(document.getElementById("app")); });
 document.addEventListener("visibilitychange", () => {
   syncTerminal(document.getElementById("app"));
   if (!document.hidden && state.token) refresh();
 });
-// Waits on the state's revision; the server answers once it moves, or after 25 s.
-async function follow() {
-  for (;;) {
-    if (!state.token || state.revision === undefined || document.hidden) {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      continue;
-    }
-    let ok;
-    try {
-      const { revision } = await api(`/api/events?since=${state.revision}`);
-      if (revision !== state.revision) watch.revision();
-      ok = revision === state.revision || (await refresh());
-    } catch {
-      await refresh();
-      ok = false;
-    }
-    if (!ok) await new Promise((resolve) => setTimeout(resolve, 5000));
-  }
-}
 // Ages read in minutes, so repaint them once a minute even when nothing changes.
 setInterval(() => { if (!document.hidden && state.token) refresh(); }, 60000);
 // The browser offers to install only once the page handles this; the Notifications screen shows it.
@@ -3372,5 +3441,3 @@ addEventListener("beforeinstallprompt", (event) => {
   render();
 });
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
-follow();
-refresh();

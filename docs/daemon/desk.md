@@ -4,7 +4,7 @@ The desk is what waits on a person: asks, blocked and failed tasks, reports and 
 them in one list, oldest first, so a person sees every decision the factory needs from them without
 reading each task.
 
-`priory desk` prints the pause line first while admissions are paused (see Pause), then one line per spend cap reached whose new runs wait (see [spend.md](spend.md)), then one line per lane or batch whose review limit holds a new task (see [runs.md](runs.md#review-limit)), then the stall banner while the queue is stalled (see Room), then the intake banner while the intake fails or stopped (see Intake banner), then what waits on a person, oldest first: since, kind, id, task, lane, what and the task's generation.
+`priory desk` prints the pause line first while admissions are paused (see Pause), then the autopilot line while [autopilot](waits.md#autopilot) is on, with its end and how to turn it off, then one line per spend cap reached whose new runs wait (see [spend.md](spend.md)), then one line per lane or batch whose review limit holds a new task (see [runs.md](runs.md#review-limit)), then the stall banner while the queue is stalled (see Room), then the intake banner while the intake fails or stopped (see Intake banner), then what waits on a person, oldest first: since, kind, id, task, lane, what and the task's generation.
 
 | Kind | Id | What | Since |
 | ---- | -- | ---- | ----- |
@@ -14,24 +14,24 @@ reading each task.
 | `failed` | the task | its reason, then `revive: priory revive <task>` | the task last changed state |
 | `prompt` | the outbox prompt | its text, for an `uncertain` prompt | it was attempted |
 | `command` | the answer's action | `Priory stopped while answer <answer> to ask <ask> ran <argv> in <dir>: check the target`, for an `uncertain` command (see [tools.md](../reference/tools.md#commands-an-answer-runs)) | it ended |
-| `held` | the hold | the task's reason: why it is held, and until what | it was held |
+| `held` | the hold | the task's reason: why it is held, and until what. For a running task marked to be held, `holds after this turn: <reason>`, and for one that sleeps or is blocked since, `holds once it is ready: <reason>` (see [runs.md](runs.md#holding-a-running-task)) | it was held, or marked |
 | `batch` | the batch | its title and counts, then which entries start next: `Invoice exports: 1 merged, 3 started, 2 planned. Next: ENG-41 and ENG-42 start when ENG-40 merges.`, each task named by its key without the source. One row per going batch, in place of the `held` rows of its entries (see Batches) | the go |
-| `memory` | the memory grant | `waits for <N> GB: <command>` | it was requested |
+| `memory` | the memory grant | `waits for <N> GB: <command>`, then `; grant <id> of task <task> holds <N> GB for <time>` for the longest held grant. A grant held past an hour while others wait has its own row: `holds <N> GB for <time> while <n> grants wait: <command>` (see [memory-gate.md](memory-gate.md)) | it was requested, or granted for the held row |
 | `memories` | `memories` | `` <n> memory candidates wait for a person: <name>, <name>; see them with `priory memories` ``. One row while any candidate waits (see Memory candidates) | the oldest candidate was written |
 | `pattern` | the failure pattern's id | `` <workflow>/<step>: <n> tasks stopped for one reason: <text>; see it with `priory patterns show <id>` ``, for an open pattern of at least 2 tasks (see [patterns.md](patterns.md)) | its latest task stopped |
 | `queue` | the task's place in the queue | its band, then its reason when it has one | the task last changed state |
-| `sweep` | the script's run | its command, then `running`, or its status and output, for the open stall | it started |
+| `sweep` | the script's run | its command, then `running`, or its status and output: for the open stall, or for a scheduled run, with no task, while it runs or after it failed | it started |
 | `report` | the report's inbox sequence number | `<source>: <line>`, for an unread report | it was posted |
 | `todo` | the to-do | its text, then `, due <time>` when it has one (see To-dos). `priory desk` prints the time in UTC; the web and Herdr Desks show it in local time | it was added |
 | `retired` | the task | `its worktree was removed to free disk; it resurrects from <branch> when its wait fires` | it retired |
-| `worktree` | the worktree's path | why it stays: see Sweep | `-` |
+| `worktree` | the worktree's path | why it stays, then its size: see Sweep | `-` |
 
 The lane column is the task's lane, or `-` for a `worktree` row.
 
 In `priory desk --json`, an `ask` item carries `routed_to`: the lead it is routed to, or null. The
 web Desk and the Herdr Desk show it as "with <lead>" on the ask's row and in the next thing.
 
-It lists only asks and prompts of active tasks, holds of held tasks and waiting memory grants. Then the `queue` rows in start order, then one `worktree` row per worktree the sweep keeps. `priory asks` prints every open ask. Both leave snoozed items out, unless you pass `--all` (see Snooze).
+It lists only asks and prompts of active tasks, holds of held tasks and of tasks marked to be held, and waiting or long-held memory grants. Then the `queue` rows in start order, then one `worktree` row per worktree the sweep keeps. `priory asks` prints every open ask. Both leave snoozed items out, unless you pass `--all` (see Snooze).
 
 ## Batches
 
@@ -166,7 +166,7 @@ The web and Herdr Desks show it as a plain row with its line, without Accept or 
 
 `priory post SOURCE LINE` stores one report line on the inbox for a person to read, and prints its
 sequence number. The daemon routes it to no task. `SOURCE` matches `[a-z0-9-]{1,32}`. The sources
-the intake and the daemon publish under are refused: `cli`, `factory`, `github`, `intake`, `linear`,
+the intake and the daemon publish under are refused: `autopilot`, `cli`, `factory`, `github`, `intake`, `linear`,
 `priory`, `schedule` and `slack`, so a script cannot pass for an event. `LINE` is one line, cut at 500
 characters.
 
@@ -177,6 +177,10 @@ printed can resume from it. `--json` prints the same entries as JSON.
 An unread report shows on the desk as a `report` row. `priory inbox read SEQ` marks it read, and it
 leaves the desk. It is refused for a sequence number that is not a report. `POST /api/inbox/{seq}/read`
 is its twin. The Herdr library's `read` and the web desk's Read button run it.
+
+The intake marks a `landed wrong` report of a red merge read once the base branch recovers (see
+[pull-requests.md](../intake/pull-requests.md#when-the-base-branch-recovers)). A revert's report
+stays until a person marks it read.
 
 A held task's row shows its reason. The web desk's Release button on it runs `POST /api/tasks/{id}/release`
 with the state revision the page drew, as `priory release --expected` does. A newer state gets `409`,
@@ -218,6 +222,9 @@ A tick that polls no Linear or Slack source records only `github`.
 - When a source the triggers need cannot start, such as Linear without `LINEAR_API_KEY`, the
   intake records the failure the same way, but posts its report at once, then exits, and systemd
   restarts it.
+- When a `github` poll has more reviews to look up than
+  [one poll reads](../intake/github-polling.md#calls-and-cost), it counts as failing here until a poll
+  looks them all up.
 - `priory desk` prints one banner per failing source, joined by `; `.
 - When no source polled in the last 5 minutes, the banner is instead `the intake has not polled
   since <time>: waits on GitHub, Linear and Slack cannot fire`. A factory whose intake never ran
@@ -236,6 +243,11 @@ While the sweep cannot fetch a repository that still has worktrees, the banner e
 remote is gone, remove <home>/worktrees/<owner>/<name> and <home>/repos/<owner>/<name>`. The
 daemon reads it from Priory home, not the state, so a client sees it at its next read. See
 [sweep.md](sweep.md#a-clone-that-fails-to-fetch).
+
+For 24 hours after the sweep restored the agents slice's limits, the banner ends with `another
+process set <slice> to <limits>; the sweep restored its limits at <time>`. While the daemon may not
+set them, it ends with `left the limits of <slice> alone: <why>` instead. The daemon reads both from
+Priory home too. See [agents-slice.md](agents-slice.md#restoring-the-limits).
 
 The banner is `intake` in `priory desk --json` and `/api/desk`. A source that starts failing, or
 recovers, moves the state's revision, so a client that waits on `/api/events` redraws the banner at
@@ -292,7 +304,15 @@ prompts.
   debater reads it. It replies `task <id> is in a debate at step <step>: the step after the debate
   reads it`.
 
-Otherwise it replies `task <id> will hear it`. It refuses a `done`, `failed` or `dropped` task, a
+- A `done` task whose pull request is open reopens as its next generation, with TEXT as the first
+  prompt. Its step, session and branch are those of [feedback that reopens a done
+  task](routing.md#feedback-reopens-a-done-task). It replies `task <id> reopened at <step>,
+  generation <n>`. It is refused, with the reason, when the task owns no pull request, when that
+  pull request merged or closed, when another active task holds its key or a resource it owns, or
+  when no agent runs the step it would reopen at. A merge the intake has not published yet does not
+  refuse it. A pick or comment on a done task's report reopens nothing.
+
+Otherwise it replies `task <id> will hear it`. It refuses a `failed` or `dropped` task, a
 task at a human or code step with no open ask, and a task that has neither a run nor a queued
 prompt, such as a `queued` one, since its first run builds the step's prompt then.
 

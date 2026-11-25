@@ -274,9 +274,10 @@ pub struct ReviewSubmitted {
     /// during the agent's turn.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub own: Option<bool>,
-    /// Whether an agent wrote it: `own`, and its body holds `<!-- agent-comment -->`; absent while
-    /// `gh` cannot say. An agent's comment starts no task. The person's unmarked one wakes its task
-    /// even when it was written during the agent's turn.
+    /// Whether an agent wrote it: `own`, and its body holds `<!-- agent-comment -->`, or its body is
+    /// empty and every thread comment it wraps holds that; absent while `gh` cannot say. An agent's
+    /// review starts no task. The person's wakes its task even when it was written during the
+    /// agent's turn.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<bool>,
     /// The `X-GitHub-Delivery` of the webhook delivery that reported it; absent when a poll did.
@@ -389,10 +390,14 @@ pub struct CheckRunCompleted {
     /// Check runs on the same commit not completed at the poll, counting those past the first 100.
     pub pending: u64,
     /// Check runs on the same commit completed with a conclusion other than success, neutral or
-    /// skipped.
+    /// skipped, leaving out a cancelled run that `superseded_by` passed.
     pub failing: u64,
     /// GitHub's check run id.
     pub github_id: u64,
+    /// For a cancelled run on a merge commit: the later commit of the base branch whose run of the
+    /// same name succeeded, so the cancelled run counts as passing. Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<String>,
     #[serde(flatten)]
     pub source: Source,
 }
@@ -483,14 +488,46 @@ pub struct LinearIssue {
     pub labels: Vec<String>,
 }
 
-/// An issue that entered or left a saved Linear view since the previous poll.
+/// Where a Linear issue stands in its project, as the intake saw it.
+#[derive(JsonSchema)]
+pub struct IssueOrder {
+    /// Linear's id of the project.
+    pub project_id: String,
+    /// The issue's milestone; null without one.
+    pub milestone: Option<MilestoneOrder>,
+    /// The issue's manual order in Linear. Lower comes first.
+    pub sort_order: f64,
+}
+
+/// Where a milestone stands in its project.
+#[derive(JsonSchema)]
+pub struct MilestoneOrder {
+    /// Linear's id of the milestone.
+    pub id: String,
+    /// The milestone's manual order in its project. Lower comes first.
+    pub sort_order: f64,
+    /// The milestone's target date, `YYYY-MM-DD`; null without one.
+    pub target_date: Option<String>,
+}
+
+/// An issue that entered or left a saved Linear view, or a Linear project's issues that a trigger's
+/// filter keeps, since the previous poll.
 #[derive(JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ViewChanged {
     #[serde(flatten)]
     pub issue: LinearIssue,
-    /// The view, as the trigger names it.
-    pub view: String,
+    /// The view, as the trigger names it. View events only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub view: Option<String>,
+    /// The stream, `linear.project:<project>`, then `:` and the trigger's filter as JSON when it has
+    /// one. Project events only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream: Option<String>,
+    /// Where the issue stands in its project; null without a project, and absent from an issue the
+    /// intake last read before it kept the order.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub order: Option<IssueOrder>,
     #[serde(flatten)]
     pub source: Source,
 }
@@ -538,6 +575,12 @@ pub struct LinearStateChanged {
     pub from: Option<String>,
     /// The state it moved to.
     pub to: String,
+    /// The type of the state it moved to: `triage`, `backlog`, `unstarted`, `started`,
+    /// `completed` or `canceled`. Linear's Duplicate state is of type `canceled`.
+    pub to_type: Option<String>,
+    /// The identifier of the issue it duplicates, as its `duplicate` relation names it; null
+    /// without one and from a webhook.
+    pub duplicate_of: Option<String>,
     /// The Linear display name of who moved it.
     pub actor: Option<String>,
     /// The identifiers of the open issues that block it; null past 20 relations.
@@ -833,6 +876,10 @@ pub struct TaskRequested {
     /// The Linear issue's project name, or null without one. Linear sources only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<Option<String>>,
+    /// Where the Linear issue stands in its project, which orders the task in the queue; null
+    /// without a project. Linear view and project sources only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub order: Option<IssueOrder>,
     /// The repository the task works in: `priory request --repo` for a CLI request, the pull
     /// request's for a review request. Those sources only. A task whose `repo` is not a GitHub
     /// `owner/name` blocks before its first run.
@@ -857,6 +904,14 @@ pub struct TaskRequested {
     /// the trigger's when unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_answer: Option<priory_factory::factory::Confidence>,
+    /// The task's labels, which runner filters match: the trigger's `labels`, or `priory request`
+    /// or `priory add --label`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(extend(
+        "propertyNames" = { "pattern": "^[a-z0-9][a-z0-9_.-]*$" },
+        "additionalProperties" = { "type": "string", "pattern": "^[A-Za-z0-9_.:/-]+$" }
+    ))]
+    pub labels: Option<std::collections::BTreeMap<String, String>>,
     /// The batch a planning task plans, from `priory batch add`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub batch: Option<BatchRequest>,
@@ -1132,6 +1187,17 @@ pub struct TaskApplied {
     pub why: Option<String>,
 }
 
+/// A person drops the requests of a key that no runner claimed, with `priory cancel KEY`. Every
+/// machine drops the ones it holds as `unaccepted`. A claim on its way still wins.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TaskDropped {
+    /// The key.
+    pub key: String,
+    /// Where the drop came from: `cli`.
+    pub by: String,
+}
+
 /// An agent saves a memory with the `remember` tool, or removes one with `forget`. Each message is
 /// one candidate, known by its `id`: its own task's later runs get it at once, and other tasks'
 /// runs only once a person accepts it. A later write of the same name is a new candidate.
@@ -1184,6 +1250,22 @@ pub struct MemoryDropped {
     pub retire: Option<bool>,
 }
 
+/// A person turns autopilot on or off with `priory autopilot`. Every runner applies it in log order.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AutopilotSet {
+    /// When it ends by itself; absent when it is turned off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("format" = "date-time"))]
+    pub until: Option<String>,
+    /// The lowest confidence it acts on: `high` or `medium`. Absent when it is turned off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<priory_factory::factory::Confidence>,
+    /// The lanes it covers; every lane when empty or absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lanes: Option<Vec<String>>,
+}
+
 /// Where a stream stands after a poll that moved it; a missing marker means the stream is still
 /// in its baseline.
 #[derive(JsonSchema)]
@@ -1196,23 +1278,34 @@ pub struct Baseline {
     /// or `slack.channel:C0123`.
     pub stream: String,
     pub position: Position,
-    /// Every issue in the view, or every pull request asking the reviewer for a review. Linear view
-    /// and review request streams only.
+    /// Every issue in the view or the project, or every pull request asking the reviewer for a
+    /// review. Linear view, Linear project and review request streams only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub members: Option<Members>,
     /// The ids of the events at the position's instant. Linear issue and comment streams only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seen: Option<Vec<String>>,
-    /// The view's filter, as Linear reported it at the poll. Linear view streams only.
+    /// The view's filter, as Linear reported it at the poll, or the project trigger's filter.
+    /// Linear view and project streams only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filter: Option<serde_json::Value>,
+}
+
+/// An issue of a Linear view or project.
+#[derive(JsonSchema)]
+pub struct Member {
+    #[serde(flatten)]
+    pub issue: LinearIssue,
+    /// Where the issue stands in its project; null without a project.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub order: Option<IssueOrder>,
 }
 
 /// The members of a set stream.
 #[derive(JsonSchema)]
 #[serde(untagged)]
 pub enum Members {
-    Issues(Vec<LinearIssue>),
+    Issues(Vec<Member>),
     Pulls(Vec<RequestedPull>),
 }
 

@@ -95,7 +95,7 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
 - [health.md](health.md): run verdicts, failed or blocked tasks, a step's budget, repair, and the stall handler.
 - [desk.md](desk.md): `priory desk`, reports and `priory post`, resume, cancel, revive, snooze, say,
   pause, and `priory seen` for Since you looked.
-- [sweep.md](sweep.md): worktree removal, retiring asleep tasks, sweep scripts and the sweeper.
+- [sweep.md](sweep.md): worktree removal, reclaiming build output, retiring asleep tasks, sweep scripts and the sweeper.
 - [tools.md](tools.md): how a run uses the MCP tools: ending a turn, subscriptions, consulting an
   investigator, proofs and `priory gate`, moving between steps, intervention, code steps, the `run`
   action, approvals and staged tasks, which a `staged` trigger runs as a trial that writes nothing.
@@ -103,7 +103,7 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
 - [evidence.md](evidence.md): evidence items, a step's `record` command, `priory evidence add`,
   the admission checks that keep secrets out, the pull request's Evidence section and how long
   items stay.
-- [waits.md](waits.md): asks and answers, wait conditions, and the checks gate before `done`.
+- [waits.md](waits.md): asks and answers, autopilot, wait conditions, and the checks gate before `done`.
 - [decisions.md](decisions.md): decision models, the triage model that settles feedback which asks
   the agent for nothing, `priory calibrate`, and the fallback.
 - [debates.md](debates.md): debate steps: two agents' turns, when the debate ends, the result or
@@ -116,7 +116,7 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
   report, outcome labels, `priory grades`, `priory report risk` and the OpenTelemetry export. To send
   the export to a backend, follow
   [How to send traces to an OpenTelemetry backend](../sending-traces-to-opentelemetry.md).
-- [metrics.md](metrics.md): the metrics each process sends over OTLP, the process, log, runs, intake and work groups,
+- [metrics.md](metrics.md): the metrics each process sends over OTLP, the process, log, runs, intake, work and room groups,
   `PRIORY_METRICS`, the per-minute cap and what a failed send loses. To send them to a collector
   or a backend and set alerts, follow [How to send metrics to an OpenTelemetry backend](../sending-metrics.md).
 - [spend.md](spend.md): spend caps per task, day and week on the factory, a trigger or a lane,
@@ -139,6 +139,8 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
 - [serve.md](serve.md): the HTTP server over the state, its token and its limits.
 - [reload.md](reload.md): how the daemon and the server follow edits of the factory's files, the
   keys that wait for a restart, and what an edit does to a running task.
+- [upgrades.md](upgrades.md): how the daemon finds, verifies and installs a newer release by itself,
+  and how it rolls back.
 - To run Priory as systemd user services, follow
   [How to run Priory as services](../running-as-services.md). The listing commands, such as
   `priory runs`, are in [the command reference](../reference/cli.md).

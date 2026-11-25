@@ -438,11 +438,9 @@ pub(crate) fn header_file(
 ) -> Result<Option<std::path::PathBuf>, String> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
-    let Some(variable) = factory.otlp_headers_env() else {
+    let Some(lines) = headers(factory)? else {
         return Ok(None);
     };
-    let text = crate::serve::env(variable, "the OTLP headers, as key1=value1,key2=value2")?;
-    let lines = header_lines(&text).map_err(|error| format!("{variable}: {error}"))?;
     let file = home.join(name);
     // A file left by an older process keeps its mode, so it is replaced rather than truncated.
     let _ = std::fs::remove_file(&file);
@@ -454,6 +452,19 @@ pub(crate) fn header_file(
         .and_then(|mut out| out.write_all(lines.as_bytes()))
         .map_err(|error| format!("{}: {error}", file.display()))?;
     Ok(Some(file))
+}
+
+/// The header lines of the variable the factory names, where it names one.
+pub(crate) fn headers(
+    factory: &priory_factory::factory::Factory,
+) -> Result<Option<String>, String> {
+    let Some(variable) = factory.otlp_headers_env() else {
+        return Ok(None);
+    };
+    let text = crate::serve::env(variable, "the OTLP headers, as key1=value1,key2=value2")?;
+    header_lines(&text)
+        .map(Some)
+        .map_err(|error| format!("{variable}: {error}"))
 }
 
 /// The header lines `curl --header @file` reads, from OTLP's `key1=value1,key2=value2` with

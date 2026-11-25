@@ -4,7 +4,7 @@
 
 use crate::daemon::repo_of;
 use priory_factory::factory::Factory;
-use priory_runtime::{runtime::git, script};
+use priory_runtime::{runtime::git, script, worktrees};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -647,15 +647,21 @@ impl Job {
             ),
             Err(why) => Recorded::Ended("failed", format!("cannot run git: {why}")),
         };
-        let _ = git(&self.clone)
-            .args(["worktree", "remove", "--force"])
-            .arg(&self.scratch)
-            .output();
-        for folder in [
-            self.scratch.with_extension("out"),
-            self.scratch.with_extension("home"),
-        ] {
-            let _ = std::fs::remove_dir_all(folder);
+        if self.scratch.exists()
+            && let Err(why) = worktrees::remove_checkout(&self.clone, &self.scratch)
+        {
+            eprintln!(
+                "priory daemon: the record checkout of task {}: {why}",
+                self.task
+            );
+        }
+        for extension in ["out", "home"] {
+            if let Err(why) = worktrees::remove_unmounted(&self.scratch.with_extension(extension)) {
+                eprintln!(
+                    "priory daemon: the record folder of task {}: {why}",
+                    self.task
+                );
+            }
         }
         recorded
     }

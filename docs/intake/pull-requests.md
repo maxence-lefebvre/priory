@@ -64,6 +64,21 @@ also holds the line `<!-- agent-comment -->`. Agents post as the person's own lo
 tells an agent's comment from the person's. The marker alone, from another login, proves nothing.
 See [routing.md](../daemon/routing.md#an-agents-own-comments).
 
+GitHub wraps each reply in a review thread in a `COMMENTED` review with an empty body. The marker is
+in the thread comment, so the intake judges such a review by its comments when `gh`'s login wrote it:
+
+| Its thread comments | The review |
+| ------------------- | ---------- |
+| all marked | `agent: true`, so it starts no task |
+| all marked, and each is already on `factory.intake` | not published, except in a first poll that has an unread review: there it is `agent: true`, so the next poll need not look it up |
+| some unmarked, or none | the person's: `agent: false` |
+
+A review with a body is judged by its body. So is another login's review, which is never `agent`.
+The comments take one REST call per review (see [github-polling.md](github-polling.md#calls-and-cost)).
+
+An empty list for a review under a minute old is unread: GitHub can report a review before it lists
+the review's comments. A later poll reads it again.
+
 `merged` on a close is true only when the pull request is merged and this is its last `closed`
 event the poll read.
 A close also carries `merge_commit`, the commit the merge made on the base branch, or null unless
@@ -92,6 +107,43 @@ also raises a `landed wrong` alarm on the desk, once per merge commit (see
 - A restart reads once more only a commit that had no run, since the daemon's record of the others persists.
 - A merge into a branch other than the default counts too: the event names the pull request's base branch as it is.
 - Past 100 runs on a commit, the first 100 are read and `pending` stays above 0, so the commit is read until the 7 days end.
+- A `cancelled` run, as a workflow's concurrency group leaves one when a newer push supersedes it,
+  counts as red only when no later run of the same name succeeded. The intake reads that name's run
+  on the tip of the base branch, `repos/{repo}/commits/heads/{base}/check-runs?check_name={name}`
+  with `{base}` percent-encoded, and checks with `repos/{repo}/compare/{merge}...{tip}` that the
+  tip descends from the merge commit. A success there publishes the cancelled run with
+  `superseded_by` set to the tip. It then counts as passing and is left out of `failing`. A tip run
+  that is still running or was cancelled too keeps the cancelled run pending, so the commit is read
+  again on the next poll. So does a tip with no run of that name, for 5 minutes after the cancel,
+  while a newer push's run may not exist yet. Any other answer, and any failed read, such as a 404
+  for a base branch deleted after the merge, publishes the cancelled run as it is.
+
+### When the base branch recovers
+
+On each poll, the intake marks an unread `landed wrong` report of a red merge read once every check
+that failed on the merge commit passed on a commit of the base branch that contains the merge.
+
+- A check is a run of the same name and app. Two workflows can name a job alike, so a GitHub Actions run
+  must also be of the same workflow, which `repos/{repo}/actions/runs/{run}` names. When several workflows
+  failed under one name, each of them must pass on the same commit. An Actions run whose URL holds no run
+  id, and a check with no app, clear nothing.
+- A fine-grained token needs the `Actions` repository permission (read) for `actions/runs/{run}`. Without it,
+  GitHub's 403 keeps the report and does not count as a failed poll.
+- A pass is `success`: `skipped` and `neutral` are none. It is a run with a higher id than the red one.
+- The intake looks at the tip of the base branch, where every run of that name and app must be a later
+  success. Then it looks at the 5 newest other task merges into that branch whose checks all completed,
+  where each run of that name and app with a higher id than the red one must be a success.
+- A re-run on the merge commit counts only while that commit is the tip.
+- A third party's re-run that keeps its check run's id never counts, since the id is not higher.
+- `repos/{repo}/compare/{merge}...{sha}` must say `ahead`, so a commit without the merge clears nothing.
+- It waits until the merge commit's own checks all completed, since the one report stands for all of them.
+- It reads the merges of the last 7 days. An older report stays until a person marks it read, and so does
+  one with a failing run that has no id. A poll that could not read the merges clears nothing.
+- GitHub's 404 or 422, as for a deleted base branch, keeps the report. Any other failed read, such as a rate
+  limit, keeps it too and counts as a failed poll in the intake's health.
+- It makes one call per failed check and poll while the report is unread. It makes one call per Actions run
+  and one per commit compared, and keeps their answers until the next start.
+- The report of a revert stays. The [`red-after-merge`](../daemon/trace.md#outcome-labels) label stays too.
 
 ### Check run snapshots
 
@@ -143,5 +195,12 @@ Each message id is the UUIDv5 of a name:
   commit per pull request.
 - A poll reads the repository's newest 100 review thread comments. More than 100 between two polls
   loses the oldest, unless a webhook delivered them.
+- Of the thread comments a review wraps, the first 100 are read.
+- A review whose thread comments cannot be read is not published. The next poll tries again, if it
+  still reads the pull request. After 10 failed tries it counts as the person's, so an agent's reply
+  can then start a task. `priory intake --once` keeps no tries, so a lookup that fails for ever
+  fails each run and keeps a first poll a baseline.
+- While `gh` cannot name its login, no review is judged by its comments.
+- A review dropped as a repeat is not on `factory.intake`, so each restart looks it up again.
 - A comment's or review's author is a bot when GitHub types the account `Bot`. A person or an
   agent that comments through a personal access token is not one.

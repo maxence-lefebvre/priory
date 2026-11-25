@@ -37,6 +37,7 @@ A task gets its resources at these moments:
 
 | When | Resource | Example |
 | ---- | -------- | ------- |
+| `priory adopt` parks it on a pull request | that pull request as its key, subscribed, as the first row does | `github:owner/name#57` |
 | The task is created | its trigger key, and a subscription to it when the key names an issue, a pull request, a Linear issue or a Slack thread | `github:owner/name#42`, `linear:ENG-7`, `cli:docs-1` |
 | A request whose `pre` script printed another `key` creates the task or joins it | a subscription to the issue, pull request or thread the trigger named before the script | `github:owner/name#43` |
 | Its first run starts | its branch | `github:owner/name@priory/3` |
@@ -154,6 +155,45 @@ That task's key is the pull request, `github:owner/name#42`, and it subscribes t
 A `priory request --key github:owner/name#42` keys its task the same way, so that task subscribes
 to the pull request too (see [cli.md](../intake/cli.md)).
 
+### Parked pull requests
+
+A pull request opened by hand has no task, so its events reach none. `priory adopt` parks a task
+on it (see [adopting-pull-requests.md](../adopting-pull-requests.md)). The task is keyed by the
+pull request, so it owns and subscribes to it as a comment trigger's task does. Its source is a
+CLI request, and the pull request still counts as its own, so after its first run the checks gate
+and the merge apply to it as they do to a pull request that `open-pr` opened (see
+[waits.md](waits.md#done-and-checks)).
+
+The task is `held` with one condition, `parked`. A held task has no run, no worktree and no
+process, so it costs nothing while it waits. Every event of the pull request, a comment, a review,
+a check or a push, is `kept` on it with no prompt, and its Inbox lists them.
+
+1. Ana comments on pull request 42. Task 5 is parked on it, so it keeps the event.
+2. The comment trigger's request for pull request 42 finds task 5 parked. Its outcome is
+   `released`, and task 5 is `queued`.
+3. Task 5's first run reads the step's prompt, the adopt request, then every event it kept, the
+   comment among them.
+
+So the agent starts exactly when the trigger would have started a task. A comment the trigger does
+not match stays kept, and the next run reads it. `priory release` starts the task by hand.
+
+While the task is parked, the pull request's `github.pull_request.closed` ends it: `done` with
+the reason `<key> merged while parked` when it merged, else `dropped` with `<key> closed while
+parked`. The newest closed event decides, even one older than the adopt request, unless a later
+event from before the adopt carries `open: true`. A merge stands whatever came after it. A reopen
+after the drop does not bring the task back. An event with `open: false` ends nothing: only the
+closed event says whether the pull request merged. If a parked task's close never arrives, run
+`priory cancel ID`. The desk, the Queue's waiting list and `priory tasks` list no row for a parked
+task. `priory tasks --all` shows it held, with the reason
+`held: adopted for trigger <name>, until a comment or review trigger fires on <key>`.
+
+`priory adopt` skips a pull request that a task in any state owns, and one whose head branch in
+the repository an active task owns, even before its first event arrives. A comment reopens a done
+task, and `priory revive` brings back a failed or dropped one.
+
+Events of the pull request from before the adopt stay unrouted: the daemon routes only new
+messages.
+
 ### An agent's own comments
 
 Agents post with the person's own `gh` login, so the login alone cannot tell an agent's comment from
@@ -164,7 +204,7 @@ comment:
 | Field | `true` when | What reads it |
 | ----- | ----------- | ------------- |
 | `own` | the login `gh` runs as wrote it | the person's handling: [triage](../reference/tools.md#review-feedback) does not put it to the agent |
-| `agent` | it is `own` and its body holds the marker | triggers, waking during a turn, and the agent's reply in triage |
+| `agent` | it is `own` and its body holds the marker, or it is a review with an empty body whose [thread comments all hold it](../intake/pull-requests.md#events) | triggers, waking during a turn, and the agent's reply in triage |
 
 Priory adds the marker to each comment it posts itself, and the starter factories tell agents to add
 it. The marker in another login's comment proves nothing: that comment is neither `own` nor `agent`.
@@ -183,6 +223,7 @@ Each inbox entry gets one of these outcomes:
 | ----------------------------------------- | --------- | -------------------------------------------- |
 | A schedule's or review request's `factory.task.requested`, with a task asleep at a model step owning its key | `woke` | that task, now `ready` |
 | A schedule's or review request's `factory.task.requested`, with a task in another active state owning its key | `coalesced` | that task, unchanged |
+| A comment or review trigger's `factory.task.requested`, with a parked task owning its pull request | `released` | that task, now `queued` (see [Parked pull requests](#parked-pull-requests)) |
 | A comment or review trigger's `factory.task.requested`, with a task its comment reached or an active task owning its pull request | `coalesced` | that task, unchanged |
 | A comment or review trigger's `factory.task.requested`, with no such task and the pull request's newest task failed or dropped | `ignored` | none |
 | A review, comment or review thread comment, with no active task owning a resource it names, and a done task it reopens | `reopened` | that task, now `ready` at its reopen step |
@@ -196,7 +237,9 @@ Each inbox entry gets one of these outcomes:
 | A GitHub comment or review whose `association` is not `OWNER`, `MEMBER` or `COLLABORATOR` | `outsider` | none: it wakes, reopens, claims and reaches no task |
 | A task request whose key no runner holds, with several runners | `claiming` | none until this runner's claim wins (see [runners.md](runners.md)) |
 | A task request whose key another runner holds | `elsewhere` | none                                    |
-| Any task request, on a [view-only machine](runners.md#a-machine-that-only-views) | `elsewhere` | none: it claims nothing |
+| A task request whose key no runner holds and this runner's filters refuse, or on a [view-only machine](runners.md#a-machine-that-only-views) | `unaccepted`, then `elsewhere` once another runner's claim wins | none until a claim wins |
+| An `unaccepted` task request, or a `claiming` one whose claim this runner has not published, that a person, a close or a withdrawal dropped | `dropped` | none |
+| `priory.task.dropped` | `noted`, or `refused` when it drops nothing | none |
 | `priory.task.claimed` that wins its key   | `claimed` | the task this runner creates, when it is the new owner |
 | `priory.task.claimed` that loses          | `refused` | none; this runner's own losing claim drops its copy of the task, `owned by runner <name>` |
 | `priory.task.held` or `priory.runner.alive` | `noted` | none                                         |
@@ -227,6 +270,7 @@ task's wait it fired. Together they say what the event did:
 | `woke` | `confirmed` | It woke the asleep task, and its prompt was delivered |
 | `reopened` | `confirmed` | It reopened the done task, and its prompt was delivered |
 | `coalesced` | null | A schedule firing or review request that the task already covered |
+| `released` | null | A comment or review trigger's request that released the parked task: its first run reads the events it kept |
 | `said` | `queued` or `confirmed` | A repeated `priory request` for the task's key: its text is queued, then delivered |
 | `ignored` | `confirmed` | The task's source event, which its first prompt carried |
 | `kept` | `queued` | Its prompt is still queued: for after the current turn, or for the next run |
@@ -328,6 +372,8 @@ What happens to a `kept` message depends on the task's state:
 - For a `running` task, the daemon also queues an outbox prompt with the message, so the agent reads
   it after its current turn. Until then, for feedback, the agent's `result`, `ask` and `wait` are
   refused (see [Ending a turn](tools.md#ending-a-turn)).
+- For a `running` task, news that may end its work also reaches the run during its turn (see
+  [News during a turn](#news-during-a-turn)).
 - If the message satisfies the task's open wait, the wait fires in any active state (see
   [waits.md](waits.md)). An asleep task wakes. A ready, blocked or held task keeps its state, and
   its next run gets the prompt.
@@ -349,6 +395,51 @@ What happens to a `kept` message depends on the task's state:
   neither grow the ask nor keep it unanswerable. The answer may lead to `done` with no agent run
   at all. If a run follows, it reads the message too.
 - Any other kept message waits for the task's next run, which reads it in its first prompt.
+
+## News during a turn
+
+A queued prompt waits for the end of the turn, and a run can open a pull request before then. So
+the daemon also hands news that may end the task's work to the run during its turn. News is one of
+these events, kept by the task itself or through a subscription:
+
+| Event | News when |
+| ----- | --------- |
+| `linear.issue.state_changed` | `to_type` is `canceled`, as Linear's Duplicate and Canceled states are, or `completed` |
+| `github.pull_request.closed` | `merged` is `false` |
+| `github.issues.closed` | always |
+
+The daemon records the news for the task's live run and creates a marker file, `news`, in
+`<home>/news/<session>/`. Only the daemon writes that folder, and a sandboxed run reads it, so no
+run can plant a link or a pipe where the daemon writes. A run in a [debate](debates.md) gets no news:
+the step after the debate reads the event. A name from outside, such as the actor or the state, goes
+on one line, without control characters and cut to 100 characters. The run's [tool guard hook](guard.md#news-before-a-pull-request)
+checks for that file on every call, and asks the daemon for the news only when it exists. Each
+piece of news is one line, such as:
+
+```text
+Ana moved ENG-7 to Duplicate (canceled), as a duplicate of ENG-9. https://linear.app/acme/issue/ENG-7
+```
+
+The hook adds that line to the next call the agent makes, once. The news stays unread until a call
+that opens a pull request, pushes, or ends or sleeps the run: the hook refuses that call once with
+the news as its reason, and only then is the news read. So a push after a few reads is still held.
+The `result`, `ask`, `wait` and `consult` tools refuse once the same way, for a harness whose hook
+does not reach them. The agent can so read one event up to three times: on an ordinary call, in
+the refusal, and in the queued prompt that still carries the event after the turn. Two calls the
+agent makes at once can each show it. Priory repeats news rather than lose it.
+
+News counts whoever closed the pull request or issue, so an agent that closes its own gets its next
+push or result held once too. An agent that merges its own pull request hears no close, since a
+merge is no news. But the merge moves the Linear issue to Done, which is, so its next such call is
+held once.
+
+`completed` counts whoever moved the issue: agents move Linear issues with the person's key, so the
+actor cannot tell the agent from the person. An agent that moved its own issue to Done gets one
+refused call. A task asleep at its checks gate wakes on a `canceled` state change (see
+[Subscriptions in tools.md](tools.md#subscriptions)). A `completed` one does not, since a merge
+moves the issue to Done.
+
+The outcome stays `kept`. A waiting [`linear_state` wait](waits.md) still fires on its named state.
 
 ## Schedule firings
 
@@ -411,6 +502,8 @@ Feedback reopened this done task as generation 2: Ana replied in slack:C0123:176
 
 The task is `ready`, so its next run resumes the session of the step's agent. The daemon appends a
 `factory.task.reopened` trace record (see [trace.md](trace.md)).
+
+A person reopens a done task with [`priory say`](desk.md#say) while its pull request is open.
 
 A prompt that carries feedback, on a reopen or any wake, ends with the rule to sort each item as
 `trivial`, `nothing-to-do` or `persons-call`, and the result records the classes (see [Review

@@ -54,7 +54,8 @@ events, up to 100 recent issues, or every open pull request's reviews and checks
 [events.md](../reference/events.md#factoryintakebaseline).
 
 Until that message is on the output, the stream stays in its baseline. A crash in the baseline makes
-the next start read the first page again as a baseline.
+the next start read the first page again as a baseline. The review stream's message also waits while a
+review's thread comments are [unread](pull-requests.md#events), so an old review never starts a task.
 
 ## Keys and ids
 
@@ -72,6 +73,7 @@ The events' ids are on their own pages.
 | N over 25 | the query pages itself: ceil(N/25) requests |
 | New pull request events | 1 more GraphQL query per 25 pull requests they name |
 | A task pull request merged in the last 7 days | 1 more REST request per merge commit whose checks have not all completed ([why](pull-requests.md#check-runs-at-a-merge)) |
+| A review by `gh`'s login that is `COMMENTED` with an empty body | 1 more REST request for its thread comments, at most 20 per poll, newest first within equal failed tries, and none for a review already on `factory.intake` ([why](pull-requests.md#events)) |
 | Over 100 new events in a stream since the last poll | 1 more REST page per 100 |
 
 A subscription or a task branch adds no call for a repository a trigger already names. For one no
@@ -116,6 +118,7 @@ A poll publishes reviews and checks before the issue streams. So a crash after a
 | ---------- | ---- |
 | `gh` with a 5xx or GitHub's GraphQL timeout | the call is tried again after 1 second, then after 3 seconds. If the third try fails too, it fails like any other `gh` error |
 | `gh` for one repository | that repository publishes nothing; the others still publish |
+| `gh` for a review's thread comments | that review is not published, and the next poll tries again; the rest publishes. A rate limit or a timeout ends the poll's other such calls. The tenth failed try of a review, rate limits aside, publishes it as the person's |
 | `gh`, without `--once` | the error is logged and retried on the next poll. With `PRIORY_DB` set, it shows as a banner on the desk until a poll succeeds, and as an alarm once it has failed for `[intake] alarm_after`: see [desk.md](../daemon/desk.md#intake-banner) |
 | `gh`, with `--once` | the intake polls the other sources, records the failure, then exits non-zero |
 | a publish | the intake ends, so its restart recovers what it left out |
@@ -129,6 +132,11 @@ A poll publishes reviews and checks before the issue streams. So a crash after a
 - A trigger removed after a crash, before the restart, gets no recovered task request.
 - An event during a crash-interrupted baseline, before the restart, lands on the replayed first page
   and is published as a baseline. Only a `backfill` trigger gives it a task.
+- While a first poll has an unread review, newer reviews and comments of its repository are published
+  as a baseline too.
+- A poll that has over 20 reviews to look up shows it in the
+  [intake banner](../daemon/desk.md#intake-banner), and `--once` still exits zero. A dropped repeat is
+  looked up again by each `--once` run, so over 20 of them keep the banner and starve older reviews.
 - Each start reads the output back to the baseline markers, which grows with the output.
 - `opened` pages follow creation time and stop at issue numbers. An issue transferred or imported
   into the repository with an older creation time can be missed.

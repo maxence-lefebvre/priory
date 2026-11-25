@@ -14,6 +14,8 @@ fn a_person_verb_refuses_inside_a_run() {
         &["answer", "--revision", "1", "12", "approve"][..],
         &["dismiss", "12"],
         &["release", "7"],
+        &["autopilot", "on", "--for", "1h"],
+        &["autopilot", "off"],
         &["give", "github:owner/repo#1", "b"],
         &["eval", "prompts/review.md"],
         &["bench", "replay", "cases/eng-412", "--budget", "5"],

@@ -1,9 +1,9 @@
 use super::gh::{Login, gh};
-use super::{CHECK_RUNS, CHECKED, COMMENTED, Merge, Observed, REVIEWED};
+use super::{CHECK_RUNS, CHECKED, COMMENTED, Merge, Observed, Passed, REVIEWED, Red, RedCheck};
 use herdr_bus::Timestamp;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// GitHub creates check runs seconds after a push, and a push updates the pull request.
 const GRACE_SECONDS: i64 = 5 * 60;
@@ -309,6 +309,8 @@ struct CommitRuns {
 struct Run {
     id: u64,
     name: String,
+    #[serde(default)]
+    head_sha: String,
     status: String,
     conclusion: Option<String>,
     completed_at: Option<String>,
@@ -319,14 +321,15 @@ struct Run {
 /// The completed check runs on the merge commits of `merges` in `repo`, as events of the pull
 /// requests that merged there. A commit is read once per poll until every run completed, when the
 /// daemon's record of these events stops `merges` listing it, or until it has no run past the grace
-/// period, which `unchecked` remembers.
+/// period, which `unchecked` remembers. A cancelled run waits for its name's run on a later commit
+/// of the base branch, as `later_run` reads it.
 pub(super) fn merge_checks(
     repo: &str,
     merges: &[Merge],
     unchecked: &mut HashSet<String>,
     cursor: impl Fn(&'static str) -> Option<u64>,
 ) -> Result<Vec<Observed>, String> {
-    let now = Timestamp::now().as_second();
+    let now = super::now()?.as_second();
     let mut checks = Vec::new();
     let unread: Vec<&Merge> = merges
         .iter()
@@ -345,20 +348,43 @@ pub(super) fn merge_checks(
         if found.total_count == 0 && merged + GRACE_SECONDS <= now {
             unchecked.insert(merge.commit.clone());
         }
-        let done = |run: &&Run| run.status == "completed";
-        let pending = found.total_count - found.check_runs.iter().filter(done).count();
         let conclusion = |run: &Run| run.conclusion.as_deref().unwrap_or_default().to_lowercase();
-        let failing = found
+        let mut done = Vec::new();
+        for run in found
             .check_runs
             .iter()
-            .filter(done)
-            .filter(|run| !super::PASSING.contains(&conclusion(run).as_str()))
+            .filter(|run| run.status == "completed")
+        {
+            let later = match conclusion(run).as_str() {
+                // A base branch deleted after the merge answers 404: count the run as it was.
+                "cancelled" => {
+                    // The grace runs from the cancel: a newer merge's run starts about then.
+                    let fresh = run
+                        .completed_at
+                        .as_deref()
+                        .and_then(|time| time.parse::<Timestamp>().ok())
+                        .is_some_and(|time| time.as_second() + GRACE_SECONDS > now);
+                    later_run(repo, merge, &run.name, fresh).unwrap_or(Later::Not)
+                }
+                _ => Later::Not,
+            };
+            if !matches!(later, Later::Running) {
+                done.push((run, later));
+            }
+        }
+        let pending = found.total_count - done.len();
+        let failing = done
+            .iter()
+            .filter(|(run, later)| {
+                !super::PASSING.contains(&conclusion(run).as_str())
+                    && !matches!(later, Later::Succeeded(_))
+            })
             .count();
-        for run in found.check_runs.iter().filter(done) {
+        for (run, later) in done {
             let Some(time) = run.completed_at.as_deref() else {
                 continue;
             };
-            let data = json!({
+            let mut data = json!({
                 "repo": repo,
                 "pull_request": merge.pull_request,
                 "url": run.html_url,
@@ -373,6 +399,9 @@ pub(super) fn merge_checks(
                 "pending": pending,
                 "failing": failing,
             });
+            if let Later::Succeeded(sha) = later {
+                data["superseded_by"] = json!(sha);
+            }
             checks.push(Observed {
                 kind: CHECKED,
                 name: format!(
@@ -388,6 +417,205 @@ pub(super) fn merge_checks(
         }
     }
     Ok(checks)
+}
+
+/// What the run named like a cancelled one did on a later commit of the base branch.
+enum Later {
+    /// It succeeded on this descendant commit, so the cancelled run is not red.
+    Succeeded(String),
+    /// It has not concluded yet, so the cancelled run waits for it.
+    Running,
+    /// There is none on a descendant commit, or it failed: the cancelled run counts as red.
+    Not,
+}
+
+#[derive(Deserialize)]
+struct Compare {
+    status: String,
+}
+
+/// The run named `name` on the tip of `merge`'s base branch, when the tip descends from the merge
+/// commit. A cancelled tip run waits too: a newer push cancelled it, and its own run follows. While
+/// `fresh`, a tip with no run of that name waits for one to start.
+fn later_run(repo: &str, merge: &Merge, name: &str, fresh: bool) -> Result<Later, String> {
+    let path = format!(
+        "repos/{repo}/commits/heads/{}/check-runs",
+        encoded(&merge.base_branch)
+    );
+    let check_name = format!("check_name={name}");
+    let found: CommitRuns = gh(&path, &["-X", "GET", "-f", &check_name])?;
+    // shortcut: a fresh empty tip waits without a compare, so a diverged tip delays red by the grace.
+    let Some(tip) = found.check_runs.first() else {
+        return Ok(if fresh { Later::Running } else { Later::Not });
+    };
+    if tip.head_sha.is_empty() || tip.head_sha == merge.commit {
+        return Ok(Later::Not);
+    }
+    let path = format!("repos/{repo}/compare/{}...{}", merge.commit, tip.head_sha);
+    let compare: Compare = gh(&path, &["-X", "GET", "-f", "per_page=1"])?;
+    if compare.status != "ahead" {
+        return Ok(Later::Not);
+    }
+    let conclusion = tip.conclusion.as_deref().unwrap_or_default().to_lowercase();
+    Ok(match (tip.status.as_str(), conclusion.as_str()) {
+        ("completed", "success") => Later::Succeeded(tip.head_sha.clone()),
+        ("completed", "cancelled") => Later::Running,
+        ("completed", _) => Later::Not,
+        _ => Later::Running,
+    })
+}
+
+/// What GitHub answered that never changes, kept for the life of the process.
+#[derive(Default)]
+pub(super) struct Known {
+    /// Whether a commit descends from a merge commit, by repository, merge commit and commit.
+    contains: HashMap<(String, String, String), bool>,
+    /// The workflow of an Actions run, by repository and run id.
+    workflows: HashMap<(String, u64), u64>,
+}
+
+/// Whether every check that failed on `red`'s merge commit passed later on a commit of the base
+/// branch that contains the merge.
+pub(super) fn recovered(red: &Red, known: &mut Known) -> Result<bool, String> {
+    for check in &red.checks {
+        if !passes(red, check, known)? {
+            return Ok(false);
+        }
+    }
+    Ok(!red.checks.is_empty())
+}
+
+fn passes(red: &Red, check: &RedCheck, known: &mut Known) -> Result<bool, String> {
+    let tip = passed_tip(red, check)?;
+    for passed in tip.iter().chain(&check.passed) {
+        if same_check(red, check, &passed.urls, known)? && contains(red, &passed.sha, known)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// GitHub's answer, or none when it has no such branch, commit or run.
+fn found<T>(answer: Result<T, String>) -> Result<Option<T>, String> {
+    match answer {
+        Err(error) if error.contains("(HTTP 404)") || error.contains("(HTTP 422)") => Ok(None),
+        answer => answer.map(Some),
+    }
+}
+
+/// The tip of `red`'s base branch, when every run of `check`'s name and app there succeeded, later
+/// than the red one.
+fn passed_tip(red: &Red, check: &RedCheck) -> Result<Option<Passed>, String> {
+    let path = format!(
+        "repos/{}/commits/heads/{}/check-runs",
+        red.repo,
+        encoded(&red.base_branch)
+    );
+    let check_name = format!("check_name={}", check.name);
+    let fields = ["-X", "GET", "-f", &check_name, "-f", "per_page=100"];
+    let Some(found) = found(gh::<CommitRuns>(&path, &fields))? else {
+        return Ok(None);
+    };
+    let runs: Vec<&Run> = found
+        .check_runs
+        .iter()
+        .filter(|run| run.app.as_ref().map(|app| &app.slug) == check.app.as_ref())
+        .collect();
+    let passed = found.total_count == found.check_runs.len()
+        && runs.iter().all(|run| {
+            run.id > check.id
+                && run.status == "completed"
+                && run.conclusion.as_deref() == Some("success")
+        });
+    Ok(runs.first().filter(|_| passed).map(|tip| Passed {
+        sha: tip.head_sha.clone(),
+        urls: runs.iter().map(|run| run.html_url.clone()).collect(),
+    }))
+}
+
+/// Whether the runs at `urls`, of `check`'s name and app, include one for each of its failing runs. Two
+/// workflows can name a job alike, so each failing GitHub Actions run needs one of its own workflow.
+fn same_check(
+    red: &Red,
+    check: &RedCheck,
+    urls: &[String],
+    known: &mut Known,
+) -> Result<bool, String> {
+    match check.app.as_deref() {
+        None => return Ok(false),
+        Some("github-actions") => {}
+        Some(_) => return Ok(true),
+    }
+    let mut passing = Vec::new();
+    for url in urls {
+        passing.extend(workflow(&red.repo, url, known)?);
+    }
+    for url in &check.urls {
+        match workflow(&red.repo, url, known)? {
+            Some(failed) if passing.contains(&failed) => {}
+            _ => return Ok(false),
+        }
+    }
+    Ok(!check.urls.is_empty())
+}
+
+#[derive(Deserialize)]
+struct ActionsRun {
+    workflow_id: u64,
+}
+
+/// The workflow of the Actions run whose job's page is `url`.
+fn workflow(repo: &str, url: &str, known: &mut Known) -> Result<Option<u64>, String> {
+    let run = url
+        .split_once("/actions/runs/")
+        .and_then(|(_, rest)| rest.split('/').next()?.parse::<u64>().ok());
+    let Some(run) = run else {
+        return Ok(None);
+    };
+    let key = (repo.to_owned(), run);
+    if let Some(workflow) = known.workflows.get(&key) {
+        return Ok(Some(*workflow));
+    }
+    let answer = match gh::<ActionsRun>(&format!("repos/{repo}/actions/runs/{run}"), &[]) {
+        // The token may read checks and not Actions. A rate limit's 403 says something else.
+        Err(error) if error.contains("Resource not accessible") => return Ok(None),
+        answer => found(answer)?,
+    };
+    let Some(answer) = answer else {
+        return Ok(None);
+    };
+    known.workflows.insert(key, answer.workflow_id);
+    Ok(Some(answer.workflow_id))
+}
+
+/// Whether the commit `sha` is `red`'s merge commit or descends from it.
+fn contains(red: &Red, sha: &str, known: &mut Known) -> Result<bool, String> {
+    if sha == red.commit {
+        return Ok(true);
+    }
+    let key = (red.repo.clone(), red.commit.clone(), sha.to_owned());
+    if let Some(contains) = known.contains.get(&key) {
+        return Ok(*contains);
+    }
+    let path = format!("repos/{}/compare/{}...{sha}", red.repo, red.commit);
+    let Some(compare) = found(gh::<Compare>(&path, &["-X", "GET", "-f", "per_page=1"]))? else {
+        return Ok(false);
+    };
+    let ahead = compare.status == "ahead";
+    known.contains.insert(key, ahead);
+    Ok(ahead)
+}
+
+/// `text` percent-encoded as one URL path segment, so a branch such as `release/x` stays one.
+fn encoded(text: &str) -> String {
+    text.bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                char::from(byte).to_string()
+            }
+            _ => format!("%{byte:02X}"),
+        })
+        .collect()
 }
 
 const PULL_FIELDS: &str = "fragment pull on PullRequest { number headRefName headRefOid baseRefName headRepository { nameWithOwner } merged mergeCommit { oid } body state author { login } \
@@ -598,6 +826,13 @@ pub(super) fn issue_comments(repo: &str) -> Result<Vec<Value>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_branch_is_encoded_as_one_path_segment() {
+        assert_eq!(encoded("main"), "main");
+        assert_eq!(encoded("release/1.x"), "release%2F1.x");
+        assert_eq!(encoded("fix #2 é"), "fix%20%232%20%C3%A9");
+    }
 
     /// The most nodes a GraphQL selection can return: each `first:` or `last:` connection
     /// multiplies the nodes under it, as GitHub counts them against its limits.

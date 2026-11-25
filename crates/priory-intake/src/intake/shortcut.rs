@@ -16,6 +16,8 @@ const QUEUE: usize = 16;
 const BUSY: &str = "Priory is busy with other requests; try again in a minute.";
 const REFUSED: &str =
     "You are not on this Priory's `[slack.shortcut] users`, so nothing was queued.";
+const NONE: &str =
+    "Every workflow of this Priory sets `requestable = false`, so there is nothing to queue.";
 const LONGEST_WAIT: Duration = Duration::from_secs(60);
 /// How long the socket may stay silent before Priory pings it.
 const QUIET: Duration = Duration::from_secs(30);
@@ -179,6 +181,10 @@ fn handle(
             if !allowed {
                 return reply(payload, REFUSED);
             }
+            // Slack refuses a form whose select has no option.
+            if factory.requestable().is_empty() {
+                return reply(payload, NONE);
+            }
             let opened =
                 json!({ "trigger_id": payload["trigger_id"], "view": form(factory, payload) });
             post(Some((TOKEN, bot)), &format!("{API}views.open"), &opened).map(drop)
@@ -193,7 +199,7 @@ fn handle(
     }
 }
 
-/// The form: the workflow, preselected from `[request]`; the repo, empty for `triggers/cli.toml`'s;
+/// The form: the requestable workflows, preselected from `[request]`; the repo, empty for `triggers/cli.toml`'s;
 /// and the note, prefilled with the message. Its metadata carries the thread and the reply URL.
 fn form(factory: &Factory, payload: &Value) -> Value {
     let channel = text(&payload["channel"]["id"]);
@@ -215,8 +221,8 @@ fn form(factory: &Factory, payload: &Value) -> Value {
     });
     let option = |workflow: &str| json!({ "text": { "type": "plain_text", "text": workflow }, "value": workflow });
     let options: Vec<Value> = factory
-        .workflows
-        .keys()
+        .requestable()
+        .iter()
         .take(100)
         .map(|name| option(name))
         .collect();
@@ -291,6 +297,7 @@ fn submit(factory: &Factory, payload: &Value, ended: Ended) -> String {
         intervention: None,
         session: None,
         auto_answer: None,
+        labels: Vec::new(),
     };
     let key = format!("slack:{channel}:{thread}");
     let ended = match ended(&key) {

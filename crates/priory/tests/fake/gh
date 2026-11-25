@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # A stand-in for the GitHub CLI's pull request and issue commands. Appends each call's arguments, as a JSON
-# array, to FAKE_DIR/gh.log. FAKE_DIR/open-pr holds the number `pr list` reports as open, and
+# array, to FAKE_DIR/gh.log. FAKE_DIR/open-pr holds the number `pr list` reports as open, unless FAKE_DIR/prs holds what it prints, and
 # FAKE_DIR/gh-fail makes `pr create` fail and FAKE_DIR/gh-hang makes it hang. FAKE_DIR/issues holds what `issue list` prints.
 # FAKE_DIR/pr-state holds the state `pr view` prints, OPEN by default. `pr comment` appends the body
 # it reads on stdin to FAKE_DIR/pr-comments, and `api repos/<repo>/statuses/<sha>` prints `{}`. `pr create` numbers its pull
@@ -11,7 +11,8 @@ set -u
 jq -nc '$ARGS.positional' --args -- "$@" >> "$FAKE_DIR/gh.log"
 case "$1 $2" in
   "pr list")
-    if [ -e "$FAKE_DIR/open-pr" ]; then echo "[{\"number\":$(cat "$FAKE_DIR/open-pr"),\"baseRefName\":\"main\"}]"; else echo '[]'; fi ;;
+    if [ -e "$FAKE_DIR/prs" ]; then cat "$FAKE_DIR/prs"
+    elif [ -e "$FAKE_DIR/open-pr" ]; then echo "[{\"number\":$(cat "$FAKE_DIR/open-pr"),\"baseRefName\":\"main\"}]"; else echo '[]'; fi ;;
   "pr view")
     if [ -e "$FAKE_DIR/pr-state" ]; then cat "$FAKE_DIR/pr-state"; else echo OPEN; fi ;;
   "pr create")
@@ -30,6 +31,9 @@ case "$1 $2" in
     echo "https://github.com/owner/repo/pull/$3#issuecomment-1" ;;
   "api repos/{owner}/{repo}")
     if [ -e "$FAKE_DIR/repo" ]; then cat "$FAKE_DIR/repo"; else echo 'none of the git remotes configured for this repository point to a known GitHub host' >&2; exit 1; fi ;;
+  "api repos/"*"/reviews/"*"/comments?per_page=100")
+    if [ -e "$FAKE_DIR/review-comments-fail" ]; then echo 'gh: HTTP 404' >&2; exit 1; fi
+    if [ -e "$FAKE_DIR/review-comments" ]; then cat "$FAKE_DIR/review-comments"; else echo '[]'; fi ;;
   "api repos/"*"/rules/branches/"*)
     if [ -e "$FAKE_DIR/rules" ]; then cat "$FAKE_DIR/rules"; else echo '[]'; fi ;;
   "api repos/"*"/branches/"*)

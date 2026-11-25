@@ -143,6 +143,12 @@ pub fn spool_dir(home: &Path, session: &str) -> PathBuf {
     home.join("spools").join(session)
 }
 
+/// The folder that holds the marker of `session`'s news. Only the daemon writes it: a jail binds it
+/// read-only.
+pub fn news_dir(home: &Path, session: &str) -> PathBuf {
+    home.join("news").join(session)
+}
+
 impl Jail {
     /// The command that starts `launch`'s harness in the jail: `bwrap`, its binds and a shell that
     /// clears every variable the run does not keep, before the harness's own command. `files` are
@@ -211,9 +217,21 @@ impl Jail {
                 binds.add(Path::new(file), Mode::Read, true);
             }
         }
-        // The harness's program, when it lives in a folder the jail empties, such as ~/.local/bin.
+        if let Some(folder) = launch.direnv {
+            binds.add(folder, Mode::Read, true);
+            // Its links lead to the person's, which the jail empties with their home.
+            for name in [crate::trust::PERSONS_DIRENVRC, "lib"] {
+                if let Ok(target) = std::fs::canonicalize(folder.join(name)) {
+                    binds.add(&target, Mode::Read, true);
+                }
+            }
+        }
+        let programs = std::iter::once(harness.program())
+            .chain(launch.direnv.map(|_| "direnv"))
+            .filter_map(find);
+        // A program, when it lives in a folder the jail empties, such as ~/.local/bin.
         let mut link = Vec::new();
-        if let Some(program) = find(harness.program()) {
+        for program in programs {
             let resolved = real(&program);
             if hidden(&resolved, user) {
                 let dir = resolved.parent().expect("a program has a folder");
@@ -236,9 +254,15 @@ impl Jail {
             Mode::Write,
             true,
         );
+        // A file in it becomes the daemon's binary.
+        crate::upgrade::private(&home)?;
+        binds.add(&crate::upgrade::dir(&home), Mode::Empty, true);
         let spool = spool_dir(&home, launch.session);
         std::fs::create_dir_all(&spool).map_err(|error| format!("{}: {error}", spool.display()))?;
         binds.add(&spool, Mode::Write, true);
+        let news = news_dir(&home, launch.session);
+        std::fs::create_dir_all(&news).map_err(|error| format!("{}: {error}", news.display()))?;
+        binds.add(&news, Mode::Read, true);
         for (paths, mode) in [(&self.read, Mode::Read), (&self.write, Mode::Write)] {
             for path in paths.iter().filter_map(|path| expand(path, user)) {
                 binds.add(&path, mode, false);
@@ -250,6 +274,9 @@ impl Jail {
         // The shell runs in the jail, so the variables it keeps are the pane's own.
         let mut kept: Vec<&str> = KEPT.to_vec();
         kept.extend(harness.home_env());
+        if launch.direnv.is_some() {
+            kept.push("DIRENV_CONFIG");
+        }
         kept.extend(
             launch
                 .env

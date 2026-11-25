@@ -29,8 +29,9 @@ the one CI uses.
   it kills every process that inherited it, even when the test panics.
 - Start every process a test runs with `harness::priory()` or `harness::command(program)` from
   `crates/priory/tests/harness`, never `Command::new`. It drops the `PRIORY_*` and `HERDR_*`
-  variables your shell exports, so the suite passes on your machine as it does in CI. Set a
-  variable the test needs on the command itself.
+  variables your shell exports, so the suite passes on your machine as it does in CI. It
+  also hides your systemd user manager, so no test changes your agents slice. Set a variable the
+  test needs on the command itself.
 - Cover each parser of outside text (JSON, request heads, shell commands) with a `proptest` test
   that feeds it random and mutated input and asserts it returns or refuses without panicking.
   `proptest` is a dev-dependency only. Keep each test to a few seconds in a debug build.
@@ -47,6 +48,11 @@ the one CI uses.
   `corepack pnpm web:build`, and commit `crates/priory-core/web/dist/app.js` with your change. CI
   fails on a stale bundle. [ADR 0004](docs/adr/0004-the-web-view-is-a-react-app-whose-built-bundle-is-committed.md)
   says why the bundle is committed.
+- Check that a refresh keeps the page drawn: with the demo served, run
+  `node scripts/demo/refresh.mjs DIR [CHROMIUM]`. It changes the demo's data while a page is open
+  and fails on a frame that lost a section, or the Say field's focus, text or caret, on a blank page or on a
+  stale draw. It needs the `sqlite3` command. Paste its output in the pull request, since CI has no
+  browser.
 - Follow [DESIGN.md](DESIGN.md) for tokens, components, states, touch and copy. Change it in the
   same pull request when the UI needs something it lacks.
 - Retake the README's screenshots from synthetic data. Run `scripts/demo/serve.sh DIR` with a new

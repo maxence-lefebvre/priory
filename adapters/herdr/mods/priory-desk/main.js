@@ -164,6 +164,7 @@ export default class PrioryDesk extends View {
         }
         this.since = mergeSince(this.since, desk.since_you_looked);
         this.data = { desk, asks, tasks, queue, memories };
+        this.adding.offer(addChoices(queue, tasks.tasks));
         this.error = null;
         cx.notify();
         return desk.revision;

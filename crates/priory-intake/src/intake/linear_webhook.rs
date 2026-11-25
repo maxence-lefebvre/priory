@@ -146,6 +146,9 @@ impl LinearWebhook {
                     let mut fields = issue_fields(data, &payload["url"]);
                     fields["from"] = Value::Null;
                     fields["to"] = data["state"]["name"].clone();
+                    fields["to_type"] = data["state"]["type"].clone();
+                    // The payload names no relations; the poll's copy of this change is a repeat.
+                    fields["duplicate_of"] = Value::Null;
                     // Signed fields that a redelivery keeps, unlike the body's `webhookTimestamp`.
                     let name = format!(
                         "linear:webhook:state_changed:{}:{}:{}",
@@ -226,7 +229,7 @@ fn names(trigger: &Trigger, team: &Value) -> bool {
         .filter
         .as_ref()
         .and_then(|filter| filter.get("team"));
-    key.is_none_or(|key| key == team)
+    key.is_none_or(|key| team == key)
 }
 
 /// The fields of an `Issue` payload's data, as a poll reads them.

@@ -222,6 +222,14 @@ pub(crate) fn call(
             None,
         ));
     }
+    // News refuses the call once and is then read, so this refusal commits.
+    if matches!(call.tool.as_str(), "result" | "ask" | "wait" | "consult")
+        && run.debate.is_none()
+        && let Some(held) = crate::news::refusal(&tx, &run.session)?
+    {
+        tx.commit()?;
+        return Ok((Err(held), None));
+    }
     let refused = match (call.tool.as_str(), open_ask, open_wait) {
         ("result" | "ask" | "wait" | "consult", ..) if run.debate.is_some() => {
             Some(crate::debate::ENDS_WITH_POSITION.to_owned())
@@ -249,6 +257,23 @@ pub(crate) fn call(
     if let Some(refused) = refused {
         return Ok((Err(refused), None));
     }
+    // A result moves the task, maybe to another agent's conversation, before the compact is typed.
+    if call.tool == "result" && compact_queued(&tx, run.task)? {
+        return Ok((
+            Err(
+                "a compact is queued for this run; end your turn and call result after the compaction"
+                    .to_owned(),
+            ),
+            None,
+        ));
+    }
+    // A refused answer is kept, with the ask's next revision when its plan changed.
+    if call.tool == "result"
+        && let Err(refused) = lead_answer(&tx, &run, &call.arguments, trace, head)?
+    {
+        tx.commit()?;
+        return Ok((Err(refused), None));
+    }
     // The run moves on from the asks and waits of earlier runs. A refused call rolls this back.
     tx.execute(
         "UPDATE asks SET withdrawn = 1, withdrawn_reason = 'moved-on' WHERE task = ?1
@@ -262,19 +287,9 @@ pub(crate) fn call(
     )?;
     let mut kill = None;
     let stored = match call.tool.as_str() {
-        // A result moves the task, maybe to another agent's conversation, before the compact is typed.
-        "result" if compact_queued(&tx, run.task)? => Err(
-            "a compact is queued for this run; end your turn and call result after the compaction"
-                .to_owned(),
-        ),
-        "result" => match lead_answer(&tx, &run, &call.arguments, trace, head)? {
-            Ok(()) => match result(&tx, &run, &call.arguments, factory, head, Some(kit))? {
-                Ok(stored) => {
-                    crate::consult::answer(&tx, run.task, run.id, &call.arguments, trace)?
-                        .map(|()| stored)
-                }
-                Err(refused) => Err(refused),
-            },
+        "result" => match result(&tx, &run, &call.arguments, factory, head, Some(kit))? {
+            Ok(stored) => crate::consult::answer(&tx, run.task, run.id, &call.arguments, trace)?
+                .map(|()| stored),
             Err(refused) => Err(refused),
         },
         "ask" => ask(&tx, &run, &call.arguments, trace, head)?,
@@ -844,8 +859,19 @@ fn ask(
     let auto = factory.workflows.get(&run.workflow).is_some_and(|flow| {
         explain::auto_answerable(&flow.value, &run.step, command.is_some(), level, confidence)
     });
+    let pilot = match factory.workflows.get(&run.workflow).filter(|_| !auto) {
+        Some(flow) => crate::autopilot::answers(
+            tx,
+            &flow.value,
+            run.task,
+            &run.step,
+            command.is_some(),
+            confidence,
+        )?,
+        None => None,
+    };
     // A low confidence is the agent saying it does not know: a lead's guess is no person's answer.
-    let lead = match auto || confidence == Some(Confidence::Low) {
+    let lead = match auto || pilot.is_some() || confidence == Some(Confidence::Low) {
         true => None,
         false => lead_of(
             tx,
@@ -911,6 +937,14 @@ fn ask(
                 rationale.as_deref().unwrap_or_default(),
             )?;
         }
+    }
+    if let Some(window) = pilot
+        && crate::autopilot::judge(tx, id, &window, trace, head)?
+    {
+        tx.execute(
+            "DELETE FROM push_queue WHERE kind = 'ask' AND item = ?1",
+            [id],
+        )?;
     }
     Ok(Ok(format!(
         "ask {id} stored: end your turn now; the answer arrives as your next prompt"
@@ -1478,6 +1512,7 @@ pub(crate) fn event(
             .as_str()
             .zip(data["pull_request"].as_u64())
             .map(|(repo, number)| route::pull_request(repo, number));
+        let reviewed = kind_of_event == REVIEWED && data["agent"] != true;
         // Each pull request of a stack has its own gate, which only its events decide.
         if daemon && on.as_deref() != Some(resource.as_str()) {
             // A merged pull request's gate already fired, so a person's feedback on it fires the
@@ -1490,7 +1525,7 @@ pub(crate) fn event(
             }
             let place = crate::stack::place(tx, task, &on)?;
             let said = feedback(&on, place.as_deref(), &kind_of_event, &data)
-                .filter(|_| later || kind_of_event == REVIEWED || not_agents(&data))
+                .filter(|_| later || reviewed || not_agents(&data))
                 .filter(|_| !settles(&kind_of_event, &data));
             let Some(said) = said else {
                 continue;
@@ -1507,7 +1542,7 @@ pub(crate) fn event(
         // A comment written before the wait, such as the agent's own, wakes nothing.
         let place = crate::stack::place(tx, task, &resource)?;
         let said = feedback(&resource, place.as_deref(), &kind_of_event, &data)
-            .filter(|_| later || kind_of_event == REVIEWED || not_agents(&data));
+            .filter(|_| later || reviewed || not_agents(&data));
         if daemon {
             let Some(said) = said.filter(|_| !settles(&kind_of_event, &data)) else {
                 return judge(tx, wait, factory);
@@ -1582,15 +1617,20 @@ fn feedback_on(kind: &str, data: &Value) -> Option<String> {
 
 /// Fires the checks gate of `task` on a comment or reply in `message` on its issue, Linear issue
 /// or Slack thread, as pull request feedback fires it, since a merge would end the task unheard.
+/// Its Linear issue canceled or marked a duplicate fires it too.
 pub(crate) fn gate_feedback(
     tx: &Transaction,
     task: i64,
     message: &herdr_bus::Message,
     seq: Option<i64>,
 ) -> rusqlite::Result<bool> {
-    let Some(resource) = feedback_on(&message.kind, &message.data)
-        .filter(|_| !FEEDBACK.contains(&message.kind.as_str()))
-    else {
+    // Only a cancel: a merge moves a Linear issue to Done and closes issues, and ends the task.
+    let news = crate::news::line(&message.kind, &message.data)
+        .filter(|_| message.data["to_type"] == "canceled");
+    let resource = feedback_on(&message.kind, &message.data)
+        .filter(|_| !FEEDBACK.contains(&message.kind.as_str()));
+    // The news itself, or else the resource a comment or reply is on.
+    let Some(about) = news.map(Ok).or(resource.map(Err)) else {
         return Ok(false);
     };
     let gate: Option<i64> = tx.query_row(
@@ -1603,7 +1643,10 @@ pub(crate) fn gate_feedback(
     let Some(gate) = gate else {
         return Ok(false);
     };
-    let said = reopened_by(&resource, None, &message.kind, &message.data);
+    let said = match about {
+        Ok(news) => news,
+        Err(resource) => reopened_by(&resource, None, &message.kind, &message.data),
+    };
     let mut text = format!("wait {gate} fired: {said}");
     // Another task kept the event, so its whole line goes with the reason.
     if seq.is_none() {
@@ -1688,6 +1731,7 @@ impl Seen {
     fn red(&self) -> bool {
         self.kind == CHECKED
             && !PASSING.contains(&self.data["conclusion"].as_str().unwrap_or("none"))
+            && self.data["superseded_by"].is_null()
     }
 }
 
@@ -2540,6 +2584,15 @@ pub(crate) fn stop(
     Ok(None)
 }
 
+/// Whether the run sent its result.
+fn sent(tx: &Transaction, run: i64) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT count(*) > 0 FROM results WHERE run = ?1",
+        [run],
+        |row| row.get(0),
+    )
+}
+
 /// Fails the run's task when its step went over its budget, before its result moves it. Returns
 /// the tmux session to kill when it did.
 fn over_spent(
@@ -2551,13 +2604,9 @@ fn over_spent(
     let Some((over, reason)) = over_budget(tx, run, trace)? else {
         return Ok(None);
     };
-    let sent = tx
-        .query_row("SELECT 1 FROM results WHERE run = ?1", [run.id], |_| Ok(()))
-        .optional()?
-        .is_some();
     // The money of a turn that sent its result is spent: the result stands, and its step's
     // trace record carries the overrun.
-    if over && sent {
+    if over && sent(tx, run.id)? {
         return Ok(None);
     }
     end(tx, run.id, "budget")?;
@@ -2789,20 +2838,35 @@ fn dollars(spent: f64, budget: f64) -> String {
     format!("${spent:.6}")
 }
 
-/// After the turn of a run marked to stop for task `head`: settles it as `stop` does, but ends it
-/// as `preempted` wherever its process would have gone on, with the stop prompt ahead of the
-/// task's queued prompts. Returns the tmux session to kill.
-pub(crate) fn preempt(
+/// Why a live run is stopped with its session kept.
+#[derive(Clone, Copy)]
+pub(crate) enum Stopped {
+    /// To make room for this task.
+    For(i64),
+    /// For its task's hold, at its turn end.
+    Held,
+    /// For its task's hold, idle between turns.
+    Idle,
+    /// For its task's hold, inside its turn.
+    Interrupted,
+}
+
+/// After the turn of a marked run, or inside it for `Interrupted`: settles it as `stop` does, but
+/// stops it wherever its process would have gone on, with the stop prompt ahead of the task's
+/// queued prompts. Returns the tmux session to kill.
+pub(crate) fn stop_marked(
     tx: &Transaction,
     session: &str,
     trace: &Trace,
-    head: i64,
+    why: Stopped,
 ) -> rusqlite::Result<Option<String>> {
     let Some(mut run) = run(tx, session)? else {
         return Ok(None);
     };
-    // A step over its budget fails, marked or not.
-    if let Some(kill) = over_spent(tx, &run, trace)? {
+    // A step over its budget fails, marked or not. A turn that has not ended may have no tokens
+    // to price yet: with no result sent, a later turn end prices it.
+    let unpriced = matches!(why, Stopped::Idle | Stopped::Interrupted) && !sent(tx, run.id)?;
+    if !unpriced && let Some(kill) = over_spent(tx, &run, trace)? {
         return Ok(kill);
     }
     // No process carries on, so a next step of the same agent gets a new run.
@@ -2827,8 +2891,111 @@ pub(crate) fn preempt(
             return Ok(kill);
         }
     }
-    stop_for(tx, trace, run.id, head)?;
+    match why {
+        Stopped::For(head) => stop_for(tx, trace, run.id, head)?,
+        Stopped::Held | Stopped::Idle | Stopped::Interrupted => stop_held(tx, &run)?,
+    }
     Ok(Some(run.tmux))
+}
+
+/// Ends `run` as `held`, if it is not ended yet, and holds its task with the stop prompt ahead of
+/// its queued prompts.
+fn stop_held(tx: &Transaction, run: &Run) -> rusqlite::Result<()> {
+    let text = crate::hold::prompt(tx, run)?;
+    crate::hold::forget_unprompted(tx, run.id)?;
+    crate::state::requeue_unready(tx, run.id)?;
+    tx.execute(
+        "UPDATE outbox SET state = 'uncertain' WHERE run = ?1 AND state = 'attempted'",
+        [run.id],
+    )?;
+    tx.execute(
+        &format!("UPDATE runs SET ended = coalesce(ended, {NOW}), ended_as = 'held' WHERE id = ?1"),
+        [run.id],
+    )?;
+    wake(tx, run.task, &text)?;
+    set(tx, run.task, "ready", None, None)?;
+    crate::hold::park(tx, run.task).map(drop)
+}
+
+/// Ends the idle live run of `session` for its task's hold, unless its mark no longer stops it.
+/// Returns the tmux session to kill.
+pub(crate) fn hold_idle(
+    db: &mut Connection,
+    trace: &Trace,
+    session: &str,
+) -> rusqlite::Result<Option<String>> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let Some(run) = run(&tx, session)? else {
+        return Ok(None);
+    };
+    if !crate::hold::stops(&tx, run.id, trace.factory)? {
+        return Ok(None);
+    }
+    trace::account(&tx, trace, run.id, None)?;
+    let kill = stop_marked(&tx, session, trace, Stopped::Idle)?;
+    tx.commit()?;
+    Ok(kill)
+}
+
+/// Holds `task` as `hold` does, and ends its live run at once rather than at its turn end. Refused
+/// for a run that `preempt::guarded` protects. Returns the reply and the tmux session to kill.
+fn hold_now(
+    tx: &Transaction,
+    task: i64,
+    hold: &priory_factory::factory::Hold,
+    trace: &Trace,
+) -> rusqlite::Result<(Result<String, String>, Option<String>)> {
+    let state = tx
+        .query_row("SELECT state FROM tasks WHERE id = ?1", [task], |row| {
+            row.get::<_, String>(0)
+        })
+        .optional()?;
+    let live: Option<(i64, String)> = tx
+        .query_row(
+            "SELECT id, session FROM runs WHERE task = ?1 AND ended IS NULL",
+            [task],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    if state.as_deref() == Some("running") {
+        let refused = match &live {
+            None => Some(format!("task {task} has no live run to interrupt")),
+            Some((run, _)) => crate::hold::guarded(tx, *run, trace.factory)?,
+        };
+        if let Some(why) = refused {
+            return Ok((
+                Err(format!("{why}: leave out --now to hold it after its turn")),
+                None,
+            ));
+        }
+    }
+    let marked = crate::hold::hold(tx, task, hold, trace.factory)?;
+    let Some((run, session)) =
+        live.filter(|_| marked.is_ok() && state.as_deref() == Some("running"))
+    else {
+        return Ok((marked, None));
+    };
+    // Ending the run would drop the result its gate grades: the verdict moves the task first.
+    if crate::gates::grading(tx, run)?.is_some() {
+        let until = if crate::gates::turn_over(tx, run)? {
+            "its process goes on until the gate's verdict"
+        } else {
+            "its turn still runs, and its process goes on until the turn's end and the gate's verdict"
+        };
+        return Ok((marked.map(|marked| format!("{marked}; {until}")), None));
+    }
+    trace::account(tx, trace, run, None)?;
+    let kill = stop_marked(tx, &session, trace, Stopped::Interrupted)?;
+    let (state, reason): (String, Option<String>) = tx.query_row(
+        "SELECT state, reason FROM tasks WHERE id = ?1",
+        [task],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let reply = match (state.as_str(), reason) {
+        ("held", Some(reason)) => format!("task {task} {reason}"),
+        _ => format!("task {task} is {state}"),
+    };
+    Ok((Ok(reply), kill))
 }
 
 /// Ends the run `run` as `preempted` for task `head`, if it is not ended yet, and makes its task
@@ -3094,6 +3261,11 @@ pub(crate) fn settle(
                     ask_text(tx, run.task)?
                 ],
             )?;
+            let ask = tx.last_insert_rowid();
+            let author = crate::plan::author(tx, run.task, &run.step, |at| {
+                step(workflows, &run.workflow, at)
+            })?;
+            crate::plan::present(tx, ask, run.task, author.as_deref())?;
             end(tx, run.id, "asleep")?;
             set(tx, run.task, "asleep", None, None)?;
             return Ok(Some(Some(run.tmux.clone())));
@@ -3166,6 +3338,9 @@ pub const LEAD_TRIGGER: &str = "priory/lead";
 /// Who answers an ask the daemon answered with its recommendation, at or above its task's
 /// `auto_answer` level.
 pub const AUTO: &str = "auto";
+
+/// Who answers an ask the daemon answered while a person had autopilot on.
+pub const AUTOPILOT: &str = "autopilot";
 
 /// What `answered_by` starts with for an ask a person's own session answered or dismissed through
 /// `priory mcp --outside`: `session:` and the session's name.
@@ -3274,7 +3449,7 @@ fn lead_of(
 
 /// Queues a lead task that answers `ask` in the person's place. Its source event carries the ask,
 /// so its first prompt names it.
-fn call_lead(tx: &Transaction, ask: i64, lead: &str) -> rusqlite::Result<()> {
+pub(crate) fn call_lead(tx: &Transaction, ask: i64, lead: &str) -> rusqlite::Result<()> {
     let source = uuid::Uuid::new_v4().to_string();
     tx.execute(
         "INSERT INTO tasks
@@ -3295,7 +3470,8 @@ fn call_lead(tx: &Transaction, ask: i64, lead: &str) -> rusqlite::Result<()> {
            json_object('task', asks.task, 'key', tasks.key, 'ask', asks.id,
              'revision', asks.revision, 'question', asks.question, 'options', json(asks.options),
              'recommendation', asks.recommendation, 'tradeoff', asks.tradeoff,
-             'title', asks.title, 'text', asks.text),
+             'title', asks.title, 'text', asks.text,
+             'plan', (SELECT json(ask_plans.files) FROM ask_plans WHERE ask_plans.ask = asks.id)),
            '[]', ?3, 'created'
          FROM asks JOIN tasks ON tasks.id = asks.task WHERE asks.id = ?1",
         params![ask, source, task],
@@ -3345,7 +3521,9 @@ fn lead_answer(
         run: false,
         by: format!("agent:{}", run.agent.as_deref().unwrap_or_default()),
     };
-    Ok(answer_in(tx, &answer, trace, head)?.map(drop))
+    Ok(answer_in_tx(tx, &answer, trace, head)?
+        .map(drop)
+        .map_err(|why| format!("{why}. If the person has the ask now, end with skipped")))
 }
 
 /// Drops the lead task still queued for `ask`, which a person answered or dismissed first.
@@ -3512,6 +3690,9 @@ pub(crate) fn pull_request(tx: &Connection, task: i64) -> rusqlite::Result<Optio
              WHERE inbox.task = ?1 AND inbox.outcome IN ('kept', 'woke')
              AND json_extract(inbox.data, '$.pull_request') IS NOT NULL
              AND json_extract(inbox.data, '$.head_branch') = tasks.branch
+           UNION ALL
+           SELECT tasks.key, 0, 0 FROM tasks JOIN holds ON holds.task = tasks.id
+             WHERE tasks.id = ?1 AND holds.kind = 'parked'
            UNION ALL
            SELECT tasks.key, 0, 0 FROM tasks JOIN inbox ON inbox.id = tasks.source
              WHERE tasks.id = ?1 AND inbox.type LIKE 'github.pull_request.%'
@@ -3781,9 +3962,14 @@ fn step_in(
                 (None, true, None) => target.to_owned(),
                 (None, false, None) => format!("{target}: {context}"),
             };
-            let text = match go {
-                Some((_, plan)) => Some(plan),
-                None => ask_text(tx, task)?,
+            let (text, approves) = match go {
+                Some((_, plan)) => (Some(plan), None),
+                None => (
+                    ask_text(tx, task)?,
+                    crate::plan::approved_at(tx, task, target, |at| {
+                        self::step(workflows, workflow, at)
+                    })?,
+                ),
             };
             let command = match step_command(tx, task, step, &values, factory)? {
                 Ok(command) => command,
@@ -3807,8 +3993,12 @@ fn step_in(
                     text
                 ],
             )?;
+            let ask = tx.last_insert_rowid();
+            if let Some(author) = approves {
+                crate::plan::present(tx, ask, task, author.as_deref())?;
+            }
             if let Some(lead) = &lead {
-                call_lead(tx, tx.last_insert_rowid(), lead)?;
+                call_lead(tx, ask, lead)?;
             }
             set(tx, task, "asleep", Some(target), None)?;
             finish("asleep")
@@ -3852,19 +4042,141 @@ pub(crate) fn answer_in_tx(
     trace: &Trace,
     head: &dyn Fn(&Path, &str) -> Option<String>,
 ) -> rusqlite::Result<Result<String, String>> {
-    let applied = answer_in(tx, answer, trace, head)?;
+    if let Some(replaced) = replace_autopilot(tx, answer, trace)? {
+        return Ok(Ok(replaced));
+    }
+    let mut applied = match unfit(&answer.ask.to_string(), &answer.text) {
+        Some(refused) if autopilot_answered(tx, answer)?.is_some() => Err(refused),
+        _ => answer_in(tx, answer, trace, head)?,
+    };
+    if let Err(why) = &mut applied
+        && unfit("", &answer.text).is_none()
+        && by_person(&answer.by)
+        && let Some(task) = autopilot_answered(tx, answer)?
+    {
+        why.push_str(&format!(
+            " by autopilot, and its task went on: tell it with `priory say {task} TEXT`"
+        ));
+    }
     if let Err(why) = &applied {
+        let refused: String = answer.text.chars().take(REFUSED_CHARS).collect();
         tx.execute(
             "INSERT INTO ask_refusals (ask, revision, answer, by, why)
              SELECT id, ?2, ?3, ?4, ?5 FROM asks WHERE id = ?1",
-            params![answer.ask, answer.revision, answer.text, answer.by, why],
+            params![answer.ask, answer.revision, refused, answer.by, why],
         )?;
     }
     Ok(applied)
 }
 
-/// Applies `answer` in `tx`, writing nothing when it refuses it.
-fn answer_in(
+/// Why ask `label` takes no answer `text`: it is blank or too long.
+fn unfit(label: &str, text: &str) -> Option<String> {
+    if text.trim().is_empty() {
+        return Some(format!("ask {label} takes no blank answer"));
+    }
+    (text.len() > ANSWER_BYTES).then(|| {
+        format!(
+            "ask {label} takes an answer of at most {ANSWER_BYTES} bytes, not {}",
+            text.len()
+        )
+    })
+}
+
+/// Whether `by`, an answer's author, is a person, and no agent, session or the daemon itself.
+fn by_person(by: &str) -> bool {
+    by != AUTO && by != AUTOPILOT && !by.starts_with("agent:") && !by.starts_with(SESSION)
+}
+
+/// The task of the ask that `answer` names, when autopilot answered it at that revision.
+fn autopilot_answered(tx: &Transaction, answer: &Answer) -> rusqlite::Result<Option<i64>> {
+    tx.query_row(
+        "SELECT task FROM asks WHERE id = ?1 AND revision = ?2 AND answered_by = ?3
+         AND answer IS NOT NULL AND withdrawn IS NULL",
+        params![answer.ask, answer.revision, AUTOPILOT],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
+/// Puts a person's answer in place of the one autopilot gave an agent's ask, while the prompt that
+/// carries it is still queued. The agent then reads only the person's.
+fn replace_autopilot(
+    tx: &Transaction,
+    answer: &Answer,
+    trace: &Trace,
+) -> rusqlite::Result<Option<String>> {
+    if !by_person(&answer.by) || unfit("", &answer.text).is_some() {
+        return Ok(None);
+    }
+    let Some(task) = autopilot_answered(tx, answer)? else {
+        return Ok(None);
+    };
+    let (kind, given): (String, String) = tx.query_row(
+        "SELECT kind, answer FROM asks WHERE id = ?1",
+        [answer.ask],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if kind != "agent" {
+        return Ok(None);
+    }
+    let prompt = |text: &str| answer_prompt(&answer.ask.to_string(), answer.revision, text);
+    let queued = tx
+        .prepare("SELECT id, text FROM outbox WHERE task = ?1 AND state = 'queued' ORDER BY id")?
+        .query_map([task], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let old = format!("\n{}", prompt(&given));
+    let Some((id, text)) = queued
+        .into_iter()
+        .map(|(id, text)| (id, format!("\n{text}")))
+        .find(|(_, text)| text.contains(&old))
+    else {
+        return Ok(None);
+    };
+    let text = text.replacen(&old, &format!("\n{}", prompt(&answer.text)), 1);
+    tx.execute(
+        "UPDATE outbox SET text = ?2 WHERE id = ?1",
+        params![id, &text[1..]],
+    )?;
+    tx.execute(
+        &format!("UPDATE asks SET answer = ?2, answered = {NOW}, answered_by = ?3 WHERE id = ?1"),
+        params![answer.ask, answer.text, answer.by],
+    )?;
+    let replaced = json!({
+        "ask": answer.ask.to_string(),
+        "revision": answer.revision,
+        "option": answer.text,
+        "replaced": given,
+        "by": answer.by,
+    });
+    trace::autopilot(
+        tx,
+        trace,
+        "factory.ask.autopilot_replaced",
+        answer.ask,
+        replaced,
+    )?;
+    Ok(Some(format!(
+        "ask {} answered, in place of autopilot's answer {given}",
+        answer.ask
+    )))
+}
+
+/// The line that carries `text`, the answer to ask `label`, to its agent.
+fn answer_prompt(label: &str, revision: i64, text: &str) -> String {
+    format!("Answer to ask {label} (revision {revision}): {text}")
+}
+
+/// The longest answer an ask takes.
+const ANSWER_BYTES: usize = 16 * 1024;
+
+/// How much of a refused answer an ask keeps.
+const REFUSED_CHARS: usize = 200;
+
+/// Applies `answer` in `tx`. A refusal writes nothing, except that a plan that changed since the
+/// ask showed it is shown as the ask's next revision.
+pub(crate) fn answer_in(
     tx: &Transaction,
     answer: &Answer,
     trace: &Trace,
@@ -3885,6 +4197,9 @@ fn answer_in(
         Err(error) => return Ok(Err(error)),
     };
     let options: Vec<String> = serde_json::from_str(&options).expect("options are stored as JSON");
+    if let Some(refused) = unfit(&label, &answer.text) {
+        return Ok(Err(refused));
+    }
     if let Some(applied) = crate::gates::answered(tx, answer.ask, &answer.text, &answer.by)? {
         return Ok(applied);
     }
@@ -3905,13 +4220,81 @@ fn answer_in(
         .filter(|_| kind == "agent" || kind == "step")
         .and_then(|command| serde_json::from_str::<command::Command>(command).ok())
         .filter(|command| command.runs.contains(&chosen));
+    let asked = step(workflows, &workflow, &at);
+    if (kind == "step" || hold.is_some())
+        && !options.contains(&chosen)
+        && let Some(meant) = meant(&chosen, &options)
+    {
+        return Ok(Err(format!(
+            "ask {label} takes one of: {}; did you mean {meant}?",
+            options.join(", ")
+        )));
+    }
+    let written = hold.is_some()
+        || (kind == "step"
+            && asked.is_some_and(|asked| asked.decides == Decider::Human)
+            // Going back can rerun an autonomous irreversible step with no person deciding.
+            && !answer.by.starts_with(SESSION));
+    if written
+        && !options.contains(&chosen)
+        && let Some(task) = task
+    {
+        let by = decider(&answer.by);
+        if let Some(hold) = hold {
+            let text = format!("{by} wrote on ask {label}: {}", answer.text);
+            let unstarted: bool = tx.query_row(
+                "SELECT resume = 'queued' FROM holds WHERE id = ?1",
+                [hold],
+                |row| row.get(0),
+            )?;
+            // A first run's prompt and a debate's turn are built at the start: queued text would
+            // precede them.
+            if unstarted || asked.is_some_and(|asked| asked.debate.is_some()) {
+                tx.execute(
+                    "INSERT INTO outbox (task, text, state) VALUES (?1, ?2, 'held')",
+                    params![task, text],
+                )?;
+            } else {
+                queue_first(tx, task, &text)?;
+            }
+            void_approvals(tx, task)?;
+            return Ok(Ok(format!(
+                "ask {label}: the text waits for the task's next run; its hold still takes one of: {}",
+                options.join(", ")
+            )));
+        }
+        let Some(back) = last_model_step(tx, workflows, &workflow, task)? else {
+            return Ok(Err(format!(
+                "ask {label} takes one of: {}; no earlier model step reads a written answer",
+                options.join(", ")
+            )));
+        };
+        if let Some(refused) = plan_changed(tx, answer, &label)? {
+            return Ok(Err(refused));
+        }
+        tx.execute(
+            &format!(
+                "UPDATE asks SET answer = ?2, answered = {NOW}, answered_by = ?3 WHERE id = ?1"
+            ),
+            params![answer.ask, answer.text, answer.by],
+        )?;
+        drop_lead(tx, answer.ask, &format!("ask {label} was answered first"))?;
+        void_approvals(tx, task)?;
+        trace::ended(tx, trace, task, "written", None)?;
+        queue_first(
+            tx,
+            task,
+            &format!("{by} answered step {at} in writing: {}", answer.text),
+        )?;
+        enter(tx, task, &workflow, &back, None, "", trace.factory)?;
+        return Ok(Ok(format!("ask {label} answered: back to step {back}")));
+    }
     if (kind == "step" || hold.is_some()) && !options.contains(&chosen) {
         return Ok(Err(format!(
             "ask {label} takes one of: {}",
             options.join(", ")
         )));
     }
-    let asked = step(workflows, &workflow, &at);
     let target = match (kind == "step", asked) {
         (false, _) => None,
         // A `plan` task's grading step: an approval moves it by its grade.
@@ -3942,8 +4325,9 @@ fn answer_in(
     // question, or the dropped task's reason.
     let reads_note = |target: &str| {
         target == "stop"
-            || step(workflows, &workflow, target)
-                .is_some_and(|next| matches!(next.decides, Decider::Model | Decider::Human))
+            || step(workflows, &workflow, target).is_some_and(|next| {
+                next.debate.is_none() && matches!(next.decides, Decider::Model | Decider::Human)
+            })
     };
     if let (Some(_), Some(target)) = (note, target.as_deref())
         && (runs.is_some() || !reads_note(target))
@@ -3973,6 +4357,9 @@ fn answer_in(
         if let Err(refused) = crate::batch::answering(tx, task, go, &answer.by)? {
             return Ok(Err(refused));
         }
+    }
+    if let Some(refused) = plan_changed(tx, answer, &label)? {
+        return Ok(Err(refused));
     }
     tx.execute(
         &format!("UPDATE asks SET answer = ?2, answered = {NOW}, answered_by = ?3 WHERE id = ?1"),
@@ -4086,10 +4473,7 @@ fn answer_in(
         wake(
             tx,
             task,
-            &format!(
-                "Answer to ask {label} (revision {}): {}",
-                answer.revision, answer.text
-            ),
+            &answer_prompt(&label, answer.revision, &answer.text),
         )?;
         // An answer that beats the run's Stop leaves it running: the answer is its next prompt.
         if state == "asleep" {
@@ -4097,6 +4481,105 @@ fn answer_in(
         }
     }
     Ok(Ok(format!("ask {label} answered")))
+}
+
+/// Why `answer` is refused when the plan its ask showed changed: the ask then shows the plan as its
+/// next revision.
+fn plan_changed(
+    tx: &Transaction,
+    answer: &Answer,
+    label: &str,
+) -> rusqlite::Result<Option<String>> {
+    if !crate::plan::changed(tx, answer.ask)? {
+        return Ok(None);
+    }
+    crate::plan::again(tx, answer.ask)?;
+    tx.execute(
+        "UPDATE asks SET revision = revision + 1 WHERE id = ?1",
+        [answer.ask],
+    )?;
+    unroute(tx, answer.ask)?;
+    Ok(Some(format!(
+        "the plan of ask {label} changed since revision {}: read revision {} and answer again",
+        answer.revision,
+        answer.revision + 1
+    )))
+}
+
+/// The option that `text`, or its part before a colon, misspells: it differs from the option only
+/// by case and whitespace, or is a lone word a letter or two away from one of 5 letters or more.
+fn meant<'a>(text: &str, options: &'a [String]) -> Option<&'a String> {
+    let squeeze = |text: &str| -> Vec<char> {
+        text.chars()
+            .filter(|char| !char.is_whitespace())
+            .flat_map(char::to_lowercase)
+            .collect()
+    };
+    let head = text.split(':').next().unwrap_or_default();
+    options
+        .iter()
+        .flat_map(|option| [text, head].map(|typed| (typed.trim(), option)))
+        .map(|(typed, option)| {
+            let known = squeeze(option);
+            let lone = !typed.contains(char::is_whitespace);
+            let most = if lone && known.len() >= 5 { 2 } else { 0 };
+            (distance(&squeeze(typed), &known), most, option)
+        })
+        .filter(|(far, most, _)| far <= most)
+        .min_by_key(|(far, ..)| *far)
+        .map(|(.., option)| option)
+}
+
+/// The Levenshtein distance between `left` and `right`.
+fn distance(left: &[char], right: &[char]) -> usize {
+    let mut row: Vec<usize> = (0..=right.len()).collect();
+    for (at, a) in left.iter().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = at + 1;
+        for (to, b) in right.iter().enumerate() {
+            let cost = diagonal + usize::from(a != b);
+            diagonal = row[to + 1];
+            row[to + 1] = cost.min(diagonal + 1).min(row[to] + 1);
+        }
+    }
+    row[right.len()]
+}
+
+/// Voids the approvals of `task`'s current generation, so each irreversible step asks again.
+fn void_approvals(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
+    tx.execute(
+        "UPDATE approvals SET commit_sha = NULL WHERE task = ?1
+           AND generation IS (SELECT generation FROM tasks WHERE id = ?1)",
+        [task],
+    )
+    .map(drop)
+}
+
+/// The model step of `workflow`, neither irreversible nor a debate, that `task` ran last in its
+/// current generation, which reads a written answer to a human step.
+fn last_model_step(
+    tx: &Transaction,
+    workflows: &Workflows,
+    workflow: &str,
+    task: i64,
+) -> rusqlite::Result<Option<String>> {
+    let ran = tx
+        .prepare(
+            "SELECT step FROM runs WHERE task = ?1
+               AND id > (SELECT coalesce(max(task_ends.run), 0) FROM task_ends
+                 JOIN tasks ON tasks.id = task_ends.task
+                 WHERE tasks.id = ?1 AND task_ends.generation < tasks.generation)
+             ORDER BY id DESC",
+        )?
+        .query_map([task], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(ran.into_iter().find(|ran| {
+        step(workflows, workflow, ran).is_some_and(|ran| {
+            ran.decides == Decider::Model
+                && ran.effect != Effect::Irreversible
+                && ran.debate.is_none()
+        })
+    }))
 }
 
 /// Where answer `answer` to the ask of step `at` leads.
@@ -4348,22 +4831,25 @@ pub struct Act {
     /// The state revision a person's `hold`, `release` or `cancel` was made on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected: Option<i64>,
+    /// Whether `hold` ends a running task's turn at once.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub now: bool,
 }
 
 /// Applies a desk action. `resume` makes a blocked task `ready`, with a prompt that says why it
 /// stopped. `cancel` drops an active task and ends its live run. `revive` restarts a failed or
-/// dropped task as its next generation. `hold` and `release` hold a queued or ready task and let it
-/// go. Returns the reply and a tmux session to kill.
+/// dropped task as its next generation. `hold` and `release` hold a queued, ready or running task and let
+/// it go. Returns the reply and a tmux session to kill.
 pub(crate) fn act(
     db: &mut Connection,
     act: &Act,
-    factory: &priory_factory::factory::Factory,
+    trace: &Trace,
 ) -> rusqlite::Result<(Result<String, String>, Option<String>)> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     if let Err(stale) = crate::state::expect_revision(&tx, act.expected) {
         return Ok((Err(stale), None));
     }
-    let acted = act_in_tx(&tx, act, factory)?;
+    let acted = act_in_tx(&tx, act, trace)?;
     if acted.0.is_ok() {
         tx.commit()?;
     }
@@ -4374,8 +4860,12 @@ pub(crate) fn act(
 pub(crate) fn act_in_tx(
     tx: &Transaction,
     act: &Act,
-    factory: &priory_factory::factory::Factory,
+    trace: &Trace,
 ) -> rusqlite::Result<(Result<String, String>, Option<String>)> {
+    let factory = trace.factory;
+    if let ("hold", Some(hold), true) = (act.act.as_str(), &act.hold, act.now) {
+        return hold_now(tx, act.task, hold, trace);
+    }
     let held = match (act.act.as_str(), &act.hold) {
         ("hold", Some(hold)) => Some(crate::hold::hold(tx, act.task, hold, factory)?),
         ("release", _) => Some(crate::hold::release_task(tx, act.task)?),
@@ -4432,10 +4922,11 @@ pub(crate) fn act_in_tx(
             };
             // A fixed first line keeps a text starting with `/` from running as a slash command.
             let text = format!("{SAYS}{text}");
-            Ok((
-                say_or_hold(tx, act.task, &text, &state, &factory.workflows)?,
-                None,
-            ))
+            let said = match state.as_str() {
+                "done" => say_reopens(tx, trace, act.task, &text)?,
+                _ => say_or_hold(tx, act.task, &text, &state, &factory.workflows)?,
+            };
+            Ok((said, None))
         }
         "cancel" if ["done", "failed", "dropped"].contains(&state.as_str()) => {
             Ok((Err(format!("task {} is already {state}", act.task)), None))
@@ -4505,6 +4996,127 @@ pub(crate) fn say_or_hold(
         )));
     }
     say(tx, task, text, state, workflows)
+}
+
+/// Reopens the done `task` with `text` as its first prompt while a pull request of it is open, or
+/// says why not.
+fn say_reopens(
+    tx: &Transaction,
+    trace: &Trace,
+    task: i64,
+    text: &str,
+) -> rusqlite::Result<Result<String, String>> {
+    let resource = match open_pull_request(tx, task)? {
+        Ok(resource) => resource,
+        Err(why) => return Ok(Err(format!("task {task} is done and {why}"))),
+    };
+    let target = match reopens_at(tx, &trace.factory.workflows, task, &resource)? {
+        Ok(target) => target,
+        Err(why) => return Ok(Err(format!("task {task} is done and {why}"))),
+    };
+    let (workflow, at, generation): (String, String, i64) = tx.query_row(
+        "SELECT workflow, step, generation FROM tasks WHERE id = ?1",
+        [task],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    let generation = reenter(tx, trace, task, &workflow, &at, generation, &resource)?;
+    let prompt = format!(
+        "{text}\nThis reopened your done task as generation {generation}: {resource} is still open. Check the worktree, then continue."
+    );
+    wake_on(tx, task, &prompt, None)?;
+    trace::reopened(tx, trace, task, &resource, Some(&resource))?;
+    Ok(Ok(format!(
+        "task {task} reopened at {target}, generation {generation}"
+    )))
+}
+
+/// Whether a `say` reopens the done `task`, or why not. Without `factory`, its step goes unchecked.
+pub(crate) fn says_reopens(
+    tx: &Transaction,
+    task: i64,
+    factory: Option<&Factory>,
+) -> rusqlite::Result<Result<(), String>> {
+    let resource = match open_pull_request(tx, task)? {
+        Ok(resource) => resource,
+        Err(why) => return Ok(Err(why)),
+    };
+    match factory {
+        Some(factory) => Ok(reopens_at(tx, &factory.workflows, task, &resource)?.map(drop)),
+        None => Ok(Ok(())),
+    }
+}
+
+/// The step the done `task` reopens at for `resource`, or why it cannot: an active task holds its
+/// key or a resource of it, or no agent runs that step.
+fn reopens_at(
+    tx: &Transaction,
+    workflows: &Workflows,
+    task: i64,
+    resource: &str,
+) -> rusqlite::Result<Result<String, String>> {
+    let (key, workflow, at): (String, String, String) = tx.query_row(
+        "SELECT key, workflow, step FROM tasks WHERE id = ?1",
+        [task],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    if let Some(rival) = rival(tx, task, &key)? {
+        return Ok(Err(rival));
+    }
+    let target = reentry(tx, workflows, task, &workflow, &at, resource)?;
+    if step(workflows, &workflow, &target).is_none_or(|step| step.decides != Decider::Model) {
+        return Ok(Err(format!(
+            "would reopen at step {target}, which no agent runs"
+        )));
+    }
+    Ok(Ok(target))
+}
+
+/// The lowest open pull request of `task`, or why it has none: it owns none, or they merged or
+/// closed.
+pub(crate) fn open_pull_request(
+    tx: &Transaction,
+    task: i64,
+) -> rusqlite::Result<Result<String, String>> {
+    let stack = crate::stack::of(tx, task)?;
+    let pulls = match stack.is_empty() {
+        true => pull_request(tx, task)?
+            .map(|resource| (resource, "open".to_owned()))
+            .into_iter()
+            .collect(),
+        false => stack
+            .into_iter()
+            .map(|pull| (pull.resource, pull.state))
+            .collect::<Vec<_>>(),
+    };
+    let mut why = "owns no pull request".to_owned();
+    for (resource, mut state) in pulls {
+        if state == "open" {
+            state = last_read(tx, &resource)?;
+        }
+        if state == "open" {
+            return Ok(Ok(resource));
+        }
+        why = format!("its pull request {resource} is {state}");
+    }
+    Ok(Err(why))
+}
+
+/// Whether the newest event that says so read the pull request `resource` `open`, `closed` or
+/// `merged`. A merge stands whatever came after it; `open` when none says.
+fn last_read(tx: &Transaction, resource: &str) -> rusqlite::Result<String> {
+    tx.query_row(
+        "SELECT state FROM (
+           SELECT seq, CASE WHEN type = ?2 AND json_extract(data, '$.merged') = 1 THEN 'merged'
+             WHEN type != ?2 AND json_extract(data, '$.open') = 1 THEN 'open' ELSE 'closed' END AS state
+           FROM inbox
+           WHERE 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1
+           AND (type = ?2 OR json_extract(data, '$.open') IS NOT NULL))
+         ORDER BY state = 'merged' DESC, seq DESC LIMIT 1",
+        params![resource, CLOSED],
+        |row| row.get(0),
+    )
+    .optional()
+    .map(|state| state.unwrap_or_else(|| "open".to_owned()))
 }
 
 /// Queues `text` as the next prompt of the agent at the task's model step, as an answer
@@ -4612,15 +5224,7 @@ pub(crate) fn tell_ask(tx: &Transaction, task: i64, line: &str) -> rusqlite::Res
             "UPDATE asks SET revision = revision + 1, text = ?2 WHERE id = ?1",
             params![ask, text],
         )?;
-        // A lead was called for the earlier revision, so its answer would be refused: the person
-        // decides the new one.
-        tx.execute(
-            "UPDATE asks SET routed = NULL,
-               question = question || ' (' || routed || ' did not answer: the ask changed while it waited)'
-             WHERE id = ?1 AND routed IS NOT NULL",
-            [ask],
-        )?;
-        drop_lead(tx, ask, &format!("ask {ask} changed while it waited"))?;
+        unroute(tx, ask)?;
         return Ok(true);
     }
     let (kept, counted) = match text.rsplit_once("\n\n") {
@@ -4633,6 +5237,18 @@ pub(crate) fn tell_ask(tx: &Transaction, task: i64, line: &str) -> rusqlite::Res
         params![ask, text],
     )?;
     Ok(true)
+}
+
+/// Returns ask `ask` to the person at its new revision: its lead was called for the earlier one, so
+/// the lead's answer would be refused.
+fn unroute(tx: &Transaction, ask: i64) -> rusqlite::Result<()> {
+    tx.execute(
+        "UPDATE asks SET routed = NULL,
+           question = question || ' (' || routed || ' did not answer: the ask changed while it waited)'
+         WHERE id = ?1 AND routed IS NOT NULL",
+        [ask],
+    )?;
+    drop_lead(tx, ask, &format!("ask {ask} changed while it waited"))
 }
 
 /// The count in an ask's `While this waited: and N more.` line.
@@ -4699,30 +5315,8 @@ fn revive(
     let Some(entered) = step(workflows, &workflow, target) else {
         return Ok(Err(format!("step {target} is not in workflow {workflow}")));
     };
-    let active = tx
-        .query_row(
-            "SELECT id FROM tasks WHERE key = ?1 AND state NOT IN ('done', 'failed', 'dropped')",
-            [&key],
-            |row| row.get::<_, i64>(0),
-        )
-        .optional()?;
-    if let Some(active) = active {
-        return Ok(Err(format!("task {active} is already active on key {key}")));
-    }
-    let shared = tx
-        .query_row(
-            "SELECT owned.resource, tasks.id FROM owned JOIN owned AS mine ON mine.resource = owned.resource
-             JOIN tasks ON tasks.id = owned.task
-             WHERE mine.task = ?1 AND owned.task != ?1 AND tasks.state NOT IN ('done', 'failed', 'dropped')
-             ORDER BY tasks.id LIMIT 1",
-            [act.task],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
-        )
-        .optional()?;
-    if let Some((resource, active)) = shared {
-        return Ok(Err(format!(
-            "task {active} is already active on {resource}"
-        )));
+    if let Some(rival) = rival(tx, act.task, &key)? {
+        return Ok(Err(rival));
     }
     let generation = generation + 1;
     regenerate(tx, act.task, generation)?;
@@ -4744,9 +5338,45 @@ fn revive(
     )))
 }
 
+/// The active task that holds the `key` or a resource of the ended `task`, as why it cannot restart.
+pub(crate) fn rival(tx: &Transaction, task: i64, key: &str) -> rusqlite::Result<Option<String>> {
+    let active = tx
+        .query_row(
+            "SELECT id FROM tasks WHERE key = ?1 AND state NOT IN ('done', 'failed', 'dropped')",
+            [key],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    if let Some(active) = active {
+        return Ok(Some(format!(
+            "task {active} is already active on key {key}"
+        )));
+    }
+    tx.query_row(
+        "SELECT owned.resource, tasks.id FROM owned JOIN owned AS mine ON mine.resource = owned.resource
+         JOIN tasks ON tasks.id = owned.task
+         WHERE mine.task = ?1 AND owned.task != ?1 AND tasks.state NOT IN ('done', 'failed', 'dropped')
+         ORDER BY tasks.id LIMIT 1",
+        [task],
+        |row| {
+            Ok(format!(
+                "task {} is already active on {}",
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(0)?
+            ))
+        },
+    )
+    .optional()
+}
+
 /// Makes `generation` the task's, withdrawing the open asks, waits and queued prompts of the
 /// earlier ones so that no late answer or event reaches it.
 fn regenerate(tx: &Transaction, task: i64, generation: i64) -> rusqlite::Result<()> {
+    tx.execute(
+        "INSERT INTO generations (task, after)
+         SELECT ?1, coalesce(max(id), 0) FROM runs WHERE task = ?1",
+        [task],
+    )?;
     tx.execute(
         "UPDATE asks SET withdrawn = 1, withdrawn_reason = 'revived' WHERE task = ?1
          AND answer IS NULL AND withdrawn IS NULL",
@@ -4895,6 +5525,22 @@ fn reenter(
     resource: &str,
 ) -> rusqlite::Result<i64> {
     let workflows = &trace.factory.workflows;
+    let target = reentry(tx, workflows, task, workflow, at, resource)?;
+    let generation = generation + 1;
+    regenerate(tx, task, generation)?;
+    enter(tx, task, workflow, &target, None, "", trace.factory)?;
+    Ok(generation)
+}
+
+/// The step a done task reopens at.
+fn reentry(
+    tx: &Transaction,
+    workflows: &Workflows,
+    task: i64,
+    workflow: &str,
+    at: &str,
+    resource: &str,
+) -> rusqlite::Result<String> {
     let opened: Option<String> = tx
         .query_row(
             "SELECT results.step FROM actions JOIN results ON results.run = actions.result
@@ -4907,11 +5553,7 @@ fn reenter(
     let named = workflows
         .get(workflow)
         .and_then(|flow| flow.value.reopen.clone());
-    let target = named.or(opened).unwrap_or_else(|| at.to_owned());
-    let generation = generation + 1;
-    regenerate(tx, task, generation)?;
-    enter(tx, task, workflow, &target, None, "", trace.factory)?;
-    Ok(generation)
+    Ok(named.or(opened).unwrap_or_else(|| at.to_owned()))
 }
 
 /// Ends the live run of `session`, whose tmux session was gone when the daemon started, as `lost`.
@@ -4929,12 +5571,7 @@ pub(crate) fn lost(
     };
     trace::account(&tx, trace, run.id, None)?;
     end(&tx, run.id, "lost")?;
-    // A run that never reached SessionStart never took the prompt it was launched with.
-    tx.execute(
-        "UPDATE outbox SET state = 'queued', run = NULL, attempted = NULL
-         WHERE run = ?1 AND state IN ('attempted', 'uncertain') AND (SELECT NOT ready FROM runs WHERE id = ?1)",
-        [run.id],
-    )?;
+    crate::state::requeue_unready(&tx, run.id)?;
     let again = tx
         .query_row(
             "SELECT ended_as = 'lost' FROM runs WHERE task = ?1 AND id < ?2 ORDER BY id DESC LIMIT 1",
@@ -5154,20 +5791,24 @@ pub(crate) fn approved(
     if current && commit.as_deref() == Some(head) {
         return Ok(true);
     }
-    let moved = if current {
-        format!(
-            "\nasked again: the branch moved from {} to {head} since this was answered",
-            commit.as_deref().unwrap_or("-"),
-        )
-    } else {
-        "\nasked again: this was answered in an earlier generation of the task, or before Priory kept generations".to_owned()
+    let moved = match commit {
+        _ if !current => "\nasked again: this was answered in an earlier generation of the task, or before Priory kept generations".to_owned(),
+        Some(commit) => format!(
+            "\nasked again: the branch moved from {commit} to {head} since this was answered"
+        ),
+        None => "\nasked again: a person wrote an answer since this was answered, or the branch had no commit then".to_owned(),
     };
+    let unplanned = crate::plan::missing(&tx, ask)?;
     tx.execute(
         // Asked again, an ask that a revive withdrew belongs to the current generation.
         "UPDATE asks SET revision = revision + 1, answer = NULL, answered = NULL, answered_by = NULL, withdrawn = NULL,
          withdrawn_reason = NULL, question = question || ?2, text = ?3 WHERE id = ?1",
         params![ask, moved, ask_text(&tx, task)?],
     )?;
+    crate::plan::again(&tx, ask)?;
+    if unplanned {
+        crate::plan::present(&tx, ask, task, None)?;
+    }
     unqueue(&tx, task, &entry_prompt(&tx, task, at)?)?;
     set(&tx, task, "asleep", Some(&approving), None)?;
     tx.commit()?;
@@ -5304,20 +5945,31 @@ fn unqueue(tx: &Transaction, task: i64, prompt: &str) -> rusqlite::Result<()> {
     let Some((id, text)) = queued else {
         return Ok(());
     };
-    match text.strip_prefix(prompt) {
-        Some("") => {
-            tx.execute("UPDATE inbox SET outbox = NULL WHERE outbox = ?1", [id])?;
-            tx.execute("DELETE FROM outbox WHERE id = ?1", [id])?;
-        }
-        Some(rest) if rest.starts_with('\n') => {
-            tx.execute(
-                "UPDATE outbox SET text = ?2 WHERE id = ?1",
-                params![id, &rest[1..]],
-            )?;
-        }
-        _ => {}
+    // Text written on a hold's ask may precede the prompt.
+    let Some((before, after)) = text
+        .match_indices(prompt)
+        .map(|(at, _)| (&text[..at], &text[at + prompt.len()..]))
+        .find(|(before, after)| {
+            (before.is_empty() || before.ends_with('\n'))
+                && (after.is_empty() || after.starts_with('\n'))
+        })
+    else {
+        return Ok(());
+    };
+    let kept = match after.strip_prefix('\n') {
+        Some(after) => format!("{before}{after}"),
+        None => before.trim_end_matches('\n').to_owned(),
+    };
+    if kept.is_empty() {
+        tx.execute("UPDATE inbox SET outbox = NULL WHERE outbox = ?1", [id])?;
+        tx.execute("DELETE FROM outbox WHERE id = ?1", [id])?;
+        return Ok(());
     }
-    Ok(())
+    tx.execute(
+        "UPDATE outbox SET text = ?2 WHERE id = ?1",
+        params![id, kept],
+    )
+    .map(drop)
 }
 
 /// What an action did: its status, a key of the step's `next`, and what it opened or why it failed.

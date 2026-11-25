@@ -215,6 +215,57 @@ fn an_outside_session_answers_a_human_steps_ask_and_an_outside_ask_by_its_name()
     );
 }
 
+const AUTONOMOUS_THEN_REVIEW: &str = r#"
+start = "implement"
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the issue."
+effect = "reversible"
+next = { passed = "open-pr", failed = "stop" }
+
+[[steps]]
+id = "open-pr"
+decides = "code"
+action = "open-pr"
+effect = "irreversible"
+autonomous = "a draft for review, which a person merges"
+next = { opened = "review", failed = "stop" }
+
+[[steps]]
+id = "review"
+decides = "human"
+effect = "none"
+options = ["fine", "bad"]
+next = { fine = "done", bad = "stop" }
+"#;
+
+#[test]
+fn text_from_a_session_does_not_send_a_human_step_back_over_an_irreversible_step() {
+    let mut setup = Setup::with_workflow("outside-text", AUTONOMOUS_THEN_REVIEW);
+    setup.calls(&[passed_with_evidence()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+
+    let (text, failed) = setup.outside_call(
+        &SESSION,
+        "answer",
+        json!({"ask": 1, "revision": 1, "answer": "Rename the widget."}),
+    );
+
+    assert_eq!(
+        (text.as_str(), failed),
+        ("ask 1 takes one of: fine, bad", true)
+    );
+    still_open(&setup);
+    let tasks = setup.rows("tasks");
+    assert_eq!([&tasks[0][3], &tasks[0][4]], ["review", "asleep"]);
+    assert_eq!(setup.rows("actions").len(), 1);
+}
+
 #[test]
 fn an_ask_that_approves_an_irreversible_step_is_refused_and_stays_the_persons() {
     let mut setup = Setup::with_workflow("outside-approves", OPEN_PR);

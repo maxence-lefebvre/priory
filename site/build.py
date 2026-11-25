@@ -26,6 +26,7 @@ GROUPS = [
         "docs/using-the-web-view.md",
         "docs/installing-the-herdr-adapter.md",
         "docs/running-as-services.md",
+        "docs/upgrading-automatically.md",
         "docs/testing-a-factory.md",
         "docs/adding-a-second-machine.md",
         "docs/sharing-build-caches.md",
@@ -36,6 +37,7 @@ GROUPS = [
         "docs/setting-up-a-nightly-dream.md",
         "docs/filtering-and-enriching-events.md",
         "docs/using-priory-from-your-own-session.md",
+        "docs/adopting-pull-requests.md",
     ]),
     ("Reference", "docs/reference", ["docs/reference/README.md", "docs/reference/cli.md"]),
     ("How it works", "docs/daemon", [

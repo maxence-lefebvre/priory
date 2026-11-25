@@ -152,7 +152,7 @@ The daemon never marks a run, and withdraws a mark it finds at the turn end, whe
 | ------- | --- |
 | Is at a step whose effect is `irreversible` | Its approval covers one commit, and a stop between two of its calls could leave a push without its pull request. The step is short: let it end |
 | Has an open keyboard grant | A person is typing in it. The grant ends by itself within 15 minutes |
-| Has a tmux client attached | A person is watching or typing. Read-only clients count: killing the session under a watcher looks like a crash |
+| Has a tmux client attached that can type | A person may type. Read-only clients do not count: Herdr opens one by itself on a flagged step, so counting them would protect every such run |
 | Is a shared session | It serves several tasks, and a lead's stop would hold the asks routed to it |
 | Belongs to the sweeper | It frees the room the queue waits for |
 | Belongs to a task in the head's band or a higher one | A band never stops itself. A person protects a run by moving its task up with `priory move --band` |

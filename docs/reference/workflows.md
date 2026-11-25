@@ -20,6 +20,7 @@ Schema: [`config/workflow.json`](../schemas/config/workflow.json).
 | `reopen` | string | no | the step that opened the pull request | The model step a done task goes back to when its open pull request gets feedback (see [routing.md](../daemon/routing.md#feedback-reopens-a-done-task)) | `"implement"` |
 | `max_prs` | integer, at least 1 | no | no cap | The most pull requests a task's stack may hold. `open-pr` fails with more branches (see [tools.md](../daemon/tools.md#code-steps)) | `3` |
 | `sandbox` | string | no | none: agents run as the person's whole user | A sandbox of [`[sandboxes]`](factory.md#sandboxesname) that every model step of the workflow, debate turns included, starts its agent in. `priory check` refuses it on a machine without `bwrap`. See [sandboxes.md](../daemon/sandboxes.md) | `"jail"` |
+| `requestable` | boolean | no | `true` | Whether the web view's and Herdr's Add controls and the [Slack shortcut](../intake/slack.md#message-shortcut) offer the workflow, and `POST /api/request` takes it. `[request] workflow` is always requestable, whatever this key says. `priory add`, `priory request`, the MCP `add` tool, batches and triggers start any workflow | `false` |
 | `guard` | table | no | none allowed | `allow`: the guards whose calls every step of the workflow may make with no approval, built-in or from `[guard]`. It cannot name `gh-pr-merge`, `gh-pr-approve`, `priory-person`, `connector-sign-in` or `unreadable`. See [guard.md](../daemon/guard.md) | `{ allow = ["git-push-default"] }` |
 | `steps` | array of tables | yes | | The steps, in any order | see below |
 
@@ -35,6 +36,7 @@ Schema: [`config/workflow.json`](../schemas/config/workflow.json).
 | `prompt` | string | model steps | | What the step tells its agent | `"Implement the plan."` |
 | `timeout` | duration | no | none, or `command_timeout` for a command | How long one turn of a model step, a `run` action's command, or the command a human step's answer runs, may run before Priory ends it | `"30m"` |
 | `budget` | string | no | none | Model steps only. The dollars the task may spend at this step, as an amount above zero. At each turn end, Priory prices the step's tokens with `prices.toml`, by the model the transcript names. A turn over it that sent a result moves the task and its `factory.step.ended` record carries `overrun`. Any other turn over it, or a turn whose cost is unknown, ends the run and fails the task. Inside a turn, the daemon reads the transcript at most once a minute and ends a run that passed the budget, unless it sent its result. See [health.md](../daemon/health.md#budget) | `"1.00"` |
+| `attach` | boolean | no | `false` | Model steps only, debate steps included. Each new run of the step runs the factory's `[runs] attach` command, which opens the run where a person can watch it. See [sessions.md](../daemon/sessions.md#opening-a-run-when-it-starts) | `true` |
 | `record` | string | no | none | Model steps only. The factory's command that records evidence after the step's result, relative to the factory folder. It must be an executable file inside the folder. The daemon runs it in a checkout of the result's commit, and admits the files it writes as the result's items. See [evidence.md](../daemon/evidence.md) | `"scripts/record-login"` |
 | `options` | array of strings | human steps | `[]` | The answers a person picks from | `["open", "stop"]` |
 | `question` | string | no | the step's id | Human steps only: what the ask says. It may name fields of the task's event, as `command` does. See [Fields of the task's event](#fields-of-the-tasks-event) | `"Compare pull request {pull_request}?"` |
@@ -56,7 +58,7 @@ The outcomes of a step come from:
 | `decides` | Its outcome is |
 | --------- | -------------- |
 | `model` | the `outcome` field of the run's `result`, or a debate's shared verdict |
-| `human` | the option the person picks; every option needs a `next` |
+| `human` | the option the person picks; every option needs a `next`. A written answer instead, text that is no option, has the outcome `written` and sends the task back to the model step it ran last that is neither irreversible nor a debate, with the text as that step's prompt. See [waits.md](../daemon/waits.md#asks-and-answers) |
 | `code` | the action's status, such as `opened` or `failed`. A `run` action's is the last line of its stdout when `next` names it, else `ok` on exit 0 and `failed` otherwise |
 
 Each edge, an outcome and its target, has a `by`: who decides that the task follows it. It defaults
@@ -397,6 +399,8 @@ Errors about one step start with `` step `<id>`: `` and point at the step's line
 | `` step `<id>`: `budget` needs prices.toml, which turns the step's tokens into dollars `` | A `budget` in a factory without `prices.toml` |
 | `` step `<id>`: only a model step has a `budget` `` | A `budget` on a human or code step |
 | `` step `<id>`: only a model step has a `record` command `` | A `record` on a human or code step |
+| `` step `<id>`: only a model step has `attach = true` `` | `attach = true` on a human or code step |
+| `` step `<id>`: `attach = true` needs `[runs] attach` in the factory's settings `` | `attach = true` in a factory without a `[runs] attach` command |
 | `` step `<id>`: `record`: <path> leads outside the factory folder `` | A `record` path through `..` or a symbolic link that leaves the factory folder |
 | `` step `<id>`: `record`: <path> is not a file in the factory folder `` | A `record` path that does not exist or is a folder |
 | `` step `<id>`: `record`: <path> is not executable: chmod +x it `` | A `record` file without an execute bit |

@@ -1,5 +1,5 @@
 // The strip, the docked panel and the side panel: every daemon call and all agent text live here.
-import { ARM_MS, UNDO_MS, age, answerBody, answerPath, choose, due, leftUnsent, observe, optionKey, refusal, reply, runsCommand, takesText, undo } from "./lib/ask.js";
+import { ARM_MS, UNDO_MS, age, answerBody, answerPath, choose, due, leftUnsent, observe, optionKey, refusal, reply, runsCommand, dismissable, undo } from "./lib/ask.js";
 import { grade, parseGuide, scoreKey } from "./lib/guide.js";
 import { live } from "./lib/live.js";
 import { parsePr } from "./lib/pr.js";
@@ -304,14 +304,14 @@ function askTab(asks) {
     options,
     S.unreachable ? h("div", { class: "notice" }, "Reconnect to answer.") : null,
     draft?.phase === "armed" ? commandBlock(ask) : null,
-    S.writing && takesText(ask)
+    S.writing
       ? h("form", { class: "field", onsubmit: (event) => { event.preventDefault(); if (S.written.trim()) pick(ask, { text: S.written.trim(), again: draft?.phase === "unknown" }); } },
         h("textarea", { id: "written", class: "input", rows: 3, "aria-label": "Your answer", value: S.written, oninput: (event) => { S.written = event.target.value; } }),
         h("div", { class: "end" }, h("button", { class: "btn primary", type: "submit", disabled: blocked }, "Send")))
       : null,
     h("div", { class: "lowrow" },
-      S.writing || !takesText(ask) ? null : h("button", { class: "btn ghost", disabled: blocked, onclick: () => { S.writing = true; render(); } }, icon("pencil", "s14"), "Write an answer"),
-      takesText(ask) ? h("button", { class: "btn ghost", disabled: blocked, onclick: () => dismiss(ask) }, "Dismiss") : null,
+      S.writing ? null : h("button", { class: "btn ghost", disabled: blocked, onclick: () => { S.writing = true; render(); } }, icon("pencil", "s14"), "Write an answer"),
+      dismissable(ask) ? h("button", { class: "btn ghost", disabled: blocked, onclick: () => dismiss(ask) }, "Dismiss") : null,
       h("button", { class: "btn ghost", disabled: blocked, onclick: () => snooze(ask, snoozed) }, snoozed ? "Unsnooze" : "Snooze 1 h"),
       draft?.phase === "unknown"
         ? h("button", { class: "btn ghost", onclick: () => (draft.dismiss ? dismiss(ask) : pick(ask, { ...(draft.option === undefined ? { text: draft.text } : { option: draft.option }), again: true })) }, "Send again")

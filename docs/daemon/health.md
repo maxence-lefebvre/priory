@@ -6,8 +6,8 @@ Each second, the daemon gives every live run one of these verdicts, in this orde
 | ------- | ----------- | -------- | ---- | ------ |
 | Unexpected exit | the tagged pane is gone, or dead under `remain-on-exit`, and no result, ask or wait ended the turn | `exited` | `failed`, then repaired: see Repair | `run <id> exited: claude no longer runs in tmux session <name>` |
 | Trust dialog | the screen of a run with no `SessionStart` shows Claude's trust dialog | `exited` | `blocked` | `claude asked whether to trust <worktree>; Priory never answers it. ...` |
-| Unresumed | 60 seconds with no `SessionStart` from a Claude run that resumed a session, as under [When a resume never starts](sessions.md#when-a-resume-never-starts) | `unresumed` | `ready`, repaired with a new session | `claude showed no SessionStart within 60s when Priory resumed session <id>` |
-| No `SessionStart` | 60 seconds with no `SessionStart`, as under [Trusting the worktrees and the clone](sessions.md#trusting-the-worktrees-and-the-clone) | `exited` | `blocked` | `claude showed no SessionStart within 60s; ...` |
+| Unresumed | no `SessionStart` within the same window from a Claude run that resumed a session, as under [When a resume never starts](sessions.md#when-a-resume-never-starts) | `unresumed` | `ready`, repaired with a new session | `claude showed no SessionStart within 60s when Priory resumed session <id>` |
+| No `SessionStart` | no `SessionStart` within 60 seconds, 180 with recorded trust or 600 while direnv loads, as under [Trusting the worktrees and the clone](sessions.md#trusting-the-worktrees-and-the-clone) | `exited` | `blocked` | `claude showed no SessionStart within 60s; ...`, then the folders to trust or the cause it can see, or both, then `Resume the task to try again` |
 | Permission prompt | a `PermissionPrompt` signal | `permission` | `blocked` | `run <id> stopped on a permission prompt: <message>` |
 | Timeout | a turn older than its step's `timeout` | `timeout` | `blocked` | `run <id> timed out: its turn ran past <n>s` |
 
@@ -76,7 +76,7 @@ gained since the step's count. It prices the count plus those tokens as at a tur
 | `prices.toml` has no price for the transcript's model | Ends the run as `budget` and fails the task: `step <id> has a budget, and run <n>'s cost is unknown: price missing for <model>` |
 | The run sent its result, or a gate holds it | Leaves it to its turn end, where an overrun stands |
 | The run is at an `irreversible` step, a person holds its keyboard, or its agent's session is `shared` | Leaves it to its turn end, where an overrun stands, as a [spend cap](spend.md) does |
-| A tmux client is attached to the run's session, or tmux cannot tell | Leaves it to its turn end, where an overrun stands |
+| A tmux client that can type is attached to the run's session, or tmux cannot tell | Leaves it to its turn end, where an overrun stands |
 
 The check reads tokens Claude has written, so a turn can still pass the budget by up to a minute of
 its spending, and by the message it is writing. The step's `timeout` bounds the turn. A run left to

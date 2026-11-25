@@ -16,6 +16,7 @@ $PRIORY_HOME/
   daemon.lock                  one daemon per home
   signals.spool                signals sent while no daemon listened
   spools/<session>/            a jailed run's own spool (see sandboxes.md)
+  news/<session>/news          news waits for the run's hook (see routing.md)
   repos/owner/name/            Priory's clone of owner/name, with no checkout
   partial/owner/name/          a clone in progress, renamed into repos/ once complete
   worktrees/owner/name/3/      the worktree of task 3, on branch priory/3
@@ -24,6 +25,7 @@ $PRIORY_HOME/
   summaries/                   where summarizer calls run (see search.md)
   models/                      the embedding model's files (see search.md)
   push/                        the Web Push key pair and the requests in flight (see serve.md)
+  slice.json                   the agents slice's last restore or refusal (see agents-slice.md)
   fetches/owner/name.json      the failing fetch of owner/name's clone (see sweep.md)
 ```
 
