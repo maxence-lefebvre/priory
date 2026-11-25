@@ -32,7 +32,8 @@ const BACKOFF_MAX: i64 = 30 * 60;
 /// The run whose session a thread starts. One at a time: a repository has one folder for them.
 static STARTING: Mutex<Option<(i64, Starting)>> = Mutex::new(None);
 
-type Starting = Receiver<Result<Started, NotStarted>>;
+/// How a start ended, with what `left_on_origin` says when its run ended first.
+type Starting = Receiver<(Result<Started, NotStarted>, Option<String>)>;
 
 /// How many times in a row a task's checks before a cloud start may run out of time.
 const SLOW_TRIES: u32 = 5;
@@ -99,13 +100,15 @@ pub(crate) fn left(tx: &Transaction, task: i64) -> rusqlite::Result<Option<Strin
         |row| {
             Ok(match row.get::<_, Option<String>>(0)? {
                 Some(cloud) => format!("its cloud session still runs: {}", link(&cloud)),
-                None => "its cloud session may still start: look for it at https://claude.ai/code"
-                    .to_owned(),
+                None => MAY_START.to_owned(),
             })
         },
     )
     .optional()
 }
+
+/// What a cancel during a start says, until the start ends.
+const MAY_START: &str = "its cloud session may still start: look for it at https://claude.ai/code";
 
 fn link(cloud: &str) -> String {
     format!("https://claude.ai/code/{cloud}")
@@ -232,7 +235,7 @@ fn rules(branch: &str) -> String {
 }
 
 /// `text` without the first whole lines that are `part`: a person's later words may quote it.
-fn without(text: &str, part: &str) -> String {
+pub(crate) fn without(text: &str, part: &str) -> String {
     let found = text.match_indices(part).find(|(at, _)| {
         let after = &text[at + part.len()..];
         (*at == 0 || text[..*at].ends_with('\n')) && (after.is_empty() || after.starts_with('\n'))
@@ -284,7 +287,7 @@ pub(crate) fn dispatch(
     let entry = entry(&tx, task, step)?;
     let source = crate::state::source(&tx, task)?;
     let queued = queued.join("\n");
-    crate::news::hold_back(&tx, task, &queued)?;
+    crate::news::hold_back(&tx, task, run)?;
     tx.commit()?;
     let queued = unended(&crate::news::untold(&queued), step);
     // A cloud session cannot send the classes the rule asks for.
@@ -310,15 +313,39 @@ pub(crate) fn dispatch(
     std::thread::spawn(move || {
         let started = screen()
             .map_err(NotStarted::Denied)
-            .and_then(|()| cloud::start(&start, || still_live(run)));
-        let _ = sender.send(started);
+            .and_then(|()| cloud::start(&start, || patient(|| still_live(run))));
+        let none = matches!(started, Err(NotStarted::Refused(_) | NotStarted::Denied(_)));
+        let left = (none && !still_live(run).unwrap_or(true)).then(|| left_on_origin(&start));
+        let _ = sender.send((started, left));
     });
     Ok(())
 }
 
+/// What `live` says. An error is asked again each second for the command timeout: a state file that
+/// is busy or being migrated must not fail the step.
+fn patient(live: impl Fn() -> Result<bool, String>) -> Result<bool, String> {
+    let ends = Instant::now() + runtime::command_timeout();
+    loop {
+        match live() {
+            Err(_) if Instant::now() < ends => std::thread::sleep(Duration::from_secs(1)),
+            said => return said,
+        }
+    }
+}
+
+/// Whether a start that made no session left the task's branch on `origin`, for a person to delete.
+fn left_on_origin(start: &Start) -> String {
+    let branch = &start.branch;
+    match cloud::on_origin(&start.home, &start.repo, branch) {
+        Ok(true) => format!(", and origin has its branch {branch}"),
+        Ok(false) => String::new(),
+        Err(error) => format!(", and Priory could not see whether origin has {branch}: {error}"),
+    }
+}
+
 /// Stores what the start under way gave once it ended.
 fn collect(db: &mut Connection, trace: &Trace, kit: crate::kit::Current<'_>) -> Result<(), Error> {
-    let (run, started) = {
+    let (run, (started, on_origin)) = {
         let mut starting = STARTING.lock().expect("no start panics");
         let Some((run, receiver)) = starting.as_ref() else {
             return Ok(());
@@ -327,7 +354,8 @@ fn collect(db: &mut Connection, trace: &Trace, kit: crate::kit::Current<'_>) -> 
             Ok(started) => started,
             Err(TryRecvError::Empty) => return Ok(()),
             Err(TryRecvError::Disconnected) => {
-                Err(NotStarted::Uncertain("its thread stopped".into()))
+                let stopped = NotStarted::Uncertain("its thread stopped".into());
+                (Err(stopped), None)
             }
         };
         let run = *run;
@@ -356,15 +384,20 @@ fn collect(db: &mut Connection, trace: &Trace, kit: crate::kit::Current<'_>) -> 
                 "it may have started a cloud session: {reason}. Look for it at https://claude.ai/code"
             ),
             Err(NotStarted::Refused(_) | NotStarted::Denied(_)) => {
+                // Its run ended after the thread looked: the look is off the tick, so there is none.
+                let on_origin = on_origin.unwrap_or_else(|| {
+                    ", and Priory did not look whether origin has its branch".to_owned()
+                });
                 eprintln!("priory daemon: cloud run {run} ended before its session started");
-                return Ok(());
+                format!("no cloud session started{on_origin}")
             }
         };
         eprintln!("priory daemon: cloud run {run} ended during its start: {left}");
         db.execute(
-            "UPDATE tasks SET reason = coalesce(reason || '; ', '') || ?2
+            "UPDATE tasks SET reason = CASE WHEN instr(reason, ?3) THEN replace(reason, ?3, ?2)
+               ELSE coalesce(reason || '; ', '') || ?2 END
              WHERE id = (SELECT task FROM runs WHERE id = ?1) AND state = 'dropped'",
-            params![run, left],
+            params![run, left, MAY_START],
         )?;
         return Ok(());
     };
@@ -455,10 +488,6 @@ fn give_back(
         .query_map([run], |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
     for (id, text) in claimed {
-        // `dispatch` held these for the next run already.
-        let text = crate::news::pair_texts(&text)
-            .iter()
-            .fold(text, |text, held| without(&text, held));
         let text = match step {
             Some(step) => unended(&text, step),
             None => text,
@@ -809,13 +838,17 @@ fn end(
 /// Shows what came during the run on the ask it led to, since no session read it.
 fn tell(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
     crate::news::expire(tx, task)?;
-    let kept: Vec<String> = tx
+    let kept: Vec<(String, bool, Option<i64>)> = tx
         .prepare(
-            "SELECT text FROM outbox WHERE task = ?1 AND state IN ('queued', 'held') AND compact = 0 ORDER BY id",
+            "SELECT text, state = 'held', pair FROM outbox
+             WHERE task = ?1 AND state IN ('queued', 'held') AND compact = 0 ORDER BY id",
         )?
-        .query_map([task], |row| row.get(0))?
+        .query_map([task], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
         .collect::<rusqlite::Result<_>>()?;
-    for text in kept {
+    for (text, held, pair) in kept {
+        if held && crate::news::shown(tx, task, pair, &text)? {
+            continue;
+        }
         let said: Vec<_> = text
             .lines()
             .filter(|line| !line.starts_with("End this step by calling the result tool"))
@@ -946,6 +979,20 @@ mod tests {
         let counted = polling();
         *STARTING.lock().unwrap() = None;
         assert!(counted);
+    }
+
+    #[test]
+    fn a_start_reads_again_whether_its_run_is_live_after_an_error() {
+        let reads = std::cell::Cell::new(0);
+        let said = patient(|| {
+            reads.set(reads.get() + 1);
+            match reads.get() {
+                1 => Err("database is locked".to_owned()),
+                _ => Ok(false),
+            }
+        });
+
+        assert_eq!((said, reads.get()), (Ok(false), 2));
     }
 
     #[test]

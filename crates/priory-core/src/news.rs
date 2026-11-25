@@ -264,9 +264,35 @@ pub(crate) fn pair_texts(text: &str) -> Vec<String> {
     found
 }
 
-/// Holds `pair_texts` of `text` for the next ask and agent run of `task`.
-pub(crate) fn hold_back(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<()> {
-    for held in pair_texts(text) {
+/// Holds the `pair_texts` of what cloud run `run` claimed for the next ask and agent run of `task`,
+/// and takes them out of it, so a claim that is queued again holds no second copy.
+pub(crate) fn hold_back(tx: &Transaction, task: i64, run: i64) -> rusqlite::Result<()> {
+    let claimed: Vec<(i64, String)> = tx
+        .prepare("SELECT id, text FROM outbox WHERE run = ?1 AND state = 'attempted' ORDER BY id")?
+        .query_map([run], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (id, text) in claimed {
+        let held = pair_texts(&text);
+        if held.is_empty() {
+            continue;
+        }
+        let left = held
+            .iter()
+            .fold(text, |text, held| crate::cloud::without(&text, held));
+        // One with nothing left has nothing to queue again.
+        tx.execute(
+            "UPDATE outbox SET text = ?2, state = iif(?2 = '', 'confirmed', state),
+             confirmed = iif(?2 = '', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), confirmed)
+             WHERE id = ?1",
+            params![id, left],
+        )?;
+        hold(tx, task, held)?;
+    }
+    Ok(())
+}
+
+fn hold(tx: &Transaction, task: i64, texts: Vec<String>) -> rusqlite::Result<()> {
+    for held in texts {
         let pair = match held.lines().last().and_then(named) {
             Some(other) if paired(tx, task, other)? => Some(other),
             _ => None,
@@ -274,6 +300,27 @@ pub(crate) fn hold_back(tx: &Transaction, task: i64, text: &str) -> rusqlite::Re
         later(tx, task, pair, &held)?;
     }
     Ok(())
+}
+
+/// Whether a step ask of `task` already shows `text`, held for its pair with `pair`. An ask before
+/// that pair was made showed an earlier duplicate.
+pub(crate) fn shown(
+    tx: &Transaction,
+    task: i64,
+    pair: Option<i64>,
+    text: &str,
+) -> rusqlite::Result<bool> {
+    if pair_texts(text).is_empty() {
+        return Ok(false);
+    }
+    tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM asks WHERE task = ?1 AND kind = 'step' AND withdrawn IS NULL
+           AND instr(text, ?3) > 0 AND unixepoch(created) >= coalesce(
+             (SELECT max(unixepoch(created)) FROM pairs
+              WHERE (task = ?1 AND other = ?2) OR (task = ?2 AND other = ?1)), 0))",
+        params![task, pair, text],
+        |row| row.get(0),
+    )
 }
 
 /// How two tasks on the same work agree which continues, for the agent whose pair is `other`.
@@ -444,9 +491,34 @@ mod tests {
         );
         let text = format!("{said}\n{ANSWER}2.\nAna moved it. {}", agreement(3));
         let tx = db.transaction().unwrap();
+        for (run, claimed) in [(1, text.clone()), (2, format!("Fix it.\n{text}"))] {
+            tx.execute(
+                "INSERT INTO runs (id, task, step, tmux, session, ended) VALUES (?1, 1, 's', 't', ?1, 'now')",
+                [run],
+            )
+            .unwrap();
+            tx.execute(
+                "INSERT INTO outbox (task, run, text, state) VALUES (1, ?1, ?2, 'attempted')",
+                params![run, claimed],
+            )
+            .unwrap();
+        }
 
-        hold_back(&tx, 1, &text).unwrap();
-        hold_back(&tx, 1, &text).unwrap();
+        hold_back(&tx, 1, 1).unwrap();
+        hold_back(&tx, 1, 2).unwrap();
+        // What an uncertain start does with the claims.
+        for run in [1, 2] {
+            crate::state::requeue_unready(&tx, run).unwrap();
+        }
+
+        let queued: Vec<String> = tx
+            .prepare("SELECT text FROM outbox WHERE state = 'queued' ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(queued, ["Fix it."]);
 
         assert_eq!(untold(&text), said);
         let held: Vec<(String, Option<i64>)> = tx

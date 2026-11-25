@@ -728,6 +728,8 @@ pub fn worktree(
     }
     if keep_branches {
         never_prune(&clone);
+    } else {
+        may_prune(&clone);
     }
     if let Some(reason) = mounted_orphan(home, repo, name) {
         return Err(reason);
@@ -834,21 +836,51 @@ pub fn worktree(
 /// Turns off a person's `fetch.prune` in `clone`, which would drop a merged branch, whose commits
 /// then look never pushed. Its git commands share one `loop_timeout`. Best effort.
 fn never_prune(clone: &Path) {
-    let config = || {
-        let mut command = git(clone);
-        command.args(["config", "--local"]);
-        command
-    };
     as_one(|| {
-        match soon(config().args(["--get", "remote.origin.prune"])) {
-            Ok(set) if set.trim() == "false" => {}
+        let had = match soon(config(clone).args(["--get", PRUNE])) {
+            Ok(set) if set.trim() == "false" => return,
             // A write killed midway leaves a lock file, so a slow disk gets none.
-            Err(error) if timed_out(&error) => {}
-            _ => {
-                let _ = soon(config().args(["--replace-all", "remote.origin.prune", "false"]));
-            }
+            Err(error) if timed_out(&error) => return,
+            had => had.unwrap_or_default(),
+        };
+        // Without what to put back, the setting could never be undone.
+        if fs::write(clone.join(PRUNED), had.trim()).is_ok() {
+            let _ = soon(config(clone).args(["--replace-all", PRUNE, "false"]));
         }
     });
+}
+
+/// Puts back the setting that `never_prune` changed in `clone`, unless a person changed it since.
+/// Runs no git when there is none. Best effort, within one `loop_timeout`: the next worktree of the
+/// repository tries again.
+fn may_prune(clone: &Path) {
+    let file = clone.join(PRUNED);
+    let Ok(had) = fs::read_to_string(&file) else {
+        return;
+    };
+    as_one(|| {
+        let done = match soon(config(clone).args(["--get", PRUNE])) {
+            Ok(set) if set.trim() != "false" => Ok(set),
+            Err(error) if timed_out(&error) => Err(error),
+            // Unset since: a person's change too.
+            Err(_) => Ok(String::new()),
+            Ok(_) if had.is_empty() => soon(config(clone).args(["--unset-all", PRUNE])),
+            Ok(_) => soon(config(clone).args(["--replace-all", PRUNE, &had])),
+        };
+        if done.is_ok() {
+            let _ = fs::remove_file(&file);
+        }
+    });
+}
+
+const PRUNE: &str = "remote.origin.prune";
+/// The file in a clone with the `PRUNE` it had before `never_prune`, empty when it had none.
+const PRUNED: &str = ".git/priory-pruned";
+
+fn config(clone: &Path) -> Command {
+    let mut command = git(clone);
+    command.args(["config", "--local"]);
+    command
 }
 
 /// How a task's reason starts while its worktree waits for a fetch that timed out.

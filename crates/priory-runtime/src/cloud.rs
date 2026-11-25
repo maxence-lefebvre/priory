@@ -433,6 +433,13 @@ fn remote_head(worktree: &Path, branch: &str, timeout: Duration) -> Result<Optio
     Ok(listed.split_whitespace().next().map(str::to_owned))
 }
 
+/// Whether the `origin` of `repo`'s clone has the task's `branch`. It reads the clone: a sweep may
+/// move the worktree of a task that ended.
+pub fn on_origin(home: &Path, repo: &str, branch: &str) -> Result<bool, String> {
+    let clone = home.join("repos").join(repo);
+    remote_head(&clone, branch, POLL_TIMEOUT).map(|head| head.is_some())
+}
+
 /// The commit `branch` has on `origin`, fetched by that SHA, or none while it is not there.
 pub fn poll(worktree: &Path, branch: &str) -> Result<Option<String>, String> {
     let Some(commit) = remote_head(worktree, branch, POLL_TIMEOUT)? else {

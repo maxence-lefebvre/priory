@@ -49,7 +49,8 @@ Some tasks start no cloud run:
   request does not matter. Push those commits, or rebase the task's branch onto a branch that is on
   `origin`, then resume the task. Priory turns off `fetch.prune` in the clone of a repository
   with `cloud = true`, so a merged parent's branch still counts as pushed once GitHub deletes it. All
-  tasks of that repository share the clone. Every other clone keeps a person's setting.
+  tasks of that repository share the clone. Every other clone keeps a person's setting. Once the
+  repository drops `cloud = true`, its next task's worktree puts back the setting the clone had.
 - A task whose commits past the default branch hold a private term of the factory, in a repository
   [`[private]`](../reference/factory.md#private) lists. It blocks before the push, and the reason
   names the rule and the place, never the term. It does not count as a session.
@@ -69,6 +70,9 @@ time. The daemon:
    waits up to `command_timeout` for it to exit;
 5. removes the clone, and stores the `session_<id>` the command printed as the run's cloud session,
    which `priory runs` shows in its `session` column.
+
+When the state file cannot be read for one of those two checks, the daemon reads it again each second, for
+`command_timeout` at most, and only then fails the start.
 
 The rules tell the session to push its work to the branch `claude/priory-<task>-<token>`, where
 the token is the first 8 characters of the run's harness session id. They tell it to open no pull
@@ -140,8 +144,11 @@ effect once the run ends.
 
 `priory cancel`, a review request's removal and a move to another runner drop the task, and its
 reason names the session's page, which `priory cancel` prints too. During a start it says that a session
-may still start, and the dropped task's reason then names the session that did. A cancel that
-the last check before `claude --cloud` sees starts none. The session itself goes on until a
+may still start. Once the start ends, the dropped task's reason says instead which session started,
+that one may have, or that none did. When none did, the daemon looks on `origin` for the task's
+branch, off the tick. The reason names the branch when it is there, so a person can delete it, and
+says so when that look failed or the run ended after it. A daemon that stops during the start leaves the reason as it was.
+A cancel that the last check before `claude --cloud` sees starts none. The session itself goes on until a
 person archives it, and the branches it pushed stay on `origin`.
 
 ## Asks and feedback
@@ -160,7 +167,8 @@ has no class, so the human step after it is where a person reads what it did. Fe
 during the run does not hold up its push: the next model step's prompt has it, and an ask that opens next shows it.
 News that may end the work, such as an issue marked a duplicate, does the same: no session reads it,
 so it never refuses the push, and the ask shows it with the task to agree with. The task's later
-cloud prompts leave it out too: it stays for the next ask and the next local run.
+cloud prompts leave it out too: it stays for the next ask, which shows it once, and for the next
+local run.
 
 ## What still applies, and what a cloud run gives up
 
