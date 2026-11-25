@@ -27,7 +27,7 @@ case " $* " in
     fi
     ;;
   *" config "*" remote.origin.prune "*)
-    if [ -e "$FAKE_DIR/git-hang-config" ]; then exec sleep 60; fi
+    while [ -e "$FAKE_DIR/git-hang-config" ]; do sleep 0.1; done
     ;;
   *" merge --quiet "*)
     if [ -e "$FAKE_DIR/git-hang-merge" ]; then echo merge >> "$FAKE_DIR/git-merging"; exec sleep 60; fi

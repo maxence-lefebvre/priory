@@ -39040,6 +39040,7 @@ fn a_cancel_during_a_cloud_start_names_the_session_it_may_leave() {
         reason.contains("may have started a cloud session"),
         "{reason}"
     );
+    assert!(!reason.contains("may still start"), "{reason}");
 }
 
 #[test]
@@ -39064,7 +39065,12 @@ fn a_cancel_during_the_push_of_a_cloud_start_starts_no_session() {
 
     setup.logged("ended before its session started");
     assert_eq!(setup.cloud_prompts(), [""; 0]);
-    assert_eq!(held_as(&setup, "1")[0], "dropped");
+    let [state, reason] = held_as(&setup, "1");
+    assert_eq!(state, "dropped");
+    assert_eq!(
+        reason,
+        "cancelled from the desk; no cloud session started, and origin has its branch priory/1"
+    );
 }
 
 #[test]
@@ -39089,6 +39095,10 @@ fn a_cancel_during_the_private_terms_screen_of_a_cloud_start_pushes_nothing() {
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&pushed.stdout), "");
     assert_eq!(setup.cloud_prompts(), [""; 0]);
+    assert_eq!(
+        held_as(&setup, "1")[1],
+        "cancelled from the desk; no cloud session started"
+    );
 }
 
 #[test]
@@ -39115,6 +39125,24 @@ fn a_cloud_repository_keeps_its_merged_branches() {
 
     setup.cloud_started();
     assert_eq!(setup.prune(), "false\n");
+}
+
+#[test]
+fn a_repository_that_drops_cloud_gets_its_prune_setting_back() {
+    let mut setup = cloud("cloud-prune-back", CLOUD);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.cloud_started();
+    assert_eq!(setup.prune(), "false\n");
+    setup.crash();
+    setup.settings("");
+    setup.calls(&[result("passed")]);
+    setup.local_task(43);
+
+    setup.start();
+
+    setup.until("tasks", |rows| with(rows, 4, "done") == 1);
+    assert_eq!(setup.prune(), "");
 }
 
 impl Setup {
@@ -39158,6 +39186,51 @@ fn a_cloud_step_after_a_duplicate_gets_no_pair_instruction_and_its_ask_shows_it(
     let task = task_json(&setup, "1");
     let text = task["asks"][0]["text"].as_str().unwrap_or_default();
     assert!(text.contains("Agree with task 2 which of you"), "{task}");
+}
+
+#[test]
+fn a_pair_text_an_ask_showed_is_not_on_the_next_cloud_ask() {
+    let again = CLOUD
+        .replace("\"open\", \"stop\"]", "\"open\", \"again\", \"stop\"]")
+        .replace(
+            "next = { open = \"open-pr\",",
+            "next = { again = \"implement\", open = \"open-pr\",",
+        );
+    let mut setup = cloud("cloud-pair-once", &again);
+    setup.publish(&linear_requested("ENG-9", "first"));
+    setup.start();
+    setup.cloud_started();
+    setup.publish(&linear_requested("ENG-7", "second"));
+    setup.until("runs", |rows| {
+        rows.iter().any(|row| row[4] == "session_01Fake2")
+    });
+    setup.publish(&moved_to("Duplicate", "canceled"));
+    setup.until("inbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "linear.issue.state_changed")
+    });
+    setup.crash();
+    setup.cloud_push(0);
+    setup.cloud_pushes("Fix the widget\n");
+    setup.start();
+    setup.within(120, "asks", |rows| rows.len() == 1);
+    let asked = |setup: &Setup| {
+        let task = task_json(setup, "1");
+        let asks = task["asks"].as_array().unwrap();
+        let open = asks.iter().find(|ask| ask["answer"].is_null());
+        open.unwrap().clone()
+    };
+    let first = asked(&setup);
+    let text = first["text"].as_str().unwrap_or_default();
+    assert!(text.contains("Agree with task 2 which of you"), "{first}");
+
+    let (id, revision) = (first["id"].to_string(), first["revision"].to_string());
+    person(&setup, "answer", &[&id, "again", "--revision", &revision]);
+
+    setup.within(120, "asks", |rows| rows.len() == 1 && rows[0][0] != id);
+    let second = asked(&setup);
+    let text = second["text"].as_str().unwrap_or_default();
+    assert!(!text.contains("Agree with task 2"), "{second}");
 }
 
 #[test]

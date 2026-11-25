@@ -3923,18 +3923,80 @@ mod tests {
         assert_eq!(echo, Ok(Some(b"ab".to_vec())));
     }
 
+    /// Puts a fifo in place of git's config `file`, on which git blocks until this drops.
+    struct Hung {
+        file: PathBuf,
+        plain: PathBuf,
+        /// Its close ends the read of each git that waits.
+        _fifo: fs::File,
+    }
+
+    impl Hung {
+        fn at(file: PathBuf) -> Self {
+            let plain = file.with_file_name("config-plain");
+            fs::rename(&file, &plain).unwrap();
+            run(Command::new("mkfifo").arg(&file)).unwrap();
+            let fifo = fs::File::options()
+                .read(true)
+                .write(true)
+                .open(&file)
+                .unwrap();
+            Hung {
+                file,
+                plain,
+                _fifo: fifo,
+            }
+        }
+    }
+
+    impl Drop for Hung {
+        fn drop(&mut self) {
+            let _ = fs::rename(&self.plain, &self.file);
+        }
+    }
+
     #[test]
     fn a_hung_prune_setting_ends_within_the_loops_timeout() {
         let home = Home::new("prune");
         home.tree();
-        let config = home.home().join("repos/o/n/.git/config");
-        fs::remove_file(&config).unwrap();
-        run(Command::new("mkfifo").arg(&config)).unwrap();
+        let clone = home.home().join("repos/o/n");
+        let hung = Hung::at(clone.join(".git/config"));
+        let (sender, ended) = mpsc::channel();
 
-        let started = Instant::now();
-        never_prune(&home.home().join("repos/o/n"));
+        let setting = std::thread::spawn(move || {
+            never_prune(&clone);
+            let _ = sender.send(());
+        });
 
-        assert!(started.elapsed() < Duration::from_secs(45));
+        let ended = ended.recv_timeout(Duration::from_secs(45));
+        drop(hung);
+        setting.join().unwrap();
+        assert_eq!(ended, Ok(()));
+    }
+
+    #[test]
+    fn a_clone_without_cloud_gets_back_the_prune_setting_it_had() {
+        for had in [None, Some("true"), Some("false")] {
+            let home = Home::new("prune-back");
+            home.tree();
+            let clone = home.home().join("repos/o/n");
+            if let Some(had) = had {
+                sh(&clone, &["config", "remote.origin.prune", had]);
+            }
+            let set = |cloud| {
+                worktree(&home.home(), "o/n", "1", None, false, cloud).unwrap();
+                run(git(&clone).args(["config", "--local", "--get", "remote.origin.prune"])).ok()
+            };
+
+            assert_eq!(set(true).as_deref(), Some("false\n"));
+            assert_eq!(set(true).as_deref(), Some("false\n"));
+            assert_eq!(set(false), had.map(|had| format!("{had}\n")));
+
+            // What a person set since is theirs.
+            set(true);
+            sh(&clone, &["config", "remote.origin.prune", "true"]);
+            assert_eq!(set(false).as_deref(), Some("true\n"));
+        }
     }
 
     #[test]
