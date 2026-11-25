@@ -579,7 +579,10 @@ impl Drop for Setup {
 
 fn git(dir: &Path) -> Command {
     let mut command = harness::command("git");
-    command.current_dir(dir);
+    // Detached maintenance would outlive a commit and occupy the worktree.
+    command
+        .current_dir(dir)
+        .args(["-c", "maintenance.auto=false"]);
     command
 }
 
@@ -12973,6 +12976,8 @@ impl Setup {
         let output = self
             .command("git")
             .current_dir(dir)
+            // Detached maintenance would outlive a commit and occupy the worktree.
+            .args(["-c", "maintenance.auto=false"])
             .args(args)
             .output()
             .unwrap();

@@ -1753,6 +1753,8 @@ mod tests {
         let out = runtime::git(dir)
             .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
             .args(["-c", "commit.gpgsign=false"])
+            // Detached maintenance would outlive a commit and occupy the worktree.
+            .args(["-c", "maintenance.auto=false"])
             .args(args)
             .output()
             .unwrap();
