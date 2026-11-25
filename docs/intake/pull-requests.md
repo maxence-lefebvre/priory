@@ -109,10 +109,16 @@ for the same commit. The intake counts each check once.
   is for. Their checks count by check suite instead of by workflow. A closed pull request the poll does
   not read, or a tag or second branch without a pull request, at that head is not seen, so its newer run of
   the same workflow, event and job can supersede.
+- Two watched pull requests with one head keep the wake loop: a red run that another suite's rerun passed
+  still counts in `failing`, so each later check wakes the agent again. A push that moves the head of one
+  ends it for that one.
 - The GraphQL query names the workflow run of each check's suite, so this adds no request. A token that
   may not read Actions gets `Resource not accessible`, and the intake asks again without the workflows.
-- On a merge commit, the intake also reads the branch of each run, since a tag or second branch at that
-  commit starts the same workflow on the same event. A run there supersedes none of the base branch's.
+- On a merge commit, only a `push` run counts by its workflow. Any other event, such as `workflow_run`,
+  `issue_comment`, `workflow_dispatch`, `repository_dispatch` or `schedule`, can start unrelated runs of one
+  workflow there, so those count by check suite. A rerun in the same suite still supersedes.
+- The intake also reads the branch of each push run, since a tag or second branch at that commit starts the
+  same workflow. A run there supersedes none of the base branch's.
   It reads `repos/{repo}/actions/runs?head_sha={sha}` once per poll while the commit is read, when it
   has a GitHub Actions check. The first 100 runs count. The `Actions` permission (read) covers it too.
 - With no workflow, as for another app, a workflow or branch GitHub does not name, or a refused token,

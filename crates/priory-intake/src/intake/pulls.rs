@@ -4,8 +4,8 @@ use herdr_bus::Timestamp;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::sync::{Mutex, MutexGuard};
+use std::time::Duration;
 
 /// GitHub creates check runs seconds after a push, and a push updates the pull request.
 const GRACE_SECONDS: i64 = 5 * 60;
@@ -442,8 +442,9 @@ impl Run {
     }
 }
 
-/// The workflow, event and branch of each check suite. A tag or second branch at one commit starts
-/// the same workflow and event, so only the branch tells them apart.
+/// The workflow, event and branch of each check suite that a push started. A tag or second branch at one
+/// commit starts the same workflow and event, so only the branch tells them apart. Any other event can
+/// start two unrelated runs of one workflow there, such as a `workflow_run` per upstream run.
 type Workflows = HashMap<u64, String>;
 
 #[derive(Deserialize)]
@@ -467,7 +468,7 @@ fn repeated(runs: &[Run]) -> bool {
         .any(|(name, suite)| *suites.entry(name).or_insert(suite) != suite)
 }
 
-/// The workflow of each check suite at `sha`. None when the token may not read Actions, so the suites
+/// The workflow of each check suite at `sha` that a push started. None when the token may not read Actions, so the suites
 /// count apart.
 fn workflows(repo: &str, sha: &str) -> Result<Workflows, String> {
     let path = format!("repos/{repo}/actions/runs?head_sha={sha}&per_page=100");
@@ -478,6 +479,7 @@ fn workflows(repo: &str, sha: &str) -> Result<Workflows, String> {
     let runs = answer.map_or_else(Vec::new, |answer| answer.workflow_runs);
     Ok(runs
         .into_iter()
+        .filter(|run| run.event == "push")
         .filter_map(|run| {
             let workflow = format!("{}:{}:{}", run.workflow_id, run.event, run.head_branch?);
             Some((run.check_suite_id, workflow))
@@ -847,47 +849,57 @@ const PULLS_PER_REQUEST: usize = 25;
 /// Below this many, a smaller request is not worth the calls.
 const FEWEST_PULLS: usize = 3;
 
-/// How long a repository keeps the smaller size that answered.
-const KEEP_SIZE: Duration = Duration::from_secs(60 * 60);
+/// How many pages in a row must answer at a kept size before a larger one is tried. A failed try costs
+/// one request, so at most one in 20 more.
+const PAGES_BEFORE_RAISE: usize = 20;
 
-/// The size that answered for each repository whose query failed at a larger one, and when.
-static SIZES: Mutex<BTreeMap<String, (usize, Instant)>> = Mutex::new(BTreeMap::new());
+/// The size of each repository whose open pull request query failed at a larger one, and how many
+/// pages answered since.
+static SIZES: Mutex<BTreeMap<String, (usize, usize)>> = Mutex::new(BTreeMap::new());
+
+fn sizes() -> MutexGuard<'static, BTreeMap<String, (usize, usize)>> {
+    SIZES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 fn pulls_per_request(repo: &str) -> usize {
-    let sizes = SIZES
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    sizes
+    sizes()
         .get(repo)
-        .filter(|(_, at)| at.elapsed() < KEEP_SIZE)
         .map_or(PULLS_PER_REQUEST, |(size, _)| *size)
+}
+
+/// Keeps the size `read` for `repo` when a page `asked` for more, and raises it after enough pages.
+fn keep_size(repo: &str, asked: usize, read: usize) {
+    let mut sizes = sizes();
+    if read < asked {
+        sizes.insert(repo.to_owned(), (read, 0));
+        return;
+    }
+    let Some((size, answered)) = sizes.get_mut(repo) else {
+        return;
+    };
+    *answered += 1;
+    if *answered == PAGES_BEFORE_RAISE {
+        *size = (*size * 2 + 1).min(PULLS_PER_REQUEST);
+        *answered = 0;
+    }
 }
 
 /// The answer of `ask` for `size` pull requests, or for half as many each time GitHub fails or
 /// truncates it, and how many it read. `ask` gets the size and the waits before its retries.
 fn halving(
-    repo: &str,
     mut size: usize,
     ask: impl Fn(usize, &[Duration]) -> Result<Value, Failed>,
 ) -> Result<(Value, usize), String> {
-    let mut shrunk = false;
     loop {
         let waits: &[Duration] = if size > FEWEST_PULLS { &[] } else { &BACKOFF };
         match ask(size, waits) {
             Err(Failed::Transient(_)) if size > FEWEST_PULLS => {
                 size = (size / 2).max(FEWEST_PULLS);
-                shrunk = true;
             }
             Err(error) => return Err(error.text()),
-            Ok(answer) => {
-                if shrunk {
-                    let mut sizes = SIZES
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    sizes.insert(repo.to_owned(), (size, Instant::now()));
-                }
-                return Ok((answer, size));
-            }
+            Ok(answer) => return Ok((answer, size)),
         }
     }
 }
@@ -917,7 +929,9 @@ pub(super) fn open_pulls(repo: &str) -> Result<Vec<Pull>, String> {
             }
             graphql(&query, &fields, waits)
         };
-        let (answer, _) = halving(repo, pulls_per_request(repo), ask)?;
+        let size = pulls_per_request(repo);
+        let (answer, read) = halving(size, ask)?;
+        keep_size(repo, size, read);
         let page = &answer["data"]["repository"]["pullRequests"];
         for pull in page["nodes"].as_array().into_iter().flatten() {
             let pull = serde_json::from_value(pull.clone())
@@ -947,7 +961,7 @@ fn by_number_query(numbers: &[u64]) -> String {
 }
 
 /// The pull requests `numbers` name, `pulls_per_request` to a GraphQL query; none when `numbers`
-/// is empty.
+/// is empty. A query that fails shrinks the rest of this call only.
 pub(super) fn pull_requests(
     repo: &str,
     numbers: &BTreeSet<u64>,
@@ -957,12 +971,16 @@ pub(super) fn pull_requests(
     let mut pulls = BTreeMap::new();
     let numbers: Vec<u64> = numbers.iter().copied().collect();
     let mut rest = numbers.as_slice();
+    let mut size = pulls_per_request(repo);
     while !rest.is_empty() {
-        let size = pulls_per_request(repo).min(rest.len());
-        let (answer, read) = halving(repo, size, |size, waits| {
+        let asked = size.min(rest.len());
+        let (answer, read) = halving(asked, |size, waits| {
             let query = by_number_query(&rest[..size]);
             graphql(&query, &["-f", &owner, "-f", &name], waits)
         })?;
+        if read < asked {
+            size = read;
+        }
         rest = &rest[read..];
         let found = answer["data"]["repository"]
             .as_object()

@@ -600,8 +600,8 @@ fn a_page_that_names_no_next_cursor_fails_the_poll() {
 }
 
 #[test]
-fn a_repository_whose_query_failed_keeps_the_smaller_page() {
-    let setup = Setup::baseline("page-kept");
+fn a_by_number_query_that_failed_sets_no_page_size_of_the_repository() {
+    let setup = Setup::baseline("page-by-number");
     let numbers: Vec<u64> = (43..53).collect();
     let issues: Vec<_> = numbers.iter().map(|number| pull_issue(*number)).collect();
     let named: Vec<_> = numbers
@@ -633,7 +633,75 @@ fn a_repository_whose_query_failed_keeps_the_smaller_page() {
         3,
         "ten that failed, then five twice"
     );
-    assert_eq!(fs::read_to_string(log).unwrap(), "first=5\n");
+    assert_eq!(fs::read_to_string(log).unwrap(), "first=25\n");
+}
+
+/// A fake `gh` with `pages` pages of one open pull request each, 101 and up, whose call numbers for
+/// `failing` answer a 504. `gh.log` holds each GraphQL call's `first`.
+fn many_pages(setup: &Setup, pages: u64, failing: &[u64]) {
+    for page in 0..pages {
+        let info =
+            json!({ "hasNextPage": page + 1 < pages, "endCursor": format!("c{}", page + 1) });
+        let nodes = [pull(101 + page, false, json!([]), json!([]))];
+        let answer = json!({ "data": { "repository": { "pullRequests": { "pageInfo": info, "nodes": nodes } } } });
+        write(
+            &setup.dir.join(format!("page-c{page}.json")),
+            &answer.to_string(),
+        );
+    }
+    let failing = failing.iter().map(u64::to_string).collect::<Vec<_>>();
+    let script = format!(
+        "#!/bin/sh\ncase \"$*\" in\n  \"api graphql -F\"*)\n    echo \"${{4#first=}}\" >> '{0}/gh.log'\n    \
+         case $(($(wc -l < '{0}/gh.log'))) in {1}) echo 'gh: HTTP 504' >&2; exit 1 ;; esac\n    \
+         cursor=c0\n    for arg; do case \"$arg\" in endCursor=*) cursor=${{arg#endCursor=}} ;; esac; done\n    \
+         cat \"{0}/page-$cursor.json\" ;;\n  *) echo '[]' ;;\nesac\n",
+        setup.dir.display(),
+        failing.join("|"),
+    );
+    Setup::fake_gh(&setup.dir, &script);
+}
+
+/// The sizes `gh.log` holds, each with how many calls in a row asked for it.
+fn asked_sizes(setup: &Setup) -> Vec<(u64, u64)> {
+    let log = fs::read_to_string(setup.dir.join("gh.log")).unwrap();
+    let mut asked: Vec<(u64, u64)> = Vec::new();
+    for size in log.lines().map(|size| size.parse().unwrap()) {
+        match asked.last_mut() {
+            Some((last, calls)) if *last == size => *calls += 1,
+            _ => asked.push((size, 1)),
+        }
+    }
+    asked
+}
+
+#[test]
+fn a_smaller_page_rises_again_after_20_pages_that_answer() {
+    let setup = Setup::baseline("page-raised");
+    many_pages(&setup, 65, &[1, 2, 3]);
+
+    succeeded(&setup.intake());
+
+    let asked = [
+        (25, 1),
+        (12, 1),
+        (6, 1),
+        (3, 21),
+        (7, 20),
+        (15, 20),
+        (25, 4),
+    ];
+    assert_eq!(asked_sizes(&setup), asked);
+}
+
+#[test]
+fn a_raised_page_that_fails_shrinks_again_for_20_more() {
+    let setup = Setup::baseline("page-raise-fails");
+    many_pages(&setup, 43, &[1, 2, 3, 25]);
+
+    succeeded(&setup.intake());
+
+    let asked = [(25, 1), (12, 1), (6, 1), (3, 21), (7, 1), (3, 21), (7, 1)];
+    assert_eq!(asked_sizes(&setup), asked);
 }
 
 #[test]

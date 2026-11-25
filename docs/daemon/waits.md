@@ -449,5 +449,8 @@ Known limits:
 - The `origin` of a check can change at one commit (see
   [Superseded runs](../intake/pull-requests.md#superseded-runs)). The older red check then counts as not
   superseded, with the same effect.
+- Two watched pull requests with one head keep waking their agents on a red check that a rerun in another
+  check suite passed (see [Superseded runs](../intake/pull-requests.md#superseded-runs)).
+- The task's page lists an old red check stored without an `origin` beside its new green, until the next push.
 - Feedback after the task is done reopens it instead (see
   [routing.md](routing.md#feedback-reopens-a-done-task)).

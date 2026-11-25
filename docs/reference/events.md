@@ -512,7 +512,7 @@ The pull request fields, and:
 | `name` | string or null | The check run's name, as branch protection names a required check |
 | `conclusion` | string or null | `success`, `failure`, `neutral`, `cancelled`, `skipped`, `timed_out`, `action_required`, `stale` or `startup_failure` |
 | `app` | string or null | The slug of the GitHub App that ran it |
-| `origin` | string, optional | What started the run: `workflow:<id>:<event>` for a GitHub Actions workflow, with `:<branch>` on a merge commit, or else `suite:<id>`, its check suite, or else `run:<id>`. A run with a higher id of the same app, name and origin on the same commit supersedes it, unless it is skipped or neutral and this one is not. Absent from an older intake's event |
+| `origin` | string, optional | What started the run: `workflow:<id>:<event>` for a GitHub Actions workflow, on a merge commit only for a `push` run, with `:<branch>`, or else `suite:<id>`, its check suite, or else `run:<id>`. A run with a higher id of the same app, name and origin on the same commit supersedes it, unless it is skipped or neutral and this one is not. Absent from an older intake's event |
 | `pending` | integer | Check runs on the same commit not completed at the poll, counting those past the first 100 and leaving out superseded ones |
 | `failing` | integer | Check runs on the same commit completed with a conclusion other than success, neutral or skipped, leaving out superseded ones and a cancelled run that `superseded_by` passed |
 | `github_id` | integer | GitHub's check run id |

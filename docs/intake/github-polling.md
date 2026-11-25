@@ -83,7 +83,7 @@ trigger names, it adds that repository's 5 `gh` calls per poll, however many sub
 branches name it.
 
 At one poll a minute, that is 240 REST requests and at least 60 GraphQL requests an hour per
-repository, each against GitHub's 5,000 an hour.
+repository, each against GitHub's 5,000 an hour. A [very large repository](#page-size) can spend the GraphQL limit.
 
 One GraphQL request reads 25 pull requests. Each brings its last 50 reviews, its last 50 comments
 and the first 100 check runs of its head commit, so a request returns at most 5,050 nodes. At 100
@@ -98,13 +98,19 @@ intake then asks for the same page again with half as many pull requests, down t
 at 3 does it wait and retry as [Failures](#failures) says. A page that fails there fails the repository's
 poll, which publishes nothing.
 
-The repository keeps the size that answered for an hour, in memory, then starts at 25 again. A failed
-poll keeps nothing, and neither does a restart or an `--once` run.
+The repository keeps the size that answered, in memory. After 20 more pages that answer, it tries a larger
+one: from 3, that is 7, 15, then 25. A larger page that fails shrinks again and waits for 20 more, so the
+tries add at most 1 request in 20 at 3 a page. A restart or an `--once` run starts at 25. The query for pull
+requests by number starts at the kept size too, but when it fails, it shrinks only for the rest of that query.
 
-A step down costs at most 3 failed requests, then 2 retries at 3. At 3 a page, N open pull requests take
-ceil(N/3) requests a poll for that hour, up to 8.3 times as many. A smaller page asks GitHub for fewer
-nodes, at most 606 at 3, so its cost per request is lower. An outage of GitHub shrinks the page too when
-a smaller one happens to answer.
+A step down costs at most 3 failed requests, then 2 retries at 3. A page at 3 asks for at most 606 nodes and
+one at 25 for 5,050, but each request costs 1 point of the GraphQL rate limit at either size. So at 3 a page,
+N open pull requests cost about ceil(N/3) points a poll, up to 8.3 times as many as at 25.
+
+On a very large repository, the rate limit is the bound. With 3,000 open pull requests, one page at 25 and
+the rest at 3 are 993 requests a poll, so about 5 polls spend the 5,000 points of an hour. Even at 25 a page,
+120 requests a poll spend them in 41 polls. Poll such a repository less often. An outage of GitHub shrinks
+the page too when a smaller one happens to answer.
 
 Each `gh api` call runs in its own process group. Past `command_timeout` in `factory.toml`, 5
 minutes by default, the call is killed and the poll fails with `timed out after <n>s`.
