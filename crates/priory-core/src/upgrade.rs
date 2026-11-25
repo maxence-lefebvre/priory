@@ -6,8 +6,8 @@ use crate::trace::{self, Trace};
 use crate::{memory, post, reload, state};
 use jiff::Timestamp;
 use priory_factory::factory::{Channel, Factory, Upgrade};
+use priory_runtime::room;
 use priory_runtime::upgrade::{self as journal, Journal, Phase};
-use priory_runtime::{room, transcript};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -774,35 +774,26 @@ fn host(upgrade: &Upgrade) -> Result<Host, String> {
     })
 }
 
-/// What an upgrade must wait for, if anything: a pause, a memory grant, a compaction, or a run inside a tool
-/// call, or with `none_live` any live run. A run whose transcript does not tell counts as busy.
+/// What an upgrade must wait for, if anything: a pause, a compaction, or with `none_live` any live
+/// run. A run between or inside tool calls is no reason: its calls and hooks wait for the restart.
 pub(crate) fn busy(db: &Connection, none_live: bool) -> rusqlite::Result<Option<String>> {
     let count = |query: &str| db.query_row(query, [], |row| row.get::<_, i64>(0));
     if count("SELECT count(*) FROM pause")? > 0 {
         return Ok(Some("priory is paused".to_owned()));
     }
-    if count("SELECT count(*) FROM grants")? > 0 {
-        return Ok(Some("a memory grant is held or waits".to_owned()));
-    }
     if count("SELECT count(*) FROM idle_compactions WHERE ended IS NULL")? > 0 {
         return Ok(Some("a shared session is compacted".to_owned()));
     }
-    let mut statement =
-        db.prepare("SELECT id, transcript FROM runs WHERE ended IS NULL ORDER BY id")?;
-    let mut rows = statement.query([])?;
-    while let Some(row) = rows.next()? {
-        let (run, path): (i64, Option<String>) = (row.get(0)?, row.get(1)?);
-        if none_live {
-            return Ok(Some(format!("run {run} is live and the release migrates")));
-        }
-        let path = path.map(PathBuf::from);
-        match path.and_then(|path| transcript::in_tool_call_at(&path).ok().flatten()) {
-            Some(false) => {}
-            Some(true) => return Ok(Some(format!("run {run} is inside a tool call"))),
-            None => return Ok(Some(format!("run {run}'s transcript cannot be read"))),
-        }
-    }
-    Ok(None)
+    let live: Option<i64> = db
+        .query_row(
+            "SELECT id FROM runs WHERE ended IS NULL ORDER BY id LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(live
+        .filter(|_| none_live)
+        .map(|run| format!("run {run} is live and the release migrates")))
 }
 
 /// Runs the staged binary on copies of the databases, so a migration that fails, or a factory the
@@ -1152,57 +1143,26 @@ mod tests {
     }
 
     #[test]
-    fn a_held_or_waiting_grant_is_not_quiet() {
+    fn a_live_run_or_a_grant_is_quiet_unless_the_release_migrates() {
         let db = state::memory();
-        assert_eq!(busy(&db, true).unwrap(), None);
-        for state in ["held", "waiting"] {
-            db.execute("DELETE FROM grants", []).unwrap();
-            db.execute(
-                "INSERT INTO grants (bytes, pid, started, command, state) VALUES (1, 1, 1, 'x', ?1)",
-                [state],
-            )
-            .unwrap();
-            let busy = busy(&db, false).unwrap();
-            assert_eq!(
-                busy.as_deref(),
-                Some("a memory grant is held or waits"),
-                "{state}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_live_run_is_quiet_only_between_tool_calls_and_never_for_a_migration() {
-        let db = state::memory();
-        let path = std::env::temp_dir().join(format!("priory-upgrade-{}", std::process::id()));
         db.execute_batch(
             "INSERT INTO tasks (id, key, workflow, step, state, trigger, source)
                VALUES (1, 'k', 'w', 's', 'running', 't', 's');
-             INSERT INTO runs (id, task, step, tmux, session) VALUES (7, 1, 's', 'm', 'n');",
+             INSERT INTO runs (id, task, step, tmux, session) VALUES (7, 1, 's', 'm', 'n');
+             INSERT INTO grants (bytes, pid, started, command, state) VALUES (1, 1, 1, 'x', 'held');",
         )
         .unwrap();
-        let reason = |migrates: bool| busy(&db, migrates).unwrap();
+
+        assert_eq!(busy(&db, false).unwrap(), None);
         assert_eq!(
-            reason(false).as_deref(),
-            Some("run 7's transcript cannot be read")
-        );
-        db.execute("UPDATE runs SET transcript = ?1", [path.to_str().unwrap()])
-            .unwrap();
-        let call =
-            r#"{"type":"assistant","message":{"id":"a","content":[{"type":"tool_use","id":"t"}]}}"#;
-        fs::write(&path, call).unwrap();
-        assert_eq!(
-            reason(false).as_deref(),
-            Some("run 7 is inside a tool call")
-        );
-        let result =
-            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t"}]}}"#;
-        fs::write(&path, format!("{call}\n{result}")).unwrap();
-        assert_eq!(reason(false), None);
-        assert_eq!(
-            reason(true).as_deref(),
+            busy(&db, true).unwrap().as_deref(),
             Some("run 7 is live and the release migrates")
         );
-        fs::remove_file(&path).unwrap();
+        db.execute("INSERT INTO pause (id, since) VALUES (1, 'now')", [])
+            .unwrap();
+        assert_eq!(
+            busy(&db, false).unwrap().as_deref(),
+            Some("priory is paused")
+        );
     }
 }
