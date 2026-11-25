@@ -19,9 +19,18 @@ the inbox and routes it to a task (see [routing.md](routing.md)). Without `--onc
 for new messages every second and runs agents, as [runs.md](runs.md) describes.
 
 One pass of its loop handles at most 100 messages, and stops after the message that brings it past 1
-second, so a burst does not hold the hooks and calls that wait on the loop. While messages are left,
-the next pass follows at once and goes on in order. A daemon with a runner file reads the whole log
-before it runs anything (see [runners.md](runners.md)).
+second. The second starts once the first read of the log ended. While messages are left, the next
+pass follows at once and goes on in order, so a burst does not hold the hooks and calls that wait on
+the loop. Two cases hold work until the log is read to its end:
+
+- After a start, or after a lost log answers again, the daemon runs nothing before its first
+  catch-up. A task that the rest of the log withdraws never starts. Hooks and calls still apply.
+- A daemon with a runner file that is behind runs nothing and applies no hook, call or answer,
+  since another runner may have taken the task (see [runners.md](runners.md)).
+
+A [triage decision](decisions.md) runs a command inside its message's handling. A pass can so last 1
+second and one more command's `timeout`, 5 seconds by default. While work is held, the commands of
+its passes add up, until `daily_calls` is spent.
 
 `--once` routes what is pending and exits. It starts no runs, since no daemon would stay to hear
 their hooks.
