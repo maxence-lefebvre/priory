@@ -1,6 +1,5 @@
 use crate::runtime::{
-    OWN_GIT, PATCHES, SCAN, as_one, at_risk, clone_of, git, is_ancestor, remove_sealed, run, soon,
-    unseal,
+    OWN_GIT, PATCHES, SCAN, as_one, at_risk, clone_of, git, is_ancestor, run, soon, unseal,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -753,6 +752,7 @@ pub fn remove(home: &Path, found: &Found) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::remove_sealed;
     use proptest::prelude::*;
 
     const TABLE: &[u8] = b"22 1 8:1 / / rw - ext4 /dev/sda1 rw\n\
