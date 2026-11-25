@@ -17969,36 +17969,144 @@ fn an_idle_task_build_output_goes_under_the_reclaim_threshold_even_read_only() {
     );
 }
 
-#[test]
-fn a_build_folder_with_a_mount_stays_with_what_is_mounted() {
-    let unshare = "unshare --user --map-current-user --keep-caps --mount";
+const UNSHARE: &str = "unshare --user --map-current-user --keep-caps --mount";
+
+/// Whether this machine allows a mount in a user namespace.
+fn mounts_allowed() -> bool {
     let allowed = harness::command("sh")
-        .args(["-c", &format!("{unshare} mount -t tmpfs none /mnt")])
+        .args(["-c", &format!("{UNSHARE} mount -t tmpfs none /mnt")])
         .output()
         .unwrap();
     if !allowed.status.success() {
         eprintln!("skipped, this machine refuses a mount in a user namespace: {allowed:?}");
-        return;
     }
-    let (mut setup, target) = asleep_with_build_output("reclaim-mount");
-    setup.crash();
+    allowed.status.success()
+}
+
+/// A program that runs `priory` with a folder outside the worktrees, returned too, mounted at
+/// `point`.
+fn mounting(setup: &Setup, point: &Path) -> (PathBuf, PathBuf) {
     let outside = setup.dir.join("outside");
     fs::create_dir_all(&outside).unwrap();
     fs::write(outside.join("keep"), "x\n").unwrap();
-    let point = target.join("debug/mount");
-    fs::create_dir_all(&point).unwrap();
-    let link = setup.worktree(1).join("link");
-    fs::create_dir_all(&link).unwrap();
-    fs::write(link.join("out.o"), "x\n").unwrap();
+    fs::create_dir_all(point).unwrap();
     let exe = setup.dir.join("mounted-priory");
     let script = format!(
-        "#!/bin/sh\nexec {unshare} sh -c 'mount --bind \"$0\" \"$1\" && shift && exec \"$@\"' '{}' '{}' '{}' \"$@\"\n",
+        "#!/bin/sh\nexec {UNSHARE} sh -c 'mount --bind \"$0\" \"$1\" && shift && exec \"$@\"' '{}' '{}' '{}' \"$@\"\n",
         outside.display(),
         point.display(),
         env!("CARGO_BIN_EXE_priory"),
     );
     fs::write(&exe, script).unwrap();
     fs::set_permissions(&exe, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    (exe, outside)
+}
+
+/// Makes git ignore `target` in the worktrees of the setup's clone.
+fn ignore_target(setup: &Setup) {
+    fs::write(setup.clone().join(".git/info/exclude"), "target\n").unwrap();
+}
+
+#[test]
+fn a_sweep_keeps_a_done_task_worktree_with_a_mount_and_takes_it_once_unmounted() {
+    if !mounts_allowed() {
+        return;
+    }
+    let mut setup = Setup::ended("sweep-mount", 2);
+    ignore_target(&setup);
+    let point = setup.worktree(2).join("target/mnt");
+    let (exe, outside) = mounting(&setup, &point);
+    setup.work_on(1);
+    setup.push(1);
+    setup.merge(1);
+    setup.start_as(&exe);
+    setup.removed(1);
+
+    let reason = format!("{} is a mount", point.display());
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while setup.stays(2).as_ref() != Some(&reason) {
+        assert!(Instant::now() < deadline, "{:?}", setup.stays(2));
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(outside.join("keep").exists());
+    assert!(setup.worktree(2).join("README.md").exists());
+    assert!(setup.clone().join(".git/worktrees/2").exists());
+
+    setup.crash();
+    setup.start();
+    setup.removed(2);
+    assert!(outside.join("keep").exists());
+}
+
+#[test]
+fn an_asleep_task_with_a_mount_in_its_worktree_never_retires_and_says_why() {
+    if !mounts_allowed() {
+        return;
+    }
+    let mut setup = asleep_on("retire-mount", on_pull_7("pull_request"));
+    setup.crash();
+    ignore_target(&setup);
+    let point = setup.worktree(1).join("target/mnt");
+    let (exe, outside) = mounting(&setup, &point);
+    setup.disk(10);
+    setup.start_as(&exe);
+
+    let tasks = setup.until("tasks", |rows| rows[0][7] != "-");
+    assert_eq!(
+        [&tasks[0][4], &tasks[0][7], &tasks[0][10]],
+        [
+            "asleep",
+            &format!("cannot retire: {} is a mount", point.display()),
+            "-"
+        ]
+    );
+    assert!(outside.join("keep").exists());
+    assert!(setup.clone().join(".git/worktrees/1").exists());
+}
+
+#[test]
+fn a_task_waits_while_a_mount_is_in_the_folder_its_worktree_would_replace() {
+    if !mounts_allowed() {
+        return;
+    }
+    let mut setup = asleep_on("orphan-mount", on_pull_7("pull_request"));
+    setup.crash();
+    ignore_target(&setup);
+    let point = setup.worktree(1).join("target/mnt");
+    let (exe, outside) = mounting(&setup, &point);
+    fs::remove_dir_all(setup.clone().join(".git/worktrees/1")).unwrap();
+    setup.calls(&[result("passed"), result("passed")]);
+    setup.publish(&closed());
+    setup.publish(&requested(43));
+    setup.start_as(&exe);
+
+    let reason = format!(
+        "waits to add its worktree back: {} is a mount",
+        point.display()
+    );
+    let tasks = setup.until("tasks", |rows| {
+        rows.len() == 2 && rows[0][7] == reason && rows[1][4] == "done"
+    });
+    assert_eq!(tasks[0][4], "ready");
+    assert!(outside.join("keep").exists());
+
+    setup.crash();
+    setup.start();
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    assert!(outside.join("keep").exists());
+}
+
+#[test]
+fn a_build_folder_with_a_mount_stays_with_what_is_mounted() {
+    if !mounts_allowed() {
+        return;
+    }
+    let (mut setup, target) = asleep_with_build_output("reclaim-mount");
+    setup.crash();
+    let link = setup.worktree(1).join("link");
+    fs::create_dir_all(&link).unwrap();
+    fs::write(link.join("out.o"), "x\n").unwrap();
+    let (exe, outside) = mounting(&setup, &target.join("debug/mount"));
 
     setup.disk(30);
     setup.start_as(&exe);
@@ -31495,6 +31603,31 @@ fn committed_task_saying(name: &str, summary: &str) -> (Setup, String) {
     });
     setup.commit(1, "b.txt");
     (setup, planned)
+}
+
+#[test]
+fn a_command_scorer_that_mounts_a_folder_loses_nothing_of_it() {
+    if !mounts_allowed() {
+        return;
+    }
+    let (setup, _) = committed_task("score-mount");
+    let (exe, outside) = mounting(&setup, &setup.dir.join("point"));
+    let script = format!(
+        "#!/bin/sh\nmkdir mnt && mount --bind '{}' mnt || exit 2\n",
+        outside.display()
+    );
+    command_scorer(&setup, "mounts", "1m", &script);
+    let factory = setup.dir.join("factory");
+
+    let output = setup
+        .command(exe.to_str().unwrap())
+        .args(["score", factory.to_str().unwrap(), "1"])
+        .output()
+        .unwrap();
+
+    let said = String::from_utf8_lossy(&output.stderr);
+    assert!(said.contains("/mnt is a mount"), "{output:?}");
+    assert!(outside.join("keep").exists());
 }
 
 #[test]

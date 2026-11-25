@@ -1595,7 +1595,17 @@ fn tend(
         // Measured again after each start, since its clone and worktree take disk.
         let measured = OnceCell::new();
         let room = || measured.get_or_init(|| room::measure(home));
-        let checking = |task| probes.checking(task);
+        let checking = |admission: &state::Admission| {
+            // A check of its agent's claude.ai connectors runs in the background.
+            if probes.checking(admission.task) {
+                return Some(crate::connectors::CHECKING.to_owned());
+            }
+            // A mount in the folder its worktree would replace: asked again each tick.
+            let repo = repo_of(trace.factory, &admission.trigger, admission.repo.as_deref())?;
+            let name = worktree_name(db, trace.runner.as_deref(), admission.task).ok()?;
+            runtime::mounted_orphan(home, repo, &name)
+                .map(|reason| format!("waits to add its worktree back: {reason}"))
+        };
         let pass = state::admissible(
             db,
             factory,

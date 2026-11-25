@@ -17,6 +17,8 @@ It removes a folder and its branch `priory/<id>` only when all checks hold:
   the pid of the Priory process that runs it, and so do its children. A process counts as
   Priory's only when that pid runs Priory's program, is its ancestor, and that ancestor's child on
   the way carries the same value. Any process can set the variable, so the value alone hides none.
+- Its task has no live run and no memory grant, waiting or held (see Memory gate).
+- No mount is at or under it, and it holds no repository of its own (see What a removal never takes).
 - The branch tip is in `origin/HEAD`, or is the head commit of a merged pull request for the
   branch (a `github.pull_request.closed` event with `merged` true). Otherwise it stays as
   `unpushed commits` when a commit is on no remote branch, else as `not merged`.
@@ -60,12 +62,42 @@ task's next run removes the folder and adds the worktree back from its branch.
 `priory desk` lists each kept folder with its reason: `no task <id>`, `kept while task <id> is <state>`,
 `not a worktree of <clone>`, `not recorded as the worktree of task <id>`, `not on branch priory/<id>`,
 `uncommitted changes`, `untracked files`, `a process runs in it`, `unpushed commits`, `not merged`,
-`teardown runs` or `teardown failed: ...`.
+`teardown runs`, `teardown failed: ...`, `<path> is a mount`, `<path> holds a git repository` or
+`task <id> has a live run or a memory grant, or left its state`.
 It runs no git: it reads the reasons from `sweep/sizes.json`, which each sweep writes. Before the
 first sweep, it lists only the reasons it reads from the database. Each reason ends with the size of
 the folder in binary units, such as `not merged, 7.4 GiB`. After each periodic sweep, a thread of its
 own walks the kept folders and records their sizes, since that walk takes seconds. A folder the walk
 has not measured yet shows its reason alone.
+
+## What a removal never takes
+
+`git worktree remove` deletes the files of a folder mounted under the worktree, then fails. So the
+sweep and a retirement check again, after any teardown and right before git runs:
+
+- No mount is at or under the worktree, as `/proc/self/mountinfo` shows. A table that cannot be read
+  keeps the worktree.
+- No ignored file or folder is part of a repository: a `.git` entry, or a `HEAD` beside `objects` and
+  `refs`. Nor is a `.git` in a folder of tracked files. Its commits can be nowhere else, and the reclaim keeps it too. A repository in the `tmp`
+  folder of a cargo target does not count. A tracked folder that looks like a repository does not count
+  either, since the branch holds it.
+- The checks listed above still hold: the task's state, its runs and grants, uncommitted and untracked
+  files, and processes.
+
+A worktree that fails one stays, with the reason on the desk or the task, and the next sweep tries
+again. Unmount the mount (`findmnt -R <path>`) or move the repository out.
+
+Only the tick starts runs, and the checks and the removal are one step of it, so no run starts between
+them. A process that already runs elsewhere can still mount a folder in the worktree during the
+removal. A mount in a private namespace, such as a jail's, does not show in the daemon's table, and
+git does not enter it.
+
+A folder without its entry in the clone (see above) waits the same way: its task stays `queued` or
+`ready` with `waits to add its worktree back: <path> is a mount`, and each tick tries again. One that
+holds a repository, ignored or not, moves to `PRIORY_HOME/trash/` instead of going.
+
+The checkouts of a `record` command and of a `command` scorer also stay when a mount is in them. They
+are logged and not tried again.
 
 ## Reclaiming build output
 
@@ -87,7 +119,9 @@ that holds a file git tracks, such as a committed bundle, stays. A build folder 
 or that a symlink leads to, is never followed, and a symlink inside one goes without what it points
 to.
 
-These build folders stay too:
+These build folders stay too. One of them does not keep the worktree's other build folders, while a
+sweep or a retirement keeps the whole worktree for a mount or a repository (see What a removal never
+takes):
 
 - One with a mount at or under it, as `/proc/self/mountinfo` shows.
 - One inside a submodule or a nested repository.
@@ -137,7 +171,8 @@ for ever. A delete that runs for 10 minutes no longer holds it up: the daemon lo
 and retires. Nothing else is reclaimed until that delete ends. Retiring runs
 `git worktree remove` without force. The worktree goes, while the branch `priory/<id>` and the
 task's sessions stay. A task retires only when its worktree is Priory's, on its branch, has nothing
-uncommitted or untracked, and no process runs in it. The daemon marks the task before removing the
+uncommitted or untracked, no process runs in it, its task has no memory grant, and nothing in it is
+what a removal never takes. The daemon marks the task before removing the
 worktree, so a crash in between leaves a mark on an existing folder, which the next sweep checks
 again.
 

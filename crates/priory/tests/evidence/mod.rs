@@ -682,6 +682,31 @@ fn the_sweep_removes_the_items_of_a_task_ended_31_days_ago_and_keeps_newer_and_a
 }
 
 #[test]
+fn a_record_command_that_mounts_a_folder_loses_nothing_of_it() {
+    if !mounts_allowed() {
+        return;
+    }
+    let mut setup = Setup::recording("record-mount", RECORDED, "");
+    let (exe, outside) = mounting(&setup, &setup.dir.join("point"));
+    let record = format!(
+        "#!/bin/sh\nfor at in \"$PWD\" \"$PRIORY_EVIDENCE\" \"$HOME\"; do\n\
+         mkdir \"$at/mnt\" && mount --bind '{}' \"$at/mnt\" || exit 1\ndone\n",
+        outside.display()
+    );
+    fs::write(setup.dir.join("factory/record"), record).unwrap();
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(1));
+    setup.start_with(&exe, &[("TEST_TOKEN", SERVE_TOKEN)]);
+
+    let recorded = setup.recorded(1);
+
+    assert_eq!(recorded["record"]["state"], "recorded", "{recorded}");
+    assert!(outside.join("keep").exists());
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    assert_eq!(log.matches("/mnt is a mount").count(), 3, "{log}");
+}
+
+#[test]
 fn an_approval_a_written_answer_voids_keeps_its_items_listed() {
     let workflow = open_pr_recorded().replace("opened = \"done\"", "opened = \"confirm\"")
         + r#"

@@ -131,9 +131,10 @@ pub fn run(db: &Connection, factory: &Factory, home: &Path) -> rusqlite::Result<
         .collect();
     repos.dedup();
     let unfetched = fetch(home, &repos, jiff::Timestamp::now());
-    let entries = assess(db, home, Judge::Git)?;
+    let mut entries = assess(db, home, Judge::Git)?;
     record(home, &entries);
-    for entry in entries {
+    let mut refused = false;
+    for entry in &mut entries {
         if unfetched.contains(&entry.found.repo) {
             continue;
         }
@@ -153,7 +154,14 @@ pub fn run(db: &Connection, factory: &Factory, home: &Path) -> rusqlite::Result<
         if !matches!(torn, Teardown::Done) {
             continue;
         }
-        let removed = if entry.retire {
+        // Read after the teardown, right before the removal.
+        let busy = match task_of(&entry.found) {
+            Some(task) => busy(db, task, "'done', 'failed', 'dropped'")?,
+            None => None,
+        };
+        let removed = if let Some(reason) = busy {
+            Err(reason)
+        } else if entry.retire {
             worktrees::retire(home, &entry.found)
         } else {
             worktrees::remove(home, &entry.found)
@@ -163,7 +171,15 @@ pub fn run(db: &Connection, factory: &Factory, home: &Path) -> rusqlite::Result<
                 "priory daemon: removing {}: {error}",
                 entry.found.path.display()
             );
+            if entry.found.path.exists() {
+                refused = true;
+                entry.stays = Some(error.clone());
+                entry.judged = Some(error);
+            }
         }
+    }
+    if refused {
+        record(home, &entries);
     }
     Ok(())
 }
@@ -766,15 +782,28 @@ fn delete(
     })
 }
 
+/// Whether nothing of a task can be at work in its worktree: no live run and no memory grant.
+const UNUSED: &str =
+    "NOT EXISTS (SELECT 1 FROM runs WHERE runs.task = tasks.id AND runs.ended IS NULL)
+     AND NOT EXISTS (SELECT 1 FROM grants WHERE grants.task = tasks.id)";
+
+/// Why the worktree of `task` cannot go now: its state left `states`, a quoted list, or it is in use.
+fn busy(db: &Connection, task: i64, states: &str) -> rusqlite::Result<Option<String>> {
+    let free = db
+        .prepare(&format!(
+            "SELECT 1 FROM tasks WHERE id = ?1 AND state IN ({states}) AND {UNUSED}"
+        ))?
+        .exists([task])?;
+    Ok((!free).then(|| format!("task {task} has a live run or a memory grant, or left its state")))
+}
+
 /// The idle tasks and their worktree paths, longest idle first.
 fn idle(db: &Connection) -> rusqlite::Result<Vec<(i64, String)>> {
-    db.prepare(
+    db.prepare(&format!(
         "SELECT id, worktree FROM tasks
          WHERE state IN ('done', 'dropped', 'held', 'asleep') AND worktree IS NOT NULL
-           AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.task = tasks.id AND ended IS NULL)
-           AND NOT EXISTS (SELECT 1 FROM grants WHERE grants.task = tasks.id)
-         ORDER BY changed, id",
-    )?
+           AND {UNUSED} ORDER BY changed, id"
+    ))?
     .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
     .collect()
 }
@@ -903,6 +932,13 @@ pub(crate) fn retire(
                 Teardown::Runs => return Ok(()),
                 Teardown::Failed(reason) => stays = Some(reason),
             }
+        }
+        // Checked before the mark too, which clears the reason.
+        if stays.is_none() {
+            stays = match busy(db, task, "'asleep'")? {
+                Some(reason) => Some(reason),
+                None => worktrees::removable(home, found).err(),
+            };
         }
         if stays.is_none() {
             db.execute(
@@ -1539,6 +1575,32 @@ mod tests {
         let walked = home.reclaim.walk.take().unwrap().join().unwrap();
         assert!(walked.is_empty());
         remove_sealed(&shm);
+    }
+
+    #[test]
+    fn a_retirement_keeps_the_worktree_of_a_task_in_use() {
+        let home = Home::new("in-use");
+        let exclude = home.dir.join("repos/o/r/.git/info/exclude");
+        std::fs::write(exclude, "target\n").unwrap();
+        let tree = home.task(1, "asleep");
+        home.db
+            .execute(
+                "INSERT INTO grants (bytes, pid, started, task, command, created)
+                 VALUES (1, 1, 1, 1, 'build', 'now')",
+                [],
+            )
+            .unwrap();
+        retire(&home.db, &home.factory, &home.dir, || true).unwrap();
+        assert!(tree.exists());
+        let reason: String = home
+            .db
+            .query_row("SELECT reason FROM tasks", [], |row| row.get(0))
+            .unwrap();
+        assert!(reason.contains("memory grant"), "{reason}");
+
+        home.db.execute("DELETE FROM grants", []).unwrap();
+        retire(&home.db, &home.factory, &home.dir, || true).unwrap();
+        assert!(!tree.exists());
     }
 
     #[test]
