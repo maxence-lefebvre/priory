@@ -2205,7 +2205,7 @@ PRAGMA user_version = 123;
 ";
 
 // When the last autopilot `off` was made, and when the setting this runner has not read back was, so
-// an older `on` read late is dropped.
+// an older `on` read late is dropped. Text dates sort right without their `Z`; one ahead counts as now.
 const SCHEMA_124: &str = "
 CREATE TABLE IF NOT EXISTS autopilot_times (
   id        INTEGER PRIMARY KEY CHECK (id = 1),
@@ -2213,6 +2213,9 @@ CREATE TABLE IF NOT EXISTS autopilot_times (
   unread_at TEXT
 );
 INSERT OR IGNORE INTO autopilot_times (id) VALUES (1);
+UPDATE autopilot_times SET off = (
+  SELECT max(min(rtrim(time, 'Z'), strftime('%Y-%m-%dT%H:%M:%f', 'now'))) || 'Z' FROM inbox
+  WHERE type = 'priory.autopilot.set' AND data = '{}' AND outcome = 'noted');
 PRAGMA user_version = 124;
 ";
 
@@ -5335,22 +5338,59 @@ mod autopilot_times {
     use super::*;
 
     #[test]
-    fn an_upgrade_from_123_keeps_an_unread_setting_and_knows_no_off_yet() {
+    fn an_upgrade_from_123_keeps_an_unread_setting_and_the_last_off_it_applied() {
         let mut db = Connection::open_in_memory().unwrap();
         db.execute_batch(&MIGRATIONS[..123].concat()).unwrap();
-        db.execute("UPDATE autopilot_state SET unread = 'mine'", [])
-            .unwrap();
+        db.execute_batch(
+            "UPDATE autopilot_state SET unread = 'mine';
+             INSERT INTO inbox (id, type, time, data, links, outcome) VALUES
+               ('1', 'priory.autopilot.set', '2026-01-01T00:00:01.5Z', '{}', '[]', 'noted'),
+               ('2', 'priory.autopilot.set', '2026-01-01T00:00:01.52Z', '{}', '[]', 'noted'),
+               ('3', 'priory.autopilot.set', '2026-01-01T00:00:01Z', '{}', '[]', 'noted'),
+               ('4', 'priory.autopilot.set', '2026-01-02T00:00:00Z', '{}', '[]', 'refused'),
+               ('5', 'priory.autopilot.set', '2026-01-02T00:00:00Z', '{}', '[]', 'outsider'),
+               ('6', 'priory.autopilot.set', '2026-01-02T00:00:00Z', '{\"level\":\"high\"}', '[]', 'noted'),
+               ('7', 'priory.task.requested.cli', '2026-01-02T00:00:00Z', '{}', '[]', 'noted');",
+        )
+        .unwrap();
 
         migrate(&mut db).unwrap();
 
-        let row: (String, Option<String>, Option<String>) = db
+        let row: (String, String, Option<String>) = db
             .query_row(
                 "SELECT unread, off, unread_at FROM autopilot_state, autopilot_times",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        assert_eq!(row, ("mine".to_owned(), None, None));
+        assert_eq!(
+            row,
+            (
+                "mine".to_owned(),
+                "2026-01-01T00:00:01.52Z".to_owned(),
+                None
+            )
+        );
+    }
+
+    #[test]
+    fn an_upgrade_counts_an_off_dated_ahead_as_made_now() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.execute_batch(&MIGRATIONS[..123].concat()).unwrap();
+        db.execute(
+            "INSERT INTO inbox (id, type, time, data, links, outcome)
+             VALUES ('1', 'priory.autopilot.set', '2099-01-01T00:00:00Z', '{}', '[]', 'noted')",
+            [],
+        )
+        .unwrap();
+
+        migrate(&mut db).unwrap();
+
+        let off: String = db
+            .query_row("SELECT off FROM autopilot_times", [], |row| row.get(0))
+            .unwrap();
+        let off: jiff::Timestamp = off.parse().unwrap();
+        assert!(off <= jiff::Timestamp::now(), "{off}");
     }
 }
 

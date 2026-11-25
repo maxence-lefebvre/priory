@@ -126,7 +126,9 @@ The daemon answers an ask with its recommendation when all of these hold:
 5. It is neither snoozed nor with a lead. An ask comes back to autopilot when its snooze ends or its
    lead gives up. A new ask is answered before a lead is called.
 
-Every other open ask stays for the person. Its desk row starts with `autopilot left this (<why>): `,
+Every other open ask stays for the person. The daemon judges each in a read transaction, and writes
+only to answer it or to note a new reason. An ask whose answer is refused as it is given, such as a
+batch's go, is judged again in a write transaction on each tick. Its desk row starts with `autopilot left this (<why>): `,
 and its JSON carries the reason as `autopilot_left`. A pause changes nothing: an answered task goes
 on as after a person's answer.
 

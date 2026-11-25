@@ -64,9 +64,14 @@ The runners publish more message types on the same output, which
 [autopilot](waits.md#autopilot) on or off on every runner. A runner applies its own setting at once
 and the others' as it reads the log, where the last one wins. Two rules let a person's later `off`
 win over an `on` that a cut-off runner publishes late. A runner ignores an `on` dated at or before
-the last `off` it read or applied. Until it reads its own setting back, it ignores the settings it
-reads, which are older, except an `off` dated after its own. The dates are each machine's own
-clock, so a clock that is wrong can let an earlier `on` through, or drop a later one. After an `off`
+the last `off` it read or applied, and ends its own window when its own `on` is one of them.
+`priory autopilot on` refuses an `on` made at or before an `off` set while it waited for the state
+file. Until a runner reads its own setting back, it ignores the settings it reads, which are older,
+except an `off` dated at or after its own: that `off` also ends the wait. The dates are each machine's own
+clock, so a clock that is wrong can let an earlier `on` through, or drop a later one. An `off` dated
+ahead counts from when each runner reads it, so a runner that reads it late may drop an `on` that
+the others take, and stays off. A clock set back after an `off` refuses each `on` there until it
+passes that `off` again. After an `off`
 that could not tell the others, it ignores every other `on` until a person sets autopilot there
 again. A runner cut off from the log keeps its
 window until it ends or a person runs `priory autopilot off` there. A view-only machine sends the

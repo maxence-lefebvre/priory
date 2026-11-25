@@ -92,21 +92,52 @@ pub fn message(setting: Option<&Setting>) -> Message {
 }
 
 /// Turns autopilot on with `setting`, or off without one, in this state file, as `message` tells the
-/// other runners.
+/// other runners. Refuses an `on` made at or before the last `off`.
 pub fn set(
     db: &mut Connection,
     setting: Option<&Setting>,
     message: &Message,
     queued: bool,
+) -> Result<(), String> {
+    let tx = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    if setting.is_some() {
+        barred(&tx, message)?;
+    }
+    changed(&tx, setting, message, queued)
+        .and_then(|()| tx.commit())
+        .map_err(|error| error.to_string())
+}
+
+/// Refuses the `on` that `message` is when it was made at or before the last `off`, such as one
+/// that waited for the state file while an `off` was set.
+pub fn barred(db: &Connection, message: &Message) -> Result<(), String> {
+    let (off, _) = times(db).map_err(|error| error.to_string())?;
+    match off.filter(|off| message.time <= *off) {
+        // A clock set back after the `off` refuses each `on` until it passes that time again.
+        Some(off) => Err(format!(
+            "autopilot was turned off at {off}, after this `on` was made at {}: run it again, \
+             or set this machine's clock right if it is behind {off}",
+            message.time
+        )),
+        None => Ok(()),
+    }
+}
+
+fn changed(
+    tx: &Transaction,
+    setting: Option<&Setting>,
+    message: &Message,
+    queued: bool,
 ) -> rusqlite::Result<()> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    apply(&tx, &message.id.to_string(), setting, Timestamp::now())?;
+    apply(tx, &message.id.to_string(), setting, Timestamp::now())?;
     if setting.is_none() {
-        offed(&tx, message.time)?;
+        offed(tx, message.time)?;
     }
     // Queued with the change, so the log reads a runner's settings in the order it made them.
     if queued {
-        runners::send(&tx, message)?;
+        runners::send(tx, message)?;
     }
     // An off waits for its echo even before `tell`, so no older `on` from the log undoes it.
     let awaited = queued || setting.is_none();
@@ -118,13 +149,13 @@ pub fn set(
         "UPDATE autopilot_times SET unread_at = ?1",
         [message.time.to_string()],
     )?;
-    tx.commit()
+    Ok(())
 }
 
 /// When the last `off` was made, and when the setting this runner has not read back was.
-fn times(tx: &Transaction) -> rusqlite::Result<(Option<Timestamp>, Option<Timestamp>)> {
+fn times(db: &Connection) -> rusqlite::Result<(Option<Timestamp>, Option<Timestamp>)> {
     let time = |text: Option<String>| text.and_then(|text| text.parse().ok());
-    tx.query_row("SELECT off, unread_at FROM autopilot_times", [], |row| {
+    db.query_row("SELECT off, unread_at FROM autopilot_times", [], |row| {
         Ok((time(row.get(0)?), time(row.get(1)?)))
     })
 }
@@ -149,7 +180,17 @@ pub fn unused(db: &Connection, factory: &Factory, lanes: &[String]) -> Result<()
         .values()
         .filter_map(|trigger| trigger.value.lane.clone())
         .chain(factory.lanes().rules.iter().map(|rule| rule.lane.clone()))
+        .chain(factory.lanes().lane.keys().cloned())
         .chain([factory.lanes().lane(&Subject::default())])
+        .chain(lanes.iter().filter_map(|lane| {
+            // The fallback gives each team its own lane, for teams no task has yet.
+            let (team, _) = lane.split_once('/')?;
+            let fallback = factory.lanes().lane(&Subject {
+                team: Some(team),
+                ..Subject::default()
+            });
+            (&fallback == lane).then_some(fallback)
+        }))
         .collect();
     let tasks = db
         .prepare(
@@ -314,20 +355,32 @@ pub(crate) fn handle(
             let mine = echo || unread.is_none();
             match setting {
                 None => {
-                    if mine || unread_at.is_none_or(|own| message.time > own) {
+                    if mine || unread_at.is_none_or(|own| message.time >= own) {
                         apply(tx, &id, None, now)?;
+                        // This `off` ends the own `on` too, so later settings of others count again.
+                        tx.execute(
+                            "UPDATE autopilot_state SET unread = NULL
+                             WHERE unread IN (SELECT setting FROM autopilot_windows)",
+                            [],
+                        )?;
                     }
                     offed(tx, message.time)?;
                     "noted"
                 }
                 // A person turned it off after this was made.
-                Some(_) if off.is_some_and(|off| message.time <= off) => "ignored",
-                Some(on) => {
-                    if mine {
-                        apply(tx, &id, Some(&on), now)?;
-                    }
+                Some(_) if off.is_some_and(|off| message.time <= off) => {
+                    tx.execute(
+                        "UPDATE autopilot_windows SET ended = ?2, why = 'off'
+                         WHERE setting = ?1 AND ended IS NULL",
+                        [&id, &stamp(now)],
+                    )?;
+                    "ignored"
+                }
+                Some(on) if mine => {
+                    apply(tx, &id, Some(&on), now)?;
                     "noted"
                 }
+                Some(_) => "ignored",
             }
         }
         _ => "refused",
@@ -1128,5 +1181,31 @@ mod tests {
         fn until_never_panics(span in proptest::option::of(".{0,40}"), when in proptest::option::of(".{0,40}")) {
             let _ = until(span.as_deref(), when.as_deref(), at("2026-11-24T20:00:00Z"), paris());
         }
+    }
+
+    #[test]
+    fn an_on_made_before_an_off_and_set_after_it_is_refused_and_changes_nothing() {
+        let mut db = crate::state::open_at(Path::new(":memory:")).unwrap();
+        let setting = Setting {
+            until: Timestamp::now() + SignedDuration::from_hours(1),
+            level: Confidence::High,
+            lanes: Vec::new(),
+        };
+        let on = message(Some(&setting));
+        let off = message(None).time(on.time);
+        set(&mut db, None, &off, false).unwrap();
+
+        let refused = set(&mut db, Some(&setting), &on, true);
+
+        assert!(refused.is_err());
+        assert_eq!(status(&db).unwrap(), Value::Null);
+        let left: (Option<String>, i64) = db
+            .query_row(
+                "SELECT unread, (SELECT count(*) FROM sends) FROM autopilot_state",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(left, (Some(off.id.to_string()), 0));
     }
 }
