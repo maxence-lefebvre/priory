@@ -88,7 +88,9 @@ export function render() {
   // A Cancel armed on another runner's task holds for the generation the list shows.
   if (typeof state.taskArmed?.task === "string" && remoteGeneration(state.taskArmed.task) !== state.taskArmed.generation) disarmTask();
   // Every part is built before the first one lands: a part that throws leaves them all as they were.
-  const drawn = shown.map((host, at) => [host, text(slots.get(host), at)]);
+  // The first part that cannot draw says why; the others that cannot stay empty.
+  const owner = shown.find((host) => slots.get(host).kind !== "preview" && !readyFor(slots.get(host)));
+  const drawn = shown.map((host) => [host, text(slots.get(host), host === owner)]);
   // The answer bar shows once the options scroll away; a redraw of the same page keeps it shown, so focus on it stays.
   const samePage = state.renderedKey === routeKey();
   for (const [host, html] of drawn) {
@@ -106,11 +108,12 @@ export function render() {
   if (caret) again(`#${caret[0]}`)[0]?.setSelectionRange(caret[1], caret[2], caret[3]);
 }
 
-// The HTML of a legacy part. Until the page's listings are read, the first part says so and the others
-// stay empty; a part whose own listings are read draws, so an ask answers beside a list that failed.
-function text({ kind, name, id, panels }, at) {
-  const mine = kind !== "loading" && ready(needsOf([{ kind, name, id }], route()[1]));
-  if (!mine) return (at && !ready()) || kind === "preview" ? "" : loading().text;
+// Whether a part's own listings are read: it draws then, so an ask answers beside a list that failed.
+const readyFor = ({ kind, name, id }) => kind !== "loading" && ready(needsOf([{ kind, name, id }], route()[1]));
+
+// The HTML of a legacy part. One that cannot draw yet says why when it `speaks`, else stays empty.
+function text({ kind, name, id, panels }, speaks) {
+  if (!readyFor({ kind, name, id })) return speaks ? loading().text : "";
   const size = shape.size;
   const entry = entryOf(name);
   if (kind === "drawer") return entry.drawer(id, size === "wide", panels).text;
