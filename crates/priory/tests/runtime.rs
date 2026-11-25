@@ -18128,7 +18128,8 @@ fn a_clean_asleep_task_retires_when_disk_runs_short_and_resurrects_with_its_work
     let statuses = fs::read_to_string(setup.dir.join("fake/git-statuses")).unwrap();
     let checks = statuses
         .lines()
-        .filter(|line| line.contains("/1 ") && line.contains("--ignore-submodules=none"));
+        .filter(|line| line.contains("/1 ") || line.contains("/reclaim/1-"))
+        .filter(|line| line.contains("--ignore-submodules=none"));
     assert_eq!(
         checks.count(),
         2,

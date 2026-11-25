@@ -1,6 +1,6 @@
 use crate::runtime::{
     OWN_GIT, PATCHES, SCAN, as_one, as_one_within, at_risk, fetching, git, is_ancestor, move_aside,
-    run, soon, timed_out, unseal,
+    read_regular, run, soon, timed_out, unseal,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -455,16 +455,16 @@ fn unsaved_repository(worktree: &Path, files: &Files) -> Result<Option<PathBuf>,
 fn repository_left(root: &Path, files: &Files) -> Result<Option<PathBuf>, String> {
     let set = |files: &[String]| files.iter().map(PathBuf::from).collect::<HashSet<_>>();
     let (tracked, ignored) = (set(&files.tracked), set(&files.ignored));
+    let tracked: HashSet<&Path> = tracked.iter().flat_map(|file| file.ancestors()).collect();
     let mut folders = vec![root.to_path_buf()];
     while let Some(folder) = folders.pop() {
         let unread = |error| format!("cannot read {}: {error}", folder.display());
         let at = folder.strip_prefix(root).unwrap_or(&folder);
         let on_branch = || {
-            let part = |name: &str| at.join(name);
-            tracked.contains(&part("HEAD"))
-                && !["HEAD", "objects", "refs"]
-                    .iter()
-                    .any(|name| ignored.contains(&part(name)))
+            ["HEAD", "objects", "refs"].iter().all(|name| {
+                let part = at.join(name);
+                tracked.contains(part.as_path()) && !ignored.contains(&part)
+            })
         };
         let scratch = ignored.contains(at).then(|| scratch(&folder)).flatten();
         for entry in fs::read_dir(&folder).map_err(unread)? {
@@ -890,13 +890,7 @@ fn checked(home: &Path, found: &Found, tip: Option<&str>) -> Result<Files, Strin
 /// Moves a worktree back that a stopped daemon left at `aside` before its entry in the clone went,
 /// when nothing took its place. Returns whether it did.
 pub fn moved_back(home: &Path, aside: &Path) -> bool {
-    // An agent can put a fifo there, whose read would hang.
-    let read = |path: &Path| {
-        fs::symlink_metadata(path)
-            .is_ok_and(|meta| meta.is_file() && meta.len() < 1 << 16)
-            .then(|| fs::read_to_string(path).ok())
-            .flatten()
-    };
+    let read = |path: &Path| String::from_utf8(read_regular(path, 1 << 16).ok()?).ok();
     let Some(link) = read(&aside.join(".git")) else {
         return false;
     };
@@ -1395,6 +1389,23 @@ mod tests {
             refused.contains("target/n holds a git repository"),
             "{refused}"
         );
+    }
+
+    #[test]
+    fn a_late_bare_repository_around_a_tracked_head_moves_to_the_trash() {
+        let (home, found) = Home::new("late-bare");
+        fs::create_dir_all(found.path.join("half")).unwrap();
+        fs::write(found.path.join("half/HEAD"), "x\n").unwrap();
+        sh(&found.path, &["add", "."]);
+        sh(&found.path, &["commit", "-q", "-m", "half"]);
+        let taken = take(&home.0, &found, None, false).unwrap();
+        for folder in ["objects", "refs"] {
+            fs::create_dir_all(taken.aside.join("half").join(folder)).unwrap();
+        }
+
+        let refused = dispose(&home.0, &taken).unwrap_err();
+
+        assert!(refused.contains("half holds a git repository"), "{refused}");
     }
 
     #[test]
