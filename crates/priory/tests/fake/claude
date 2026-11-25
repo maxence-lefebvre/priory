@@ -121,7 +121,9 @@ mcp='{}'
 session=''
 first=''
 resumed=''
-printf '%s\n' "$@" > "$FAKE_DIR/args.log"
+# Bash writes one argument at a time, and a test reads the file once it names the session.
+printf '%s\n' "$@" > "$FAKE_DIR/args.log.$$"
+mv "$FAKE_DIR/args.log.$$" "$FAKE_DIR/args.log"
 echo $$ > "$FAKE_DIR/pid"
 env | cut -d= -f1 > "$FAKE_DIR/env.log"
 printf %s "$XDG_RUNTIME_DIR" > "$FAKE_DIR/xdg.log"

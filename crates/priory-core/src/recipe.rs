@@ -217,7 +217,7 @@ fn start(
         Ok(mut child) => {
             db.execute(
                 "UPDATE recipes SET pid = ?2, pid_started = ?3 WHERE id = ?1",
-                params![id, child.pid(), memory::started(child.pid())],
+                params![id, child.pid(), memory::start_time(child.pid())],
             )?;
             child.release();
             running.0.push((id, child));
@@ -351,7 +351,7 @@ pub(crate) fn orphans(
         .collect::<rusqlite::Result<_>>()?;
     for (id, pid, started) in left {
         if let (Some(pid), Some(started)) = (pid, started)
-            && memory::started(pid) == Some(started)
+            && memory::started(pid) == Ok(Some(started))
         {
             script::kill(pid);
         }
@@ -381,6 +381,17 @@ pub(crate) fn teardown_of(db: &Connection, task: i64) -> rusqlite::Result<Option
             (true, true) => Teardown::Done,
             (true, false) => Teardown::Failed(row.failure()),
         }))
+}
+
+/// Whether no teardown of `repo` is left to run before `task`'s worktree goes.
+pub(crate) fn torn(
+    db: &Connection,
+    factory: &Factory,
+    task: i64,
+    repo: &str,
+) -> rusqlite::Result<bool> {
+    Ok(factory.recipe(repo, Moment::Teardown).is_none()
+        || matches!(teardown_of(db, task)?, Some(Teardown::Done)))
 }
 
 /// Before the sweep or a retirement removes `task`'s `worktree` of `repo`: `Done` when it may go,

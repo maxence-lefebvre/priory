@@ -6,8 +6,8 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::OnceLock;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex, OnceLock, TryLockError};
 use std::time::{Duration, Instant};
 
 use serde_json::json;
@@ -72,14 +72,19 @@ thread_local! {
 
 /// Runs `work`, whose `soon` commands share one `loop_timeout`.
 pub(crate) fn as_one<T>(work: impl FnOnce() -> T) -> T {
-    let before = ENDS.replace(Some(Instant::now() + loop_timeout()));
+    as_one_within(loop_timeout(), work)
+}
+
+/// As `as_one`, with `limit` to share.
+pub(crate) fn as_one_within<T>(limit: Duration, work: impl FnOnce() -> T) -> T {
+    let before = ENDS.replace(Some(Instant::now() + limit));
     let done = work();
     ENDS.set(before);
     done
 }
 
 /// What is left of `loop_timeout`, or of the `as_one` around.
-fn loop_left() -> Duration {
+pub(crate) fn loop_left() -> Duration {
     ENDS.get()
         .map_or_else(loop_timeout, left)
         .min(loop_timeout())
@@ -96,7 +101,7 @@ pub(crate) fn fed_soon(command: &mut Command, input: Vec<u8>) -> Result<String, 
         .map(|out| String::from_utf8_lossy(&out).into_owned())
 }
 
-fn within(command: &mut Command, timeout: Duration) -> Result<String, String> {
+pub(crate) fn within(command: &mut Command, timeout: Duration) -> Result<String, String> {
     fed_raw_within(command, None, timeout).map(|out| String::from_utf8_lossy(&out).into_owned())
 }
 
@@ -727,6 +732,10 @@ pub fn worktree(
     if let Some(reason) = mounted_orphan(home, repo, name) {
         return Err(reason);
     }
+    // What is there now is not the worktree, which may come back.
+    if crate::worktrees::removes_at(&path) {
+        return Err(sweep_removes(repo));
+    }
     if orphaned(&path, &clone) {
         if crate::worktrees::orphan_without_repository(&path).is_ok() {
             crate::worktrees::discard_aside(home, &path);
@@ -758,6 +767,10 @@ pub fn worktree(
     }
     // A revived task whose worktree the sweep removed carries on from the branch it left.
     if head(&clone, &branch).is_some() {
+        // The prune would drop the entry of a worktree the sweep moved aside.
+        if crate::worktrees::removes_in(&clone) {
+            return Err(sweep_removes(repo));
+        }
         phased("checkout", || {
             // A worktree folder a person deleted stays registered, and git refuses to add it again.
             run(git(&clone).args(["worktree", "prune"]))?;
@@ -768,6 +781,12 @@ pub fn worktree(
         })?;
         return Ok((path, branch, Added::Restored));
     }
+    let fetching = fetching(&clone);
+    let _fetching = match fetching.try_lock() {
+        Ok(guard) => guard,
+        Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        Err(TryLockError::WouldBlock) => return Err(sweep_fetches(repo)),
+    };
     let trunk = phased("fetch", || {
         // Before the fetch, which then brings the commit.
         let trunk = (vouch && from.is_none())
@@ -844,6 +863,19 @@ fn slow() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<String, (
     SLOW.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+static FETCHING: Mutex<std::collections::BTreeMap<PathBuf, Arc<Mutex<()>>>> =
+    Mutex::new(std::collections::BTreeMap::new());
+
+/// What a fetch of `clone` holds, since the sweep fetches on a thread.
+pub(crate) fn fetching(clone: &Path) -> Arc<Mutex<()>> {
+    FETCHING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .entry(clone.to_owned())
+        .or_default()
+        .clone()
+}
+
 fn fetched(repo: &str) {
     slow().remove(repo);
 }
@@ -866,23 +898,48 @@ fn fetch_reason(repo: &str) -> String {
     )
 }
 
-/// Why worktree `name` of `repo`, which a fetch would make, waits: the last fetch timed out a short
-/// while ago.
+fn sweep_fetches(repo: &str) -> String {
+    format!("{FETCH_WAITS}{repo}: the sweep fetches it")
+}
+
+fn sweep_removes(repo: &str) -> String {
+    format!("{FETCH_WAITS}{repo}: the sweep removes a worktree of it")
+}
+
+/// Why worktree `name` of `repo` waits. The last fetch timed out a short while ago or the sweep runs
+/// one, when a fetch would make it. Else the sweep removes a worktree, when it would be added back.
 pub fn fetch_waits(home: &Path, repo: &str, name: &str) -> Option<String> {
     let waits = slow()
         .get(repo)
         .is_some_and(|(again, _)| *again > Instant::now());
-    let made = || {
-        home.join("worktrees").join(repo).join(name).exists()
-            || soon(git(&home.join("repos").join(repo)).args([
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                &format!("refs/heads/priory/{name}^{{commit}}"),
-            ]))
-            .is_ok()
+    let clone = home.join("repos").join(repo);
+    let path = home.join("worktrees").join(repo).join(name);
+    if crate::worktrees::removes_at(&path) {
+        return Some(sweep_removes(repo));
+    }
+    let exists = path.exists();
+    let branch = || {
+        soon(git(&clone).args([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/priory/{name}^{{commit}}"),
+        ]))
+        .is_ok()
     };
-    (waits && !made()).then(|| fetch_reason(repo))
+    if !exists && crate::worktrees::removes_in(&clone) && branch() {
+        return Some(sweep_removes(repo));
+    }
+    let fetching = fetching(&clone);
+    let swept = matches!(fetching.try_lock(), Err(TryLockError::WouldBlock));
+    let reason = if waits {
+        fetch_reason(repo)
+    } else if swept {
+        sweep_fetches(repo)
+    } else {
+        return None;
+    };
+    (!exists && !branch()).then_some(reason)
 }
 
 /// The head of `repo`'s default branch as GitHub has it. It runs outside the clone, whose refs and
@@ -2166,7 +2223,7 @@ fn seal(dir: &Path) -> std::io::Result<()> {
 /// Moves `path`, a worktree folder the daemon could not remove (a container can leave root-owned
 /// files under an ignored folder), into `home/trash`, so the task's worktree can be added back. A
 /// rename needs write access on the parent folder only.
-fn move_aside(home: &Path, path: &Path) -> Result<(), String> {
+pub(crate) fn move_aside(home: &Path, path: &Path) -> Result<(), String> {
     let trash = home.join("trash");
     fs::create_dir_all(&trash).map_err(|error| format!("{}: {error}", trash.display()))?;
     let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -2186,31 +2243,22 @@ fn move_aside(home: &Path, path: &Path) -> Result<(), String> {
 /// can hold a `PRIORY_HOME`: a user other than root cannot remove a sealed kit, plugin or memory
 /// folder with `fs::remove_dir_all` alone.
 pub fn remove_sealed(dir: &Path) {
-    unseal(dir, None);
+    unseal(dir);
     let _ = fs::remove_dir_all(dir);
 }
 
 /// Makes `dir` and every folder under it writable by its owner, so their files can be removed.
-/// False when it stopped at `deadline`.
-pub(crate) fn unseal(dir: &Path, deadline: Option<Instant>) -> bool {
-    let late = || deadline.is_some_and(|deadline| Instant::now() >= deadline);
+pub(crate) fn unseal(dir: &Path) {
     let mut folders = vec![dir.to_path_buf()];
     while let Some(folder) = folders.pop() {
-        if late() {
-            return false;
-        }
         if !fs::symlink_metadata(&folder).is_ok_and(|meta| meta.is_dir()) {
             continue;
         }
         let _ = fs::set_permissions(&folder, fs::Permissions::from_mode(0o755));
         for entry in fs::read_dir(&folder).into_iter().flatten().flatten() {
-            if late() {
-                return false;
-            }
             folders.push(entry.path());
         }
     }
-    true
 }
 
 /// Renames `staging` to `target`, and moves aside and removes what `target` held before.
@@ -4198,6 +4246,7 @@ mod tests {
             path: home.tree(),
             repo: "o/n".to_owned(),
             name: "1".to_owned(),
+            entry: None,
         };
 
         crate::worktrees::retire(&home.home(), &found).unwrap();

@@ -93,7 +93,7 @@ from the room, measured as for admission, after the run's promise is released:
 | Cause | Found when | Action | Restarts when |
 | ----- | ---------- | ------ | ------------- |
 | `out of memory (<room>)` | the room has no memory for the agent | `wait for room` | the room check admits the run again |
-| `disk full (<room>)` | the room has no disk | `sweep`: a sweep runs at once, and the room is measured again | the disk is no longer short |
+| `disk full (<room>)` | the room has no disk | `sweep`: a sweep starts, the run waits for it to end, and the room is measured again | the disk is no longer short |
 | `the harness crashed` | the room has space | `restart` | at once |
 
 A cause that is gone, or that the room check will confirm gone before the run starts, makes the task
@@ -199,7 +199,7 @@ Priory cannot check the text of a nudge.
 
 Each answered call appends a `factory.handler.called` record to the trace, with the action, its text, the model,
 the tokens and Claude's own `cost_usd`. A daemon that stops mid-call kills that call's process group
-when it starts again, after checking its start time in `/proc`. It then records the call's answer, if
+when it starts again, after checking its start time in `/proc`, or with `ps` on macOS. It then records the call's answer, if
 the call wrote one, as not applied, or `leave` with `the handler call failed: interrupted by a daemon
 restart`. The call still counts.
 
