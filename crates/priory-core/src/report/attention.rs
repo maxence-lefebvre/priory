@@ -121,14 +121,25 @@ fn key(by: &str) -> Result<&'static str, String> {
     }
 }
 
+/// Whether the answerer in the column `by` is a person, as `tools::by_person` reads it. Null is.
+fn person(by: &str) -> String {
+    format!(
+        "(coalesce({by}, '') NOT IN ('auto', 'autopilot') AND coalesce({by}, '') NOT LIKE 'agent:%'
+          AND coalesce({by}, '') NOT LIKE 'session:%')"
+    )
+}
+
 /// The person's acts up to `until`, oldest first: answers, dismissals, refused answers, snoozes and
 /// unsnoozes.
 fn acts(db: &Connection, until: &str, key: &str) -> rusqlite::Result<Vec<Act>> {
     let mut statement = db.prepare(&format!(
         "WITH acts AS (
-           SELECT answered AS time, ask, NULL AS task FROM ask_revisions WHERE answered IS NOT NULL
+           SELECT ask_revisions.answered AS time, ask_revisions.ask, NULL AS task FROM ask_revisions
+             LEFT JOIN ask_answerers AS who ON who.ask = ask_revisions.ask
+               AND who.revision = ask_revisions.revision
+             WHERE ask_revisions.answered IS NOT NULL AND {answerer}
            UNION ALL SELECT created, ask, NULL FROM ask_withdrawals WHERE reason = 'dismissed'
-           UNION ALL SELECT created, ask, NULL FROM ask_refusals
+           UNION ALL SELECT created, ask, NULL FROM ask_refusals WHERE {refused}
            UNION ALL SELECT time, CASE json_extract(event, '$.data.item.kind') WHEN 'ask'
                THEN CAST(json_extract(event, '$.data.item.id') AS INTEGER) END,
              CAST(json_extract(event, '$.data.task') AS INTEGER) FROM trace
@@ -137,6 +148,8 @@ fn acts(db: &Connection, until: &str, key: &str) -> rusqlite::Result<Vec<Act>> {
          LEFT JOIN tasks ON tasks.id = coalesce(asks.task, acts.task)
          WHERE julianday(acts.time) <= julianday(?1) ORDER BY 1",
         time = ms("acts.time"),
+        answerer = person("who.by"),
+        refused = person("ask_refusals.by"),
     ))?;
     statement
         .query_map([until], |row| {
@@ -155,10 +168,12 @@ fn acts(db: &Connection, until: &str, key: &str) -> rusqlite::Result<Vec<Act>> {
 fn waits(db: &Connection, window: &Window, key: &str) -> rusqlite::Result<Vec<Wait>> {
     let mut statement = db.prepare(&format!(
         "WITH revisions AS (
-           SELECT ask, revision, created, answered, (SELECT min(later.created)
+           SELECT ask_revisions.ask, ask_revisions.revision, created,
+             CASE WHEN {answerer} THEN answered END AS answered, (SELECT min(later.created)
              FROM ask_revisions AS later WHERE later.ask = ask_revisions.ask
              AND later.revision > ask_revisions.revision) AS next
-           FROM ask_revisions)
+           FROM ask_revisions LEFT JOIN ask_answerers AS who ON who.ask = ask_revisions.ask
+             AND who.revision = ask_revisions.revision)
          SELECT {asked}, (SELECT min({time}) FROM (
              SELECT revisions.answered AS time
              UNION ALL SELECT created FROM ask_withdrawals WHERE ask_withdrawals.ask = asks.id
@@ -177,6 +192,7 @@ fn waits(db: &Connection, window: &Window, key: &str) -> rusqlite::Result<Vec<Wa
          WHERE julianday(revisions.created) >= julianday(?1)
          AND julianday(revisions.created) < julianday(?2)
          ORDER BY 1",
+        answerer = person("who.by"),
         asked = ms("revisions.created"),
         time = ms("time"),
     ))?;

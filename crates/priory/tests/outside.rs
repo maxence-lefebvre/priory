@@ -65,6 +65,10 @@ fn the_outside_hook_denies_a_person_verb_and_names_the_line_the_person_can_run()
         ("env priory dismiss 14", "priory dismiss 14"),
         ("bash -c 'priory cancel 7'", "priory cancel 7"),
         (
+            "priory autopilot on --for 1h",
+            "priory autopilot on --for 1h",
+        ),
+        (
             "priory report pick 3 skip --expected 2",
             "priory report pick 3 skip --expected 2",
         ),

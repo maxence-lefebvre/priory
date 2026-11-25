@@ -154,6 +154,18 @@ a group. `PRIORY_METRICS` replaces that list for one process, such as `process,l
   [runners.md](../daemon/runners.md#giving-a-task-to-another-runner).
 - `priory pause [REASON]`, `priory unpause`: stops new tasks from starting, then lets them start
   again. See [desk.md](../daemon/desk.md#pause).
+- `priory autopilot on [DIR] [--until TIME | --for DURATION] [--level high|medium] [--lane LANE]...`:
+  lets the daemon answer eligible asks with their recommendation until it ends by itself. `TIME` is
+  the next `HH:MM` in [`[autopilot] timezone`](factory.md#autopilot), or an RFC 3339 instant. Without
+  an end, it ends at the next 08:00. The longest is 7 days, and the default level is `high`. `LANE`
+  reads `<team>/<theme>`. See
+  [waits.md](../daemon/waits.md#autopilot).
+- `priory autopilot off [DIR]`: ends it here first, whatever the daemon, the factory or the log do.
+  It then tells the other runners, and exits nonzero when it cannot: the factory does not load, this
+  machine has no role in it, or a view-only machine's publish fails.
+- `priory autopilot [status [--json]]`: prints whether it is on, until when, and its counts.
+- `priory autopilot report [WINDOW] [--json]`: prints what a window, the latest by default, answered
+  and left, why, and how to reverse each answer.
 - `priory subscribe TASK RESOURCE [--expected REVISION]`, `priory unsubscribe TASK RESOURCE`: routes
   a pull request's, Linear issue's or Slack thread's events to a task, or stops routing them. See
   [tools.md](tools.md#subscribeon-and-unsubscribeon).

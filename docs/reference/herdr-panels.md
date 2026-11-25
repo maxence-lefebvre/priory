@@ -114,7 +114,7 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
   of its last update, and the options stay disabled until it reconnects.
 - **Routed asks.** An open ask with `routed_to` shows "with <lead>" in its row, and its detail says
   the lead is answering and that the person can still answer first. An answered ask shows
-  `answered_by` as "by agent:<lead>", "by auto", "by session <session>" for a person's own session,
+  `answered_by` as "by agent:<lead>", "by auto", "by autopilot", "by session <session>" for a person's own session,
   or "by a person", in its row, its decided line and the
   History. The Desk panel shows the same mark under a routed ask's question. The helpers
   `routedMark`, `routedNote` and `answeredBy` live in `lib/priory.js`, as in the web view's
@@ -495,10 +495,10 @@ Priory bar opens it as a tab in the center stack when another panel sets `priory
 - **What it shows.** The header holds the task's state tile, key and state, then Watch and Attach. Then the
   title with its [links](#links), the workflow, step, lane and band, and the task's reason. Asks
   lists the task's asks: open ones first, each with when it was asked, then answered ones, newest
-  answer first. An answered ask's tile says who answered: a cog for `auto` or a lead agent, a
+  answer first. An answered ask's tile says who answered: a cog for `auto`, `autopilot` or a lead agent, a
   terminal for a session, a person otherwise. Its caption reads "Answered after by session 7f3c2a,
   medium", with the confidence the agent stated. An auto answer opens to its confidence as three
-  bars, its rationale, and "The first answer stands. Say to the agent to change course." Pull request shows the latest pull request's title as a
+  bars, its rationale, and "The first answer stands. Say to the agent to change course." An autopilot answer says instead how to replace it. Pull request shows the latest pull request's title as a
   link, its branches and state, its checks, and the task's stack (see [Stacks](#stacks)). A check
   with no conclusion yet counts as running. History
   lists the last 10 runs, newest first, each with its step, outcome and how long ago it started, and under it

@@ -38,6 +38,7 @@ Each type has a JSON Schema in [`docs/schemas/events/`](../schemas/events/), nam
   [`priory.ask.applied`](#prioryaskapplied), [`priory.task.dropped`](#priorytaskdropped)
 - Memories: [`priory.memory.written`](#priorymemorywritten),
   [`priory.memory.accepted`](#priorymemoryaccepted), [`priory.memory.dropped`](#priorymemorydropped)
+- Autopilot: [`priory.autopilot.set`](#prioryautopilotset)
 
 ## The envelope
 
@@ -1922,6 +1923,38 @@ Schema: [`priory.memory.dropped.json`](../schemas/events/priory.memory.dropped.j
   "time": "2026-11-21T17:00:05Z",
   "data": {
     "candidate": "0196f1d0-9a8b-7c6d-8e9f-0a1b2c3d4e5f"
+  },
+  "links": []
+}
+```
+
+## Autopilot
+
+### `priory.autopilot.set`
+
+A person turns autopilot on or off, in a factory of several runners. Each runner applies it in log
+order. It is recorded as `refused` in a factory of one runner, and when `until` is more than 7 days
+away, `level` is not `high` or `medium`, or `lanes` is missing. An empty `data` turns it off.
+Subject: `autopilot`.
+Schema: [`priory.autopilot.set.json`](../schemas/events/priory.autopilot.set.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `until` | RFC 3339, absent to turn it off | When it ends by itself |
+| `level` | string, absent to turn it off | The lowest confidence it acts on |
+| `lanes` | array of strings, absent to turn it off | The lanes it covers; every lane when empty |
+
+<!-- example: events/priory.autopilot.set.json -->
+```json
+{
+  "id": "0196f1d3-7d80-7f90-a1b2-3c4d5e6f7082",
+  "type": "priory.autopilot.set",
+  "subject": "autopilot",
+  "time": "2026-11-24T21:00:00Z",
+  "data": {
+    "until": "2026-11-25T07:00:00Z",
+    "level": "high",
+    "lanes": []
   },
   "links": []
 }

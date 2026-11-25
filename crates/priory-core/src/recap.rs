@@ -44,7 +44,7 @@ fn answerer(by: Option<&str>) -> String {
         Some(by) if by.starts_with(crate::tools::SESSION) => {
             format!("session {}", &by[crate::tools::SESSION.len()..])
         }
-        Some(crate::tools::AUTO) => "auto".to_owned(),
+        Some(by @ (crate::tools::AUTO | crate::tools::AUTOPILOT)) => by.to_owned(),
         Some(by) if !by.is_empty() && by != "cli" && by != "serve" => format!("person {by}"),
         _ => "a person".to_owned(),
     }

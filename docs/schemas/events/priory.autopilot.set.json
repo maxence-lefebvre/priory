@@ -1,0 +1,112 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/events/priory.autopilot.set.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "AutopilotSet": {
+      "additionalProperties": false,
+      "description": "A person turns autopilot on or off with `priory autopilot`. Every runner applies it in log order.",
+      "properties": {
+        "lanes": {
+          "description": "The lanes it covers; every lane when empty or absent.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "level": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Confidence"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The lowest confidence it acts on: `high` or `medium`. Absent when it is turned off."
+        },
+        "until": {
+          "description": "When it ends by itself; absent when it is turned off.",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "Confidence": {
+      "description": "How sure an agent is that its recommendation is what the person would pick, and the lowest\nsuch confidence a task's `auto_answer` lets the daemon act on.",
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "type": "string"
+    },
+    "Link": {
+      "additionalProperties": false,
+      "description": "A link for people.",
+      "properties": {
+        "label": {
+          "description": "`issue` or `pull_request`.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "A person turns autopilot on or off with `priory autopilot`. Every runner applies it in log order.",
+  "properties": {
+    "data": {
+      "$ref": "#/definitions/AutopilotSet"
+    },
+    "id": {
+      "description": "A UUIDv5 of the message's name, so a retried publish keeps its id.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "links": {
+      "description": "GitHub and Linear events carry one link to the event's page.",
+      "items": {
+        "$ref": "#/definitions/Link"
+      },
+      "type": "array"
+    },
+    "subject": {
+      "description": "A short line for listings, such as `owner/name#42`.",
+      "type": "string"
+    },
+    "time": {
+      "description": "When the event happened, RFC 3339.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "type": {
+      "const": "priory.autopilot.set",
+      "description": "The message type, such as `github.issues.labeled`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "subject",
+    "time",
+    "data",
+    "links"
+  ],
+  "title": "priory.autopilot.set",
+  "type": "object"
+}

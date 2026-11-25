@@ -4,7 +4,7 @@ The desk is what waits on a person: asks, blocked and failed tasks, reports and 
 them in one list, oldest first, so a person sees every decision the factory needs from them without
 reading each task.
 
-`priory desk` prints the pause line first while admissions are paused (see Pause), then one line per spend cap reached whose new runs wait (see [spend.md](spend.md)), then one line per lane or batch whose review limit holds a new task (see [runs.md](runs.md#review-limit)), then the stall banner while the queue is stalled (see Room), then the intake banner while the intake fails or stopped (see Intake banner), then what waits on a person, oldest first: since, kind, id, task, lane, what and the task's generation.
+`priory desk` prints the pause line first while admissions are paused (see Pause), then the autopilot line while [autopilot](waits.md#autopilot) is on, with its end and how to turn it off, then one line per spend cap reached whose new runs wait (see [spend.md](spend.md)), then one line per lane or batch whose review limit holds a new task (see [runs.md](runs.md#review-limit)), then the stall banner while the queue is stalled (see Room), then the intake banner while the intake fails or stopped (see Intake banner), then what waits on a person, oldest first: since, kind, id, task, lane, what and the task's generation.
 
 | Kind | Id | What | Since |
 | ---- | -- | ---- | ----- |
@@ -166,7 +166,7 @@ The web and Herdr Desks show it as a plain row with its line, without Accept or 
 
 `priory post SOURCE LINE` stores one report line on the inbox for a person to read, and prints its
 sequence number. The daemon routes it to no task. `SOURCE` matches `[a-z0-9-]{1,32}`. The sources
-the intake and the daemon publish under are refused: `cli`, `factory`, `github`, `intake`, `linear`,
+the intake and the daemon publish under are refused: `autopilot`, `cli`, `factory`, `github`, `intake`, `linear`,
 `priory`, `schedule` and `slack`, so a script cannot pass for an event. `LINE` is one line, cut at 500
 characters.
 

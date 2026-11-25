@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, submitted, seenAgo, sentNote, shownGroups, snoozeShortcut, stillArmed, press, optionKey, dismissable, openAsksOf, planCut, planParts, planName, planUnread, planWait, plansFirst, writeNote, writeShown, shrunkHead, answeredAsks, confidenceNote, askHeading, askBody, cutAt, HEADING_MAX } from "./asks.js";
+import { ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, submitted, seenAgo, sentNote, shownGroups, snoozeShortcut, stillArmed, press, optionKey, dismissable, openAsksOf, planCut, planParts, planName, planUnread, planWait, plansFirst, writeNote, writeShown, shrunkHead, answeredAsks, confidenceNote, courseNote, askHeading, askBody, cutAt, HEADING_MAX } from "./asks.js";
 
 const now = Date.parse("2026-11-20T12:00:00Z");
 const ask = (id, fields) => ({ id, state: "open", snoozed_until: null, ...fields });
@@ -49,10 +49,10 @@ test("the detail says the lead is answering and that the first answer stands", (
   assert.equal(routedNote(ask(2)), null);
 });
 
-test("answeredBy names a person for the CLI and the server, the lead as agent:<lead>, auto, a session by its name, and nobody when unrecorded", () => {
+test("answeredBy names a person for the CLI and the server, the lead as agent:<lead>, auto, autopilot, a session by its name, and nobody when unrecorded", () => {
   assert.deepEqual(
-    ["cli", "serve", "agent:lead", "auto", "session:t9 8f3c2a10", null].map(answeredBy),
-    ["a person", "a person", "agent:lead", "auto", "session t9 8f3c2a10", null],
+    ["cli", "serve", "agent:lead", "auto", "autopilot", "session:t9 8f3c2a10", null].map(answeredBy),
+    ["a person", "a person", "agent:lead", "auto", "autopilot", "session t9 8f3c2a10", null],
   );
 });
 
@@ -244,7 +244,7 @@ test("an answered ask carries its answer, confidence as bars, rationale, trade-o
   assert.deepEqual(auto, {
     id: 41, title: "Keep the full response for clients without a cursor", question: answered[0].question, answer: "every order, as today",
     at: "2026-11-20T11:22:00Z", answerer: "auto", by: "auto", confidence: "high", bars: 3,
-    rationale: "The brief asks for it in so many words.", tradeoff: "Large merchants keep timing out.", recommended: null,
+    rationale: "The brief asks for it in so many words.", why: null, tradeoff: "Large merchants keep timing out.", recommended: null,
   });
   assert.deepEqual([session.title, session.bars, session.rationale], ["Name the cursor parameter", 2, "The invoices endpoint already uses after."]);
   assert.deepEqual([person.title, person.confidence, person.bars, person.recommended], ["Pick the default page size", null, 0, "50"]);
@@ -254,6 +254,9 @@ test("an auto answer's confidence says it is the agent's own, and the level the 
   assert.equal(confidenceNote("high"), "confidence, the agent's own. The task answers at high and above.");
   assert.equal(confidenceNote("medium"), "confidence, the agent's own. The task answers at medium and above.");
   assert.equal(confidenceNote(null), "confidence, the agent's own.");
+  assert.equal(courseNote("auto", "high"), "The first answer stands. To change course, tell the agent.");
+  assert.equal(courseNote("autopilot", "high"), "Until the agent gets it, priory answer replaces it. After that, tell the agent.");
+  assert.equal(courseNote("autopilot", null), "To change course, cancel the task, then revive it at the plan's step.");
 });
 
 // An approval step's ask as Max's desk showed it on 2026-11-23: no title, and a 12-line question.
