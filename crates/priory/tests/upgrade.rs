@@ -613,6 +613,20 @@ fn migrating(bus: bool) -> String {
 fn migrate_process() {
     let path = |name: &str| PathBuf::from(std::env::var_os(name).unwrap());
     let state = rusqlite::Connection::open(path("PRIORY_DB")).unwrap();
+    if std::env::var("MIGRATE").unwrap() == "additive" {
+        // What an additive migration and a minute of the new daemon leave.
+        let version: i64 = state
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        state
+            .execute_batch(&format!(
+                "CREATE TABLE added (a); INSERT INTO added VALUES ('written meanwhile');
+                 PRAGMA application_id = {version}; PRAGMA user_version = {};",
+                version + 1
+            ))
+            .unwrap();
+        return;
+    }
     state
         .execute_batch("CREATE TABLE migrated (a); PRAGMA user_version = 9999")
         .unwrap();
@@ -644,6 +658,34 @@ fn a_migration_that_fails_puts_back_the_databases_it_changes_alone() {
         let kept = i64::from(!bus);
         assert_eq!(tables(&setup.path("bus.db"), "webhook"), kept, "{name}");
     }
+}
+
+#[test]
+fn an_additive_migration_rolls_back_to_the_old_binary_and_keeps_what_was_written() {
+    let setup = Setup::new("additive", "");
+    let version = |db: &rusqlite::Connection| -> i64 {
+        db.pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap()
+    };
+    let before = version(&rusqlite::Connection::open(setup.path("priory.db")).unwrap());
+    let test = std::env::current_exe().unwrap();
+    let daemon = format!(
+        "MIGRATE=additive '{}' --exact migrate_process --ignored >/dev/null; exit 1",
+        test.display()
+    );
+    setup.upgrade(&fake(CURRENT, "exit 0", &daemon), |journal| {
+        journal["answers_within"] = json!(20);
+    });
+
+    setup.helper();
+
+    setup.assert_back("additive", CURRENT);
+    let db = rusqlite::Connection::open(setup.path("priory.db")).unwrap();
+    assert_eq!(version(&db), before + 1);
+    let kept: String = db
+        .query_row("SELECT a FROM added", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(kept, "written meanwhile");
 }
 
 #[test]
