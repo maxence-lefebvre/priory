@@ -262,11 +262,17 @@ fn vouched(
     )
     .map_err(unchecked)?;
     if listed.status.code() == Some(1) {
-        return Err(
-            ".envrc is untracked, so neither the commit the task started from nor the default \
-             branch vouches for it"
-                .to_owned(),
-        );
+        return Err(match at_base {
+            Some(Err(why)) => format!(
+                ".envrc is untracked, and it could not be checked against the commit the task \
+                 started from ({why})"
+            ),
+            _ => {
+                ".envrc is untracked, so neither the commit the task started from nor the default \
+                  branch vouches for it"
+                    .to_owned()
+            }
+        });
     }
     succeeded("ls-files", listed).map_err(unchecked)?;
     let on_base = match at_base {
@@ -292,15 +298,27 @@ fn envrc_on_trunk(clone: &Path, repo: &str) -> Result<Option<String>, String> {
         "could not be read".to_owned()
     };
     let trunk = crate::runtime::trunk(repo, TRUNK_WITHIN).map_err(unread)?;
-    envrc_at(clone, &trunk).or_else(|first| {
-        fed_raw_within(
-            git(clone).args(["fetch", "--quiet", "origin", &trunk]),
-            None,
-            TRUNK_WITHIN,
-        )
-        .map_err(|why| format!("{}, after its check failed ({first})", unread(why)))?;
-        envrc_at(clone, &trunk).map_err(|why| format!("could not be checked ({why})"))
-    })
+    // A clone that only lacks the new head is the normal case, and git then exits 1.
+    let held = output(
+        "cat-file",
+        git(clone).args(["--no-replace-objects", "cat-file", "-e", &trunk]),
+        None,
+    );
+    let lacking = matches!(&held, Ok(held) if held.status.code() == Some(1));
+    let mut after = String::new();
+    if !lacking {
+        match envrc_at(clone, &trunk) {
+            Ok(at) => return Ok(at),
+            Err(first) => after = format!(", after its check failed ({first})"),
+        }
+    }
+    fed_raw_within(
+        git(clone).args(["fetch", "--quiet", "origin", &trunk]),
+        None,
+        TRUNK_WITHIN,
+    )
+    .map_err(|why| format!("{}{after}", unread(why)))?;
+    envrc_at(clone, &trunk).map_err(|why| format!("could not be checked ({why})"))
 }
 
 /// The largest `.envrc` a run can start in.
@@ -313,9 +331,13 @@ const TRUNK_WITHIN: Duration = Duration::from_secs(10);
 /// The output of `command`, git's `name`. The error names no path, since a person reads it on the
 /// task.
 fn output(name: &str, command: &mut Command, input: Option<Vec<u8>>) -> Result<Output, String> {
-    fed_within(command, input, command_timeout())
+    let timeout = command_timeout();
+    fed_within(command, input, timeout)
         .map_err(|error| format!("git {name}: {error}"))?
-        .ok_or_else(|| format!("git {name}: timed out"))
+        .ok_or_else(|| {
+            let seconds = timeout.as_secs_f64().ceil();
+            format!("git {name}: timed out after {seconds}s")
+        })
 }
 
 /// The stdout of git's `name`, or its exit code as a shell gives it, so a crash is 128 and the
