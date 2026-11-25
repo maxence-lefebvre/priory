@@ -4,6 +4,7 @@ import * as legacy from "../app.js";
 import { asked, land } from "../legacy/data.js";
 import { useListings, useStore } from "../hooks/useData.js";
 import { useMinute } from "../hooks/useScreen.js";
+import { shown } from "../shown.js";
 import { usePlace } from "./place.js";
 
 const FRAME = ["views", "links", "desk"];
@@ -17,8 +18,10 @@ export const LegacyPage = memo(function LegacyPage() {
   const host = useRef(null);
   useLayoutEffect(() => legacy.mount(host.current), []);
   useLayoutEffect(() => legacy.open({ href, entry, trail, size, names }), [href, entry, trail, size, names]);
+  // A hidden tab draws nothing: a legacy draw may read.
+  const visible = useStore(shown);
   useLayoutEffect(() => {
-    if (!reading) land();
-  }, [reading, read, minute]);
+    if (!reading && visible) land();
+  }, [reading, read, minute, visible]);
   return <div className="legacy" ref={host} />;
 });

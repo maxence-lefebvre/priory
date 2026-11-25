@@ -48,7 +48,7 @@ const Answered = memo(function Answered({ ask, live, level }) {
   if (!alone) {
     return (
       <li><Icon name={name} size="who" label={label} />
-        <div>{head}{ask.confidence ? <p className="sure dim"><Confidence level={ask.confidence} bars={ask.bars} />{ask.confidence}{ask.rationale ? `: ${ask.rationale}` : ""}</p> : null}</div><Time iso={ask.at} /></li>
+        <div>{head}{ask.confidence ? <p className="sure dim"><Confidence level={ask.confidence} bars={ask.bars} />{`${ask.confidence}${ask.rationale ? `: ${ask.rationale}` : ""}`}</p> : null}</div><Time iso={ask.at} /></li>
     );
   }
   const why = [["Why", ask.rationale], ["Autopilot", ask.why], ["Trade-off", ask.tradeoff], ["The ask", ask.question !== ask.title ? ask.question : null]].filter(([, text]) => text);
@@ -57,7 +57,7 @@ const Answered = memo(function Answered({ ask, live, level }) {
       <div>{head}
         {ask.confidence ? <p className="sure"><Confidence level={ask.confidence} bars={ask.bars} /><span><b>{ask.confidence}</b> {confidenceNote(ask.answerer === "auto" ? level : null)}</span></p> : null}
         {why.length ? <dl className="why">{why.map(([term, text]) => <Reason key={term} term={term} text={text} />)}</dl> : null}
-        <p className="course"><span>{courseNote(ask.answerer, ask.confidence)}</span>{live ? <a href="#say">Say to the agent</a> : null}<a href={`/asks/${encodeURIComponent(ask.id)}`}>Open ask {ask.id}</a></p></div><Time iso={ask.at} /></li>
+        <p className="course"><span>{courseNote(ask.answerer, ask.confidence)}</span>{live ? <a href="#say">Say to the agent</a> : null}<a href={`/asks/${encodeURIComponent(ask.id)}`}>{`Open ask ${ask.id}`}</a></p></div><Time iso={ask.at} /></li>
   );
 });
 
@@ -71,7 +71,7 @@ const AnsweredAsks = memo(function AnsweredAsks({ task }) {
   if (!rows.length) return null;
   return (
     <section className="answered" aria-labelledby="answered-head">
-      <div className="ah"><h2 id="answered-head">Answered asks</h2><span className="meta">{rows.length}{rows.length > 1 ? ", newest first" : ""}</span></div>
+      <div className="ah"><h2 id="answered-head">Answered asks</h2><span className="meta">{`${rows.length}${rows.length > 1 ? ", newest first" : ""}`}</span></div>
       <ol className="arows">{rows.map((ask) => <Answered key={ask.id} ask={ask} live={!ENDED.includes(task.state)} level={task.auto_answer} />)}</ol>
     </section>
   );
@@ -111,7 +111,7 @@ export const TaskBody = memo(function TaskBody({ task, asks, tasks }) {
   return (
     <>
       <div className="ask task">
-        <p className="ctx"><Tile state={task.state} size="sm" /><span className="mono">{taskLabel(task.key)}</span><span>{task.state}</span><span>{workStep(task)}</span><span>{task.lane || ""}</span><span>{task.band || ""}</span>{task.batch == null ? null : <a href={`/batches/${task.batch}`}>batch {task.batch}</a>}{task.auto_answer ? <span>Answers asks itself at <b>{task.auto_answer}</b></span> : null}</p>
+        <p className="ctx"><Tile state={task.state} size="sm" /><span className="mono">{taskLabel(task.key)}</span><span>{task.state}</span><span>{workStep(task)}</span><span>{task.lane || ""}</span><span>{task.band || ""}</span>{task.batch == null ? null : <a href={`/batches/${task.batch}`}>{`batch ${task.batch}`}</a>}{task.auto_answer ? <span>Answers asks itself at <b>{task.auto_answer}</b></span> : null}</p>
         <h1 className="question"><Linked text={task.tldr || task.brief?.title || task.brief?.request?.split("\n")[0] || taskLabel(task.key)} repo={task.repo} /></h1>
         {task.reason ? <p className={`text t-${role(task.state)}`}><Linked text={task.reason} repo={task.repo} /></p> : null}
         <OpenAsks asks={openAsksOf(asks, task)} />

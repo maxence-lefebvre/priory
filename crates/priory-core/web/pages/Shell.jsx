@@ -36,7 +36,7 @@ export const SignIn = memo(function SignIn({ error }) {
 
 export const Loading = memo(function Loading({ failed }) {
   if (!failed) return <p className="empty" role="status">Loading the desk…</p>;
-  return <><StaleStrip onRetry={refresh} /><p className="empty">Could not load the desk: {failed}. Check that <code>priory serve</code> or the daemon runs, then retry.</p></>;
+  return <><StaleStrip onRetry={refresh} /><p className="empty">{`Could not load the desk: ${failed}. Check that `}<code>priory serve</code> or the daemon runs, then retry.</p></>;
 });
 
 // Says a new ask to a screen reader: one this session has not seen open.

@@ -1,6 +1,6 @@
 // What the legacy pages draw from: the listings of the page on screen, landed together.
 import { draw } from "../app.js";
-import { cache, refresh as refreshQueries } from "../data.js";
+import { cache, deskReadAt, refresh as refreshQueries } from "../data.js";
 import { mergeSince } from "../desk.js";
 import { keyOf, params } from "../queries.js";
 import { onSignOut, session } from "../session.js";
@@ -20,7 +20,7 @@ export const asked = store(params());
 export const askFor = (part) => asked.set({ ...asked.get(), ...part });
 
 // The listings the page on screen shows, and those landed last, by name.
-const page = { names: [], landed: {}, stamp: null, opened: null };
+const page = { names: [], landed: {}, stamp: null };
 
 export function openPage(names) {
   page.names = names;
@@ -45,12 +45,12 @@ const drawn = ({ desk, queue, report, reports, asks, tasks, runs, older }) => [d
 export function land() {
   const queries = cache.getQueryCache();
   const held = [...new Set(["views", "links", "desk", ...page.names])].map((name) => [name, queries.find({ queryKey: keyOf(name, asked.get()), exact: true })]);
-  if (held.some(([, query]) => query?.state.fetchStatus === "fetching")) return;
-  // A failed read changes nothing.
-  if (held.some(([name, query]) => query?.state.status === "error" && name in page.landed)) return;
+  // A read in flight, and one that failed, change nothing that has landed before.
+  const settled = !held.some(([, query]) => query?.state.fetchStatus === "fetching" || query?.state.status === "error");
   for (const query of queries.getAll()) {
     const [name] = query.queryKey;
-    if (query.state.data === undefined) continue;
+    // A listing not landed yet draws from what the cache keeps, while it is read again.
+    if (query.state.data === undefined || (!settled && name in page.landed)) continue;
     const key = keyOf(name, asked.get());
     // A listing this page does not show keeps its last read, whichever rows that held.
     if (!page.names.includes(name) ? !(name in page.landed) || query.state.dataUpdatedAt >= page.landed[name].at : JSON.stringify(key) === JSON.stringify(query.queryKey)) page.landed[name] = { data: query.state.data, at: query.state.dataUpdatedAt };
@@ -58,8 +58,8 @@ export function land() {
   const of = (name) => page.landed[name]?.data;
   if (!of("views") || !of("desk")) return;
   const stamp = JSON.stringify([page.names, held.map(([, query]) => query?.state.dataUpdatedAt)]);
-  const fresh = stamp !== page.stamp;
-  page.stamp = stamp;
+  const fresh = settled && stamp !== page.stamp;
+  if (settled) page.stamp = stamp;
   accept({ of, fresh });
 }
 
@@ -97,10 +97,6 @@ function accept({ of, fresh }) {
 
 const NONE = [];
 const EMPTY_QUEUE = { waiting: [], ended: [], asleep: [], running: [], up_next: [], bands: [], lanes: [] };
-
-// When the first live read of the desk began, so an event between that read and the visit still shows next time.
-const deskReadAt = () => page.opened ?? new Date().toISOString().replace(/\.\d+Z$/, "Z");
-export const opening = () => { page.opened ??= new Date().toISOString().replace(/\.\d+Z$/, "Z"); };
 
 export async function refresh() {
   const ok = await refreshQueries();

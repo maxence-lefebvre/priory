@@ -38,7 +38,11 @@ export function mount(element) {
     host = null;
     disarm();
     disarmMemory();
+    dropPick();
     Object.assign(state.planEdit, { open: null, armed: null });
+    answerSheet().close();
+    // No legacy page is on screen, so none of its keys or actions finds an ask.
+    Object.assign(place, { href: "", entry: {} });
   };
 }
 
@@ -49,6 +53,13 @@ export function open(at) {
   shape.size = at.size;
   openPage(at.names);
   draw();
+}
+
+// A report's pick still waiting out its Undo does not go once its page is left.
+function dropPick() {
+  if (!state.reportPending || state.reportPending.sending) return;
+  clearTimeout(state.reportPending.timer);
+  state.reportPending = null;
 }
 
 const keepScrolls = () => {
@@ -68,12 +79,9 @@ export function render() {
   // The sheets live outside #app; the add sheet redraws when the connection drops or comes back under it.
   if (addSheet().open && state.add.shownOffline !== Boolean(state.failed)) renderAdd();
   if (answerSheet().open && state.data) renderSheet();
-  if (state.reportPending && !state.reportPending.sending && (!state.token || !host || current() !== "reports")) {
-    clearTimeout(state.reportPending.timer);
-    state.reportPending = null;
-  }
   const app = host;
   if (!app || !state.token) return;
+  if (current() !== "reports") dropPick();
   // Leaving the page closes an entry's menu and disarms its Drop.
   if (state.renderedKey && state.renderedKey !== routeKey()) Object.assign(state.planEdit, { open: null, armed: null });
   keepScrolls();
@@ -112,7 +120,7 @@ export function render() {
   // A render may call this; the read renders again once it ends.
   const spend = state.data?.spend;
   const old = !spend || Date.now() - spend.updated > 60000;
-  if (app.querySelector("[data-costs]") && old && !state.failed && !state.costs.loading && !state.costs.error) setTimeout(loadCosts);
+  if (app.querySelector("[data-costs]") && old && !state.failed && !state.costs.loading && !state.costs.error && !document.hidden) setTimeout(loadCosts);
 }
 
 function page() {
@@ -188,7 +196,7 @@ document.addEventListener("keydown", (event) => {
     event.preventDefault();
     return event.target.click();
   }
-  if (addSheet().open || answerSheet().open || keyboardSheet().open || event.target.closest("input, textarea, select") || event.metaKey || event.ctrlKey || event.altKey || !state.data) return;
+  if (addSheet().open || answerSheet().open || keyboardSheet().open || event.target.closest("input, textarea, select") || event.metaKey || event.ctrlKey || event.altKey || !state.token) return;
   const rows = [...document.querySelectorAll(".list [href^='/asks/'], .list tr[data-href^='/asks/']")];
   const hrefOf = (row) => row.getAttribute("href") || row.dataset.href;
   const at = rows.findIndex((row) => row.getAttribute("aria-current") === "true");

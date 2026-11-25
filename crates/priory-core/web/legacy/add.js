@@ -23,6 +23,8 @@ export async function readAddDefaults() {
 }
 
 export async function openAdd() {
+  // A page in React lands nothing for the legacy pages.
+  if (!state.data) land();
   if (!state.data || addSheet().open) return;
   if (state.add.phase === "added") Object.assign(state.add, { phase: "empty", task: null });
   const before = state.add.defaults;

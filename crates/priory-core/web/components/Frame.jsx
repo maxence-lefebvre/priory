@@ -22,7 +22,7 @@ export const StaleStrip = memo(function StaleStrip({ onRetry }) {
   if (!failed) return null;
   const read = oldestRead(cache);
   const since = read ? `Last update ${ago(new Date(read).toISOString())}.` : "";
-  return <div className="stale" role="status"><Icon name="unplug" size="s15" /><span>Reconnecting: {failed}. {since}</span><button type="button" className="ghost" data-retry onClick={onRetry}>Retry</button></div>;
+  return <div className="stale" role="status"><Icon name="unplug" size="s15" /><span>{`Reconnecting: ${failed}. ${since}`}</span><button type="button" className="ghost" data-retry onClick={onRetry}>Retry</button></div>;
 });
 
 const TopBar = memo(function TopBar({ factory }) {

@@ -21,7 +21,7 @@ export const TaskActs = memo(function TaskActs({ task, state }) {
         const on = armed?.task === task && armed.act === act;
         return (
           <button key={act} type="button" id={`act-${task}-${act}`} className={`btn secondary act ${on ? "armed" : ""}`} aria-disabled={off ? "true" : "false"} onClick={() => { if (!off) pressTask(task, act, {}); }}>
-            {on ? <><span><small>Tap again to {act}</small>{ACTS[act]}</span><Drain at={armed.at} /></> : ACTS[act]}
+            {on ? <><span><small>{`Tap again to ${act}`}</small>{ACTS[act]}</span><Drain at={armed.at} /></> : ACTS[act]}
           </button>
         );
       })}</span>

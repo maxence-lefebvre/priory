@@ -4,8 +4,15 @@ import { api, failureWords, onSignOut, refuse, session, setFailed } from "./sess
 
 const KEY = "priory.snapshot";
 
+// When the first live read of the desk began, so an event between that read and the visit still shows next time.
+let opened = null;
+export const deskReadAt = () => opened;
+
 export const cache = client({
-  api,
+  api: (path, signal) => {
+    if (path === "/api/desk") opened ??= new Date().toISOString().replace(/\.\d+Z$/, "Z");
+    return api(path, signal);
+  },
   failed: (error) => setFailed(error && failureWords(error)),
   // A read from before a sign-out must not sign the new session out.
   refused: (error) => error.token === session.get().token && refuse(),

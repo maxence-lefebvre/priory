@@ -55,7 +55,7 @@ const PlanBody = memo(function PlanBody({ part, repo }) {
   return (
     <>
       <Markdown text={part.text} repo={repo} />
-      {part.truncated ? <p className="note"><Icon name="file-text" size="s15" /><span>Showing the first 64 KB. Read the rest at {part.path || part.from}.</span></p> : null}
+      {part.truncated ? <p className="note"><Icon name="file-text" size="s15" /><span>{`Showing the first 64 KB. Read the rest at ${part.path || part.from}.`}</span></p> : null}
     </>
   );
 });
@@ -86,10 +86,10 @@ const Stack = memo(function Stack({ stack, latest }) {
   const { label, entries } = prStack(stack, latest);
   if (!label) return null;
   return (
-    <><p className="meta">Stack, bottom first: {label}</p><ol className="hist" aria-label="Pull requests, bottom first">{entries.map((pull) => (
+    <><p className="meta">{`Stack, bottom first: ${label}`}</p><ol className="hist" aria-label="Pull requests, bottom first">{entries.map((pull) => (
       <li key={pull.url}>
         <Tile state={PULL_TILES[pull.state] || (pull.next ? "ready" : "queued")} size="sm" />
-        <span><a className="autolink mono" href={pull.url} rel="noopener noreferrer" target="_blank">#{pull.number}</a> {pull.branch} into {pull.base}{pull.checks ? `, ${pull.checks}` : ""}</span>
+        <span><a className="autolink mono" href={pull.url} rel="noopener noreferrer" target="_blank">{`#${pull.number}`}</a>{` ${pull.branch} into ${pull.base}${pull.checks ? `, ${pull.checks}` : ""}`}</span>
         <span className={pull.next ? "t-live" : ""}>{pull.next ? `${pull.state}, next to merge` : pull.state}</span>
       </li>
     ))}</ol></>
@@ -114,7 +114,7 @@ const PullRequest = memo(function PullRequest({ task, stack }) {
   if (pr) {
     return (
       <Section id="pr" icon="workflow" title={`#${pr.number} ${pr.title || ""}`} meta={stateWords(pr.review)}>
-        <p className="meta">{pr.branch} into {pr.base}, head <span className="mono">{String(pr.head_sha).slice(0, 7)}</span>, {pr.state}</p>
+        <p className="meta">{`${pr.branch} into ${pr.base}, head `}<span className="mono">{String(pr.head_sha).slice(0, 7)}</span>{`, ${pr.state}`}</p>
         <ol className="hist pair">{pr.checks.map((check) => (
           <li key={check.name}><Tile state={checkState(check.conclusion)} size="sm" /><span>{check.name}</span><span>{check.conclusion ? stateWords(check.conclusion) : "running"}</span></li>
         ))}</ol>
@@ -146,7 +146,7 @@ const Inbox = memo(function Inbox({ task, tasks }) {
           <span><b title={event.type}>{eventWords(event.type)}</b> {event.subject || ""}<span className="meta">{handled(event, task.id, nameOf)}</span></span><Time iso={event.time} />
         </li>
       ))}</ol>
-      {task.inbox.length > INBOX_SHOWN ? <p className="meta">Latest {INBOX_SHOWN} of {task.inbox.length}. <code>priory task {task.id}</code> lists every event.</p> : null}
+      {task.inbox.length > INBOX_SHOWN ? <p className="meta">{`Latest ${INBOX_SHOWN} of ${task.inbox.length}. `}<code>{`priory task ${task.id}`}</code> lists every event.</p> : null}
     </Section>
   );
 });
@@ -158,7 +158,7 @@ const Run = memo(function Run({ run, scores }) {
   return (
     <li>
       <Tile state={run.ended ? run.end || "moved" : "running"} size="sm" />
-      <span><b>{run.step}</b>, run <span className="mono">{run.id}</span>, {minutes} min{run.outcome ? `, ${run.outcome}` : ""}{tokens ? `, ${tokens} tokens` : ""}
+      <span><b>{run.step}</b>, run <span className="mono">{run.id}</span>{`, ${minutes} min${run.outcome ? `, ${run.outcome}` : ""}${tokens ? `, ${tokens} tokens` : ""}`}
         {scores.length ? <ol className="scores" aria-label={`Scores of run ${run.id}`}>{scores.map((score) => (
           <li key={score.scorer}><Tile state={score.verdict} size="sm" /><span><span className="mono">{score.scorer}</span> <span className={`v t-${role(score.verdict)}`}>{score.verdict}</span><span className="meta">{score.reason}</span></span></li>
         ))}</ol> : null}

@@ -21,7 +21,8 @@ from somewhere.
   `crates/priory-core/web/dist/app.js`. The bundle is committed. `serve.rs` embeds it and serves it
   at `/app.js`.
 - CI runs `corepack pnpm install --frozen-lockfile && corepack pnpm web:check`, which rebuilds the
-  bundle in memory and fails when the committed file differs or passes 500 KB.
+  bundle in memory and fails when the committed file differs or passes its budget (500 KB at first,
+  see the amendment).
 - The service worker's shell cache gets a new name, `priory-shell-2`, and drops the older one, so an
   offline start never mixes the module files with the bundle.
 - The migration goes page by page behind a React shell: each unported page renders in a
@@ -34,6 +35,19 @@ from somewhere.
   who forgets it fails CI, not the build.
 - Two open web pull requests conflict on `dist/app.js`. Merging `main` and rebuilding resolves it.
 - The view models stop being served one file each. A browser loads one script instead of 17.
+
+## Amendment, 2026-11-25
+
+The person decided to make the web view a full React single-page app, with TanStack Router and oxlint
+beside React Query.
+
+- `@tanstack/react-router` owns every address, with its routes in code, no plugin and no code
+  splitting, so the server still serves one bundle. This reverses the note's first rejection of a router.
+- oxlint runs inside `web:check`, where a warning fails. No workflow file changes.
+- The budget is 720 KB while legacy and React pages coexist. The last port lowers it.
+- A page reads only the listings it shows. A refresh used to read all of them on every page.
+
+## Rejected
 
 We rejected a `build.rs` that runs pnpm, since every `cargo build`, clippy run and `cargo install`
 would then need Node, and the flake would need a pnpm dependency hash. We rejected a release-time
