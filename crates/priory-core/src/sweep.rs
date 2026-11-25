@@ -43,6 +43,8 @@ struct Job {
     done: bool,
     /// No teardown is left to run, so the walk of its files is the last one before the removal.
     torn: bool,
+    /// Its teardown did not run yet, so a worktree that certainly stays is not torn down.
+    fresh: bool,
 }
 
 /// What the thread found of one worktree. `walked` is `None` when nothing called for the walk.
@@ -196,6 +198,7 @@ fn jobs(db: &Connection, factory: &Factory, all: Vec<Found>) -> rusqlite::Result
             merged,
             done: state == "done",
             torn: recipe::torn(db, factory, task, &found.repo)?,
+            fresh: recipe::teardown_of(db, task)?.is_none(),
             found,
         });
     }
@@ -226,12 +229,24 @@ fn judge(home: &Path, repos: &[String], mut jobs: Vec<Job>) -> Judged {
         if verdict != Verdict::Keep(worktrees::SCAN_WAITS.to_owned()) {
             tried().insert(job.found.path.clone(), Instant::now());
         }
-        let goes = job.torn
+        let goes = (job.torn || job.fresh)
             && !matches!(verdict, Verdict::Keep(_))
             && !unfetched.contains(&job.found.repo);
         // shortcut: one walk at a time, so a huge worktree delays the others; walk several at once when it shows.
-        let walked = goes.then(|| worktrees::removable(home, &job.found));
+        let walked = goes.then(|| match job.torn {
+            true => worktrees::removable(home, &job.found),
+            // The teardown may remove what the walk could not learn, such as a mount or a container's folder.
+            false => match worktrees::held(&job.found) {
+                Ok(held) => held.map_or(Ok(()), Err),
+                Err(why) => {
+                    hung |= timed_out(&why);
+                    Ok(())
+                }
+            },
+        });
         hung |= matches!(&walked, Some(Err(why)) if timed_out(why));
+        // The walk that allows the removal comes after the teardown.
+        let walked = walked.filter(|walked| job.torn || walked.is_err());
         answers.insert(job.found.path, Answer { verdict, walked });
         if hung {
             break;
@@ -458,6 +473,7 @@ impl Sweeping {
         }
         if self.open {
             self.open = false;
+            record(home, &self.entries);
             self.ended = self.started;
             return Ok(true);
         }
@@ -550,7 +566,10 @@ impl Sweeping {
         if let Some(entry) = entry {
             entry.stays = Some(error.clone());
             entry.judged = Some(error);
-            record(home, &self.entries);
+            // The end of the sweep records it otherwise.
+            if !self.open {
+                record(home, &self.entries);
+            }
         }
     }
 
@@ -800,19 +819,35 @@ fn write_record(home: &Path, record: &Record) {
     }
 }
 
-/// Records each folder that stays and why git keeps it, with the size the last walk measured.
+/// Each folder or file in `home/trash`, which nothing empties, by its path as the desk prints it.
+fn trash(home: &Path) -> BTreeMap<String, PathBuf> {
+    let entries = std::fs::read_dir(home.join("trash"));
+    entries
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| (printed(&entry.path()), entry.path()))
+        .collect()
+}
+
+/// `path` with its control bytes, and those that are not UTF-8, escaped.
+fn printed(path: &Path) -> String {
+    let quoted = format!("{path:?}");
+    quoted[1..quoted.len() - 1].to_owned()
+}
+
+/// Records each folder that stays or is in the trash and why git keeps it, with the size the last walk measured.
 fn record(home: &Path, entries: &[Entry]) {
     let _recording = RECORDING
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut before = recorded(home);
-    let record = entries
-        .iter()
-        .filter(|entry| entry.stays.is_some())
-        .map(|entry| {
-            let path = entry.found.path.display().to_string();
+    let stay = entries.iter().filter(|entry| entry.stays.is_some());
+    let record = stay
+        .map(|entry| (entry.found.path.display().to_string(), entry.judged.clone()))
+        .chain(trash(home).into_keys().map(|path| (path, None)))
+        .map(|(path, reason)| {
             let bytes = before.remove(&path).and_then(|kept| kept.bytes);
-            let reason = entry.judged.clone();
             (path, Kept { reason, bytes })
         })
         .collect();
@@ -827,11 +862,12 @@ pub fn measure(home: &Path) {
     }
     let home = home.to_path_buf();
     std::thread::spawn(move || {
+        let mut trash = trash(&home);
         let sizes: Vec<(String, u64)> = recorded(&home)
             .into_keys()
             .map(|path| {
-                let bytes = worktrees::size(Path::new(&path));
-                (path, bytes)
+                let at = trash.remove(&path).unwrap_or_else(|| PathBuf::from(&path));
+                (path, worktrees::size(&at))
             })
             .collect();
         {
@@ -1512,22 +1548,31 @@ fn removing(worktree: &Path) -> PathBuf {
     worktree.join("removal")
 }
 
-/// Every worktree under `home` that stays: its path, its task when its name is one, and why, with
-/// the size the last walk measured. It reads why git keeps a folder from the last sweep's record,
+/// Every worktree under `home` that stays and everything in the trash: its path, its task when its
+/// name is one, and why, with the size the last walk measured. It reads why git keeps a folder from the last sweep's record,
 /// so it runs no git.
 pub fn stays(db: &Connection, home: &Path) -> rusqlite::Result<Vec<(String, Option<i64>, String)>> {
     let record = recorded(home);
+    let trash = trash(home).into_keys().map(|path| {
+        (
+            path,
+            None,
+            "in the trash until a person empties it".to_owned(),
+        )
+    });
     Ok(assess(db, home, Judge::Recorded(&record))?
         .into_iter()
         .filter_map(|entry| {
-            let reason = entry.stays?;
             let task = entry.found.name.parse().ok();
-            let path = entry.found.path.display().to_string();
+            Some((entry.found.path.display().to_string(), task, entry.stays?))
+        })
+        .chain(trash)
+        .map(|(path, task, reason)| {
             let reason = match record.get(&path).and_then(|kept| kept.bytes) {
                 Some(bytes) => format!("{reason}, {}", human(bytes)),
                 None => reason,
             };
-            Some((path, task, reason))
+            (path, task, reason)
         })
         .collect())
 }
@@ -2342,6 +2387,183 @@ mod tests {
             )
             .unwrap();
         while !home.sweep_tick() {}
+        assert!(tree.exists());
+    }
+
+    /// The reasons of the desk's rows, by the last part of each path.
+    fn rows(home: &Home) -> BTreeMap<String, String> {
+        stays(&home.db, &home.dir)
+            .unwrap()
+            .into_iter()
+            .map(|(path, _, reason)| (path.rsplit('/').next().unwrap().to_owned(), reason))
+            .collect()
+    }
+
+    #[test]
+    fn a_sweep_records_why_each_worktree_that_was_to_go_stays() {
+        let mut home = ignoring_target("busy");
+        let trees = [1, 2, 3].map(|task| home.task(task, "done"));
+        assert!(home.start_sweep());
+        let judging = home.sweeping.judging.as_ref().unwrap();
+        until(|| judging.thread.is_finished());
+        home.sweep_tick();
+        assert_eq!(home.sweeping.next.len(), 3, "each may go");
+        home.db
+            .execute_batch(
+                "INSERT INTO grants (bytes, pid, started, task, command, created)
+                 VALUES (1, 1, 1, 1, 'build', 'now');
+                 UPDATE tasks SET state = 'asleep' WHERE id = 2;",
+            )
+            .unwrap();
+        home.sweep_tick();
+        home.sweep_tick();
+        home.sweep_tick();
+        while !home.sweep_tick() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        assert_eq!(trees.map(|tree| tree.exists()), [true, true, false]);
+        let reason = recorded(&home.dir)[&home.dir.join("worktrees/o/r/1").display().to_string()]
+            .reason
+            .clone();
+        let busy =
+            |task| format!("task {task} has a live run or a memory grant, or left its state");
+        assert_eq!(reason, Some(busy(1)));
+        home.db
+            .execute("UPDATE tasks SET state = 'done'", [])
+            .unwrap();
+        assert_eq!(rows(&home)["2"], busy(2));
+    }
+
+    #[test]
+    fn the_desk_lists_what_is_in_the_trash_with_its_size() {
+        let mut home = ignoring_target("trash");
+        let trashed = home.dir.join("trash/1-5");
+        std::fs::create_dir_all(&trashed).unwrap();
+        std::fs::write(trashed.join("file"), "x").unwrap();
+        let waits = "in the trash until a person empties it";
+        assert_eq!(rows(&home)["1-5"], waits);
+        home.sweep();
+        until(|| {
+            // Again, since a walk of another test makes it a no-op.
+            measure(&home.dir);
+            rows(&home)["1-5"].starts_with(&format!("{waits}, "))
+        });
+        std::fs::remove_dir_all(trashed).unwrap();
+        assert!(rows(&home).is_empty());
+    }
+
+    // macOS refuses such a name.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_desk_sizes_and_escapes_any_name_in_the_trash() {
+        use std::os::unix::ffi::OsStrExt;
+        let mut home = ignoring_target("trash-names");
+        let trash = home.dir.join("trash");
+        std::fs::create_dir_all(&trash).unwrap();
+        for name in [b"a\xff".as_slice(), b"b\n\x1b[2J", b"c"] {
+            let file = trash.join(std::ffi::OsStr::from_bytes(name));
+            std::fs::write(file, [0; 4096]).unwrap();
+        }
+        home.sweep();
+        let waits = "in the trash until a person empties it, ";
+        until(|| {
+            measure(&home.dir);
+            rows(&home).values().all(|reason| reason.starts_with(waits))
+        });
+        let rows = rows(&home);
+        assert!(
+            rows.values().all(|reason| !reason.ends_with(", 0 B")),
+            "{rows:?}"
+        );
+        let names: Vec<&str> = rows.keys().map(String::as_str).collect();
+        assert_eq!(names, ["a\\xFF", "b\\n\\u{1b}[2J", "c"]);
+    }
+
+    #[test]
+    fn an_open_sweep_records_a_late_refusal_at_its_end() {
+        let mut home = ignoring_target("late-refusal");
+        let tree = home.task(1, "done");
+        assert!(home.start_sweep());
+        let judging = home.sweeping.judging.as_ref().unwrap();
+        until(|| judging.thread.is_finished());
+        home.sweep_tick();
+        let key = tree.display().to_string();
+        let reason = |home: &Home| recorded(&home.dir).remove(&key)?.reason;
+
+        let Home { sweeping, dir, .. } = &mut home;
+        sweeping.next.clear();
+        sweeping.stayed(dir, &tree, "late".to_owned());
+        assert_eq!(reason(&home), None);
+
+        assert!(home.sweep_tick());
+        assert_eq!(reason(&home).as_deref(), Some("late"));
+        home.sweeping.stayed(&home.dir, &tree, "later".to_owned());
+        assert_eq!(reason(&home).as_deref(), Some("later"));
+    }
+
+    fn tearing_down(name: &str) -> Home {
+        let mut home = ignoring_target(name);
+        std::fs::write(
+            home.dir.join("factory.toml"),
+            "name = \"demo\"\n[repos.\"o/r\"]\nteardown = { shell = \"true\" }\n",
+        )
+        .unwrap();
+        home.factory = priory_factory::factory::load(&home.dir).0;
+        home
+    }
+
+    /// A folder in `target` whose path is too long to read, as another user's is closed.
+    #[cfg(target_os = "linux")]
+    fn unreadable(tree: &Path) {
+        let name = "n".repeat(200);
+        let half = |at: PathBuf| (0..11).fold(at, |at, _| at.join(&name));
+        std::fs::create_dir_all(half(tree.join("target/a"))).unwrap();
+        std::fs::create_dir_all(half(tree.join("target/b"))).unwrap();
+        std::fs::rename(tree.join("target/b"), half(tree.join("target/a")).join("b")).unwrap();
+    }
+
+    // macOS takes paths of 1024 bytes only.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_folder_the_walk_cannot_read_holds_no_first_teardown_back() {
+        let mut home = tearing_down("unread-torn");
+        let tree = home.task(1, "done");
+        unreadable(&tree);
+        git(&tree, &["init", "-q", "target/n"]);
+        home.sweep();
+        let held = format!("{} holds a git repository", tree.join("target/n").display());
+        assert_eq!(rows(&home)["1"], held);
+
+        std::fs::remove_dir_all(tree.join("target/n")).unwrap();
+        home.sweep();
+        assert_eq!(rows(&home)["1"], "teardown runs");
+
+        home.db
+            .execute("UPDATE recipes SET ended = 'now', status = 'exit 0'", [])
+            .unwrap();
+        home.sweep();
+        assert!(
+            rows(&home)["1"].starts_with("cannot read "),
+            "{:?}",
+            rows(&home)
+        );
+        assert!(tree.join("target/a").exists());
+    }
+
+    #[test]
+    fn a_worktree_that_holds_a_repository_is_not_torn_down() {
+        let mut home = tearing_down("untorn");
+        let tree = home.task(1, "done");
+        git(&tree, &["init", "-q", "target/n"]);
+        home.sweep();
+        let held = format!("{} holds a git repository", tree.join("target/n").display());
+        assert_eq!(rows(&home)["1"], held);
+        assert!(recipe::teardown_of(&home.db, 1).unwrap().is_none());
+
+        std::fs::remove_dir_all(tree.join("target/n")).unwrap();
+        home.sweep();
+        assert_eq!(rows(&home)["1"], "teardown runs");
         assert!(tree.exists());
     }
 
