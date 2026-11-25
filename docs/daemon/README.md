@@ -18,6 +18,11 @@ factory of several runners (see [runners.md](runners.md)). It records each messa
 the inbox and routes it to a task (see [routing.md](routing.md)). Without `--once`, the daemon looks
 for new messages every second and runs agents, as [runs.md](runs.md) describes.
 
+One pass of its loop handles at most 100 messages, and stops after the message that brings it past 1
+second, so a burst does not hold the hooks and calls that wait on the loop. While messages are left,
+the next pass follows at once and goes on in order. A daemon with a runner file reads the whole log
+before it runs anything (see [runners.md](runners.md)).
+
 `--once` routes what is pending and exits. It starts no runs, since no daemon would stay to hear
 their hooks.
 

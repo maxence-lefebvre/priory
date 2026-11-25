@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 122;
+const VERSION: i64 = 123;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -2189,6 +2189,21 @@ CREATE INDEX IF NOT EXISTS inbox_closed_pulls ON inbox ('github:' || json_extrac
 PRAGMA user_version = 122;
 ";
 
+// Routing a message looks up the inbox by pull request or issue, by task and by merge commit.
+// Without these each lookup scans every entry. The queries repeat their expressions.
+const SCHEMA_123: &str = "
+CREATE INDEX IF NOT EXISTS inbox_by_pull ON inbox ('github:' || json_extract(data, '$.repo') || '#'
+  || coalesce(json_extract(data, '$.pull_request'), json_extract(data, '$.issue')))
+  WHERE 'github:' || json_extract(data, '$.repo') || '#'
+  || coalesce(json_extract(data, '$.pull_request'), json_extract(data, '$.issue')) IS NOT NULL;
+CREATE INDEX IF NOT EXISTS inbox_by_issue ON inbox ('linear:' || json_extract(data, '$.issue'))
+  WHERE 'linear:' || json_extract(data, '$.issue') IS NOT NULL;
+CREATE INDEX IF NOT EXISTS inbox_by_task ON inbox (task);
+CREATE INDEX IF NOT EXISTS inbox_merges ON inbox (json_extract(data, '$.repo'),
+  json_extract(data, '$.merge_commit')) WHERE type = 'github.pull_request.closed';
+PRAGMA user_version = 123;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -2206,7 +2221,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
     SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112, SCHEMA_113,
     SCHEMA_114, SCHEMA_115, SCHEMA_116, SCHEMA_117, SCHEMA_118, SCHEMA_119, SCHEMA_120, SCHEMA_121,
-    SCHEMA_122,
+    SCHEMA_122, SCHEMA_123,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -2982,19 +2997,19 @@ fn claim_pull_request(tx: &Transaction, message: &Message) -> rusqlite::Result<(
             "SELECT owns.task, tasks.worktree FROM owns JOIN tasks ON tasks.id = owns.task
              WHERE owns.resource GLOB 'github:*@*' AND tasks.state NOT IN ('failed', 'dropped')
              AND (owns.resource = ?2 OR (?2 GLOB owns.resource || '-?*'
-               AND (?5 NOT GLOB 'priory/*' OR ('github:' || ?3 || '@' || ?5) = owns.resource
-                 OR ('github:' || ?3 || '@' || ?5) GLOB owns.resource || '-?*')))
+               AND (?4 NOT GLOB 'priory/*' OR ('github:' || ?3 || '@' || ?4) = owns.resource
+                 OR ('github:' || ?3 || '@' || ?4) GLOB owns.resource || '-?*')))
              AND NOT EXISTS (SELECT 1 FROM owned JOIN tasks AS other ON other.id = owned.task
                WHERE owned.resource = ?1 AND owned.task != owns.task
                AND other.state NOT IN ('done', 'failed', 'dropped'))
-             AND NOT EXISTS (SELECT 1 FROM inbox WHERE json_extract(data, '$.repo') = ?3
-               AND json_extract(data, '$.pull_request') = ?4 AND outcome != 'outsider')
+             AND NOT EXISTS (SELECT 1 FROM inbox WHERE 'github:' || json_extract(data, '$.repo') || '#'
+                 || coalesce(json_extract(data, '$.pull_request'), json_extract(data, '$.issue')) = ?1
+               AND json_extract(data, '$.pull_request') IS NOT NULL AND outcome != 'outsider')
              ORDER BY owns.task DESC LIMIT 1",
             params![
                 resource,
                 route::branch(repo, head),
                 repo,
-                number as i64,
                 base
             ],
             |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
@@ -5339,6 +5354,254 @@ mod listing_indexes {
             )
             .unwrap();
         assert_eq!(found, 1);
+    }
+}
+
+#[cfg(test)]
+mod inbox_lookups {
+    use super::*;
+    use rusqlite::StatementStatus;
+    use rusqlite::trace::{TraceEvent, TraceEventCodes};
+    use serde_json::{Value, json};
+    use std::cell::Cell;
+
+    thread_local! {
+        static SCANNED: Cell<i64> = const { Cell::new(0) };
+    }
+
+    fn count(event: TraceEvent<'_>) {
+        if let TraceEvent::Profile(statement, _) = event {
+            let rows = statement.get_status(StatementStatus::FullscanStep);
+            SCANNED.set(SCANNED.get() + i64::from(rows));
+        }
+    }
+
+    /// 200 done tasks and one running, and `events` inbox entries about their pull requests and
+    /// issues.
+    fn synthetic(events: i64) -> Connection {
+        let mut db = memory();
+        let tx = db.transaction().unwrap();
+        tx.execute_batch(
+            "WITH RECURSIVE n (i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 201)
+             INSERT INTO tasks (id, key, workflow, step, state, trigger, source, changed)
+               SELECT i, 'linear:ENG-' || i, 'w', 's', iif(i = 201, 'running', 'done'), 'cli', 'm' || i,
+                 '2026-01-01T00:00:00Z' FROM n;
+             INSERT INTO owns (task, resource) SELECT id, key FROM tasks;
+             INSERT INTO owns (task, resource)
+               SELECT id, 'github:owner/repo@priory/' || id FROM tasks;
+             INSERT INTO subscriptions (task, resource)
+               SELECT id, 'github:owner/repo#' || id FROM tasks;
+             INSERT INTO pull_requests (task, resource, branch, base, state)
+               SELECT id, 'github:owner/repo#' || id, 'priory/' || id, 'main',
+                 iif(id = 201, 'open', 'closed') FROM tasks;",
+        )
+        .unwrap();
+        let pad = "x".repeat(1300);
+        let mut insert = tx
+            .prepare(
+                "INSERT INTO inbox (id, type, subject, time, data, links, task, outcome)
+                 VALUES (?1, ?2, 's', strftime('%Y-%m-%dT%H:%M:%SZ', '2025-12-01', '+' || ?3 || ' seconds'),
+                   ?4, '[]', ?5, 'kept')",
+            )
+            .unwrap();
+        for i in 0..events {
+            let (kind, extra) = match i % 20 {
+                0..=9 => (
+                    CHECKED,
+                    json!({"conclusion": "success", "pending": 0, "open": true}),
+                ),
+                10..=12 => (
+                    "github.pull_request.comment",
+                    json!({"body": "b", "open": true}),
+                ),
+                13 => (
+                    "github.pull_request_review.submitted",
+                    json!({"state": "commented", "actor": "a", "commit": "old", "open": true}),
+                ),
+                14 => (
+                    CLOSED,
+                    json!({"merged": false, "merge_commit": format!("c{i}")}),
+                ),
+                15..=17 => ("linear.issue.updated", json!({"state": "In Progress"})),
+                _ => ("priory.other", json!({})),
+            };
+            // The close is the newest event of a pull request, from the last lap over the tasks.
+            let number = 1 + i / 20 % 200;
+            let mut data = extra;
+            data["pad"] = json!(pad);
+            if kind.starts_with("github.") {
+                data["repo"] = json!("owner/repo");
+                data["pull_request"] = json!(number);
+                data["head_branch"] = json!(format!("priory/{number}"));
+                data["head_sha"] = json!("old");
+            } else if kind.starts_with("linear.") {
+                data["issue"] = json!(format!("ENG-{number}"));
+            }
+            // A task keeps as many entries whatever the size of the inbox.
+            let task = (i < 4000).then_some(number);
+            insert
+                .execute(params![format!("m{i}"), kind, i, data.to_string(), task])
+                .unwrap();
+        }
+        // What the review and the merge of the running task's pull request are judged on.
+        insert
+            .execute(params![
+                "reviewed",
+                "github.pull_request_review.submitted",
+                events,
+                json!({"repo": "owner/repo", "pull_request": 201, "actor": "a", "commit": "old"})
+                    .to_string(),
+                201
+            ])
+            .unwrap();
+        drop(insert);
+        tx.commit().unwrap();
+        db
+    }
+
+    fn messages() -> Vec<Message> {
+        let on = |kind: &str, number: i64, extra: Value| {
+            let mut data = json!({
+                "repo": "owner/repo", "pull_request": number, "base_branch": "main", "url": "u",
+                "head_branch": format!("priory/{number}"), "head_sha": "new", "open": true,
+            });
+            for (name, value) in extra.as_object().unwrap() {
+                data[name] = value.clone();
+            }
+            Message::new(kind, data).subject("s")
+        };
+        let review = json!({"state": "commented", "actor": "a", "own": false, "commit": "new"});
+        vec![
+            on(CHECKED, 201, json!({"conclusion": "success"})),
+            on(
+                CHECKED,
+                9999,
+                json!({"conclusion": "success", "head_branch": "priory/201"}),
+            ),
+            on(
+                CHECKED,
+                201,
+                json!({"conclusion": "failure", "head_sha": "c14"}),
+            ),
+            on("github.pull_request_review.submitted", 201, review.clone()),
+            on("github.pull_request_review.submitted", 100, review),
+            on(
+                "github.pull_request.comment",
+                100,
+                json!({"body": "b", "own": false, "open": null}),
+            ),
+            on(
+                CLOSED,
+                201,
+                json!({"merged": true, "open": false, "merge_commit": "z", "title": "t"}),
+            ),
+            Message::new(
+                "linear.issue.updated",
+                json!({"issue": "ENG-201", "changed": ["title"]}),
+            ),
+        ]
+    }
+
+    /// For each message, the rows its routing scans, and what it did.
+    fn routed(db: &mut Connection) -> Vec<(i64, String)> {
+        let factory = Factory::default();
+        let trace = Trace {
+            factory: &factory,
+            revision: None,
+            machine: None,
+            runner: None,
+            usage: |_, _| None,
+        };
+        db.trace_v2(TraceEventCodes::SQLITE_TRACE_PROFILE, Some(count));
+        messages()
+            .iter()
+            .map(|message| {
+                let tx = db.transaction().unwrap();
+                SCANNED.set(0);
+                handle_in(&tx, message, &trace, None).unwrap();
+                let scanned = SCANNED.get();
+                let did: String = tx
+                    .query_row(
+                        "SELECT (SELECT coalesce(task, '-') || ' ' || outcome FROM inbox WHERE id = ?1)
+                           || ' | ' || coalesce((SELECT group_concat(state, ',') FROM
+                             (SELECT state FROM tasks WHERE id IN (100, 201) ORDER BY id)), '')
+                           || ' | ' || coalesce((SELECT group_concat(json_extract(event, '$.data.label')
+                             || ' ' || json_extract(event, '$.data.evidence'), ',') FROM trace
+                             WHERE type = 'factory.step.labeled'), '')
+                           || ' | ' || coalesce((SELECT group_concat(text, ',') FROM outbox), '')",
+                        [message.id.to_string()],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                tx.rollback().unwrap();
+                (scanned, did)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn routing_a_message_scans_no_more_of_a_larger_inbox() {
+        let small = routed(&mut synthetic(4_000));
+        let large = routed(&mut synthetic(28_000));
+
+        let scans = |routed: &[(i64, String)]| -> Vec<i64> {
+            routed.iter().map(|(scanned, _)| *scanned).collect()
+        };
+        assert_eq!(scans(&large), scans(&small));
+    }
+
+    #[test]
+    fn routing_does_the_same_without_the_indexes() {
+        let mut db = synthetic(4_000);
+        let indexed = routed(&mut db);
+
+        db.execute_batch(
+            "DROP INDEX inbox_by_pull; DROP INDEX inbox_by_issue; DROP INDEX inbox_by_task;
+             DROP INDEX inbox_merges;",
+        )
+        .unwrap();
+        let scanned = routed(&mut db);
+
+        let did = |routed: Vec<(i64, String)>| -> Vec<String> {
+            routed.into_iter().map(|(_, did)| did).collect()
+        };
+        assert!(
+            scanned.iter().zip(&indexed).any(|(a, b)| a.0 > b.0 + 4_000),
+            "the scans count nothing"
+        );
+        assert_eq!(did(scanned), did(indexed));
+    }
+
+    #[test]
+    fn an_upgrade_from_122_adds_the_indexes_over_the_rows_it_keeps() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.execute_batch(&MIGRATIONS[..122].concat()).unwrap();
+        db.execute_batch(
+            r#"INSERT INTO inbox (id, type, time, data, links, outcome) VALUES
+                 ('e', 'github.pull_request.closed', 'x',
+                   '{"repo":"owner/repo","pull_request":1,"merge_commit":"c"}', '[]', 'ignored'),
+                 ('f', 'linear.issue.updated', 'x', '{"issue":"ENG-1"}', '[]', 'ignored'),
+                 ('g', 'priory.other', 'x', '{}', '[]', 'ignored');"#,
+        )
+        .unwrap();
+
+        migrate(&mut db).unwrap();
+
+        let found: (i64, i64, i64) = db
+            .query_row(
+                "SELECT count(*),
+                   (SELECT count(*) FROM inbox INDEXED BY inbox_by_pull
+                    WHERE 'github:' || json_extract(data, '$.repo') || '#'
+                      || coalesce(json_extract(data, '$.pull_request'), json_extract(data, '$.issue'))
+                      = 'github:owner/repo#1'),
+                   (SELECT count(*) FROM inbox INDEXED BY inbox_by_issue
+                    WHERE 'linear:' || json_extract(data, '$.issue') = 'linear:ENG-1')
+                 FROM inbox",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(found, (3, 1, 1));
     }
 }
 

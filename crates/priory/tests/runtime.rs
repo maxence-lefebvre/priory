@@ -26717,6 +26717,39 @@ fn a_runner_that_joins_late_reads_a_finished_task_without_running_it_again() {
 }
 
 #[test]
+fn a_runner_several_ticks_behind_claims_and_runs_nothing_before_it_read_the_whole_log() {
+    let mut a = runner("behind", "a", None);
+    let key = "github:owner/repo#1";
+    let request = requested(1);
+    a.publish(&request);
+    // Over one tick's 100 messages, so the claim comes in a later tick than the request.
+    for at in 0..250 {
+        a.publish(&Message::new("t.event", json!({ "at": at })));
+    }
+    for (kind, data) in [
+        (
+            "priory.task.claimed",
+            json!({ "key": key, "runner": "b", "request": request.id.to_string() }),
+        ),
+        (
+            "priory.task.held",
+            json!({ "key": key, "runner": "b", "hold": "kept", "generation": 1 }),
+        ),
+    ] {
+        a.publish(&Message::new(kind, data).subject(key));
+    }
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    until_alive(&a, "a");
+
+    assert_eq!(claimants(&a, key), ["b"]);
+    assert!(a.own_tasks().is_empty());
+    assert!(a.rows("runs").is_empty());
+    a.crash();
+}
+
+#[test]
 fn a_runner_added_to_a_factory_that_had_one_does_not_run_its_finished_requests_again() {
     let mut a = runner("joined", "a", None);
     let mut b = runner("joined", "b", Some(&a));
