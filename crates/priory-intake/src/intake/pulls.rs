@@ -1,9 +1,11 @@
-use super::gh::{Login, gh};
+use super::gh::{BACKOFF, Failed, Login, gh, gh_within};
 use super::{CHECK_RUNS, CHECKED, COMMENTED, Merge, Observed, Passed, REVIEWED, Red, RedCheck};
 use herdr_bus::Timestamp;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::{Mutex, MutexGuard};
+use std::time::Duration;
 
 /// GitHub creates check runs seconds after a push, and a push updates the pull request.
 const GRACE_SECONDS: i64 = 5 * 60;
@@ -126,13 +128,95 @@ struct Context {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Suite {
+    #[serde(default)]
+    database_id: Option<u64>,
     app: Option<App>,
+    #[serde(default)]
+    workflow_run: Option<WorkflowRun>,
+}
+
+#[derive(Deserialize)]
+struct WorkflowRun {
+    event: String,
+    workflow: Workflow,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Workflow {
+    database_id: Option<u64>,
 }
 
 #[derive(Deserialize)]
 struct App {
     slug: String,
+}
+
+impl Context {
+    fn suite_id(&self) -> Option<u64> {
+        self.check_suite.as_ref()?.database_id
+    }
+
+    fn app(&self) -> Option<&str> {
+        Some(self.check_suite.as_ref()?.app.as_ref()?.slug.as_str())
+    }
+
+    /// See `origin`; on a `shared` head the suites count apart.
+    fn origin(&self, shared: bool) -> String {
+        let run = self
+            .check_suite
+            .as_ref()
+            .and_then(|suite| suite.workflow_run.as_ref())
+            .filter(|_| !shared);
+        let workflow =
+            run.and_then(|run| Some(format!("{}:{}", run.workflow.database_id?, run.event)));
+        origin(
+            workflow,
+            self.suite_id(),
+            self.database_id.unwrap_or_default(),
+        )
+    }
+
+    fn rank(&self) -> Rank {
+        let ran = super::ran(self.conclusion.as_deref());
+        (ran, self.database_id.unwrap_or_default())
+    }
+}
+
+/// What started the check run `id`: the workflow and event of its Actions run, or else its check suite.
+/// The daemon compares it as one string. A suite alone never joins two runs of a workflow, and a run of
+/// unknown origin is a check of its own.
+fn origin(workflow: Option<String>, suite: Option<u64>, id: u64) -> String {
+    match (workflow, suite) {
+        (Some(workflow), _) => format!("workflow:{workflow}"),
+        (None, Some(suite)) => format!("suite:{suite}"),
+        (None, None) => format!("run:{id}"),
+    }
+}
+
+/// The app, origin and name of a check.
+type Check<'a> = (Option<&'a str>, String, &'a str);
+
+/// Orders the runs of one check: whether it `ran`, then its id.
+type Rank = (bool, u64);
+
+/// The run of each check that stands for it: the one of the highest rank.
+fn newest<'a, T>(
+    runs: impl Iterator<Item = &'a T>,
+    check: impl Fn(&'a T) -> Check<'a>,
+    rank: impl Fn(&T) -> Rank,
+) -> Vec<&'a T> {
+    let runs: Vec<&T> = runs.collect();
+    let mut newest = HashMap::new();
+    for run in &runs {
+        let top = newest.entry(check(run)).or_insert(rank(run));
+        *top = rank(run).max(*top);
+    }
+    runs.into_iter()
+        .filter(|run| newest[&check(run)] == rank(run))
+        .collect()
 }
 
 /// The submitted reviews and completed check runs of `pulls`, oldest first, and a snapshot of
@@ -144,7 +228,14 @@ pub(super) fn reviews_and_checks<'a>(
 ) -> (Vec<Observed>, Vec<Observed>) {
     let mut reviews = Vec::new();
     let mut checks = Vec::new();
+    let pulls: Vec<&Pull> = pulls.collect();
+    let mut heads = HashMap::new();
+    for pull in &pulls {
+        *heads.entry(pull.head_ref_oid.as_str()).or_insert(0) += 1;
+    }
     for pull in pulls {
+        // GitHub does not say which pull request a run is for, and their bases can differ.
+        let shared = heads[pull.head_ref_oid.as_str()] > 1;
         let on_pull = |kind, name: String, github_id: u64, time: &str, url: &str| {
             let mut data = json!({
                 "repo": repo,
@@ -216,25 +307,27 @@ pub(super) fn reviews_and_checks<'a>(
             .map(|rollup| &rollup.contexts)
             .collect();
         // Contexts past the first page may be check runs still running, so they count as pending.
-        let pending: usize = pages
+        let unread: usize = pages
             .iter()
-            .map(|page| {
-                let running = page.nodes.iter().filter(|check| {
-                    check.database_id.is_some() && check.status.as_deref() != Some("COMPLETED")
-                });
-                running.count() + page.total_count.saturating_sub(page.nodes.len())
-            })
+            .map(|page| page.total_count.saturating_sub(page.nodes.len()))
             .sum();
-        let runs: usize = pages
-            .iter()
-            .map(|page| {
-                let runs = page
-                    .nodes
-                    .iter()
-                    .filter(|check| check.database_id.is_some());
-                runs.count() + page.total_count.saturating_sub(page.nodes.len())
-            })
-            .sum();
+        let contexts = newest(
+            pages
+                .iter()
+                .flat_map(|page| &page.nodes)
+                .filter(|check| check.database_id.is_some()),
+            |check| {
+                (
+                    check.app(),
+                    check.origin(shared),
+                    check.name.as_deref().unwrap_or_default(),
+                )
+            },
+            Context::rank,
+        );
+        let completed = |check: &&&Context| check.status.as_deref() == Some("COMPLETED");
+        let pending = unread + contexts.iter().filter(|check| !completed(check)).count();
+        let runs = unread + contexts.len();
         let now = Timestamp::now();
         let quiet = pull
             .updated_at
@@ -255,12 +348,9 @@ pub(super) fn reviews_and_checks<'a>(
             data.insert("updated_at".into(), json!(pull.updated_at));
             checks.push(observed);
         }
-        let contexts = pages.iter().flat_map(|page| &page.nodes);
         let failing = contexts
-            .clone()
-            .filter(|check| {
-                check.database_id.is_some() && check.status.as_deref() == Some("COMPLETED")
-            })
+            .iter()
+            .filter(completed)
             .filter(|check| {
                 let conclusion = check
                     .conclusion
@@ -270,7 +360,7 @@ pub(super) fn reviews_and_checks<'a>(
                 !super::PASSING.contains(&conclusion.as_str())
             })
             .count();
-        for check in contexts.filter(|check| check.status.as_deref() == Some("COMPLETED")) {
+        for check in contexts.iter().filter(completed) {
             let (Some(id), Some(time)) = (check.database_id, check.completed_at.as_deref()) else {
                 continue;
             };
@@ -285,11 +375,8 @@ pub(super) fn reviews_and_checks<'a>(
                     .as_ref()
                     .map(|conclusion| conclusion.to_lowercase())
             );
-            let app = check
-                .check_suite
-                .as_ref()
-                .and_then(|suite| suite.app.as_ref());
-            observed.data["app"] = json!(app.map(|app| &app.slug));
+            observed.data["app"] = json!(check.app());
+            observed.data["origin"] = json!(check.origin(shared));
             observed.data["pending"] = json!(pending);
             observed.data["failing"] = json!(failing);
             checks.push(observed);
@@ -316,6 +403,99 @@ struct Run {
     completed_at: Option<String>,
     html_url: String,
     app: Option<App>,
+    #[serde(default)]
+    check_suite: Option<RunSuite>,
+}
+
+#[derive(Deserialize)]
+struct RunSuite {
+    id: u64,
+}
+
+impl Run {
+    fn app(&self) -> Option<&str> {
+        self.app.as_ref().map(|app| app.slug.as_str())
+    }
+
+    fn suite_id(&self) -> Option<u64> {
+        self.check_suite.as_ref().map(|suite| suite.id)
+    }
+
+    /// See `origin`.
+    fn origin(&self, workflows: &Workflows) -> String {
+        let suite = self.suite_id();
+        let workflow = suite.and_then(|suite| workflows.get(&suite));
+        origin(workflow.cloned(), suite, self.id)
+    }
+
+    fn check(&self, workflows: &Workflows) -> Check<'_> {
+        (self.app(), self.origin(workflows), &self.name)
+    }
+
+    fn rank(&self) -> Rank {
+        (super::ran(self.conclusion.as_deref()), self.id)
+    }
+
+    fn actions_suite(&self) -> Option<u64> {
+        self.suite_id()
+            .filter(|_| self.app() == Some("github-actions"))
+    }
+}
+
+/// The workflow, event and branch of each check suite that a push started. A tag or second branch at one
+/// commit starts the same workflow and event, so only the branch tells them apart. Any other event can
+/// start two unrelated runs of one workflow there, such as a `workflow_run` per upstream run.
+type Workflows = HashMap<u64, String>;
+
+#[derive(Deserialize)]
+struct ActionsRuns {
+    workflow_runs: Vec<SuiteRun>,
+}
+
+#[derive(Deserialize)]
+struct SuiteRun {
+    check_suite_id: u64,
+    workflow_id: u64,
+    event: String,
+    head_branch: Option<String>,
+}
+
+/// Whether `runs` hold one name in two suites of Actions.
+fn repeated(runs: &[Run]) -> bool {
+    let mut suites = HashMap::new();
+    runs.iter()
+        .filter_map(|run| Some((run.name.as_str(), run.actions_suite()?)))
+        .any(|(name, suite)| *suites.entry(name).or_insert(suite) != suite)
+}
+
+/// The workflow of each check suite at `sha` that a push started. None when the token may not read Actions, so the suites
+/// count apart.
+fn workflows(repo: &str, sha: &str) -> Result<Workflows, String> {
+    let path = format!("repos/{repo}/actions/runs?head_sha={sha}&per_page=100");
+    let answer = match gh::<ActionsRuns>(&path, &[]) {
+        Err(error) if refused(&error) => None,
+        answer => found(answer)?,
+    };
+    let runs = answer.map_or_else(Vec::new, |answer| answer.workflow_runs);
+    Ok(runs
+        .into_iter()
+        .filter(|run| run.event == "push")
+        .filter_map(|run| {
+            let workflow = format!("{}:{}:{}", run.workflow_id, run.event, run.head_branch?);
+            Some((run.check_suite_id, workflow))
+        })
+        .collect())
+}
+
+/// The newest of `runs` of each check. See `newest`.
+fn newest_runs<'a>(runs: impl Iterator<Item = &'a Run>, workflows: &Workflows) -> Vec<&'a Run> {
+    newest(runs, |run| run.check(workflows), Run::rank)
+}
+
+/// Whether `error` says the token may not read what was asked, as a fine-grained one without Actions.
+/// A rate limit's 403 says something else.
+fn refused(error: &str) -> bool {
+    error.contains("Resource not accessible")
 }
 
 /// The completed check runs on the merge commits of `merges` in `repo`, as events of the pull
@@ -349,15 +529,33 @@ pub(super) fn merge_checks(
             unchecked.insert(merge.commit.clone());
         }
         let conclusion = |run: &Run| run.conclusion.as_deref().unwrap_or_default().to_lowercase();
-        let mut done = Vec::new();
-        for run in found
+        // Read even for one run, so that a run's origin does not change when a second one appears.
+        let actions = found
             .check_runs
             .iter()
-            .filter(|run| run.status == "completed")
-        {
+            .any(|run| run.actions_suite().is_some());
+        let workflows = match actions {
+            true => workflows(repo, &merge.commit)?,
+            false => Workflows::new(),
+        };
+        let runs = newest_runs(found.check_runs.iter(), &workflows);
+        let superseded = found.check_runs.len() - runs.len();
+        // A later pass of the cancelled run's name must not hide a failure before it.
+        let failed_before = |run: &Run| {
+            found.check_runs.iter().any(|other| {
+                let conclusion = conclusion(other);
+                other.id < run.id
+                    && other.status == "completed"
+                    && conclusion != "cancelled"
+                    && !super::PASSING.contains(&conclusion.as_str())
+                    && other.check(&workflows) == run.check(&workflows)
+            })
+        };
+        let mut done = Vec::new();
+        for run in runs.into_iter().filter(|run| run.status == "completed") {
             let later = match conclusion(run).as_str() {
                 // A base branch deleted after the merge answers 404: count the run as it was.
-                "cancelled" => {
+                "cancelled" if !failed_before(run) => {
                     // The grace runs from the cancel: a newer merge's run starts about then.
                     let fresh = run
                         .completed_at
@@ -372,7 +570,7 @@ pub(super) fn merge_checks(
                 done.push((run, later));
             }
         }
-        let pending = found.total_count - done.len();
+        let pending = found.total_count - superseded - done.len();
         let failing = done
             .iter()
             .filter(|(run, later)| {
@@ -399,6 +597,7 @@ pub(super) fn merge_checks(
                 "pending": pending,
                 "failing": failing,
             });
+            data["origin"] = json!(run.origin(&workflows));
             if let Later::Succeeded(sha) = later {
                 data["superseded_by"] = json!(sha);
             }
@@ -516,11 +715,13 @@ fn passed_tip(red: &Red, check: &RedCheck) -> Result<Option<Passed>, String> {
     let Some(found) = found(gh::<CommitRuns>(&path, &fields))? else {
         return Ok(None);
     };
-    let runs: Vec<&Run> = found
-        .check_runs
-        .iter()
-        .filter(|run| run.app.as_ref().map(|app| &app.slug) == check.app.as_ref())
-        .collect();
+    let workflows = match found.check_runs.first() {
+        Some(run) if repeated(&found.check_runs) => workflows(&red.repo, &run.head_sha)?,
+        _ => Workflows::new(),
+    };
+    let of_app = found.check_runs.iter();
+    let of_app = of_app.filter(|run| run.app() == check.app.as_deref());
+    let runs = newest_runs(of_app, &workflows);
     let passed = found.total_count == found.check_runs.len()
         && runs.iter().all(|run| {
             run.id > check.id
@@ -577,8 +778,7 @@ fn workflow(repo: &str, url: &str, known: &mut Known) -> Result<Option<u64>, Str
         return Ok(Some(*workflow));
     }
     let answer = match gh::<ActionsRun>(&format!("repos/{repo}/actions/runs/{run}"), &[]) {
-        // The token may read checks and not Actions. A rate limit's 403 says something else.
-        Err(error) if error.contains("Resource not accessible") => return Ok(None),
+        Err(error) if refused(&error) => return Ok(None),
         answer => found(answer)?,
     };
     let Some(answer) = answer else {
@@ -622,86 +822,166 @@ const PULL_FIELDS: &str = "fragment pull on PullRequest { number headRefName hea
     reviews(last: 50) { nodes { databaseId state body submittedAt url commit { oid } author { login __typename } authorAssociation } } \
     comments(last: 50) { nodes { databaseId body url createdAt author { login __typename } authorAssociation } } \
     updatedAt commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { totalCount nodes { \
-    __typename ... on CheckRun { databaseId name status conclusion completedAt url checkSuite { app { slug } } } \
+    __typename ... on CheckRun { databaseId name status conclusion completedAt url checkSuite { databaseId app { slug } workflowRun { event workflow { databaseId } } } } \
     } } } } } } }";
+
+/// The answer to `query`, with `fields` beside it, tried again after each of `waits`. A token that may
+/// not read Actions gets it without the workflows, so that check suites count apart.
+fn graphql(query: &str, fields: &[&str], waits: &[Duration]) -> Result<Value, Failed> {
+    let ask = |query: &str| {
+        let query = format!("query={query}");
+        let fields = [fields, &["-f", &query]].concat();
+        gh_within("graphql", &fields, waits)
+    };
+    match ask(query) {
+        Err(Failed::Other(error)) if refused(&error) => {
+            ask(&query.replace("workflowRun { event workflow { databaseId } }", ""))
+        }
+        answer => answer,
+    }
+}
 
 /// How many pull requests one GraphQL request reads. Each brings up to 50 reviews, 50 comments and
 /// 100 check runs, so 100 per request made about 20,000 nodes, which GitHub on a busy repository
 /// answered with a 504.
 const PULLS_PER_REQUEST: usize = 25;
 
+/// Below this many, a smaller request is not worth the calls.
+const FEWEST_PULLS: usize = 3;
+
+/// How many pages in a row must answer at a kept size before a larger one is tried. A failed try costs
+/// one request, so at most one in 20 more.
+const PAGES_BEFORE_RAISE: usize = 20;
+
+/// The size of each repository whose open pull request query failed at a larger one, and how many
+/// pages answered since.
+static SIZES: Mutex<BTreeMap<String, (usize, usize)>> = Mutex::new(BTreeMap::new());
+
+fn sizes() -> MutexGuard<'static, BTreeMap<String, (usize, usize)>> {
+    SIZES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn pulls_per_request(repo: &str) -> usize {
+    sizes()
+        .get(repo)
+        .map_or(PULLS_PER_REQUEST, |(size, _)| *size)
+}
+
+/// Keeps the size `read` for `repo` when a page `asked` for more, and raises it after enough pages.
+fn keep_size(repo: &str, asked: usize, read: usize) {
+    let mut sizes = sizes();
+    if read < asked {
+        sizes.insert(repo.to_owned(), (read, 0));
+        return;
+    }
+    let Some((size, answered)) = sizes.get_mut(repo) else {
+        return;
+    };
+    *answered += 1;
+    if *answered == PAGES_BEFORE_RAISE {
+        *size = (*size * 2 + 1).min(PULLS_PER_REQUEST);
+        *answered = 0;
+    }
+}
+
+/// The answer of `ask` for `size` pull requests, or for half as many each time GitHub fails or
+/// truncates it, and how many it read. `ask` gets the size and the waits before its retries.
+fn halving(
+    mut size: usize,
+    ask: impl Fn(usize, &[Duration]) -> Result<Value, Failed>,
+) -> Result<(Value, usize), String> {
+    loop {
+        let waits: &[Duration] = if size > FEWEST_PULLS { &[] } else { &BACKOFF };
+        match ask(size, waits) {
+            Err(Failed::Transient(_)) if size > FEWEST_PULLS => {
+                size = (size / 2).max(FEWEST_PULLS);
+            }
+            Err(error) => return Err(error.text()),
+            Ok(answer) => return Ok((answer, size)),
+        }
+    }
+}
+
 fn open_pulls_query() -> String {
     format!(
-        "query($owner: String!, $name: String!, $endCursor: String) {{ repository(owner: $owner, name: $name) {{ \
-         pullRequests(states: OPEN, first: {PULLS_PER_REQUEST}, after: $endCursor) {{ pageInfo {{ hasNextPage endCursor }} \
+        "query($owner: String!, $name: String!, $first: Int!, $endCursor: String) {{ repository(owner: $owner, name: $name) {{ \
+         pullRequests(states: OPEN, first: $first, after: $endCursor) {{ pageInfo {{ hasNextPage endCursor }} \
          nodes {{ ...pull }} }} }} }} {PULL_FIELDS}"
     )
 }
 
-/// The open pull requests of `repo`, `PULLS_PER_REQUEST` per page.
+/// The open pull requests of `repo`, `pulls_per_request` per page.
 pub(super) fn open_pulls(repo: &str) -> Result<Vec<Pull>, String> {
     let (owner, name) = repo.split_once('/').unwrap_or_default();
-    let pages: Vec<serde_json::Value> = gh(
-        "graphql",
-        &[
-            "--paginate",
-            "--slurp",
-            "-f",
-            &format!("owner={owner}"),
-            "-f",
-            &format!("name={name}"),
-            "-f",
-            &format!("query={}", open_pulls_query()),
-        ],
-    )?;
-    let nodes = pages
+    let (owner, name) = (format!("owner={owner}"), format!("name={name}"));
+    let query = open_pulls_query();
+    let mut pulls = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let after = cursor.as_ref().map(|cursor| format!("endCursor={cursor}"));
+        let ask = |size: usize, waits: &[Duration]| {
+            let first = format!("first={size}");
+            let mut fields = vec!["-F", &first, "-f", &owner, "-f", &name];
+            if let Some(after) = &after {
+                fields.extend(["-f", after]);
+            }
+            graphql(&query, &fields, waits)
+        };
+        let size = pulls_per_request(repo);
+        let (answer, read) = halving(size, ask)?;
+        keep_size(repo, size, read);
+        let page = &answer["data"]["repository"]["pullRequests"];
+        for pull in page["nodes"].as_array().into_iter().flatten() {
+            let pull = serde_json::from_value(pull.clone())
+                .map_err(|error| format!("gh api graphql: {error}"))?;
+            pulls.push(pull);
+        }
+        if page["pageInfo"]["hasNextPage"] != true {
+            return Ok(pulls);
+        }
+        let next = page["pageInfo"]["endCursor"].as_str().map(str::to_owned);
+        if next.is_none() || next == cursor {
+            return Err("gh api graphql: a page of pull requests names no next one".to_owned());
+        }
+        cursor = next;
+    }
+}
+
+/// The query for the pull requests `numbers`, each named by alias.
+fn by_number_query(numbers: &[u64]) -> String {
+    let fields: String = numbers
         .iter()
-        .flat_map(|page| page["data"]["repository"]["pullRequests"]["nodes"].as_array())
-        .flatten();
-    nodes
-        .map(|pull| {
-            serde_json::from_value(pull.clone()).map_err(|error| format!("gh api graphql: {error}"))
-        })
-        .collect()
+        .map(|number| format!("pr{number}: pullRequest(number: {number}) {{ ...pull }} "))
+        .collect();
+    format!(
+        "query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ {fields}}} }} {PULL_FIELDS}"
+    )
 }
 
-/// One query per `PULLS_PER_REQUEST` of `numbers`, each naming its pull requests by alias.
-fn by_number_queries(numbers: &BTreeSet<u64>) -> Vec<String> {
-    let numbers: Vec<u64> = numbers.iter().copied().collect();
-    numbers
-        .chunks(PULLS_PER_REQUEST)
-        .map(|chunk| {
-            let fields: String = chunk
-                .iter()
-                .map(|number| format!("pr{number}: pullRequest(number: {number}) {{ ...pull }} "))
-                .collect();
-            format!(
-                "query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ {fields}}} }} {PULL_FIELDS}"
-            )
-        })
-        .collect()
-}
-
-/// The pull requests `numbers` name, `PULLS_PER_REQUEST` to a GraphQL query; none when `numbers`
-/// is empty.
+/// The pull requests `numbers` name, `pulls_per_request` to a GraphQL query; none when `numbers`
+/// is empty. A query that fails shrinks the rest of this call only.
 pub(super) fn pull_requests(
     repo: &str,
     numbers: &BTreeSet<u64>,
 ) -> Result<BTreeMap<u64, Pull>, String> {
     let (owner, name) = repo.split_once('/').unwrap_or_default();
+    let (owner, name) = (format!("owner={owner}"), format!("name={name}"));
     let mut pulls = BTreeMap::new();
-    for query in by_number_queries(numbers) {
-        let answer: serde_json::Value = gh(
-            "graphql",
-            &[
-                "-f",
-                &format!("owner={owner}"),
-                "-f",
-                &format!("name={name}"),
-                "-f",
-                &format!("query={query}"),
-            ],
-        )?;
+    let numbers: Vec<u64> = numbers.iter().copied().collect();
+    let mut rest = numbers.as_slice();
+    let mut size = pulls_per_request(repo);
+    while !rest.is_empty() {
+        let asked = size.min(rest.len());
+        let (answer, read) = halving(asked, |size, waits| {
+            let query = by_number_query(&rest[..size]);
+            graphql(&query, &["-f", &owner, "-f", &name], waits)
+        })?;
+        if read < asked {
+            size = read;
+        }
+        rest = &rest[read..];
         let found = answer["data"]["repository"]
             .as_object()
             .into_iter()
@@ -880,24 +1160,17 @@ mod tests {
     #[test]
     fn one_request_of_the_pull_request_query_returns_at_most_6000_nodes() {
         let per_pull = nodes(PULL_FIELDS);
-        let open = nodes(&open_pulls_query()) + PULLS_PER_REQUEST as u64 * per_pull;
-        let numbers: BTreeSet<u64> = (1..=200).collect();
-        let named = by_number_queries(&numbers);
+        let query = open_pulls_query().replace("$first,", &format!("{PULLS_PER_REQUEST},"));
+        let open = nodes(&query) + PULLS_PER_REQUEST as u64 * per_pull;
+        let numbers: Vec<u64> = (1..=PULLS_PER_REQUEST as u64).collect();
+        let query = by_number_query(&numbers);
         assert!(open <= 6000, "{open} nodes per page of open pull requests");
-        for query in &named {
-            let aliases = query.matches(": pullRequest(number:").count() as u64;
-            let named = aliases * (1 + per_pull);
-            assert!(
-                named <= 6000,
-                "{named} nodes in one query of named pull requests"
-            );
-        }
-        assert_eq!(
-            named
-                .iter()
-                .map(|query| query.matches(": pullRequest(number:").count())
-                .sum::<usize>(),
-            200
+        let aliases = query.matches(": pullRequest(number:").count();
+        assert_eq!(aliases, PULLS_PER_REQUEST);
+        let named = aliases as u64 * (1 + per_pull);
+        assert!(
+            named <= 6000,
+            "{named} nodes in one query of named pull requests"
         );
     }
 }
