@@ -10,7 +10,8 @@
 # makes a fetch of a commit by its SHA fail, as a dropped connection does. git-shas
 # gets a line per such fetch. git-hang-status makes the status that lists every untracked file wait
 # until it is gone, after it writes git-status-held, and git-hang-merge makes a
-# merge hang.
+# merge hang. git-hang-log makes the private terms' log wait in the same way, after it writes
+# git-log-held, and git-hang-config makes each read or write of remote.origin.prune hang.
 case " $* " in
   *" status "*)
     echo "$*" >> "$FAKE_DIR/git-statuses"
@@ -18,6 +19,15 @@ case " $* " in
       echo held >> "$FAKE_DIR/git-status-held"
       while [ -e "$FAKE_DIR/git-hang-status" ]; do sleep 0.1; done
     fi
+    ;;
+  *" log --encoding=UTF-8 "*)
+    if [ -e "$FAKE_DIR/git-hang-log" ]; then
+      echo held >> "$FAKE_DIR/git-log-held"
+      while [ -e "$FAKE_DIR/git-hang-log" ]; do sleep 0.1; done
+    fi
+    ;;
+  *" config "*" remote.origin.prune "*)
+    if [ -e "$FAKE_DIR/git-hang-config" ]; then exec sleep 60; fi
     ;;
   *" merge --quiet "*)
     if [ -e "$FAKE_DIR/git-hang-merge" ]; then echo merge >> "$FAKE_DIR/git-merging"; exec sleep 60; fi

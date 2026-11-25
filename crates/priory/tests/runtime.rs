@@ -39028,7 +39028,7 @@ fn a_cancel_during_a_cloud_start_names_the_session_it_may_leave() {
 }
 
 #[test]
-fn a_session_that_starts_after_its_cancel_is_on_the_dropped_task() {
+fn a_cancel_during_the_push_of_a_cloud_start_starts_no_session() {
     let mut setup = cloud("cloud-cancel-push", CLOUD);
     let pushing = setup.dir.join("pushing");
     let go = setup.dir.join("go");
@@ -39047,11 +39047,102 @@ fn a_session_that_starts_after_its_cancel_is_on_the_dropped_task() {
     person(&setup, "cancel", &["1"]);
     fs::write(&go, "").unwrap();
 
-    let link = "its cloud session still runs: https://claude.ai/code/session_01Fake1";
-    setup.logged(link);
-    let [state, reason] = held_as(&setup, "1");
-    assert_eq!(state, "dropped");
-    assert!(reason.contains(link), "{reason}");
+    std::thread::sleep(Duration::from_secs(5));
+    assert_eq!(setup.cloud_prompts(), [""; 0]);
+    assert_eq!(held_as(&setup, "1")[0], "dropped");
+}
+
+#[test]
+fn a_cancel_during_the_private_terms_screen_of_a_cloud_start_pushes_nothing() {
+    let mut setup = cloud("cloud-cancel-screen", CLOUD);
+    setup.settings(&format!(
+        "[private]\nrepos = [\"owner/repo\"]\nterms = [{{ label = \"host\", text = [\"vault9\"] }}]\n{CLOUD_ON}"
+    ));
+    setup.hold("git-hang-log");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/git-log-held");
+
+    person(&setup, "cancel", &["1"]);
+    setup.release("git-hang-log");
+
+    std::thread::sleep(Duration::from_secs(5));
+    let bare = setup.dir.join("origin/owner/repo.git");
+    let pushed = git(&bare)
+        .args(["branch", "--list", "priory/1"])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&pushed.stdout), "");
+    assert_eq!(setup.cloud_prompts(), [""; 0]);
+}
+
+#[test]
+fn a_repository_without_cloud_keeps_a_persons_prune_setting() {
+    let mut setup = cloud("cloud-prune", CLOUD);
+    setup.settings("");
+    setup.calls(&[result("passed")]);
+    setup.hold("git-hang-config");
+    setup.local_task(43);
+
+    setup.start();
+
+    setup.until("tasks", |rows| with(rows, 4, "done") == 1);
+    setup.release("git-hang-config");
+    assert_eq!(setup.prune(), "");
+}
+
+#[test]
+fn a_cloud_repository_keeps_its_merged_branches() {
+    let mut setup = cloud("cloud-no-prune", CLOUD);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.cloud_started();
+    assert_eq!(setup.prune(), "false\n");
+}
+
+impl Setup {
+    /// What Priory's clone sets `remote.origin.prune` to.
+    fn prune(&self) -> String {
+        let output = git(&self.dir.join("home/repos/owner/repo"))
+            .args(["config", "--local", "--get", "remote.origin.prune"])
+            .output()
+            .unwrap();
+        String::from_utf8(output.stdout).unwrap()
+    }
+}
+
+#[test]
+fn a_cloud_step_after_a_duplicate_gets_no_pair_instruction_and_its_ask_shows_it() {
+    let mut setup = cloud("cloud-pair-prompt", &cloud_then_fix());
+    setup.publish(&linear_requested("ENG-9", "first"));
+    setup.start();
+    setup.cloud_started();
+    setup.publish(&linear_requested("ENG-7", "second"));
+    setup.until("runs", |rows| {
+        rows.iter().any(|row| row[4] == "session_01Fake2")
+    });
+    setup.publish(&moved_to("Duplicate", "canceled"));
+    setup.until("inbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "linear.issue.state_changed")
+    });
+    setup.crash();
+    setup.cloud_push(0);
+    setup.cloud_pushes("Fix the widget\n");
+
+    setup.start();
+
+    setup.within(120, "asks", |rows| rows.len() == 1);
+    let prompt = &setup.cloud_prompts()[2];
+    assert!(prompt.contains("Fix the review."), "{prompt}");
+    for tool in ["hand_over", "message tool", "ask tool"] {
+        assert!(!prompt.contains(tool), "{prompt}");
+    }
+    let task = task_json(&setup, "1");
+    let text = task["asks"][0]["text"].as_str().unwrap_or_default();
+    assert!(text.contains("Agree with task 2 which of you"), "{task}");
 }
 
 #[test]
@@ -39496,12 +39587,15 @@ fn a_slow_worktree_check_delays_a_cloud_start_and_blocks_nothing() {
         with(
             rows,
             7,
-            "waits to check its worktree again: git was too slow",
+            "waits to check its worktree again: git was too slow 1 of 5 times",
         ) == 1
     });
     assert_ne!(tasks[0][4], "blocked");
     setup.release("git-hang-status");
     setup.settings(CLOUD_ON);
+    // The wait is a minute, and a restart forgets it.
+    setup.crash();
+    setup.start();
     setup.cloud_started();
 }
 

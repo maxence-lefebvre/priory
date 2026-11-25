@@ -1554,6 +1554,8 @@ mod tests {
                  '2026-11-23T10:01:00Z', 0, NULL, NULL, NULL),
                (1, 'implement', 'implementer', 'p', 'c', '2026-11-23T09:00:00Z',
                  '2026-11-23T09:01:00Z', 0, 'codex', 0, NULL);
+             INSERT INTO runs (task, step, agent, tmux, session, ready, harness, thread)
+             VALUES (1, 'implement', 'implementer', 'p', 'd', 0, 'claude-cloud', 'session_1');
              INSERT INTO recipes (task, moment, worktree, argv, timeout, started, ended, status)
              VALUES (1, 'setup', 'w', '[]', 60, '2026-11-23T10:00:00Z', '2026-11-23T10:00:30Z',
                  'timed out after 30s');",

@@ -906,6 +906,13 @@ mod tests {
         });
         assert!(thread.join().is_err());
         assert!(!polling());
+
+        // A cancelled run's start outlives its run.
+        let (_sender, receiver) = channel();
+        *STARTING.lock().unwrap() = Some((1, receiver));
+        let counted = polling();
+        *STARTING.lock().unwrap() = None;
+        assert!(counted);
     }
 
     #[test]
