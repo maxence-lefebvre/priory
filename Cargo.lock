@@ -1990,6 +1990,7 @@ dependencies = [
  "sha2",
  "signal-hook",
  "toml",
+ "uuid",
 ]
 
 [[package]]
