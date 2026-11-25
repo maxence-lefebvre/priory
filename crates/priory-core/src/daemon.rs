@@ -3332,6 +3332,7 @@ mod tests {
             ready: false,
             waited: Some(600),
             direnv: 1,
+            resumes: false,
             turn: None,
             prompted: None,
         };
