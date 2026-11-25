@@ -22529,6 +22529,8 @@ fn a_daemon_that_does_not_answer_gets_a_guarded_call_denied() {
     fs::create_dir_all(&home).unwrap();
     let socket = priory_runtime::runtime::socket_in(Some(&home), &home);
     fs::create_dir_all(socket.parent().unwrap()).unwrap();
+    // A long home puts the socket under /tmp, where an earlier run leaves it.
+    let _ = fs::remove_file(&socket);
     let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
     let silent = std::thread::spawn(move || listener.accept().map(|(stream, _)| stream));
 

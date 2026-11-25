@@ -116,7 +116,7 @@
           "type": "string"
         },
         "timezone": {
-          "description": "The IANA zone the days and hours are read in, such as `Europe/Paris`; the machine's own\nwhen unset, which only a factory of one runner allows.",
+          "description": "The IANA zone the days and hours are read in, such as `Europe/Paris`; the machine's own\nwhen unset, which a filter allows only in a factory of one runner.",
           "type": "string"
         }
       },
