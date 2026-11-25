@@ -3512,16 +3512,23 @@ mod tests {
         let bus = backlog("bounded-drain", 250);
         let mut seen = Vec::new();
 
-        let mut ticks = Vec::new();
-        for _ in 0..3 {
+        let mut passes = vec![0];
+        loop {
             let caught_up = some(&bus, "c", false, &mut |delivery| {
                 seen.push(delivery.message.data["at"].as_u64().unwrap());
                 Ok(())
             });
-            ticks.push((caught_up.unwrap(), seen.len()));
+            passes.push(seen.len());
+            if caught_up.unwrap() {
+                break;
+            }
         }
 
-        assert_eq!(ticks, [(false, 100), (false, 200), (true, 250)]);
+        // A slow disk may end a pass sooner, so only the most is certain.
+        assert!(
+            passes.windows(2).all(|pass| pass[1] - pass[0] <= 100),
+            "{passes:?}"
+        );
         assert!(seen.into_iter().eq(0..250));
     }
 

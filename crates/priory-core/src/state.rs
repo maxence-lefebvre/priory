@@ -2189,10 +2189,13 @@ CREATE INDEX IF NOT EXISTS inbox_closed_pulls ON inbox ('github:' || json_extrac
 PRAGMA user_version = 122;
 ";
 
-// Routing a message looks up the inbox by pull request or issue, by task and by merge commit.
+// Routing a message looks up the inbox by pull request, by pull request or issue, by task and by merge commit.
 // Without these each lookup scans every entry. The queries repeat their expressions.
 const SCHEMA_123: &str = "
-CREATE INDEX IF NOT EXISTS inbox_by_pull ON inbox ('github:' || json_extract(data, '$.repo') || '#'
+CREATE INDEX IF NOT EXISTS inbox_by_pull ON inbox ('github:' || json_extract(data, '$.repo')
+  || '#' || json_extract(data, '$.pull_request'))
+  WHERE 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') IS NOT NULL;
+CREATE INDEX IF NOT EXISTS inbox_by_number ON inbox ('github:' || json_extract(data, '$.repo') || '#'
   || coalesce(json_extract(data, '$.pull_request'), json_extract(data, '$.issue')))
   WHERE 'github:' || json_extract(data, '$.repo') || '#'
   || coalesce(json_extract(data, '$.pull_request'), json_extract(data, '$.issue')) IS NOT NULL;
@@ -3002,16 +3005,10 @@ fn claim_pull_request(tx: &Transaction, message: &Message) -> rusqlite::Result<(
              AND NOT EXISTS (SELECT 1 FROM owned JOIN tasks AS other ON other.id = owned.task
                WHERE owned.resource = ?1 AND owned.task != owns.task
                AND other.state NOT IN ('done', 'failed', 'dropped'))
-             AND NOT EXISTS (SELECT 1 FROM inbox WHERE 'github:' || json_extract(data, '$.repo') || '#'
-                 || coalesce(json_extract(data, '$.pull_request'), json_extract(data, '$.issue')) = ?1
-               AND json_extract(data, '$.pull_request') IS NOT NULL AND outcome != 'outsider')
+             AND NOT EXISTS (SELECT 1 FROM inbox WHERE 'github:' || json_extract(data, '$.repo')
+                 || '#' || json_extract(data, '$.pull_request') = ?1 AND outcome != 'outsider')
              ORDER BY owns.task DESC LIMIT 1",
-            params![
-                resource,
-                route::branch(repo, head),
-                repo,
-                base
-            ],
+            params![resource, route::branch(repo, head), repo, base],
             |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
         )
         .optional()?;
@@ -5376,7 +5373,7 @@ mod inbox_lookups {
         }
     }
 
-    /// 200 done tasks and one running, and `events` inbox entries about their pull requests and
+    /// 199 done tasks, one at its checks gate and one running, and `events` inbox entries about their pull requests and
     /// issues.
     fn synthetic(events: i64) -> Connection {
         let mut db = memory();
@@ -5384,7 +5381,7 @@ mod inbox_lookups {
         tx.execute_batch(
             "WITH RECURSIVE n (i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 201)
              INSERT INTO tasks (id, key, workflow, step, state, trigger, source, changed)
-               SELECT i, 'linear:ENG-' || i, 'w', 's', iif(i = 201, 'running', 'done'), 'cli', 'm' || i,
+               SELECT i, 'linear:ENG-' || i, 'w', 's', CASE i WHEN 201 THEN 'running' WHEN 200 THEN 'asleep' ELSE 'done' END, 'cli', 'm' || i,
                  '2026-01-01T00:00:00Z' FROM n;
              INSERT INTO owns (task, resource) SELECT id, key FROM tasks;
              INSERT INTO owns (task, resource)
@@ -5393,7 +5390,13 @@ mod inbox_lookups {
                SELECT id, 'github:owner/repo#' || id FROM tasks;
              INSERT INTO pull_requests (task, resource, branch, base, state)
                SELECT id, 'github:owner/repo#' || id, 'priory/' || id, 'main',
-                 iif(id = 201, 'open', 'closed') FROM tasks;",
+                 iif(id >= 200, 'open', 'closed') FROM tasks;
+             INSERT INTO runs (id, task, step, tmux, session, ended)
+               VALUES (1, 200, 's', 't', 's', '2026-01-01T00:00:00Z');
+             INSERT INTO results (run, task, step, outcome, summary, commit_sha)
+               VALUES (1, 200, 's', 'done', 'x', 'old');
+             INSERT INTO waits (task, run, kind, resource, head_sha, daemon)
+               VALUES (200, 1, 'checks', 'github:owner/repo#200', 'old', 1);",
         )
         .unwrap();
         let pad = "x".repeat(1300);
@@ -5472,6 +5475,11 @@ mod inbox_lookups {
         };
         let review = json!({"state": "commented", "actor": "a", "own": false, "commit": "new"});
         vec![
+            on(
+                CHECKED,
+                200,
+                json!({"conclusion": "success", "head_sha": "old"}),
+            ),
             on(CHECKED, 201, json!({"conclusion": "success"})),
             on(
                 CHECKED,
@@ -5524,7 +5532,7 @@ mod inbox_lookups {
                     .query_row(
                         "SELECT (SELECT coalesce(task, '-') || ' ' || outcome FROM inbox WHERE id = ?1)
                            || ' | ' || coalesce((SELECT group_concat(state, ',') FROM
-                             (SELECT state FROM tasks WHERE id IN (100, 201) ORDER BY id)), '')
+                             (SELECT state FROM tasks WHERE id IN (100, 200, 201) ORDER BY id)), '')
                            || ' | ' || coalesce((SELECT group_concat(json_extract(event, '$.data.label')
                              || ' ' || json_extract(event, '$.data.evidence'), ',') FROM trace
                              WHERE type = 'factory.step.labeled'), '')
@@ -5556,7 +5564,7 @@ mod inbox_lookups {
         let indexed = routed(&mut db);
 
         db.execute_batch(
-            "DROP INDEX inbox_by_pull; DROP INDEX inbox_by_issue; DROP INDEX inbox_by_task;
+            "DROP INDEX inbox_by_pull; DROP INDEX inbox_by_number; DROP INDEX inbox_by_issue; DROP INDEX inbox_by_task;
              DROP INDEX inbox_merges;",
         )
         .unwrap();
@@ -5592,8 +5600,7 @@ mod inbox_lookups {
                 "SELECT count(*),
                    (SELECT count(*) FROM inbox INDEXED BY inbox_by_pull
                     WHERE 'github:' || json_extract(data, '$.repo') || '#'
-                      || coalesce(json_extract(data, '$.pull_request'), json_extract(data, '$.issue'))
-                      = 'github:owner/repo#1'),
+                      || json_extract(data, '$.pull_request') = 'github:owner/repo#1'),
                    (SELECT count(*) FROM inbox INDEXED BY inbox_by_issue
                     WHERE 'linear:' || json_extract(data, '$.issue') = 'linear:ENG-1')
                  FROM inbox",

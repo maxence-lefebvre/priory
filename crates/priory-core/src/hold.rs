@@ -1160,9 +1160,7 @@ fn parked_closed(tx: &Transaction, task: i64, resource: &str) -> rusqlite::Resul
         .query_row(
             // A poll can see `open: false` before the closed event, which alone says `merged`, arrives.
             "WITH pull AS (SELECT seq, type, data FROM inbox
-               WHERE 'github:' || json_extract(data, '$.repo') || '#'
-                 || coalesce(json_extract(data, '$.pull_request'), json_extract(data, '$.issue')) = ?1
-               AND json_extract(data, '$.pull_request') IS NOT NULL)
+               WHERE 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1)
              SELECT json_extract(data, '$.merged') FROM pull AS closed
              WHERE type = 'github.pull_request.closed'
              AND (json_extract(data, '$.merged') = 1
