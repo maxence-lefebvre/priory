@@ -4510,7 +4510,7 @@ fn a_resume_with_no_session_start_goes_on_in_a_new_session_that_names_the_old_tr
         rows.first().is_some_and(|row| row[4] == "asleep")
     });
     let session = setup.rows("runs")[0][4].clone();
-    setup.hold("silent-resume");
+    fs::write(setup.dir.join("fake/silent-resume"), READY_PROMPT).unwrap();
 
     let answered = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
 
@@ -4519,6 +4519,7 @@ fn a_resume_with_no_session_start_goes_on_in_a_new_session_that_names_the_old_tr
         rows.get(1).is_some_and(|row| row[7] == "unresumed")
     });
     assert_eq!(runs[1][4], session);
+    setup.until("runs", |rows| rows.len() == 3);
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     let runs = setup.rows("runs");
     assert_eq!(runs.len(), 3, "{runs:?}");

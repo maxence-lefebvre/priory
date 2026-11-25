@@ -1846,34 +1846,30 @@ fn verdict(
     });
     if let Some((within, trusted)) = late {
         let program = harness.program();
-        let loading = run.direnv == 1 && runtime::direnv_loading(home, &run.session);
-        let claude = factory
-            .agents
-            .get(&run.agent)
-            .is_some_and(|agent| matches!(agent.value.harness, Harness::ClaudeCode));
-        // Claude 2.1.330 resumed some sessions without running their hooks; a new session starts.
-        if run.resumes && claude && !loading {
+        let ready = rows.as_deref().is_some_and(|rows| harness.at_prompt(rows));
+        let throttling = throttled();
+        // Claude 2.1.330 resumed some sessions to an idle prompt without running their hooks.
+        if run.resumes && ready && throttling.is_none() {
             let reason = format!(
                 "{program} showed no SessionStart within {within}s when Priory resumed session {}",
                 run.session
             );
             return Some(("unresumed", reason, false));
         }
-        let mut reason = if loading {
+        let mut reason = if run.direnv == 1 && runtime::direnv_loading(home, &run.session) {
             format!(
                 "direnv did not finish loading {}/.envrc within {within}s, so {program} never \
                  started; warm it with `direnv exec <worktree> true`, or fix the .envrc",
                 run.worktree.as_deref().unwrap_or("its folder"),
             )
         } else {
-            let ready = rows.as_deref().is_some_and(|rows| harness.at_prompt(rows));
             let known = trusted && !harness.reviews_hooks();
             let recorded = if known {
                 " although Priory recorded its trust"
             } else {
                 ""
             };
-            let advice = match (ready || known, throttled()) {
+            let advice = match (ready || known, throttling) {
                 (true, Some(throttled)) => throttled,
                 (true, None) if ready => "its prompt is ready and asks for no trust, so its \
                                           SessionStart hook is late or never reached the daemon"
