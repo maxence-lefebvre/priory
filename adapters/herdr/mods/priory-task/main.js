@@ -17,8 +17,8 @@ const TILES = {
   done: ["tile-ok", "check"], failed: ["tile-danger", "circle-x"], dropped: ["tile-muted", "minus"],
   moved: ["tile-muted", "arrow-right"], lost: ["tile-warn", "unplug"], ask: ["wait", "ask"],
   answered: ["tile-muted", "check"], withdrawn: ["tile-muted", "minus"],
-  // Who answered an ask: auto or a lead agent, a person's session, or a person.
-  auto: ["tile-hold", "cog"], agent: ["tile-hold", "cog"], session: ["tile-hold", "terminal"], person: ["tile-hold", "user"],
+  // Who answered an ask: auto, autopilot or a lead agent, a person's session, or a person.
+  auto: ["tile-hold", "cog"], autopilot: ["tile-hold", "cog"], agent: ["tile-hold", "cog"], session: ["tile-hold", "terminal"], person: ["tile-hold", "user"],
   // A scorer's verdict: an error means the scorer broke, not the run.
   pass: ["tile-ok", "check"], fail: ["tile-danger", "circle-x"], error: ["tile-warn", "circle-alert"],
   "not applicable": ["tile-muted", "minus"],
@@ -216,7 +216,7 @@ export default class PrioryTask extends View {
       ...(ask.confidence ? [h_flex().gap(S["space-2"]).items_center().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(bars).child(`${ask.confidence} confidence`)] : []),
       ...(ask.rationale ? [div().whitespace_normal().px(S["space-2"]).py(S["space-1"]).rounded(S["radius-md"]).border(1).border_color(t.line).bg(t.surface)
         .text_size(S["type-caption"][0]).text_color(t.text).child(selectable(`ask-${ask.id}-why`, ask.rationale))] : []),
-      div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-3"]).child("The first answer stands. Say to the agent to change course."),
+      div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(ask.course),
     ];
   }
 

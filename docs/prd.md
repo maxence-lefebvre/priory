@@ -82,6 +82,7 @@ The Warp column comes from Warp's public page and is blank where that page says 
 | Desk       | What waits on a person: asks, blocked tasks, reports and to-dos           |              | asks panel       |
 | Wait       | The conditions an agent names before it sleeps                            |              | `retire --on`    |
 | Ask        | A question to a person, with options, a recommendation and a trade-off    | review gate  | ask              |
+| Autopilot  | A window in which the daemon answers eligible asks in a person's place    |              |                  |
 | Result     | The immutable record of a run's outcome and its evidence                  |              | result           |
 | Trace      | One record per step: decider, effect, outcome, tokens and time; exported as OpenTelemetry spans | |                  |
 | View       | A layout of panels that shows the factory and acts on it                  |              | Herdr mods       |
@@ -347,7 +348,8 @@ Priory asks again.
 
 A trigger's `intervention` can hand a task's other asks to a lead agent (`hands-off`), or add a
 person's approval of every graded plan (`plan`). The lead never answers an ask whose answer lets an
-irreversible step run: that approval stays a person's.
+irreversible step run: that approval stays a person's. A person can also turn autopilot on for a
+while. It answers only asks a lead could, and it ends by itself.
 
 ## Requirements
 

@@ -82,7 +82,7 @@ macro_rules! undo_scheduled_sweeps {
     };
 }
 
-/// Undoes migrations 117, labels, 114, a Linear place, 113, a subscription's kinds, 112, scheduled sweeps, 111, memory lapses, 110, a run under direnv, 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
+/// Undoes migrations 119, who answered each revision, 117, labels, 114, a Linear place, 113, a subscription's kinds, 112, scheduled sweeps, 111, memory lapses, 110, a run under direnv, 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
 /// `auto_answer` level, 97, the task's `added_by`, and 93: the `pre` script's task columns and the
 /// pending requests.
 macro_rules! undo_pre {
@@ -100,7 +100,7 @@ macro_rules! undo_pre {
   ALTER TABLE memory_candidates DROP COLUMN step; ALTER TABLE gates DROP COLUMN lessons; ALTER TABLE gates DROP COLUMN ask; ALTER TABLE gates DROP COLUMN judges;
   ALTER TABLE runs DROP COLUMN session_started; ALTER TABLE runs DROP COLUMN harness;
   ALTER TABLE runs DROP COLUMN resumes; ALTER TABLE runs DROP COLUMN sandbox; ALTER TABLE runs DROP COLUMN direnv; DROP TABLE lapses;
-  DROP TRIGGER push_a_landed_wrong; DROP TRIGGER push_a_stall; ALTER TABLE push_subscriptions DROP COLUMN kinds;
+  DROP TRIGGER ask_answered_by; DROP TRIGGER push_a_landed_wrong; DROP TRIGGER push_a_stall; ALTER TABLE push_subscriptions DROP COLUMN kinds;
   ")
     };
 }
@@ -10573,6 +10573,37 @@ fn a_persons_comment_written_during_the_agents_last_turn_fires_the_checks_gate()
     setup.publish(&comment);
 
     setup.until("runs", |rows| rows.len() == 3);
+}
+
+#[test]
+fn an_agents_review_written_during_its_last_turn_does_not_fire_the_checks_gate() {
+    let mut setup = Setup::new("gate-agent-review-during-turn");
+    setup.calls(&[
+        wait(on_pull_7("review")),
+        passed_at("abc0000000000000000000000000000000000000"),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.hold("hold-stop");
+    setup.publish(&reviewed());
+    setup.until("runs", |rows| rows.len() == 2);
+    std::thread::sleep(Duration::from_millis(1100));
+    setup.release("hold-stop");
+    setup.until("waits", |rows| rows.iter().any(|row| row[3] == "checks"));
+    setup.until("tasks", |rows| rows[0][4] == "asleep");
+    let during: herdr_bus::Timestamp = setup.rows("runs")[1][5].parse().unwrap();
+    let reply = on_pull(
+        "github.pull_request_review.submitted",
+        json!({ "state": "commented", "actor": "max", "body": "", "github_id": 301, "own": true, "agent": true }),
+    )
+    .time(during);
+
+    setup.publish(&reply);
+    setup.publish(&check(1, 0));
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    assert_eq!(setup.rows("runs").len(), 2);
 }
 
 #[test]

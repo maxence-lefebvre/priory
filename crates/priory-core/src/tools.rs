@@ -851,8 +851,19 @@ fn ask(
     let auto = factory.workflows.get(&run.workflow).is_some_and(|flow| {
         explain::auto_answerable(&flow.value, &run.step, command.is_some(), level, confidence)
     });
+    let pilot = match factory.workflows.get(&run.workflow).filter(|_| !auto) {
+        Some(flow) => crate::autopilot::answers(
+            tx,
+            &flow.value,
+            run.task,
+            &run.step,
+            command.is_some(),
+            confidence,
+        )?,
+        None => None,
+    };
     // A low confidence is the agent saying it does not know: a lead's guess is no person's answer.
-    let lead = match auto || confidence == Some(Confidence::Low) {
+    let lead = match auto || pilot.is_some() || confidence == Some(Confidence::Low) {
         true => None,
         false => lead_of(
             tx,
@@ -918,6 +929,14 @@ fn ask(
                 rationale.as_deref().unwrap_or_default(),
             )?;
         }
+    }
+    if let Some(window) = pilot
+        && crate::autopilot::judge(tx, id, &window, trace, head)?
+    {
+        tx.execute(
+            "DELETE FROM push_queue WHERE kind = 'ask' AND item = ?1",
+            [id],
+        )?;
     }
     Ok(Ok(format!(
         "ask {id} stored: end your turn now; the answer arrives as your next prompt"
@@ -1485,6 +1504,7 @@ pub(crate) fn event(
             .as_str()
             .zip(data["pull_request"].as_u64())
             .map(|(repo, number)| route::pull_request(repo, number));
+        let reviewed = kind_of_event == REVIEWED && data["agent"] != true;
         // Each pull request of a stack has its own gate, which only its events decide.
         if daemon && on.as_deref() != Some(resource.as_str()) {
             // A merged pull request's gate already fired, so a person's feedback on it fires the
@@ -1497,7 +1517,7 @@ pub(crate) fn event(
             }
             let place = crate::stack::place(tx, task, &on)?;
             let said = feedback(&on, place.as_deref(), &kind_of_event, &data)
-                .filter(|_| later || kind_of_event == REVIEWED || not_agents(&data))
+                .filter(|_| later || reviewed || not_agents(&data))
                 .filter(|_| !settles(&kind_of_event, &data));
             let Some(said) = said else {
                 continue;
@@ -1514,7 +1534,7 @@ pub(crate) fn event(
         // A comment written before the wait, such as the agent's own, wakes nothing.
         let place = crate::stack::place(tx, task, &resource)?;
         let said = feedback(&resource, place.as_deref(), &kind_of_event, &data)
-            .filter(|_| later || kind_of_event == REVIEWED || not_agents(&data));
+            .filter(|_| later || reviewed || not_agents(&data));
         if daemon {
             let Some(said) = said.filter(|_| !settles(&kind_of_event, &data)) else {
                 return judge(tx, wait, factory);
@@ -3303,6 +3323,9 @@ pub const LEAD_TRIGGER: &str = "priory/lead";
 /// `auto_answer` level.
 pub const AUTO: &str = "auto";
 
+/// Who answers an ask the daemon answered while a person had autopilot on.
+pub const AUTOPILOT: &str = "autopilot";
+
 /// What `answered_by` starts with for an ask a person's own session answered or dismissed through
 /// `priory mcp --outside`: `session:` and the session's name.
 pub const SESSION: &str = "session:";
@@ -4003,7 +4026,22 @@ pub(crate) fn answer_in_tx(
     trace: &Trace,
     head: &dyn Fn(&Path, &str) -> Option<String>,
 ) -> rusqlite::Result<Result<String, String>> {
-    let applied = answer_in(tx, answer, trace, head)?;
+    if let Some(replaced) = replace_autopilot(tx, answer, trace)? {
+        return Ok(Ok(replaced));
+    }
+    let mut applied = match unfit(&answer.ask.to_string(), &answer.text) {
+        Some(refused) if autopilot_answered(tx, answer)?.is_some() => Err(refused),
+        _ => answer_in(tx, answer, trace, head)?,
+    };
+    if let Err(why) = &mut applied
+        && unfit("", &answer.text).is_none()
+        && by_person(&answer.by)
+        && let Some(task) = autopilot_answered(tx, answer)?
+    {
+        why.push_str(&format!(
+            " by autopilot, and its task went on: tell it with `priory say {task} TEXT`"
+        ));
+    }
     if let Err(why) = &applied {
         let refused: String = answer.text.chars().take(REFUSED_CHARS).collect();
         tx.execute(
@@ -4015,6 +4053,105 @@ pub(crate) fn answer_in_tx(
     Ok(applied)
 }
 
+/// Why ask `label` takes no answer `text`: it is blank or too long.
+fn unfit(label: &str, text: &str) -> Option<String> {
+    if text.trim().is_empty() {
+        return Some(format!("ask {label} takes no blank answer"));
+    }
+    (text.len() > ANSWER_BYTES).then(|| {
+        format!(
+            "ask {label} takes an answer of at most {ANSWER_BYTES} bytes, not {}",
+            text.len()
+        )
+    })
+}
+
+/// Whether `by`, an answer's author, is a person, and no agent, session or the daemon itself.
+fn by_person(by: &str) -> bool {
+    by != AUTO && by != AUTOPILOT && !by.starts_with("agent:") && !by.starts_with(SESSION)
+}
+
+/// The task of the ask that `answer` names, when autopilot answered it at that revision.
+fn autopilot_answered(tx: &Transaction, answer: &Answer) -> rusqlite::Result<Option<i64>> {
+    tx.query_row(
+        "SELECT task FROM asks WHERE id = ?1 AND revision = ?2 AND answered_by = ?3
+         AND answer IS NOT NULL AND withdrawn IS NULL",
+        params![answer.ask, answer.revision, AUTOPILOT],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
+/// Puts a person's answer in place of the one autopilot gave an agent's ask, while the prompt that
+/// carries it is still queued. The agent then reads only the person's.
+fn replace_autopilot(
+    tx: &Transaction,
+    answer: &Answer,
+    trace: &Trace,
+) -> rusqlite::Result<Option<String>> {
+    if !by_person(&answer.by) || unfit("", &answer.text).is_some() {
+        return Ok(None);
+    }
+    let Some(task) = autopilot_answered(tx, answer)? else {
+        return Ok(None);
+    };
+    let (kind, given): (String, String) = tx.query_row(
+        "SELECT kind, answer FROM asks WHERE id = ?1",
+        [answer.ask],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if kind != "agent" {
+        return Ok(None);
+    }
+    let prompt = |text: &str| answer_prompt(&answer.ask.to_string(), answer.revision, text);
+    let queued = tx
+        .prepare("SELECT id, text FROM outbox WHERE task = ?1 AND state = 'queued' ORDER BY id")?
+        .query_map([task], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let old = format!("\n{}", prompt(&given));
+    let Some((id, text)) = queued
+        .into_iter()
+        .map(|(id, text)| (id, format!("\n{text}")))
+        .find(|(_, text)| text.contains(&old))
+    else {
+        return Ok(None);
+    };
+    let text = text.replacen(&old, &format!("\n{}", prompt(&answer.text)), 1);
+    tx.execute(
+        "UPDATE outbox SET text = ?2 WHERE id = ?1",
+        params![id, &text[1..]],
+    )?;
+    tx.execute(
+        &format!("UPDATE asks SET answer = ?2, answered = {NOW}, answered_by = ?3 WHERE id = ?1"),
+        params![answer.ask, answer.text, answer.by],
+    )?;
+    let replaced = json!({
+        "ask": answer.ask.to_string(),
+        "revision": answer.revision,
+        "option": answer.text,
+        "replaced": given,
+        "by": answer.by,
+    });
+    trace::autopilot(
+        tx,
+        trace,
+        "factory.ask.autopilot_replaced",
+        answer.ask,
+        replaced,
+    )?;
+    Ok(Some(format!(
+        "ask {} answered, in place of autopilot's answer {given}",
+        answer.ask
+    )))
+}
+
+/// The line that carries `text`, the answer to ask `label`, to its agent.
+fn answer_prompt(label: &str, revision: i64, text: &str) -> String {
+    format!("Answer to ask {label} (revision {revision}): {text}")
+}
+
 /// The longest answer an ask takes.
 const ANSWER_BYTES: usize = 16 * 1024;
 
@@ -4023,7 +4160,7 @@ const REFUSED_CHARS: usize = 200;
 
 /// Applies `answer` in `tx`. A refusal writes nothing, except that a plan that changed since the
 /// ask showed it is shown as the ask's next revision.
-fn answer_in(
+pub(crate) fn answer_in(
     tx: &Transaction,
     answer: &Answer,
     trace: &Trace,
@@ -4044,14 +4181,8 @@ fn answer_in(
         Err(error) => return Ok(Err(error)),
     };
     let options: Vec<String> = serde_json::from_str(&options).expect("options are stored as JSON");
-    if answer.text.trim().is_empty() {
-        return Ok(Err(format!("ask {label} takes no blank answer")));
-    }
-    if answer.text.len() > ANSWER_BYTES {
-        return Ok(Err(format!(
-            "ask {label} takes an answer of at most {ANSWER_BYTES} bytes, not {}",
-            answer.text.len()
-        )));
+    if let Some(refused) = unfit(&label, &answer.text) {
+        return Ok(Err(refused));
     }
     if let Some(applied) = crate::gates::answered(tx, answer.ask, &answer.text, &answer.by)? {
         return Ok(applied);
@@ -4326,10 +4457,7 @@ fn answer_in(
         wake(
             tx,
             task,
-            &format!(
-                "Answer to ask {label} (revision {}): {}",
-                answer.revision, answer.text
-            ),
+            &answer_prompt(&label, answer.revision, &answer.text),
         )?;
         // An answer that beats the run's Stop leaves it running: the answer is its next prompt.
         if state == "asleep" {
@@ -4886,6 +5014,22 @@ fn say_reopens(
     )))
 }
 
+/// Whether a `say` reopens the done `task`, or why not. Without `factory`, its step goes unchecked.
+pub(crate) fn says_reopens(
+    tx: &Transaction,
+    task: i64,
+    factory: Option<&Factory>,
+) -> rusqlite::Result<Result<(), String>> {
+    let resource = match open_pull_request(tx, task)? {
+        Ok(resource) => resource,
+        Err(why) => return Ok(Err(why)),
+    };
+    match factory {
+        Some(factory) => Ok(reopens_at(tx, &factory.workflows, task, &resource)?.map(drop)),
+        None => Ok(Ok(())),
+    }
+}
+
 /// The step the done `task` reopens at for `resource`, or why it cannot: an active task holds its
 /// key or a resource of it, or no agent runs that step.
 fn reopens_at(
@@ -4913,7 +5057,10 @@ fn reopens_at(
 
 /// The lowest open pull request of `task`, or why it has none: it owns none, or they merged or
 /// closed.
-fn open_pull_request(tx: &Transaction, task: i64) -> rusqlite::Result<Result<String, String>> {
+pub(crate) fn open_pull_request(
+    tx: &Transaction,
+    task: i64,
+) -> rusqlite::Result<Result<String, String>> {
     let stack = crate::stack::of(tx, task)?;
     let pulls = match stack.is_empty() {
         true => pull_request(tx, task)?
@@ -5176,7 +5323,7 @@ fn revive(
 }
 
 /// The active task that holds the `key` or a resource of the ended `task`, as why it cannot restart.
-fn rival(tx: &Transaction, task: i64, key: &str) -> rusqlite::Result<Option<String>> {
+pub(crate) fn rival(tx: &Transaction, task: i64, key: &str) -> rusqlite::Result<Option<String>> {
     let active = tx
         .query_row(
             "SELECT id FROM tasks WHERE key = ?1 AND state NOT IN ('done', 'failed', 'dropped')",

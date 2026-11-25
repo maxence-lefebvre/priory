@@ -1,4 +1,5 @@
 mod attach;
+pub mod autopilot;
 pub mod batch;
 pub mod bench;
 pub mod capture;

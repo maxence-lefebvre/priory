@@ -1286,7 +1286,7 @@ fn remote_write(db: &Connection, remote: &Remote, write: &Write, body: &[u8]) ->
         let mirrored = runners::mirrored(db, runner, id)
             .map_err(|error| Reply::error(500, &error.to_string()))?
             .ok_or_else(gone)?;
-        if let Some(stale) = runners::stale(&mirrored, revision) {
+        if let Some(stale) = runners::stale(&mirrored, revision, kind == ASK_ANSWERED) {
             let body = serde_json::json!({ "error": stale, "ask": mirrored });
             return Err(Reply::json(409, body.to_string()));
         }
