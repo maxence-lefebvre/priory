@@ -73,7 +73,18 @@ pub struct Request<'a> {
     pub arrived: Instant,
 }
 
-impl Request<'_> {
+impl<'a> Request<'a> {
+    /// A `GET` of `path` with no header.
+    pub fn get(path: &'a str, arrived: Instant) -> Self {
+        Request {
+            method: "GET",
+            path,
+            headers: &[],
+            body: &[],
+            arrived,
+        }
+    }
+
     /// The value of the first header called `name`, in any case.
     pub fn header(&self, name: &str) -> Option<&[u8]> {
         self.headers
@@ -277,6 +288,7 @@ fn answer<W: Fn(&Request) -> Reply>(
     let reason = match reply.status {
         200 => "OK",
         202 => "Accepted",
+        304 => "Not Modified",
         400 => "Bad Request",
         401 => "Unauthorized",
         403 => "Forbidden",

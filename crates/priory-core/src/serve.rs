@@ -300,6 +300,7 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Server, String> {
     // One small list per server, which lives as long as the process.
     .leak();
     let waiting = Waiting::new();
+    let shared = Arc::new(crate::shared::Shared::default());
     let public = |path: &str| !path.starts_with("/api") && !path.starts_with("/hooks");
     let event_log = factory.log().clone();
     let remote = Arc::new(Remote {
@@ -308,94 +309,109 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Server, String> {
     });
     let origins = config.extension_origins.clone();
     let wait = move |request: &Request| waiting.events(request);
-    let make = move || {
-        let db = state::read_only();
-        let home = runtime::home();
-        let live = served.clone();
-        let remote = remote.clone();
-        let mut github = github.clone().map(|github| {
-            (
-                github,
-                log::open(&event_log).map_err(|error| error.to_string()),
-            )
-        });
-        let mut linear = linear.clone().map(|linear| {
-            (
-                linear,
-                log::open(&event_log).map_err(|error| error.to_string()),
-            )
-        });
-        let mut sentry = sentry.clone().map(|sentry| {
-            (
-                sentry,
-                log::open(&event_log).map_err(|error| error.to_string()),
-            )
-        });
-        let mut figma = figma.clone().map(|figma| {
-            (
-                figma,
-                log::open(&event_log).map_err(|error| error.to_string()),
-            )
-        });
-        let mut cloudwatch = cloudwatch.clone().map(|cloudwatch| {
-            (
-                cloudwatch,
-                log::open(&event_log).map_err(|error| error.to_string()),
-            )
-        });
-        let mut honeycomb = honeycomb.clone().map(|honeycomb| {
-            (
-                honeycomb,
-                log::open(&event_log).map_err(|error| error.to_string()),
-            )
-        });
-        let mut intercom = intercom.clone().map(|intercom| {
-            (
-                intercom,
-                log::open(&event_log).map_err(|error| error.to_string()),
-            )
-        });
-        move |request: &Request| {
-            let served = live.read().unwrap_or_else(PoisonError::into_inner).clone();
-            match (
-                request.method == "POST",
-                request.path.split('?').next(),
-                &mut github,
-                &mut linear,
-                &mut sentry,
-                &mut figma,
-                &mut cloudwatch,
-                &mut honeycomb,
-                &mut intercom,
-            ) {
-                (true, Some(GITHUB), Some((github, bus)), _, _, _, _, _, _) => {
-                    github.receive(bus, request)
+    let workers = http::serve(
+        listener,
+        token,
+        origins,
+        hooks,
+        public,
+        lane,
+        wait,
+        move || {
+            let db = state::read_only();
+            let shared = Arc::clone(&shared);
+            let home = runtime::home();
+            let live = served.clone();
+            let remote = remote.clone();
+            let mut github = github.clone().map(|github| {
+                (
+                    github,
+                    log::open(&event_log).map_err(|error| error.to_string()),
+                )
+            });
+            let mut linear = linear.clone().map(|linear| {
+                (
+                    linear,
+                    log::open(&event_log).map_err(|error| error.to_string()),
+                )
+            });
+            let mut sentry = sentry.clone().map(|sentry| {
+                (
+                    sentry,
+                    log::open(&event_log).map_err(|error| error.to_string()),
+                )
+            });
+            let mut figma = figma.clone().map(|figma| {
+                (
+                    figma,
+                    log::open(&event_log).map_err(|error| error.to_string()),
+                )
+            });
+            let mut cloudwatch = cloudwatch.clone().map(|cloudwatch| {
+                (
+                    cloudwatch,
+                    log::open(&event_log).map_err(|error| error.to_string()),
+                )
+            });
+            let mut honeycomb = honeycomb.clone().map(|honeycomb| {
+                (
+                    honeycomb,
+                    log::open(&event_log).map_err(|error| error.to_string()),
+                )
+            });
+            let mut intercom = intercom.clone().map(|intercom| {
+                (
+                    intercom,
+                    log::open(&event_log).map_err(|error| error.to_string()),
+                )
+            });
+            move |request: &Request| {
+                let served = live.read().unwrap_or_else(PoisonError::into_inner).clone();
+                match (
+                    request.method == "POST",
+                    request.path.split('?').next(),
+                    &mut github,
+                    &mut linear,
+                    &mut sentry,
+                    &mut figma,
+                    &mut cloudwatch,
+                    &mut honeycomb,
+                    &mut intercom,
+                ) {
+                    (true, Some(GITHUB), Some((github, bus)), _, _, _, _, _, _) => {
+                        github.receive(bus, request)
+                    }
+                    (true, Some(LINEAR), _, Some((linear, bus)), _, _, _, _, _) => {
+                        linear.receive(bus, request)
+                    }
+                    (true, Some(SENTRY), _, _, Some((sentry, bus)), _, _, _, _) => {
+                        sentry.receive(bus, request)
+                    }
+                    (true, Some(FIGMA), _, _, _, Some((figma, bus)), _, _, _) => {
+                        figma.receive(bus, request)
+                    }
+                    (true, Some(CLOUDWATCH), _, _, _, _, Some((cloudwatch, bus)), _, _) => {
+                        cloudwatch.receive(bus, request)
+                    }
+                    (true, Some(HONEYCOMB), _, _, _, _, _, Some((honeycomb, bus)), _) => {
+                        honeycomb.receive(bus, request)
+                    }
+                    (true, Some(INTERCOM), _, _, _, _, _, _, Some((intercom, bus))) => {
+                        intercom.receive(bus, request)
+                    }
+                    _ if request.method == "POST" => write(&db, &home, &served, &remote, request),
+                    _ => {
+                        let read = || route(&db, &home, &served, web, request.method, request.path);
+                        match (&db, shares(request)) {
+                            (Ok(db), true) => shared.read(db, &served, request, read),
+                            _ => read(),
+                        }
+                    }
                 }
-                (true, Some(LINEAR), _, Some((linear, bus)), _, _, _, _, _) => {
-                    linear.receive(bus, request)
-                }
-                (true, Some(SENTRY), _, _, Some((sentry, bus)), _, _, _, _) => {
-                    sentry.receive(bus, request)
-                }
-                (true, Some(FIGMA), _, _, _, Some((figma, bus)), _, _, _) => {
-                    figma.receive(bus, request)
-                }
-                (true, Some(CLOUDWATCH), _, _, _, _, Some((cloudwatch, bus)), _, _) => {
-                    cloudwatch.receive(bus, request)
-                }
-                (true, Some(HONEYCOMB), _, _, _, _, _, Some((honeycomb, bus)), _) => {
-                    honeycomb.receive(bus, request)
-                }
-                (true, Some(INTERCOM), _, _, _, _, _, _, Some((intercom, bus))) => {
-                    intercom.receive(bus, request)
-                }
-                _ if request.method == "POST" => write(&db, &home, &served, &remote, request),
-                _ => route(&db, &home, &served, web, request.method, request.path),
             }
-        }
-    };
-    let workers = http::serve(listener, token, origins, hooks, public, lane, wait, make)
-        .map_err(|error| format!("start the server threads: {error}"))?;
+        },
+    )
+    .map_err(|error| format!("start the server threads: {error}"))?;
     eprintln!("priory: serving on http://{bound}");
     Ok(Server {
         workers,
@@ -528,6 +544,14 @@ fn lane(request: &Request) -> Lane {
         _ if LISTED.contains(&path) => Lane::Listing,
         _ => Lane::Read,
     }
+}
+
+/// Whether requests for the same path share one computed body: the listings, and one task's detail.
+fn shares(request: &Request) -> bool {
+    let path = request.path.split('?').next().unwrap_or_default();
+    let detail = |rest: &str| rest.parse::<i64>().is_ok();
+    request.method == "GET"
+        && (LISTED.contains(&path) || path.strip_prefix("/api/tasks/").is_some_and(detail))
 }
 
 fn route(
@@ -735,7 +759,7 @@ fn route(
         },
     };
     match read {
-        Ok(Some(body)) => Reply::json(200, body.to_string()),
+        Ok(Some(body)) => crate::shared::tagged(body),
         Ok(None) if path.starts_with("/api/reports/") => Reply::error(404, "no such report"),
         Ok(None) => Reply::error(404, "no such task"),
         Err(error) => Reply::error(500, &error.to_string()),
