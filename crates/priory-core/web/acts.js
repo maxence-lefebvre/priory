@@ -1,12 +1,14 @@
 // A task's actions (Resume, Revive, Cancel, Release, Say), as every page sends them.
 import { ARM_MS } from "./asks.js";
-import { refresh, revision } from "./data.js";
+import { refresh } from "./data.js";
 import { onSignOut, post, refuse } from "./session.js";
 import { store } from "./store.js";
 
 export const ACTS = { resume: "Resume", revive: "Revive", cancel: "Cancel", release: "Release" };
 const DONE_AS = { resume: "Resumed", revive: "Revived", cancel: "Cancelled", release: "Released", say: "Said" };
 const ARMS = ["revive", "cancel"];
+// The acts the server takes a revision with; it refuses one with any other.
+const GUARDED = ["cancel", "release"];
 export const ENDED = ["done", "failed", "dropped"];
 export const actsOf = (taskState) => (taskState === "blocked" ? ["resume", "cancel"] : ["failed", "dropped"].includes(taskState) ? ["revive"] : taskState === "done" ? [] : ["cancel"]);
 
@@ -39,15 +41,18 @@ export function disarmTask() {
   change({ armed: null });
 }
 
-/** A tap on an action. Revive and Cancel arm on the first and send on the second. */
-export function pressTask(task, act, { generation, body }) {
+/**
+ * A tap on an action. Revive and Cancel arm on the first and send on the second. `revision` is the one
+ * the page drew the task at; another runner's task sends its own `body` instead.
+ */
+export function pressTask(task, act, { generation, revision, body }) {
+  if (body === undefined && revision === undefined) return undefined;
   const armed = acts.get().armed;
   disarmTask();
   if (ARMS.includes(act) && !(armed?.task === task && armed.act === act)) {
     return change({ armed: { task, act, generation, at: Date.now(), timer: setTimeout(() => change({ armed: null }), ARM_MS) } });
   }
-  // A cancel carries the revision the page showed, as `priory cancel --expected` does.
-  return writeTask(task, act, body ?? (act === "cancel" ? { revision: revision() } : {}));
+  return writeTask(task, act, body ?? (GUARDED.includes(act) ? { revision } : {}));
 }
 
 export async function writeTask(task, act, body) {

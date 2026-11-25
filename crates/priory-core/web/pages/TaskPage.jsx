@@ -15,7 +15,7 @@ import { backTo } from "../pages.js";
 import { toHash } from "../router.js";
 import { taskLabel, workStep } from "../tasks.js";
 import { LegacyPage } from "./LegacyPage.jsx";
-import { usePlace } from "./place.js";
+import { listClass, usePlace } from "./place.js";
 
 // The task's open asks, each with a way to answer it.
 const OpenAsks = memo(function OpenAsks({ asks }) {
@@ -115,7 +115,7 @@ export const TaskBody = memo(function TaskBody({ task, asks, tasks }) {
         <h1 className="question"><Linked text={task.tldr || task.brief?.title || task.brief?.request?.split("\n")[0] || taskLabel(task.key)} repo={task.repo} /></h1>
         {task.reason ? <p className={`text t-${role(task.state)}`}><Linked text={task.reason} repo={task.repo} /></p> : null}
         <OpenAsks asks={openAsksOf(asks, task)} />
-        <TaskActs task={task.id} state={task.state} />
+        <TaskActs task={task.id} state={task.state} revision={task.revision} />
         {ENDED.includes(task.state) ? null : <Say task={task.id} />}
         <AnsweredAsks task={task} />
       </div>
@@ -141,9 +141,9 @@ export const TaskPage = memo(function TaskPage({ id }) {
   useScroll(href, loaded);
   const top = <div className="top"><a className="back" href={back}><Icon name="chevron-left" size="s22" />{label}</a></div>;
   const body = task
-    ? <div className="scroll" id="task-scroll"><TaskBody task={task} asks={asks} tasks={tasks} /><Terminal task={task} /></div>
+    ? <div className="scroll" id="task-scroll">{error ? <p className="note" role="status">{`Could not read task ${id} again: ${error.message}. This is its last read.`}</p> : null}<TaskBody task={task} asks={asks} tasks={tasks} /><Terminal task={task} /></div>
     : <><h1 className="sr">Task {id}</h1><p className="empty">{error ? `Could not load task ${id}: ${error.message}.` : `Loading task ${id}…`}</p></>;
-  return size === "compact" ? <>{top}{body}</> : <div className="list page">{top}{body}</div>;
+  return <div className={listClass(size, "list page")}>{top}{body}</div>;
 });
 
 // The scroll a person left a task at, kept by its address.

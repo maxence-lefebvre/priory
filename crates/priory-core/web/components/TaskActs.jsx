@@ -10,17 +10,17 @@ const Drain = memo(function Drain({ at }) {
   return <span className="drain" aria-hidden="true" style={{ animationDelay: delay }} />;
 });
 
-export const TaskActs = memo(function TaskActs({ task, state }) {
+export const TaskActs = memo(function TaskActs({ task, state, revision }) {
   const { armed, busy, notices } = useStore(acts);
   const { failed } = useStore(session);
-  const off = busy !== null || Boolean(failed);
+  const off = busy !== null || Boolean(failed) || revision === undefined;
   const notice = notices.get(task);
   return (
     <>
       <span className="task-acts">{actsOf(state).map((act) => {
         const on = armed?.task === task && armed.act === act;
         return (
-          <button key={act} type="button" id={`act-${task}-${act}`} className={`btn secondary act ${on ? "armed" : ""}`} aria-disabled={off ? "true" : "false"} onClick={() => { if (!off) pressTask(task, act, {}); }}>
+          <button key={act} type="button" id={`act-${task}-${act}`} className={`btn secondary act ${on ? "armed" : ""}`} aria-disabled={off ? "true" : "false"} onClick={() => { if (!off) pressTask(task, act, { revision }); }}>
             {on ? <><span><small>{`Tap again to ${act}`}</small>{ACTS[act]}</span><Drain at={armed.at} /></> : ACTS[act]}
           </button>
         );

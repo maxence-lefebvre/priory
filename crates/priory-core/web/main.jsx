@@ -4,9 +4,9 @@ import { flushSync } from "react-dom";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
 import { cache, refresh, reread, revision } from "./data.js";
-import { follow } from "./events.js";
+import { follow, recover } from "./events.js";
 import { watch } from "./legacy/terminal.js";
-import { staleAll } from "./queries.js";
+import { staleAll, stuck } from "./queries.js";
 import { followLink } from "./router.js";
 import { makeRouter } from "./routes.jsx";
 import { api, keepTokenForWorker, session } from "./session.js";
@@ -30,15 +30,18 @@ document.addEventListener("visibilitychange", () => {
 // Ages move and a snooze ends with no new revision, so what is on screen reads again once a minute.
 setInterval(() => { if (shown.get()) reread(); }, 60000);
 
+const live = () => true;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 follow({
-  live: () => true,
+  live,
   ready: () => (shown.get() ? revision() : undefined),
   held: revision,
   wait: (since) => api(`/api/events?since=${since}`),
   moved: () => watch.revision(),
   refresh: reread,
-  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  sleep,
 });
+recover({ live, may: () => shown.get() && Boolean(session.get().token), stuck: () => stuck(cache), refresh: reread, sleep });
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
 

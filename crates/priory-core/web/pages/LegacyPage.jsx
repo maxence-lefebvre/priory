@@ -5,6 +5,7 @@ import { asked, land } from "../legacy/data.js";
 import { useListings, useStore } from "../hooks/useData.js";
 import { useMinute } from "../hooks/useScreen.js";
 import { shown } from "../shown.js";
+import { NotFound } from "./NotFound.jsx";
 import { usePlace } from "./place.js";
 
 const FRAME = ["views", "links", "desk"];
@@ -24,4 +25,10 @@ export const LegacyPage = memo(function LegacyPage() {
     if (!reading && visible) land();
   }, [reading, read, minute, visible]);
   return <div className="legacy" ref={host} />;
+});
+
+/** The legacy pages. A batch's page is `/batches/7` alone. */
+export const LegacyRoute = memo(function LegacyRoute() {
+  const { at } = usePlace();
+  return at.here === "batches" && !at.batch ? <NotFound /> : <LegacyPage />;
 });

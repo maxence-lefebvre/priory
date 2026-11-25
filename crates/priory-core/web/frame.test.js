@@ -73,3 +73,8 @@ test("a list becomes the one a detail goes back to, and a detail leaves it", () 
   assert.deepEqual(entryOf(list, "/tasks/3"), { from: "/asks?view=all" });
   assert.deepEqual(entryOf(list, "/runs"), {});
 });
+
+test("an address that does not decode leads to its page as it is written", () => {
+  assert.equal(where("/asks/%E0%A4%A").ask, "%E0%A4%A");
+  assert.equal(where("/asks/100%").ask, "100%");
+});

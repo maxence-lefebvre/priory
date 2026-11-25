@@ -98,6 +98,22 @@ function accept({ of, fresh }) {
 const NONE = [];
 const EMPTY_QUEUE = { waiting: [], ended: [], asleep: [], running: [], up_next: [], bands: [], lanes: [] };
 
+// The ask a refused write answered with, in every listing that holds it, as old as the listing it joins.
+export async function acceptAsk(fresh) {
+  // A read that began before the refusal would bring the older ask back.
+  await cache.cancelQueries({ queryKey: ["asks"] });
+  const patched = (body) => ({ ...body, asks: body.asks.map((ask) => (ask.id === fresh.id ? fresh : ask)) });
+  for (const [queryKey, body] of cache.getQueriesData({ queryKey: ["asks"] })) {
+    if (!body) continue;
+    const { dataUpdatedAt: updatedAt, isInvalidated } = cache.getQueryState(queryKey);
+    cache.setQueryData(queryKey, patched(body), { updatedAt });
+    if (isInvalidated) cache.invalidateQueries({ queryKey, exact: true, refetchType: "none" });
+  }
+  const { asks } = page.landed;
+  if (asks) page.landed.asks = { ...asks, data: patched(asks.data) };
+  if (state.data) state.data.asks = patched(state.data).asks;
+}
+
 export async function refresh() {
   const ok = await refreshQueries();
   land();

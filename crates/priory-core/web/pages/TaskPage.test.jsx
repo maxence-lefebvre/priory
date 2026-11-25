@@ -14,7 +14,7 @@ const { acts, draft, pressTask, disarmTask } = await import("../acts.js");
 const { client } = await import("../queries.js");
 const { TaskBody } = await import("./TaskPage.jsx");
 
-const TASK = { id: 7, key: "ENG-7", state: "blocked", lane: "web", band: "now", tldr: "Fix <b>it</b>", reason: "waits on #3", repo: "acme/shop", asks: [], runs: [], inbox: [] };
+const TASK = { id: 7, revision: 281, key: "ENG-7", state: "blocked", lane: "web", band: "now", tldr: "Fix <b>it</b>", reason: "waits on #3", repo: "acme/shop", asks: [], runs: [], inbox: [] };
 
 function draw(t, task, { asks = [], tasks = [] } = {}) {
   const cache = client({ api: async () => ({}) });
@@ -39,7 +39,7 @@ test("the Say box shows the task's draft, and an ended task has none", (t) => {
 
 test("an armed Cancel asks for a second tap, and shows its countdown", (t) => {
   t.after(disarmTask);
-  pressTask(7, "cancel", {});
+  pressTask(7, "cancel", { revision: 281 });
   assert.match(draw(t, {}), /<button type="button" id="act-7-cancel" class="btn secondary act armed" aria-disabled="false"><span><small>Tap again to cancel<\/small>Cancel<\/span><span class="drain" aria-hidden="true" style="animation-delay:-\d+ms"><\/span><\/button>/);
 });
 
@@ -68,4 +68,8 @@ test("each section shows when the task holds it, agent text escaped", (t) => {
 
 test("a bare task draws no section", (t) => {
   assert.ok(!draw(t, {}).includes("<section"));
+});
+
+test("a task body with no revision keeps its actions off", (t) => {
+  assert.equal(draw(t, { revision: undefined }).match(/class="btn secondary act " aria-disabled="true"/g).length, 2);
 });

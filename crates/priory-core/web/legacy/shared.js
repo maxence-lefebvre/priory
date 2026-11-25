@@ -2,10 +2,10 @@
 import { runnerOf } from "../asks.js";
 import { taskRepo } from "../desk.js";
 import { linked } from "../links.js";
+import { decoded } from "../pages.js";
 import { markdown } from "../markdown.js";
 import { prStack } from "../stack.js";
 import { acts } from "../acts.js";
-import { revision } from "../data.js";
 import { leaves, parts, pathOf, searchOf } from "../frame.js";
 import { ICONS, STATES } from "../icons.js";
 import { session } from "../session.js";
@@ -49,7 +49,8 @@ export const state = {
   // The sign-in, the place and the actions live in plain modules; these read them.
   get token() { return session.get().token; },
   get failed() { return session.get().failed; },
-  get revision() { return revision(); },
+  // The revision of the Desk the page drew.
+  get revision() { return state.data?.desk.revision; },
   get list() { return trail.list; },
   get listUrl() { return trail.listUrl; },
   get taskArmed() { return acts.get().armed; },
@@ -202,7 +203,7 @@ export const reasonShown = (task) => Boolean(task.reason) && ["blocked", "held",
 // Ask detail
 export const selectedAsk = () => {
   const [first, id] = route();
-  return first === "asks" && id ? decodeURIComponent(id) : null;
+  return first === "asks" && id ? decoded(id) : null;
 };
 
 // An id no other control's parts can spell: whitespace and quotes are escaped away.

@@ -7,13 +7,15 @@ export { writeTask as taskWrite } from "../acts.js";
 
 // Desk actions on a task, each the twin of its CLI verb. Cancel and revive arm on the first tap and
 // send on the second, as a command ask does.
-// The action buttons of a task in `taskState`, or the `acts` given, and its last action's note.
-export function taskActs(task, taskState, acts = actsOf(taskState)) {
-  const busy = state.taskBusy !== null || Boolean(state.failed);
+// The action buttons of a task in `taskState`, or the `acts` given, and its last action's note. They
+// send the `revision` of the read the page drew the task from.
+export function taskActs(task, taskState, acts = actsOf(taskState), revision = state.revision) {
+  const remote = typeof task === "string";
+  const busy = state.taskBusy !== null || Boolean(state.failed) || (!remote && revision === undefined);
   const buttons = acts.map((act) => {
     const armed = state.taskArmed?.task === task && state.taskArmed.act === act;
     const label = armed ? html`<span><small>Tap again to ${act}</small>${ACTS[act]}</span><span class="drain" aria-hidden="true"></span>` : ACTS[act];
-    return html`<button id="act-${task}-${act}" class="btn secondary act ${armed ? "armed" : ""}" data-action="task-act" data-task="${task}" data-act="${act}" aria-disabled="${busy ? "true" : "false"}">${label}</button>`;
+    return html`<button id="act-${task}-${act}" class="btn secondary act ${armed ? "armed" : ""}" data-action="task-act" data-task="${task}" data-act="${act}" ${remote || revision === undefined ? "" : html`data-revision="${revision}"`} aria-disabled="${busy ? "true" : "false"}">${label}</button>`;
   });
   const notice = state.taskNotices.get(task);
   return html`<span class="task-acts">${buttons}</span>${notice ? html`<p class="note acts-note" role="status">${notice}</p>` : ""}`;
@@ -28,7 +30,7 @@ export const remoteBody = (task, body) => (typeof task === "string" ? { ...body,
 function taskAct(target) {
   const task = taskIdOf(target.dataset.task);
   if (target.getAttribute("aria-disabled") === "true") return;
-  pressTask(task, target.dataset.act, { generation: remoteGeneration(task), body: typeof task === "string" ? remoteBody(task, {}) : undefined });
+  pressTask(task, target.dataset.act, { generation: remoteGeneration(task), revision: target.dataset.revision && Number(target.dataset.revision), body: typeof task === "string" ? remoteBody(task, {}) : undefined });
 }
 
 export function taskClick(action, target) {

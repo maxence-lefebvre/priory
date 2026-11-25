@@ -95,8 +95,8 @@ export function render() {
   // Likewise a Cancel armed on another runner's task at a generation the list no longer shows.
   if (typeof state.taskArmed?.task === "string" && remoteGeneration(state.taskArmed.task) !== state.taskArmed.generation) disarmTask();
   if (state.memoryArmed && current() !== "memories") disarmMemory();
-  // The answer bar shows once the options scroll away; a redraw keeps it shown, so focus on it stays.
-  const barShown = app.querySelector(".abar:not([hidden])") !== null;
+  // The answer bar shows once the options scroll away; a redraw of the same page keeps it shown, so focus on it stays.
+  const barShown = state.renderedKey === routeKey() && app.querySelector(".abar:not([hidden])") !== null;
   app.innerHTML = page().text;
   if (barShown) app.querySelector(".abar")?.removeAttribute("hidden");
   // A render must not restart the countdown; CSP allows no inline style, so it is set here.
@@ -197,13 +197,16 @@ document.addEventListener("keydown", (event) => {
     return event.target.click();
   }
   if (addSheet().open || answerSheet().open || keyboardSheet().open || event.target.closest("input, textarea, select") || event.metaKey || event.ctrlKey || event.altKey || !state.token) return;
+  if (event.key === "n" || event.key === "N") {
+    event.preventDefault();
+    return openAdd();
+  }
+  // The other keys act on a legacy page's listings, which a page in React may never land.
+  if (!state.data) return;
   const rows = [...document.querySelectorAll(".list [href^='/asks/'], .list tr[data-href^='/asks/']")];
   const hrefOf = (row) => row.getAttribute("href") || row.dataset.href;
   const at = rows.findIndex((row) => row.getAttribute("aria-current") === "true");
-  if (event.key === "n" || event.key === "N") {
-    event.preventDefault();
-    openAdd();
-  } else if (asksKey(event)) {
+  if (asksKey(event)) {
     return;
   } else if (event.key === "j" || event.key === "k") {
     const next = rows[Math.min(rows.length - 1, Math.max(0, at + (event.key === "j" ? 1 : -1)))];
@@ -218,4 +221,11 @@ document.addEventListener("keydown", (event) => {
 });
 
 document.addEventListener("visibilitychange", () => syncTerminal(document.getElementById("app")));
-acts.subscribe(draw);
+// A Say draft is in its field already, and a redraw would replace the field being typed in.
+let drawnActs = acts.get();
+acts.subscribe(() => {
+  const { armed, busy, notices } = acts.get();
+  const same = armed === drawnActs.armed && busy === drawnActs.busy && notices === drawnActs.notices;
+  drawnActs = acts.get();
+  if (!same) draw();
+});

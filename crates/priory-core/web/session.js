@@ -5,6 +5,10 @@ const kept = typeof localStorage === "undefined" ? null : localStorage.getItem("
 export const session = store({ token: kept, signInError: null, failed: null });
 const change = (part) => session.set({ ...session.get(), ...part });
 
+// The kept listings. An earlier version of the web view reads and writes the other key in its own shape.
+export const SNAPSHOT = "priory.snapshot.2";
+export const EARLIER_SNAPSHOT = "priory.snapshot";
+
 // The service worker reads the same copy when the push service replaces the subscription.
 export const KEPT_KINDS = "/api/worker/kinds";
 
@@ -54,7 +58,7 @@ const leaving = new Set();
 export const onSignOut = (forget) => leaving.add(forget);
 
 export function signOut(reason) {
-  for (const key of ["priory.token", "priory.snapshot"]) localStorage.removeItem(key);
+  for (const key of ["priory.token", SNAPSHOT, EARLIER_SNAPSHOT]) localStorage.removeItem(key);
   keepTokenForWorker(null);
   for (const forget of leaving) forget();
   session.set({ token: null, signInError: reason, failed: null });

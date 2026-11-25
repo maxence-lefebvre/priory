@@ -55,7 +55,7 @@ function eventRows(events, state) {
 // The one button that routes a group's next event: revive, request a task or subscribe.
 function routeButton(group, action) {
   const { task } = group;
-  if (action === "revive") return taskActs(task.id, task.state);
+  if (action === "revive") return taskActs(task.id, task.state, undefined, state.unrouted.revision);
   if (action === "request") return group.request_text
     ? html`<button type="button" class="btn secondary" data-action="request-task" data-text="${group.request_text}" data-workflow="${task.workflow}">Request a task</button>`
     : html`<p class="meta">No new task can take this resource from here: start one from its thread.</p>`;
@@ -78,7 +78,7 @@ function unheardGroup(group) {
   const [first, ...rest] = unheardActs(task);
   const busy = state.taskBusy !== null || Boolean(state.failed);
   const act = first === "say"
-    ? html`<button type="button" class="btn secondary" data-action="unheard-say" data-task="${task.id}" data-text="${group.say_text}" aria-disabled="${busy ? "true" : "false"}">Say to ${taskLabel(task.key)}</button>${taskActs(task.id, task.state, rest)}
+    ? html`<button type="button" class="btn secondary" data-action="unheard-say" data-task="${task.id}" data-text="${group.say_text}" aria-disabled="${busy ? "true" : "false"}">Say to ${taskLabel(task.key)}</button>${taskActs(task.id, task.state, rest, state.unrouted.revision)}
       <p class="meta">Say sends “${group.say_text}”${rest.includes("resume") ? " It reads them when it resumes." : ""}</p>`
     : first ? routeButton({ ...group, resource: task.key }, first)
       : html`<p class="meta">Its next run reads them.</p>`;

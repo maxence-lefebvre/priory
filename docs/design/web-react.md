@@ -106,11 +106,11 @@ Approval of this plan approves exactly this list. Versions and dates come from t
 | react | MIT | 19.3.1 | 2026-10-14 | runtime | slice 2a | Components |
 | react-dom | MIT | 19.3.1 | 2026-10-14 | runtime | slice 2a | `createRoot`; `react-dom/server` renders component tests to markup. Brings `scheduler` (MIT). |
 | @tanstack/react-query | MIT | 5.107.1 | 2026-11-06 | runtime | slice 2a | The server data cache, approved by the person. Brings `@tanstack/query-core` (MIT). |
-
 | @tanstack/react-router | MIT | 1.170.46 | 2026-10-22 | runtime | foundation | Owns every address, as the person decided on 2026-11-25. Brings `@tanstack/history`, `router-core`, `react-store` and `store`, `cookie-es`, `seroval`, `seroval-plugins` and `use-sync-external-store` (all MIT), and `isbot` (Unlicense). |
 | oxlint | MIT | 1.94.0 | 2026-11-16 | dev | foundation | Lints the web view in `web:check`. Named by the person on 2026-11-25. |
 
-The router uses no plugin and no code splitting. Its routes are code.
+The router uses no plugin and no code splitting. Its routes are code. `isbot` is the one package here
+that is not MIT: the Unlicense puts it in the public domain.
 
 Slice 2a pins `@tanstack/react-query` at 5.107.1, the newest patch at least a week old on
 2026-11-23. The newest was then 5.108.4, released that day.
@@ -122,8 +122,11 @@ Rejected:
   types if it comes.
 - Vitest, jsdom and Testing Library: `node:test` covers the view models and the query layer,
   `renderToStaticMarkup` the markup, and browser checks against the demo the interactions.
-- React Router: the person chose TanStack Router. The first plan rejected both, since `pages.js` and
-  the History API already routed.
+- React Router: the person chose TanStack Router on 2026-11-25. The first plan rejected both, since
+  `pages.js` and the History API already routed.
+- TanStack Router's scroll restoration: it carries an element's scroll to the next page, so an unread
+  ask opened past its question. `state.scrolls` keeps a legacy page's scroll and `useScroll` a task's.
+- ESLint: the person chose oxlint.
 - Preact: smaller, but the person asked for React.
 - Tailwind or CSS-in-JS: `DESIGN.md` tokens and the CSP (`style-src 'self'`) keep plain CSS files.
 
@@ -164,13 +167,16 @@ Two ports touch few of the same lines: each page has its own file under `legacy/
    one there for a detail that has none, and keep a detail's read in `read()` of `queries.js`.
 2. Draw the same elements, classes, ids and ARIA as the legacy file. On a wide screen the page returns
    its `.list` (and `.drawer`), on a phone its `.top` and what follows. `usePlace()` gives the size.
+   Return one tree for every size, with `listClass(size, "list page")` on the list: on a phone `.flat`
+   gives it no box, so a rotation keeps the page's fields, focus and caret.
 3. Move the page's routes in `routes.jsx` from `legacy` to the root, with your component.
 4. Delete `legacy/<page>.js`, its lines in `app.js` (imports, `page()`, the event lists), its fields
    of `state` in `legacy/shared.js` and its id in `TYPED_FIELDS`.
 5. A list that a drawer or another panel still draws in a legacy page stays in `legacy/` until that
    page's port. So does what the ask drawer shares with the task page, in `legacy/sections.js`.
+   Pass an action the revision of the read it is drawn from, and keep it off until there is one.
 6. Run `corepack pnpm web:build`, `web:check` and `scripts/demo/refresh.mjs`. Add the page's reads to
-   the list in `refresh.mjs`. With `WEB=crates/priory-core/web` it needs no Rust build.
+   the list in `refresh.mjs`, and a `hooked` check for what can fail, come late or open cold. With `WEB=crates/priory-core/web` it needs no Rust build.
 
 When `dist/app.js` conflicts, merge `main`, run `corepack pnpm web:build` and commit.
 
@@ -188,7 +194,9 @@ Rules for every port:
 - URLs, including `/asks/42`, `?view=` queries, modified clicks and in-page hashes. The server still
   serves the index for every page path.
 - The API, the events long poll, the token and the snapshot in `localStorage`. The snapshot keeps each
-  listing this device has read, with its own age. Since a page reads only its own listings, one never
+  listing this device has read, with its own age, under `priory.snapshot.2`. The older `priory.snapshot`
+  is read when the new one is absent and never written, so a downgrade finds its own shape. A sign-out
+  drops both. Since a page reads only its own listings, one never
   read shows as loading offline.
 - The service worker: network first, the cached copy offline, Web Push and its `priory-push` cache.
   Slice 1 renames the shell cache to `priory-shell-2`, and `activate` deletes the older
@@ -221,14 +229,20 @@ Four briefs change today's web code: `priory-asks-decide-first-web` (Asks order,
 Rules, each with a test:
 
 0. **Read only what is on screen.** A moved revision reads each mounted query again, at most one read
-   of each in flight. A person's action or Retry starts a new read, which supersedes one in flight. A
+   of each in flight. A read that was in flight when the revision moved may hold older data, so it is
+   read once more. A person's action or Retry starts a new read, which supersedes one in flight. A
    hidden tab reads nothing, and reads once when it is shown. `/api/events` answers only a revision,
    not what changed. Once a minute a shown page reads its queries again, since a snooze ends and an age
-   moves with no new revision.
+   moves with no new revision. A failed read, or one that did not bring the held revision forward,
+   waits 5 s before the next wait. A listing that failed with nothing live to draw is read again after
+   5 s, since the wait cannot start without its revision.
 1. **Keep the last data while re-reading.** A refresh never swaps a drawn page or section for a
    loading state. A ported page's query uses `placeholderData: keepPreviousData`, and structural sharing keeps
    the objects that did not change, so their components do not redraw. Only a first visit to an id
    draws "Loading". A failed re-read keeps the last data and shows the error beside it.
+   A listing not read yet draws from the snapshot, with no stale sign while its read runs, and its
+   asks can be answered: the answer carries the revision drawn, and the server refuses one whose ask
+   closed or moved. An action that takes the state's revision stays off, since a snapshot names none.
 2. **Never unmount a focused input or move its caret.** Keys come from ids, never from a revision or
    an index. No component returns a loading state once it has data.
 3. **Keep scroll and open menus** across a refresh, for the same reason.
@@ -244,7 +258,9 @@ Tests:
   (`/asks/1`: Brief, Inbox, Trace), and on a task page drawing "Loading task" or its Say field
   losing its element, focus, text or selection. It counts what each page reads once the revision
   moves, and what a hidden tab reads. It also checks Back and forward, that a superseded refresh never
-  draws, and that a legacy draw that throws keeps the page. It drives Chromium over the DevTools
+  draws, and that a legacy draw that throws keeps the page. Its `hooked` checks make a request fail,
+  come late or be refused, and cover an ask's first scroll and bar, a rotation, a failing and a stuck
+  read, keys and actions on a cold page, and malformed addresses. It drives Chromium over the DevTools
   protocol with Node's own WebSocket, so it needs no package, only the `sqlite3` command. CI has no
   browser, so each port's pull request runs it against the demo and pastes its output.
 

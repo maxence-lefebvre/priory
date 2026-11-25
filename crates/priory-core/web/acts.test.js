@@ -60,27 +60,42 @@ test("text typed while a Say is in flight stays as the next draft", async () => 
 });
 
 test("Cancel arms on the first press and sends on the second, Resume sends at once", async () => {
-  await pressTask(1, "cancel", {});
+  await pressTask(1, "cancel", { revision: 7 });
   assert.deepEqual([sent, acts.get().armed.task, acts.get().armed.act], [[], 1, "cancel"]);
-  await pressTask(1, "cancel", {});
+  await pressTask(1, "cancel", { revision: 7 });
   assert.deepEqual([sent.map(([path]) => path), acts.get().armed], [["/api/tasks/1/cancel"], null]);
-  await pressTask(1, "resume", {});
+  await pressTask(1, "resume", { revision: 7 });
   assert.equal(sent.length, 2);
 });
 
 test("a press on another action moves the arm, and the arm runs out", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  pressTask(1, "cancel", {});
-  pressTask(2, "cancel", {});
+  pressTask(1, "cancel", { revision: 7 });
+  pressTask(2, "cancel", { revision: 7 });
   assert.deepEqual([sent, acts.get().armed.task], [[], 2]);
   t.mock.timers.tick(60000);
   assert.equal(acts.get().armed, null);
-  pressTask(2, "cancel", {});
+  pressTask(2, "cancel", { revision: 7 });
   assert.deepEqual(sent, []);
 });
 
 test("a refused token signs out", async () => {
   answer = async () => ({ status: 401, body: {} });
-  await writeTask(1, "resume", {});
+  await writeTask(1, "resume", { revision: 7 });
   assert.deepEqual([session.get().token, session.get().signInError, kept.has("priory.token")], [null, "The daemon refused this token. Paste the current one.", false]);
+});
+
+test("Cancel and Release carry the revision their page drew, and the server takes none with the rest", async () => {
+  for (const act of ["cancel", "cancel", "release", "resume", "revive", "revive"]) await pressTask(1, act, { revision: 281 });
+  assert.deepEqual(sent, [["/api/tasks/1/cancel", { revision: 281 }], ["/api/tasks/1/release", { revision: 281 }], ["/api/tasks/1/resume", {}], ["/api/tasks/1/revive", {}]]);
+});
+
+test("an act with no revision on screen neither arms nor sends", async () => {
+  for (const act of ["cancel", "cancel", "resume"]) await pressTask(1, act, {});
+  assert.deepEqual([sent, acts.get().armed], [[], null]);
+});
+
+test("another runner's task goes by its generation", async () => {
+  await pressTask("laptop:ENG-1", "resume", { generation: 3, body: { generation: 3 } });
+  assert.deepEqual(sent, [["/api/tasks/laptop:ENG-1/resume", { generation: 3 }]]);
 });

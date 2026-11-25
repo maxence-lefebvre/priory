@@ -44,11 +44,9 @@ export function client({ api, failed = () => {}, refused = () => {} }) {
     queryCache: new QueryCache({
       onError: (error, query) => {
         if (error.status === 401) refused(error);
-        else if (isListing(query)) failed(error);
+        else if (isListing(query) || query.state.data !== undefined) failed(error);
       },
-      onSuccess: (_, query) => {
-        if (isListing(query) && !broken(cache)) failed(null);
-      },
+      onSuccess: () => healed(),
     }),
     defaultOptions: {
       queries: {
@@ -63,21 +61,38 @@ export function client({ api, failed = () => {}, refused = () => {} }) {
       },
     },
   });
+  // A page with nothing to draw of a detail says so itself.
+  const healed = () => {
+    if (!errored(cache).some((query) => isListing(query) || query.state.data !== undefined)) failed(null);
+  };
+  cache.getQueryCache().subscribe((event) => {
+    if (event.type === "observerRemoved") healed();
+  });
   return cache;
 }
 
 const active = (cache) => cache.getQueryCache().findAll({ type: "active" });
-const broken = (cache) => active(cache).some((query) => isListing(query) && query.state.status === "error");
+const errored = (cache) => active(cache).filter((query) => query.state.status === "error");
 const moving = (query) => !ONCE.has(query.queryKey[0]) || query.state.status === "error" || query.state.data === undefined;
 
 // Marks every read stale and reads the mounted ones again. True when none of them failed.
-async function reread(cache, options) {
-  await cache.invalidateQueries({ predicate: moving }, options);
-  return !broken(cache);
+async function reread(cache, options, predicate = moving) {
+  await cache.invalidateQueries({ predicate }, options);
+  return errored(cache).length === 0;
 }
 
-/** The revision moved: one read of each mounted query, which joins one in flight. */
-export const moved = (cache) => reread(cache, { cancelRefetch: false });
+/**
+ * The revision moved: one read of each mounted query, which joins one in flight. What a joined read
+ * answers may be from before the move, so that query is read once more.
+ */
+export async function moved(cache) {
+  const joined = new Set(active(cache).filter((query) => query.state.fetchStatus === "fetching"));
+  const ok = await reread(cache, { cancelRefetch: false });
+  return joined.size ? reread(cache, { cancelRefetch: false }, (query) => joined.has(query) && moving(query)) : ok;
+}
+
+/** Whether a listing on screen failed with nothing live to draw, so the events poll cannot start for it. */
+export const stuck = (cache) => errored(cache).some((query) => isListing(query) && (query.state.data === undefined || (REVISIONED.includes(query.queryKey[0]) && query.state.data.revision === undefined)));
 
 /** The person acted, or asked: a new read of each mounted query, which supersedes one in flight. */
 export const refreshMounted = (cache) => reread(cache, { cancelRefetch: true });
@@ -92,6 +107,8 @@ export const staleAll = (cache) => cache.invalidateQueries({ predicate: moving, 
 export function heldRevision(cache) {
   let oldest;
   for (const query of active(cache)) {
+    // A detail that cannot be read again would hold the wait at a revision long gone.
+    if (query.state.status === "error" && !isListing(query)) continue;
     const revision = query.state.data?.revision;
     if (revision === undefined && REVISIONED.includes(query.queryKey[0])) return undefined;
     if (revision !== undefined) oldest = Math.min(oldest ?? revision, revision);

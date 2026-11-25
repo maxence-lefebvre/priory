@@ -1,7 +1,20 @@
 // The navigation: one history that TanStack Router reads, how a page or a link moves it, and the list
 // a detail was opened from. routes.jsx holds the routes.
 import { createBrowserHistory, createMemoryHistory } from "@tanstack/react-router";
+import { decoded } from "./pages.js";
 import { START, arrive, entryOf, pathOf, searchOf, step } from "./frame.js";
+
+// The router decodes each part of a path and throws on one that does not decode: `%` then stands for itself.
+export function wellFormed(href) {
+  const [path] = href.split(/[?#]/);
+  return path.split("/").map((part) => (decoded(part) === part ? part.replaceAll("%", "%25") : part)).join("/") + href.slice(path.length);
+}
+
+if (typeof window !== "undefined") {
+  const { pathname, search, hash } = window.location;
+  const href = wellFormed(pathname + search + hash);
+  if (href !== pathname + search + hash) window.history.replaceState(window.history.state, "", href);
+}
 
 export const history = typeof window === "undefined" ? createMemoryHistory() : createBrowserHistory();
 
@@ -39,12 +52,12 @@ export function placeAt(location, desk, wide) {
 }
 
 export function go(href) {
-  history.push(href, entryOf(trail, href));
+  history.push(wellFormed(href), entryOf(trail, href));
   history.flush();
 }
 
 export function replace(href) {
-  history.replace(href, entryOf(trail, href));
+  history.replace(wellFormed(href), entryOf(trail, href));
   history.flush();
 }
 
@@ -52,7 +65,7 @@ const smooth = () => (matchMedia("(prefers-reduced-motion: reduce)").matches ? "
 
 /** Scrolls to the element a hash names, if the page drew it. */
 export const toHash = (hash, behavior = smooth()) => {
-  const element = hash && document.getElementById(decodeURIComponent(hash.slice(1)));
+  const element = hash && document.getElementById(decoded(hash.slice(1)));
   element?.scrollIntoView({ behavior });
   return Boolean(element);
 };

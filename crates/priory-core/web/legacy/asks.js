@@ -7,7 +7,7 @@ import { taskRead } from "../pages.js";
 import { go } from "../router.js";
 import { taskLabel } from "../tasks.js";
 import { batchOf, closesSection, laneGraph, laneKey, planEditOf, splitsOf, splitsSection } from "./batch.js";
-import { refresh, signOut } from "./data.js";
+import { acceptAsk, refresh, signOut } from "./data.js";
 import { fold, openAsks } from "./desk.js";
 import { connection } from "./frame.js";
 import { taskOf, taskSections } from "./sections.js";
@@ -297,7 +297,7 @@ function ranLine(ran) {
 }
 
 // Writes: each is the twin of a CLI verb, sent with the revision the page showed.
-export const askOnScreen = () => state.data.asks.find((ask) => String(ask.id) === selectedAsk());
+export const askOnScreen = () => state.data?.asks.find((ask) => String(ask.id) === selectedAsk());
 
 // An answer leaves at once: a tapped option was already confirmed by its second tap, and Send is a
 // deliberate press of its own. "Sending" shows only while the request is in flight.
@@ -356,9 +356,9 @@ async function write(ask, path, body, draft) {
     state.writing.add(ask.id);
   }
   const fresh = answered.ask;
-  if (status === 409 && fresh) state.data.asks = state.data.asks.map((candidate) => (candidate.id === fresh.id ? fresh : candidate));
+  if (status === 409 && fresh) await acceptAsk(fresh);
   state.notices.set(ask.id, writeNote(status, answered, age, ask));
-  if (status === 504 || status === 0) refresh();
+  if ((status === 409 && fresh) || status === 504 || status === 0) refresh();
   return false;
 }
 
