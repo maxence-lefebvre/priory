@@ -86,6 +86,10 @@ fn processes_that_outlive_an_upgrade_and_its_rollback_keep_working() {
     let toml = fs::read_to_string(&file).unwrap();
     let serve = "\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"PRIORY_TEST_TOKEN\"\n";
     fs::write(&file, toml + serve).unwrap();
+    // The old binary makes its own state, at its own schema.
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = fs::remove_file(setup.dir.join(format!("priory.db{suffix}")));
+    }
     let installed = install(&setup, &old);
     let path = installed.to_str().unwrap().to_owned();
     setup.calls(&[]);
