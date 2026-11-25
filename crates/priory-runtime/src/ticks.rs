@@ -1,10 +1,12 @@
 //! The durations of a process's loop ticks, the other durations it times for a histogram, which
 //! its metrics exporter takes each interval, and the counts it keeps for a counter.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 static ON: AtomicBool = AtomicBool::new(false);
 static TICKS: Mutex<Vec<f64>> = Mutex::new(Vec::new());
@@ -94,4 +96,174 @@ pub fn counts() -> BTreeMap<Counter, u64> {
         .lock()
         .map(|counts| counts.clone())
         .unwrap_or_default()
+}
+
+/// The tick in progress, for the watchdog.
+struct Tick {
+    started: Instant,
+    phase: (&'static str, Instant),
+    /// The phase that took longest so far.
+    longest: (&'static str, Duration),
+    command: Option<(String, Instant)>,
+    /// The command that took longest so far.
+    slowest: Option<(String, Duration)>,
+}
+
+static TICK: Mutex<Option<Tick>> = Mutex::new(None);
+
+thread_local! {
+    /// Whether this thread runs the loop, whose commands hold the tick.
+    static LOOP: Cell<bool> = const { Cell::new(false) };
+}
+
+fn tick() -> MutexGuard<'static, Option<Tick>> {
+    TICK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Starts a tick of the loop, on the calling thread.
+pub fn begin() {
+    LOOP.set(true);
+    let now = Instant::now();
+    *tick() = Some(Tick {
+        started: now,
+        phase: ("start", now),
+        longest: ("start", Duration::ZERO),
+        command: None,
+        slowest: None,
+    });
+}
+
+/// Says what the tick does from now on.
+pub fn phase(name: &'static str) {
+    if let Some(tick) = tick().as_mut() {
+        tick.close_phase();
+        tick.phase = (name, Instant::now());
+    }
+}
+
+/// Ends the tick. When it took over `over`, returns what took longest.
+pub fn end(over: Duration) -> Option<String> {
+    let mut tick = tick().take()?;
+    tick.close_phase();
+    let took = tick.started.elapsed();
+    (took >= over).then(|| {
+        let (phase, time) = tick.longest;
+        let command = tick.slowest.map_or_else(String::new, |(command, time)| {
+            format!(", {command} for {}s", time.as_secs())
+        });
+        format!(
+            "a tick took {}s: {phase} for {}s{command}",
+            took.as_secs(),
+            time.as_secs()
+        )
+    })
+}
+
+/// When the tick in progress started, and what it runs, once it runs for over `over`.
+pub fn stuck(over: Duration) -> Option<(Instant, String)> {
+    let tick = tick();
+    let tick = tick.as_ref()?;
+    (tick.started.elapsed() >= over).then(|| {
+        let command = tick
+            .command
+            .as_ref()
+            .map_or_else(String::new, |(command, _)| format!(", {command}"));
+        let what = format!(
+            "a tick runs for over {}s: {}{command}",
+            over.as_secs(),
+            tick.phase.0
+        );
+        (tick.started, what)
+    })
+}
+
+impl Tick {
+    fn close_phase(&mut self) {
+        let (name, since) = self.phase;
+        let took = since.elapsed();
+        if took > self.longest.1 {
+            self.longest = (name, took);
+        }
+    }
+}
+
+/// Marks `command` as what the tick runs until it drops, on the loop's thread.
+pub(crate) struct Running(bool);
+
+pub(crate) fn running(command: &Command) -> Running {
+    if !LOOP.get() {
+        return Running(false);
+    }
+    if let Some(tick) = tick().as_mut() {
+        tick.command = Some((label(command), Instant::now()));
+    }
+    Running(true)
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        if !self.0 {
+            return;
+        }
+        if let Some(tick) = tick().as_mut()
+            && let Some((command, since)) = tick.command.take()
+        {
+            let took = since.elapsed();
+            if tick.slowest.as_ref().is_none_or(|(_, most)| took > *most) {
+                tick.slowest = Some((command, took));
+            }
+        }
+    }
+}
+
+/// The program and its subcommand, such as `git fetch`. Other arguments can hold private text.
+fn label(command: &Command) -> String {
+    let program = std::path::Path::new(command.get_program())
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
+    let mut arguments = command
+        .get_args()
+        .map(|argument| argument.to_string_lossy());
+    while let Some(argument) = arguments.next() {
+        if matches!(&*argument, "-C" | "-c" | "-L" | "-S" | "-f") {
+            arguments.next();
+        } else if !argument.starts_with('-') {
+            let word = argument.len() <= 24
+                && argument
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b == b'-');
+            return match word {
+                true => format!("{program} {argument}"),
+                false => program.into_owned(),
+            };
+        }
+    }
+    program.into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn a_tick_over_the_limit_names_its_phase_and_its_command_but_no_argument() {
+        begin();
+        assert_eq!(end(Duration::from_secs(10)), None, "a short tick is silent");
+        assert_eq!(stuck(Duration::ZERO), None, "no tick runs");
+
+        begin();
+        phase("sweep");
+        let mut git = crate::runtime::git(Path::new("/private"));
+        git.args(["fetch", "secret"]);
+        let running = running(&git);
+        let (_, what) = stuck(Duration::ZERO).unwrap();
+        assert_eq!(what, "a tick runs for over 0s: sweep, git fetch");
+        std::thread::sleep(Duration::from_millis(20));
+        drop(running);
+        phase("runs");
+        let said = end(Duration::ZERO).unwrap();
+        assert_eq!(said, "a tick took 0s: sweep for 0s, git fetch for 0s");
+    }
 }

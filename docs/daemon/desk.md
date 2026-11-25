@@ -246,6 +246,10 @@ process set <slice> to <limits>; the sweep restored its limits at <time>`. While
 set them, it ends with `left the limits of <slice> alone: <why>` instead. The daemon reads both from
 Priory home too. See [agents-slice.md](agents-slice.md#restoring-the-limits).
 
+For 24 hours after a tick of the daemon's loop took over 10 seconds, the banner ends with what it ran
+and when, such as `a tick took 42s: sweep for 40s, git fetch for 30s at <time>`. The daemon reads it
+from Priory home too. See [home.md](home.md#long-ticks).
+
 The banner is `intake` in `priory desk --json` and `/api/desk`. A source that starts failing, or
 recovers, moves the state's revision, so a client that waits on `/api/events` redraws the banner at
 once. A repeated poll with the same outcome moves nothing. The stopped banner comes from time

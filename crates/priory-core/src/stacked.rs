@@ -29,13 +29,19 @@ pub(crate) fn pushed(db: &mut Connection, trace: &Trace, home: &Path) -> rusqlit
         })?
         .collect::<rusqlite::Result<_>>()?;
     for (task, parent, branch, worktree, told) in stacked {
-        // The entry may have started from commits its parent had not pushed yet: an older push is
-        // no news to it.
-        let Some(head) = runtime::pushed_head(home, Path::new(&worktree), &branch).filter(|head| {
-            *head != told && !runtime::is_ancestor(Path::new(&worktree), head, &told)
-        }) else {
+        let Some(head) =
+            runtime::pushed_head(home, Path::new(&worktree), &branch).filter(|head| *head != told)
+        else {
             continue;
         };
+        // The entry may have started from commits its parent had not pushed yet: an older push is
+        // no news to it.
+        match runtime::is_ancestor(Path::new(&worktree), &head, &told) {
+            Ok(false) => {}
+            Ok(true) => continue,
+            // The next tick asks again, and a hung disk would hold this one for each entry.
+            Err(_) => return Ok(()),
+        }
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let moved = tx.execute(
             "UPDATE tasks SET parent_head = ?3 WHERE id = ?1 AND parent_head = ?2",

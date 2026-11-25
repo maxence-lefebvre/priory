@@ -925,7 +925,15 @@ pub(crate) fn sweep(db: &Connection, home: &Path) -> rusqlite::Result<()> {
         .collect::<rusqlite::Result<_>>()?;
     for task in ended {
         let folder = home.join("evidence").join(task.to_string());
-        match std::fs::remove_dir_all(&folder) {
+        // A rename, since the sweep deletes what is there on a thread.
+        let aside = match worktrees::reclaim_path(home, task) {
+            Ok(aside) => aside,
+            Err(why) => {
+                eprintln!("priory daemon: removing {}: {why}", folder.display());
+                continue;
+            }
+        };
+        match std::fs::rename(&folder, aside) {
             Ok(()) => {}
             Err(why) if why.kind() == std::io::ErrorKind::NotFound => {}
             Err(why) => {

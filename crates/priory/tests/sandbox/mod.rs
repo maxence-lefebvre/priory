@@ -282,7 +282,9 @@ fn a_real_jail_hides_the_home_keeps_the_worktree_and_reaches_the_daemon() {
         .find(|found| found.path.ends_with("repo/1"))
         .unwrap();
     assert_eq!(
-        priory_runtime::worktrees::retire_blocker(&setup.dir.join("home"), found).as_deref(),
+        priory_runtime::worktrees::removable(&setup.dir.join("home"), found)
+            .err()
+            .as_deref(),
         Some("a process runs in it")
     );
 

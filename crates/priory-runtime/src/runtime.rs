@@ -57,6 +57,28 @@ pub fn command_timeout() -> Duration {
         .unwrap_or(Duration::from_secs(300))
 }
 
+/// How long the loop waits for a network call, or for git on a worktree it sweeps.
+pub const LOOP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// `LOOP_TIMEOUT`, or the command timeout when that is shorter.
+pub fn loop_timeout() -> Duration {
+    LOOP_TIMEOUT.min(command_timeout())
+}
+
+/// As `run`, giving up after `loop_timeout`.
+pub(crate) fn soon(command: &mut Command) -> Result<String, String> {
+    within(command, loop_timeout())
+}
+
+fn within(command: &mut Command, timeout: Duration) -> Result<String, String> {
+    fed_raw_within(command, None, timeout).map(|out| String::from_utf8_lossy(&out).into_owned())
+}
+
+/// Whether `error` is of a command that ran past its deadline.
+pub fn timed_out(error: &str) -> bool {
+    error.contains("timed out after ")
+}
+
 /// Runs `command` in its own process group and returns its output, or `None` when it ran past the
 /// command timeout. Then it kills the whole group, so a hung fetch cannot stop the daemon's one
 /// thread, and no child that ignores TERM keeps the output pipe open.
@@ -84,6 +106,7 @@ pub fn fed_within(
         .stderr(Stdio::piped())
         .process_group(0)
         .spawn()?;
+    let _running = crate::ticks::running(command);
     let group = child.id();
     let stdin = child.stdin.take();
     let (sender, receiver) = mpsc::channel();
@@ -365,7 +388,7 @@ fn recover(path: &Path, branch: &str, from: Option<String>) -> Result<Recovery, 
             "{shown} {place}, not on {branch}, and {branch} is gone"
         ));
     }
-    let at_risk = at_risk(path, Some(branch), SCAN)?;
+    let at_risk = at_risk(path, Some(branch), SCAN, PATCHES)?;
     let kept_branch = match (&from, at_risk) {
         (None, 1..) => {
             let kept = format!("{branch}-kept-{short}");
@@ -435,9 +458,16 @@ pub(crate) const SCAN: usize = 2000;
 
 /// How many commits on the HEAD of `path` are neither on `branch`, when given, nor on a
 /// remote-tracking ref, nor patch-equivalent to a commit there. A merge commit has no patch id, so
-/// it always counts. When more than `scan` remote commits could match, none is compared and every
-/// commit counts.
-pub(crate) fn at_risk(path: &Path, branch: Option<&str>, scan: usize) -> Result<usize, String> {
+/// it always counts. When more than `scan` remote commits could match, or
+/// their patches take more than `cap` bytes, none is compared and every commit counts. The whole scan
+/// gives up after `loop_timeout`.
+pub(crate) fn at_risk(
+    path: &Path,
+    branch: Option<&str>,
+    scan: usize,
+    cap: usize,
+) -> Result<usize, String> {
+    let deadline = Instant::now() + loop_timeout();
     let local: Vec<String> = branch
         .map(|branch| format!("refs/heads/{branch}"))
         .into_iter()
@@ -448,10 +478,13 @@ pub(crate) fn at_risk(path: &Path, branch: Option<&str>, scan: usize) -> Result<
         if !merges {
             command.arg("--no-merges");
         }
-        let out = run(command
-            .args(["HEAD", "--not"])
-            .args(&local)
-            .arg("--remotes"))?;
+        let out = by(
+            command
+                .args(["HEAD", "--not"])
+                .args(&local)
+                .arg("--remotes"),
+            deadline,
+        )?;
         Ok(out.lines().map(str::to_owned).collect())
     };
     let all = listed(true)?;
@@ -463,9 +496,12 @@ pub(crate) fn at_risk(path: &Path, branch: Option<&str>, scan: usize) -> Result<
     if plain.is_empty() {
         return Ok(merges);
     }
-    let dates = run(git(path)
-        .args(["log", "--no-walk=unsorted", "--format=%at"])
-        .args(&plain))?;
+    let dates = by(
+        git(path)
+            .args(["log", "--no-walk=unsorted", "--format=%at"])
+            .args(&plain),
+        deadline,
+    )?;
     let oldest = dates
         .lines()
         .filter_map(|date| date.trim().parse::<i64>().ok())
@@ -476,7 +512,10 @@ pub(crate) fn at_risk(path: &Path, branch: Option<&str>, scan: usize) -> Result<
     let mut window = vec!["--no-merges".to_owned(), since, "--remotes".to_owned()];
     window.extend(local);
     window.extend(["--not".to_owned(), "HEAD".to_owned()]);
-    let count = run(git(path).args(["rev-list", "--count"]).args(&window))?;
+    let count = by(
+        git(path).args(["rev-list", "--count"]).args(&window),
+        deadline,
+    )?;
     if count
         .trim()
         .parse::<usize>()
@@ -484,8 +523,12 @@ pub(crate) fn at_risk(path: &Path, branch: Option<&str>, scan: usize) -> Result<
     {
         return Ok(all.len());
     }
-    let ours = patch_ids(path, &[], &plain)?;
-    let theirs = patch_ids(path, &window, &[])?;
+    let Some(ours) = patch_ids(path, &[], &plain, deadline, cap)? else {
+        return Ok(all.len());
+    };
+    let Some(theirs) = patch_ids(path, &window, &[], deadline, cap)? else {
+        return Ok(all.len());
+    };
     let held: std::collections::HashSet<_> = theirs.into_iter().map(|(id, _)| id).collect();
     let unmatched = plain
         .iter()
@@ -501,11 +544,14 @@ pub(crate) fn at_risk(path: &Path, branch: Option<&str>, scan: usize) -> Result<
 /// The `(patch id, commit)` pairs of the commits that `walk` reaches, or of the `commits` alone,
 /// as `git patch-id --verbatim` reads them from `git log -p`. Whitespace counts, so a commit amended
 /// only in its indentation is a different patch. A commit with an empty diff has none.
+/// `None` when the patches take more than `cap` bytes.
 fn patch_ids(
     path: &Path,
     walk: &[String],
     commits: &[String],
-) -> Result<Vec<(String, String)>, String> {
+    deadline: Instant,
+    cap: usize,
+) -> Result<Option<Vec<(String, String)>>, String> {
     let mut log = git(path);
     log.args([
         "log",
@@ -517,14 +563,71 @@ fn patch_ids(
     if !commits.is_empty() {
         log.arg("--no-walk=unsorted").args(commits);
     }
-    let patches = fed_raw(log.args(walk), None)?;
-    let ids = fed(git(path).args(["patch-id", "--verbatim"]), Some(patches))?;
-    Ok(ids
-        .lines()
-        .filter_map(|line| line.split_once(' '))
-        .map(|(id, commit)| (id.to_owned(), commit.to_owned()))
-        .collect())
+    let Some(patches) = capped(log.args(walk), deadline, cap)? else {
+        return Ok(None);
+    };
+    let ids = fed_raw_within(
+        git(path).args(["patch-id", "--verbatim"]),
+        Some(patches),
+        left(deadline),
+    )?;
+    Ok(Some(
+        String::from_utf8_lossy(&ids)
+            .lines()
+            .filter_map(|line| line.split_once(' '))
+            .map(|(id, commit)| (id.to_owned(), commit.to_owned()))
+            .collect(),
+    ))
 }
+
+fn left(deadline: Instant) -> Duration {
+    deadline.saturating_duration_since(Instant::now())
+}
+
+/// As `run`, giving up at `deadline`.
+fn by(command: &mut Command, deadline: Instant) -> Result<String, String> {
+    within(command, left(deadline))
+}
+
+/// The output of `command`, or `None` when it prints more than `cap` bytes. It ends at `deadline`.
+fn capped(command: &mut Command, deadline: Instant, cap: usize) -> Result<Option<Vec<u8>>, String> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map_err(|error| format!("{command:?}: {error}"))?;
+    let _running = crate::ticks::running(command);
+    let group = child.id();
+    let stdout = child.stdout.take().expect("stdout is piped");
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut read = Vec::new();
+        let done = stdout.take(cap as u64 + 1).read_to_end(&mut read);
+        if read.len() > cap {
+            crate::script::kill(group);
+        }
+        sender.send(done.and_then(|_| child.wait()).map(|status| (read, status)))
+    });
+    match receiver.recv_timeout(left(deadline)) {
+        Ok(Ok((read, _))) if read.len() > cap => Ok(None),
+        Ok(Ok((read, status))) if status.success() => Ok(Some(read)),
+        Ok(Ok((_, status))) => Err(format!("{command:?}: {status}")),
+        Ok(Err(error)) => Err(format!("{command:?}: {error}")),
+        Err(_) => {
+            crate::script::kill(group);
+            let _ = receiver.recv_timeout(REAP);
+            Err(format!(
+                "{command:?}: timed out after {}s",
+                loop_timeout().as_secs()
+            ))
+        }
+    }
+}
+
+/// The most bytes of patches a comparison reads, 5 times the largest seen.
+pub(crate) const PATCHES: usize = 64 << 20;
 
 /// Whether `path` is a worktree of `clone` whose gitdir is gone, as a `git worktree remove` that
 /// failed partway leaves it: git deleted the tracked files and the gitdir, not the rest.
@@ -589,7 +692,7 @@ pub fn worktree(
     }
     if orphaned(&path, &clone) {
         if crate::worktrees::orphan_without_repository(&path).is_ok() {
-            remove_sealed(&path);
+            crate::worktrees::discard_aside(home, &path);
         }
         if path.exists() {
             move_aside(home, &path)?;
@@ -631,16 +734,24 @@ pub fn worktree(
     let trunk = phased("fetch", || {
         // Before the fetch, which then brings the commit.
         let trunk = (vouch && from.is_none())
-            .then(|| trunk(repo, command_timeout()))
+            .then(|| trunk(repo, loop_timeout()))
             .transpose()?;
-        run(git(&clone).args(["fetch", "--quiet", "origin"]))?;
-        run(git(&clone).args(["remote", "set-head", "origin", "--auto"]))?;
+        soon(git(&clone).args(["fetch", "--quiet", "origin"]))?;
+        soon(git(&clone).args(["remote", "set-head", "origin", "--auto"]))?;
         if let Some(trunk) = &trunk
             && run(git(&clone).args(["cat-file", "-e", trunk])).is_err()
         {
-            run(git(&clone).args(["fetch", "--quiet", "origin", trunk]))?;
+            soon(git(&clone).args(["fetch", "--quiet", "origin", trunk]))?;
         }
         Ok(trunk)
+    })
+    .inspect(|_| fetched(repo))
+    .map_err(|error| {
+        if timed_out(&error) {
+            put_off(repo)
+        } else {
+            error
+        }
     })?;
     let start = match (from, trunk) {
         (Some(from), _) => {
@@ -662,6 +773,53 @@ pub fn worktree(
     })?;
     // Not the branch's head: every worktree shares the clone's refs, so an agent can have moved it.
     Ok((path, branch, Added::New(start)))
+}
+
+/// How a task's reason starts while its worktree waits for a fetch that timed out.
+pub const FETCH_WAITS: &str = "waits to fetch ";
+
+/// Each repository whose fetch timed out: when it may be tried again, and how long that wait is.
+static SLOW: std::sync::Mutex<std::collections::BTreeMap<String, (Instant, Duration)>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn slow() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<String, (Instant, Duration)>>
+{
+    SLOW.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn fetched(repo: &str) {
+    slow().remove(repo);
+}
+
+/// Waits 1 minute before `repo` is fetched again, twice as long after each next timeout, 10 minutes
+/// at most. Returns why its tasks wait.
+fn put_off(repo: &str) -> String {
+    let mut slow = slow();
+    let wait = slow.get(repo).map_or(Duration::from_secs(60), |(_, wait)| {
+        (*wait * 2).min(Duration::from_secs(600))
+    });
+    slow.insert(repo.to_owned(), (Instant::now() + wait, wait));
+    fetch_reason(repo)
+}
+
+fn fetch_reason(repo: &str) -> String {
+    format!(
+        "{FETCH_WAITS}{repo}: timed out after {}s",
+        loop_timeout().as_secs()
+    )
+}
+
+/// Why worktree `name` of `repo`, which a fetch would make, waits: the last fetch timed out a short
+/// while ago.
+pub fn fetch_waits(home: &Path, repo: &str, name: &str) -> Option<String> {
+    let waits = slow()
+        .get(repo)
+        .is_some_and(|(again, _)| *again > Instant::now());
+    let made = || {
+        home.join("worktrees").join(repo).join(name).exists()
+            || head(&home.join("repos").join(repo), &format!("priory/{name}")).is_some()
+    };
+    (waits && !made()).then(|| fetch_reason(repo))
 }
 
 /// The head of `repo`'s default branch as GitHub has it. It runs outside the clone, whose refs and
@@ -695,7 +853,7 @@ fn phased<T>(phase: &'static str, step: impl FnOnce() -> Result<T, String>) -> R
     let done = step();
     let outcome = match &done {
         Ok(_) => "ok",
-        Err(error) if error.contains(": timed out after ") => "timeout",
+        Err(error) if timed_out(error) => "timeout",
         Err(_) => "error",
     };
     crate::ticks::timed_as(
@@ -846,12 +1004,14 @@ pub fn default_branch(worktree: &Path) -> Result<String, String> {
     )
 }
 
-/// Whether commit `below` is `commit` or one of its ancestors, in the repository of `worktree`.
-pub fn is_ancestor(worktree: &Path, below: &str, commit: &str) -> bool {
-    git(worktree)
-        .args(["merge-base", "--is-ancestor", below, commit])
-        .status()
-        .is_ok_and(|status| status.success())
+/// Whether commit `below` is `commit` or one of its ancestors, in the repository of `worktree`. A
+/// git that runs past `loop_timeout` is an error, which is not a no.
+pub fn is_ancestor(worktree: &Path, below: &str, commit: &str) -> Result<bool, String> {
+    match soon(git(worktree).args(["merge-base", "--is-ancestor", below, commit])) {
+        Ok(_) => Ok(true),
+        Err(error) if timed_out(&error) => Err(error),
+        Err(_) => Ok(false),
+    }
 }
 
 /// The origin branches, as last pushed or fetched, that hold every commit of the local branch
@@ -864,7 +1024,7 @@ pub fn in_line(home: &Path, worktree: &Path, branch: &str) -> Option<Vec<String>
         .ok()?;
     let clone = home.join("repos").join(repo);
     let head = kept_head(home, worktree, branch)?;
-    if is_ancestor(&clone, &head, "origin/HEAD") {
+    if is_ancestor(&clone, &head, "origin/HEAD").ok()? {
         return Some(Vec::new());
     }
     let refs = |filter: &[&str]| {
@@ -1844,14 +2004,18 @@ fn move_aside(home: &Path, path: &Path) -> Result<(), String> {
 /// can hold a `PRIORY_HOME`: a user other than root cannot remove a sealed kit, plugin or memory
 /// folder with `fs::remove_dir_all` alone.
 pub fn remove_sealed(dir: &Path) {
-    unseal(dir);
+    unseal(dir, None);
     let _ = fs::remove_dir_all(dir);
 }
 
 /// Makes `dir` and every folder under it writable by its owner, so their files can be removed.
-pub(crate) fn unseal(dir: &Path) {
+/// False when it stopped at `deadline`.
+pub(crate) fn unseal(dir: &Path, deadline: Option<Instant>) -> bool {
     let mut folders = vec![dir.to_path_buf()];
     while let Some(folder) = folders.pop() {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return false;
+        }
         if !fs::symlink_metadata(&folder).is_ok_and(|meta| meta.is_dir()) {
             continue;
         }
@@ -1860,6 +2024,7 @@ pub(crate) fn unseal(dir: &Path) {
             folders.extend(entries.filter_map(|entry| entry.ok().map(|entry| entry.path())));
         }
     }
+    true
 }
 
 /// Renames `staging` to `target`, and moves aside and removes what `target` held before.
@@ -3489,6 +3654,76 @@ mod tests {
     }
 
     #[test]
+    fn patches_over_the_byte_cap_count_every_commit_at_risk() {
+        let home = Home::new("cap");
+        let tree = home.tree();
+        sh(&tree, &["checkout", "--quiet", "--detach"]);
+        let head = commit(&tree, "a.txt", "a\n");
+        sh(&tree, &["checkout", "--quiet", "--detach", "origin/main"]);
+        sh(&tree, &["cherry-pick", "-x", &head]);
+        sh(
+            &tree,
+            &["push", "--quiet", "origin", "HEAD:refs/heads/copy"],
+        );
+        sh(&tree, &["checkout", "--quiet", "--detach", &head]);
+
+        assert_eq!(at_risk(&tree, Some("priory/1"), SCAN, PATCHES), Ok(0));
+        assert_eq!(at_risk(&tree, Some("priory/1"), SCAN, 10), Ok(1));
+    }
+
+    #[test]
+    fn a_capped_command_ends_at_its_deadline_and_keeps_no_more_than_its_cap() {
+        let soon = Instant::now() + Duration::from_millis(200);
+        let stuck = capped(Command::new("sleep").arg("60"), soon, 10).unwrap_err();
+        assert!(timed_out(&stuck), "{stuck}");
+
+        let later = Instant::now() + Duration::from_secs(20);
+        assert_eq!(capped(&mut Command::new("yes"), later, 1000), Ok(None));
+        let echo = capped(Command::new("printf").arg("ab"), later, 2);
+        assert_eq!(echo, Ok(Some(b"ab".to_vec())));
+    }
+
+    #[test]
+    fn a_hung_ancestor_check_is_an_error_and_not_a_no() {
+        let home = Home::new("ancestor");
+        let tree = home.tree();
+        let head = sh(&tree, &["rev-parse", "HEAD"]);
+        assert_eq!(is_ancestor(&tree, &head, "HEAD"), Ok(true));
+        assert_eq!(is_ancestor(&tree, "HEAD", "gone"), Ok(false));
+        // Git blocks on a fifo in place of its config.
+        let config = home.home().join("repos/o/n/.git/config");
+        fs::remove_file(&config).unwrap();
+        run(Command::new("mkfifo").arg(&config)).unwrap();
+
+        let started = Instant::now();
+        let hung = is_ancestor(&tree, &head, "HEAD").unwrap_err();
+
+        assert!(timed_out(&hung), "{hung}");
+        assert!(started.elapsed() < Duration::from_secs(45));
+    }
+
+    #[test]
+    fn a_fetch_that_timed_out_waits_longer_each_time_and_a_good_one_clears_it() {
+        let home = Path::new("/nowhere");
+        let wait = || slow().get("o/slow").map(|(_, wait)| wait.as_secs());
+        assert_eq!(fetch_waits(home, "o/slow", "1"), None);
+
+        let reason = put_off("o/slow");
+        assert_eq!(reason, "waits to fetch o/slow: timed out after 30s");
+        assert_eq!(fetch_waits(home, "o/slow", "1"), Some(reason));
+        assert_eq!(wait(), Some(60));
+        put_off("o/slow");
+        assert_eq!(wait(), Some(120));
+        for _ in 0..5 {
+            put_off("o/slow");
+        }
+        assert_eq!(wait(), Some(600));
+
+        fetched("o/slow");
+        assert_eq!(fetch_waits(home, "o/slow", "1"), None);
+    }
+
+    #[test]
     fn a_patch_scan_past_its_limit_counts_every_commit_at_risk() {
         let home = Home::new("scan");
         let tree = home.tree();
@@ -3503,8 +3738,8 @@ mod tests {
         );
         sh(&tree, &["checkout", "--quiet", "--detach", &head]);
 
-        assert_eq!(at_risk(&tree, Some("priory/1"), 1), Ok(0));
-        assert_eq!(at_risk(&tree, Some("priory/1"), 0), Ok(1));
+        assert_eq!(at_risk(&tree, Some("priory/1"), 1, PATCHES), Ok(0));
+        assert_eq!(at_risk(&tree, Some("priory/1"), 0, PATCHES), Ok(1));
     }
 
     #[test]
@@ -3722,6 +3957,12 @@ mod tests {
         assert_eq!(home.again(), Ok(Added::Restored));
 
         assert!(!sealed.exists());
+        let reclaim = home.home().join("reclaim");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while fs::read_dir(&reclaim).unwrap().next().is_some() {
+            assert!(Instant::now() < deadline, "the old folder goes on a thread");
+            std::thread::sleep(Duration::from_millis(10));
+        }
         assert!(home.tree().join("README.md").is_file());
         assert_eq!(sh(&home.tree(), &["branch", "--show-current"]), "priory/1");
     }
