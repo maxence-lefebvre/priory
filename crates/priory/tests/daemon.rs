@@ -753,3 +753,82 @@ fn a_comment_that_reopens_a_done_task_coalesces_its_request_into_it() {
         [route("1", "reopened"), route("1", "coalesced")]
     );
 }
+
+/// Sets a header field of the state file and returns what it was.
+fn header(setup: &Setup, field: &str, to: i64) -> i64 {
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+    let was = db
+        .pragma_query_value(None, field, |row| row.get(0))
+        .unwrap();
+    db.pragma_update(None, field, to).unwrap();
+    was
+}
+
+fn version(setup: &Setup) -> i64 {
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap()
+}
+
+#[test]
+fn a_command_waits_for_the_daemon_to_migrate_and_never_migrates() {
+    let setup = Setup::new("command-waits");
+    succeeded(&setup.priory(&["tasks"]));
+    let schema = version(&setup);
+    header(&setup, "user_version", schema - 1);
+    let listing = std::thread::scope(|scope| {
+        let listing = scope.spawn(|| setup.priory(&["tasks"]));
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        assert!(!listing.is_finished());
+        // What the daemon's migration leaves.
+        assert_eq!(header(&setup, "user_version", schema), schema - 1);
+        listing.join().unwrap()
+    });
+    succeeded(&listing);
+}
+
+#[test]
+fn a_second_daemon_migrates_nothing() {
+    for once in [false, true] {
+        let setup = Setup::new(&format!("second-daemon-{once}"));
+        succeeded(&setup.priory(&["tasks"]));
+        let schema = version(&setup);
+        header(&setup, "user_version", schema - 1);
+        let home = setup.dir.join("home");
+        fs::create_dir_all(&home).unwrap();
+        let lock = fs::File::create(home.join("daemon.lock")).unwrap();
+        lock.lock().unwrap();
+        let factory = setup.dir.join("factory");
+        let mut command = harness::priory();
+        command
+            .arg("daemon")
+            .arg(&factory)
+            .args(once.then_some("--once"))
+            .env("PRIORY_HOME", &home)
+            .env("HERDR_BUS_DB", setup.dir.join("bus.db"))
+            .env("PRIORY_DB", setup.dir.join("priory.db"));
+        let refused = command.output().unwrap();
+        let error = String::from_utf8_lossy(&refused.stderr).into_owned();
+        assert!(error.contains("another daemon holds its lock"), "{error}");
+        assert_eq!(version(&setup), schema - 1);
+    }
+}
+
+#[test]
+fn a_newer_state_opens_only_from_its_floor_on() {
+    let setup = Setup::new("floor");
+    succeeded(&setup.priory(&["tasks"]));
+    let schema = version(&setup);
+    header(&setup, "user_version", schema + 5);
+    for (floor, opens) in [(0, false), (schema + 1, false), (schema, true), (1, true)] {
+        header(&setup, "application_id", floor);
+        for args in [&["tasks"][..], &["wait", "--since", "-1"]] {
+            let output = setup.priory(args);
+            assert_eq!(output.status.success(), opens, "{floor} {args:?}");
+        }
+        assert_eq!(setup.daemon().status.success(), opens, "{floor} daemon");
+        assert_eq!(version(&setup), schema + 5);
+    }
+}

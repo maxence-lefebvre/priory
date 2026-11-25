@@ -174,9 +174,11 @@ them, `priory resume TASK` starts it again.
 To let the daemon do this by itself, follow
 [How to upgrade Priory automatically](upgrading-automatically.md).
 
-A newer release migrates the state database forward when it opens it. An older release then
-refuses it with `state schema N is newer than this priory knows (M)`. So back up both databases
-before every upgrade, to roll back:
+The daemon of a newer release migrates the state database forward when it starts. Any other command of
+that release waits up to 30 seconds for this, then refuses with
+`the state is at schema N and this priory uses M: restart the daemon on this binary`. After it, an older
+release refuses the database with `state schema N is newer than this priory knows (M)`. So back up both
+databases before every upgrade, to roll back:
 
 ```sh
 systemctl --user stop priory-daemon priory-intake

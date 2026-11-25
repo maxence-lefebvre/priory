@@ -464,7 +464,7 @@ fn serve(
 /// copies, and prints nothing.
 fn upgrade_probe(dir: &Path) -> Result<(), String> {
     let factory = load(dir).ok_or("the factory does not load")?;
-    drop(state::open()?);
+    drop(state::migrate()?);
     priory_intake::log::open(factory.log())
         .map(drop)
         .map_err(|error| error.to_string())
@@ -3436,9 +3436,10 @@ fn remote_ask(
     revision: i64,
     answers: bool,
 ) -> Result<Option<serde_json::Value>, String> {
-    let Ok(db) = state::open() else {
+    if !state::exists() {
         return Ok(None);
-    };
+    }
+    let db = state::open()?;
     let mirrored = runners::mirrored(&db, runner, ask).map_err(|error| error.to_string())?;
     if let Some(stale) = mirrored
         .as_ref()
@@ -3453,11 +3454,12 @@ fn remote_ask(
 /// against this machine's claims, else the one they hold. A machine without a state file sends the
 /// one the person named unchecked, which the runner checks again anyway.
 fn remote_generation(runner: &str, key: &str, generation: Option<i64>) -> Result<i64, String> {
-    let Ok(db) = state::open() else {
+    if !state::exists() {
         return generation.ok_or_else(|| {
             format!("this machine knows no generation of task {runner}:{key}: pass --generation N")
         });
-    };
+    }
+    let db = state::open()?;
     match runners::task_generation(&db, runner, key, generation) {
         Ok(Ok(generation)) => Ok(generation),
         Ok(Err(runners::Refused::Unknown(why) | runners::Refused::Stale(why))) => Err(why),

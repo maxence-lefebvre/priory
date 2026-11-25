@@ -1,8 +1,8 @@
 # Zero-downtime restarts
 
 This page explains what an upgrade of the `priory` binary does to a running factory today, and how
-Priory could swap its binary and restart its processes without breaking a live run. The first slice is
-built; the later slices are not.
+Priory could swap its binary and restart its processes without breaking a live run. The measurements
+below are from before the first slice. [Later slices](#later-slices) says which slices are built.
 
 ## Why
 
@@ -158,14 +158,16 @@ gone": the web view should show its offline state after 30 seconds without an an
 
 ### Migrations
 
-Today any process of a new binary that calls `state::open` migrates the state, as the third pass
-showed. The design moves every migration into the daemon's start:
+Any process of a new binary that called `state::open` migrated the state, as the third pass
+showed. Now only the daemon does, as it starts:
 
 - The daemon takes its lock before it opens the state, so a second daemon cannot migrate under the
   first.
-- Every other process refuses a state whose schema differs from its own, with `the state is at
-  schema N; restart the daemon on this binary`, as `state::read_only` already does. Nothing then
-  migrates under a running old daemon.
+- Every other process creates the schema of an empty file, and waits up to 30 seconds for the daemon to
+  migrate an older one, as after an install. Then it refuses with `the state is at schema N and this
+  priory uses M: restart the daemon on this binary`. Nothing migrates under a running old daemon.
+- The file's `application_id` holds its floor: the oldest schema whose binaries may open it. A binary
+  opens a newer file when its own schema is at least the floor. 0 lets in that schema alone.
 - A standalone `priory serve` keeps connections open, as the daemon does. `priory upgrade` restarts
   it after the daemon, and it refuses to start on a schema it does not know.
 - A migration still runs in one transaction. Under WAL, readers keep reading through it, and other
@@ -224,7 +226,7 @@ Each is useful alone, in this order:
 1. **The graceful stop.** `SIGTERM` lets the daemon finish the lines it accepted before it exits.
 2. **Call ids.** A line resent after a reset is applied once, from the MCP server or a hook.
 3. **Hooks that keep their line**, with the spool race closed.
-4. **Only the daemon migrates**, with its lock taken first.
+4. **Only the daemon migrates**, with its lock taken first. Built.
 5. **`priory upgrade`.** Verify, back up, rehearse, install, hand over, check, and `--rollback`. The
    daemon does this by itself with `[upgrade]` ([upgrades.md](../daemon/upgrades.md)), on a herdr-bus
    log and one machine. The verb for a person, and one runner after another on a Postgres log, are left.

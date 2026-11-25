@@ -2383,16 +2383,114 @@ pub(crate) struct Task {
     pub id: i64,
 }
 
-/// Opens the state file `PRIORY_DB`, creating its schema on first use.
+/// Opens the state file `PRIORY_DB`, creating its schema in a new file. A file of an older schema
+/// waits for the daemon to migrate it.
 pub fn open() -> Result<Connection, String> {
     priory_runtime::upgrade::barrier()?;
     open_at(&path()?)
 }
 
-/// Opens the state file `path`, creating its schema on first use.
+/// Opens the state file `PRIORY_DB` and migrates it: for the daemon, which holds its lock.
+pub fn migrate() -> Result<Connection, String> {
+    priory_runtime::upgrade::barrier()?;
+    migrate_at(&path()?)
+}
+
+/// Whether `PRIORY_DB` names a file that is there.
+pub fn exists() -> bool {
+    path().is_ok_and(|path| path.exists())
+}
+
+/// Whether `PRIORY_DB` is a state file that waits for a migration.
+pub fn older() -> Result<bool, String> {
+    let path = path()?;
+    if !path.exists() {
+        return Ok(false);
+    }
+    let found = schema(&connect(&path)?).map_err(|error| format!("{}: {error}", path.display()))?;
+    Ok(found.version != 0 && found.version < VERSION)
+}
+
+/// How long `open` waits for the daemon to migrate a file, as after an install.
+const MIGRATES_WITHIN: Duration = Duration::from_secs(30);
+
+/// Opens the state file `path`, as `open` does.
 pub fn open_at(path: &std::path::Path) -> Result<Connection, String> {
     let at = |error: rusqlite::Error| format!("{}: {error}", path.display());
-    let mut db = Connection::open(path).map_err(at)?;
+    let mut db = connect(path)?;
+    let deadline = std::time::Instant::now() + MIGRATES_WITHIN;
+    loop {
+        let found = schema(&db).map_err(at)?;
+        match found.version {
+            0 => apply(&mut db, true).map_err(|error| format!("{}: {error}", path.display()))?,
+            version if version < VERSION => {
+                if std::time::Instant::now() >= deadline {
+                    let path = path.display();
+                    return Err(format!(
+                        "{path}: the state is at schema {version} and this priory uses {VERSION}: restart the daemon on this binary"
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            _ if found.opens(VERSION) => break,
+            _ => return Err(format!("{}: {}", path.display(), found.newer())),
+        }
+    }
+    db.pragma_update(None, "foreign_keys", true).map_err(at)?;
+    Ok(db)
+}
+
+/// Opens the state file `path` and migrates it.
+fn migrate_at(path: &std::path::Path) -> Result<Connection, String> {
+    let at = |error: rusqlite::Error| format!("{}: {error}", path.display());
+    let mut db = connect(path)?;
+    let found = schema(&db).map_err(at)?;
+    if !found.opens(VERSION) {
+        apply(&mut db, false).map_err(|error| format!("{}: {error}", path.display()))?;
+    }
+    db.pragma_update(None, "foreign_keys", true).map_err(at)?;
+    Ok(db)
+}
+
+/// A state file's schema, and the oldest one whose binaries may still open it; 0 for its own alone.
+#[derive(Debug, Clone, Copy)]
+struct Schema {
+    version: i64,
+    floor: i64,
+}
+
+impl Schema {
+    /// Whether a binary of schema `own` reads and writes this file as it is.
+    fn opens(self, own: i64) -> bool {
+        self.version == own || (self.version > own && self.floor > 0 && self.floor <= own)
+    }
+
+    fn newer(self) -> String {
+        format!(
+            "state schema {} is newer than this priory knows ({VERSION})",
+            self.version
+        )
+    }
+}
+
+fn schema(db: &Connection) -> rusqlite::Result<Schema> {
+    // One statement, so a migration cannot commit between the two.
+    db.query_row(
+        "SELECT user_version, application_id FROM pragma_user_version, pragma_application_id",
+        [],
+        |row| {
+            Ok(Schema {
+                version: row.get(0)?,
+                floor: row.get(1)?,
+            })
+        },
+    )
+}
+
+/// Opens the file `path` in WAL mode, with foreign keys off, whatever its schema.
+fn connect(path: &std::path::Path) -> Result<Connection, String> {
+    let at = |error: rusqlite::Error| format!("{}: {error}", path.display());
+    let db = Connection::open(path).map_err(at)?;
     db.busy_timeout(Duration::from_secs(5)).map_err(at)?;
     // Setting the mode takes a lock that a crashed daemon's WAL recovery can hold past the timeout.
     let mode: String = db
@@ -2401,17 +2499,8 @@ pub fn open_at(path: &std::path::Path) -> Result<Connection, String> {
     if mode != "wal" {
         db.pragma_update(None, "journal_mode", "WAL").map_err(at)?;
     }
-    let version = |db: &Connection| -> rusqlite::Result<i64> {
-        db.pragma_query_value(None, "user_version", |row| row.get(0))
-    };
-    if version(&db).map_err(at)? == VERSION {
-        db.pragma_update(None, "foreign_keys", true).map_err(at)?;
-        return Ok(db);
-    }
     // A table rebuild needs foreign keys off, or its rename rewrites the references to it.
     db.pragma_update(None, "foreign_keys", false).map_err(at)?;
-    migrate(&mut db).map_err(|error| format!("{}: {error}", path.display()))?;
-    db.pragma_update(None, "foreign_keys", true).map_err(at)?;
     Ok(db)
 }
 
@@ -2419,7 +2508,7 @@ pub fn open_at(path: &std::path::Path) -> Result<Connection, String> {
 #[cfg(test)]
 pub(crate) fn memory() -> Connection {
     let mut db = Connection::open_in_memory().expect("an in-memory state opens");
-    migrate(&mut db).expect("the migrations apply");
+    apply(&mut db, false).expect("the migrations apply");
     db
 }
 
@@ -2438,23 +2527,22 @@ pub(crate) fn query_plan(db: &Connection, sql: &str) -> String {
 }
 
 /// Applies the migrations the file lacks in one transaction, which a broken reference rolls back.
-fn migrate(db: &mut Connection) -> Result<(), String> {
+/// With `new`, only to a file that has no schema yet.
+fn apply(db: &mut Connection, new: bool) -> Result<(), String> {
     let at = |error: rusqlite::Error| error.to_string();
-    let version = |db: &Connection| -> rusqlite::Result<i64> {
-        db.pragma_query_value(None, "user_version", |row| row.get(0))
-    };
     // Immediate, so two processes opening a new file do not both create its schema.
     let tx = db
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(at)?;
-    let version = version(&tx).map_err(at)?;
-    let Some(pending) = usize::try_from(version)
+    let found = schema(&tx).map_err(at)?;
+    if new && found.version != 0 {
+        return Ok(());
+    }
+    let Some(pending) = usize::try_from(found.version)
         .ok()
         .and_then(|done| MIGRATIONS.get(done..))
     else {
-        return Err(format!(
-            "state schema {version} is newer than this priory knows ({VERSION})"
-        ));
+        return Err(found.newer());
     };
     tx.execute_batch(&pending.concat()).map_err(at)?;
     let broken: i64 = tx
@@ -2481,7 +2569,7 @@ fn path() -> Result<std::path::PathBuf, String> {
         .ok_or_else(|| "PRIORY_DB is not set to a file: name the state file".to_owned())
 }
 
-/// Opens `PRIORY_DB` for reading only. It refuses a file whose schema this priory does not use,
+/// Opens `PRIORY_DB` for reading only. It refuses a file whose schema this priory cannot read,
 /// such as one no `open` has created yet.
 pub fn read_only() -> Result<Connection, String> {
     priory_runtime::upgrade::barrier()?;
@@ -2490,13 +2578,12 @@ pub fn read_only() -> Result<Connection, String> {
     let db = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(at)?;
     db.busy_timeout(Duration::from_secs(5)).map_err(at)?;
-    let version: i64 = db
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .map_err(at)?;
-    if version != VERSION {
+    let found = schema(&db).map_err(at)?;
+    if !found.opens(VERSION) {
         return Err(format!(
-            "{}: state schema {version}, but this priory reads {VERSION}: start `priory daemon` once to create or migrate it",
-            path.display()
+            "{}: state schema {}, but this priory reads {VERSION}: start `priory daemon` once to create or migrate it",
+            path.display(),
+            found.version
         ));
     }
     Ok(db)
@@ -5305,7 +5392,7 @@ mod push_kinds {
         )
         .unwrap();
 
-        migrate(&mut db).unwrap();
+        apply(&mut db, false).unwrap();
 
         let row: (String, Option<String>) = db
             .query_row(
@@ -5335,7 +5422,7 @@ mod listing_indexes {
         )
         .unwrap();
 
-        migrate(&mut db).unwrap();
+        apply(&mut db, false).unwrap();
 
         let found: i64 = db
             .query_row(
@@ -5611,7 +5698,7 @@ mod inbox_lookups {
         )
         .unwrap();
 
-        migrate(&mut db).unwrap();
+        apply(&mut db, false).unwrap();
 
         let found: (i64, i64, i64) = db
             .query_row(
