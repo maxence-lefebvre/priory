@@ -8,6 +8,7 @@ mod consult;
 mod debate;
 mod evidence;
 mod hold_running;
+mod live_upgrade;
 mod metrics;
 mod outside_answer;
 #[cfg(feature = "postgres")]
@@ -19425,8 +19426,13 @@ struct Kept {
 
 impl Kept {
     fn new(setup: &Setup, session: &str) -> Self {
+        Self::on(setup, session, env!("CARGO_BIN_EXE_priory"))
+    }
+
+    /// The server of the binary at `exe`, as a run started on it keeps.
+    fn on(setup: &Setup, session: &str, exe: &str) -> Self {
         let mut child = setup
-            .command(env!("CARGO_BIN_EXE_priory"))
+            .command(exe)
             .args(["mcp", "--session", session])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
