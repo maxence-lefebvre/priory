@@ -237,11 +237,11 @@ await holds("a superseded refresh never draws", "/", ROW,
   })()`);
 
 // The list and the drawer draw apart, in one pass.
-await holds("a list keeps its scroll while the drawer's ask changes", "/asks/1", `document.querySelector('.drawer [aria-label="Next ask"][href]')`,
-  `(async () => { const list = () => document.querySelector(".list .scroll"); const next = document.querySelector('.drawer [aria-label="Next ask"]'); const to = next.getAttribute("href");
-    list().scrollTop = 60; document.dispatchEvent(new Event("visibilitychange")); ${SETTLE(1500)} const kept = list().scrollTop === 60; next.click(); ${SETTLE(800)}
+await holds("a list keeps its scroll while the drawer's ask changes", "/asks/1", `location.pathname === "/asks/1" && document.querySelector('.drawer [aria-label="Next ask"][href]')`,
+  `(async () => { const list = () => document.querySelector(".list .scroll"); const next = () => document.querySelector('.drawer [aria-label="Next ask"]'); const to = next().getAttribute("href");
+    list().scrollTop = 60; document.dispatchEvent(new Event("visibilitychange")); ${SETTLE(1500)} const kept = list().scrollTop === 60; next().click(); ${SETTLE(800)}
     return kept && location.pathname === to && document.querySelectorAll("#app .legacy").length === 2; })()`);
-await holds("the drawer keeps its scroll through a refresh of the list", "/asks/1", 'document.querySelector(".drawer #trace")',
+await holds("the drawer keeps its scroll through a refresh of the list", "/asks/1", 'location.pathname === "/asks/1" && document.querySelector(".drawer #trace")',
   `(async () => { const part = () => document.querySelector(".drawer .scroll"); part().scrollTop = 60; const at = part().scrollTop; document.dispatchEvent(new Event("visibilitychange")); ${SETTLE(1500)} return at > 0 && part().scrollTop === at; })()`);
 
 for (const { check: own } of pages) if (own) await own({ open, holds, page, evaluate, until, sleep, change, report });
