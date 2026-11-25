@@ -1,4 +1,4 @@
-use crate::runtime::{fed_within, run};
+use crate::runtime::{fed_within, within};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -23,17 +23,16 @@ pub struct Room {
 /// `home`. On macOS, which has no `/proc`, memory and load come from `sysctl` and `vm_stat`.
 pub fn measure(home: &Path) -> Result<Room, String> {
     let (memory_free, memory_total, load) = if macos() {
-        let total = run(Command::new("sysctl").args(["-n", "hw.memsize"]))?;
-        let load = run(Command::new("sysctl").args(["-n", "vm.loadavg"]))?;
-        let pages = run(&mut Command::new("vm_stat"))?;
+        let total = ask("sysctl", &["-n", "hw.memsize"])?;
+        let load = ask("sysctl", &["-n", "vm.loadavg"])?;
+        let pages = ask("vm_stat", &[])?;
         (
             vm_stat_free(&pages).ok_or("vm_stat: no free pages")?,
             total
                 .trim()
                 .parse()
                 .map_err(|_| format!("sysctl hw.memsize printed {total:?}"))?,
-            load_of(load.trim_start_matches(['{', ' ']))
-                .ok_or_else(|| format!("sysctl vm.loadavg printed {load:?}"))?,
+            load_of(&load).ok_or_else(|| format!("sysctl vm.loadavg printed {load:?}"))?,
         )
     } else {
         let proc = proc();
@@ -81,13 +80,18 @@ pub fn cpus_of(stat: &str) -> usize {
         .count()
 }
 
-/// The 1-minute load average, the first number of `text`.
+/// The 1-minute load average, the first number of `text`, which `sysctl` puts in braces.
 fn load_of(text: &str) -> Option<f64> {
-    let load = text.split_whitespace().next()?.parse::<f64>().ok()?;
+    let load = text
+        .trim_start_matches(['{', ' '])
+        .split_whitespace()
+        .next()?
+        .parse::<f64>()
+        .ok()?;
     (load.is_finite() && load >= 0.0).then_some(load)
 }
 
-/// The bytes macOS can hand out without swapping, from the text of `vm_stat`: its free,
+/// The bytes macOS can hand out, from the text of `vm_stat`: its free,
 /// speculative and inactive pages.
 pub fn vm_stat_free(text: &str) -> Option<u64> {
     let (_, size) = text.lines().next()?.split_once("page size of ")?;
@@ -105,7 +109,7 @@ pub fn vm_stat_free(text: &str) -> Option<u64> {
 /// The machine's host name, which names its runner file.
 pub fn hostname() -> Option<String> {
     let name = if macos() {
-        run(Command::new("hostname").arg("-s")).ok()?
+        ask("hostname", &["-s"]).ok()?
     } else {
         std::fs::read_to_string(proc().join("sys/kernel/hostname")).ok()?
     };
@@ -128,7 +132,7 @@ pub struct Own {
 pub fn own() -> Result<Own, String> {
     if macos() {
         let pid = std::process::id().to_string();
-        let line = run(Command::new("ps").args(["-o", "rss=,utime=,time=", "-p", &pid]))?;
+        let line = ask("ps", &["-o", "rss=,utime=,time=", "-p", &pid])?;
         return own_of_ps(&line).ok_or_else(|| format!("ps printed {line:?}"));
     }
     let dir = proc().join("self");
@@ -239,6 +243,21 @@ fn read(path: &Path) -> Result<String, String> {
 
 /// How long `df` may take, since a hung mount would hold the daemon's thread.
 const DF: Duration = Duration::from_secs(5);
+
+/// How long a macOS tool that measures the machine or a process may take.
+pub const TOOL: Duration = Duration::from_secs(5);
+
+/// A macOS tool in the C locale: in another, `sysctl` and `ps` print a decimal comma.
+pub fn tool(program: &str, args: &[&str]) -> Command {
+    let mut command = Command::new(program);
+    command.env("LC_ALL", "C").args(args);
+    command
+}
+
+/// What `tool` prints.
+fn ask(program: &str, args: &[&str]) -> Result<String, String> {
+    within(&mut tool(program, args), TOOL)
+}
 
 /// Free disk on the filesystem of `path` for an unprivileged user, in bytes.
 pub fn free(path: &Path) -> Result<u64, String> {
@@ -362,6 +381,14 @@ mod tests {
         assert!(0 < room.disk_free && room.disk_free <= room.disk_total);
         assert!(hostname().is_some());
         assert!(own().unwrap().memory > 0);
+    }
+
+    #[test]
+    fn a_load_reads_in_the_c_locale_that_every_tool_runs_in() {
+        assert_eq!(load_of("{ 1.23 1.45 1.67 }\n"), Some(1.23));
+        assert_eq!(load_of("1.23 1.45 1.67 2/99 7\n"), Some(1.23));
+        assert_eq!(load_of("{ 1,23 1,45 1,67 }\n"), None);
+        assert_eq!(ask("sh", &["-c", "echo $LC_ALL"]), Ok("C\n".to_owned()));
     }
 
     #[test]

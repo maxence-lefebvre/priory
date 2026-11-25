@@ -90,7 +90,7 @@ pub(crate) fn soon(command: &mut Command) -> Result<String, String> {
     within(command, loop_left())
 }
 
-fn within(command: &mut Command, timeout: Duration) -> Result<String, String> {
+pub(crate) fn within(command: &mut Command, timeout: Duration) -> Result<String, String> {
     fed_raw_within(command, None, timeout).map(|out| String::from_utf8_lossy(&out).into_owned())
 }
 
