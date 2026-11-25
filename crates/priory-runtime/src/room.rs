@@ -167,8 +167,13 @@ fn status_bytes(status: &str, key: &str) -> Option<u64> {
 }
 
 /// The anonymous memory of process `pid` and its descendants, in bytes, without those in `seen`,
-/// which it adds them to. A process that cannot be read counts as none.
+/// which it adds them to. A process that cannot be read counts as none. On macOS, it is their
+/// resident memory, which `ps` prints.
 pub fn tree(pid: u32, seen: &mut BTreeSet<u32>) -> u64 {
+    if macos() {
+        let listed = ask("ps", &["-axo", "pid=,ppid=,rss="]).unwrap_or_default();
+        return tree_of_ps(&listed, pid, seen);
+    }
     tree_in(&proc(), pid, seen)
 }
 
@@ -229,6 +234,34 @@ pub fn own_of_ps(line: &str) -> Option<Own> {
 /// Whether to measure with macOS's tools: on macOS, unless `PRIORY_PROC` names a stand-in `/proc`.
 fn macos() -> bool {
     cfg!(target_os = "macos") && std::env::var_os("PRIORY_PROC").is_none_or(|proc| proc.is_empty())
+}
+
+/// `tree`, from lines of a pid, its parent's and its resident kilobytes.
+fn tree_of_ps(listed: &str, pid: u32, seen: &mut BTreeSet<u32>) -> u64 {
+    let processes: Vec<(u32, u32, u64)> = listed
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let pid = fields.next()?.parse().ok()?;
+            let parent = fields.next()?.parse().ok()?;
+            Some((pid, parent, fields.next()?.parse().ok()?))
+        })
+        .collect();
+    let (mut waiting, mut bytes) = (vec![pid], 0u64);
+    while let Some(pid) = waiting.pop() {
+        if !seen.insert(pid) {
+            continue;
+        }
+        for (process, parent, kilobytes) in &processes {
+            if *process == pid {
+                bytes = bytes.saturating_add(kilobytes.saturating_mul(1024));
+            }
+            if *parent == pid {
+                waiting.push(*process);
+            }
+        }
+    }
+    bytes
 }
 
 pub(crate) fn proc() -> PathBuf {
@@ -348,6 +381,17 @@ mod tests {
     }
 
     #[test]
+    fn a_tree_ps_lists_counts_each_process_once_across_calls() {
+        let listed = " 10 1 1\n 11 10 2\n 12 10 4\n 13 12 8\n 20 1 16\n 14 14 32\nx y z\n";
+        let mut seen = BTreeSet::new();
+        assert_eq!(tree_of_ps(listed, 12, &mut seen), 12 << 10);
+        assert_eq!(tree_of_ps(listed, 10, &mut seen), 3 << 10);
+        assert_eq!(tree_of_ps(listed, 11, &mut seen), 0);
+        assert_eq!(tree_of_ps(listed, 14, &mut seen), 32 << 10);
+        assert_eq!(tree_of_ps(listed, 99, &mut seen), 0);
+    }
+
+    #[test]
     fn a_tree_counts_a_real_childs_memory() {
         // A shell that forks a process holding 64 MB of anonymous memory, until its input closes.
         let mut child = Command::new("sh")
@@ -366,7 +410,7 @@ mod tests {
         )
         .unwrap();
 
-        let bytes = tree_in(Path::new("/proc"), child.id(), &mut BTreeSet::new());
+        let bytes = tree(child.id(), &mut BTreeSet::new());
 
         drop(child.stdin.take());
         child.wait().unwrap();
@@ -435,6 +479,8 @@ mod tests {
             let _ = vm_stat_free(&text);
             let _ = vm_stat_free(&format!("(page size of {text}\nPages free: {text}"));
             let _ = own_of_ps(&text);
+            let _ = tree_of_ps(&text, 1, &mut BTreeSet::new());
+            let _ = load_of(&text);
         }
 
         #[test]

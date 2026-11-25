@@ -91,7 +91,7 @@ has not measured yet shows its reason alone.
 sweep and a retirement check, after any teardown and before git runs. Mounts are checked again
 before and after folders are made writable, right before the delete:
 
-- No mount is at or under the worktree, as `/proc/self/mountinfo` shows. A table that cannot be read
+- No mount is at or under the worktree, as `/proc/self/mountinfo` shows, or `mount` on macOS. A table that cannot be read
   keeps the worktree.
 - No ignored file or folder is part of a repository: a `.git` entry, or a `HEAD` beside `objects` and
   `refs`. Nor is a `.git` in a folder of tracked files. Its commits can be nowhere else, and the reclaim keeps it too. A repository in the `tmp`

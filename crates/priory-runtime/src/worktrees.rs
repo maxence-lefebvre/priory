@@ -1,5 +1,7 @@
+use crate::room::{TOOL, tool};
 use crate::runtime::{
-    OWN_GIT, PATCHES, SCAN, as_one, at_risk, clone_of, git, is_ancestor, run, soon, unseal,
+    OWN_GIT, PATCHES, SCAN, as_one, at_risk, clone_of, fed_raw_within, git, is_ancestor, run, soon,
+    unseal,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -418,7 +420,45 @@ pub(crate) fn orphan_without_repository(path: &Path) -> Result<(), String> {
 type Mounts<'a> = &'a dyn Fn() -> std::io::Result<Vec<u8>>;
 
 pub(crate) fn mountinfo() -> std::io::Result<Vec<u8>> {
+    if cfg!(target_os = "macos") {
+        let listed = fed_raw_within(&mut tool("mount", &[]), None, TOOL);
+        return mountinfo_of_mount(&listed.map_err(std::io::Error::other)?);
+    }
     fs::read("/proc/self/mountinfo")
+}
+
+/// A `mountinfo` table from the text of macOS `mount`, such as `/dev/disk3s1 on /w/a b (apfs, local)`.
+/// Either name may hold ` on `, so each place it can split gives a mount point.
+fn mountinfo_of_mount(listed: &[u8]) -> std::io::Result<Vec<u8>> {
+    const ON: &[u8] = b" on ";
+    const DATA: &[u8] = b"/System/Volumes/Data";
+    let mut table = Vec::new();
+    for line in listed.split(|byte| *byte == b'\n') {
+        let end = line.windows(2).rposition(|pair| pair == b" (");
+        let line = &line[..end.unwrap_or(line.len())];
+        for at in (0..line.len()).filter(|at| line[*at..].starts_with(ON)) {
+            let point = &line[at + ON.len()..];
+            // The data volume's folders are also at the root, where worktrees see them.
+            for point in [Some(point), point.strip_prefix(DATA)]
+                .into_iter()
+                .flatten()
+            {
+                table.extend_from_slice(b"0 0 0:0 / ");
+                for byte in point {
+                    match byte {
+                        b' ' | b'\t' | b'\\' => table.extend(format!("\\{byte:03o}").bytes()),
+                        byte => table.push(*byte),
+                    }
+                }
+                table.push(b'\n');
+            }
+        }
+    }
+    // The root is always mounted.
+    if table.is_empty() {
+        return Err(std::io::Error::other("mount listed nothing"));
+    }
+    Ok(table)
 }
 
 /// Removes the checkout `path` of `clone`, whatever it holds but a mount.
@@ -1015,6 +1055,23 @@ mod tests {
     }
 
     #[test]
+    fn a_mount_macos_lists_at_or_under_a_folder_is_found() {
+        let table = mountinfo_of_mount(
+            b"/dev/disk3s1s1 on / (apfs, sealed, local, read-only, journaled)\n\
+              map auto_home on /System/Volumes/Data/home (autofs, automounted, nobrowse)\n\
+              /dev/disk4 on /System/Volumes/Data/w/data (apfs, local)\n\
+              //u@h/a on b on /w/a on b (1)/t (smbfs, nodev)\n",
+        )
+        .unwrap();
+        let under = |path: &str| mount_under(&table, Path::new(path));
+        assert_eq!(under("/w/a on b (1)"), Some("/w/a on b (1)/t".into()));
+        assert_eq!(under("/w/data"), Some("/w/data".into()));
+        assert_eq!(under("/w/a"), None);
+        assert_eq!(under("/w/a on b (1)/t/deep"), None);
+        assert!(mountinfo_of_mount(b"").is_err());
+    }
+
+    #[test]
     fn a_process_lsof_lists_inside_a_worktree_occupies_it_whatever_it_runs() {
         let in_w = |listed: &str| occupied_of_lsof(Path::new("/w/1"), &|| Ok(listed.to_owned()));
         assert_eq!(in_w("p12\nfcwd\nn/\np13\nfcwd\nn/w/1/a b\n"), Ok(true));
@@ -1038,6 +1095,21 @@ mod tests {
     }
 
     proptest! {
+        #[test]
+        fn a_mount_macos_lists_reads_back_whatever_its_name(name in "[a-z() \\\\\t]{1,20}") {
+            let line = format!("/dev/disk4 on /w/{name} (apfs, local)\n");
+            let table = mountinfo_of_mount(line.as_bytes()).unwrap();
+            prop_assert_eq!(
+                mount_under(&table, Path::new("/w")),
+                Some(Path::new("/w").join(&name))
+            );
+        }
+
+        #[test]
+        fn mountinfo_of_mount_never_panics(listed in proptest::collection::vec(any::<u8>(), 0..200)) {
+            let _ = mountinfo_of_mount(&listed);
+        }
+
         #[test]
         fn occupied_of_lsof_reads_any_text_without_panicking(listed in "[pn0-9/a\\n]{0,200}") {
             let _ = occupied_of_lsof(Path::new("/a"), &|| Ok(listed.clone()));
