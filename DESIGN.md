@@ -1364,7 +1364,9 @@ with no change shows its line without an icon.
   full-page spinner. A list that has data keeps it while it refreshes.
 - **Error**: where it failed, why, and how to fix it, with a "Retry" button. "Could not load runs:
   the daemon refused the connection. Check that the daemon runs on its runner, then retry." Keep
-  any stale data visible under the error.
+  any stale data visible under the error. A task that cannot be read again keeps its last read under
+  a `.note`: "Could not read task 7 again: why. This is its last read." A page that fails to draw
+  keeps the frame, says "Could not draw this page" and why, and has "Retry" and "Open the Desk".
 - **Not found**: the title "Page not found", the sentence "No page lives at this address." and an
   "Open the Desk" button in `.btn secondary`.
 
