@@ -483,6 +483,8 @@ The other task gets the branch as origin has it. So `hand_over` is refused while
 | `branch priory/3 is gone, here and on origin: ...` | that branch exists nowhere |
 | `task <id> is held, so it would not continue the work: ...` | the other task is held or blocked |
 | `task <id> already ended its step with <outcome>, ...` | the other task's live run stored a result |
+| `task <id> waits for a person's answer at its step ask, ...` | the other task has an open step ask |
+| `a message for this run is queued: ...` | a person's `say`, or the other task's message, waits for the end of the caller's turn |
 
 Priory reads origin's branches as its clone last fetched or pushed them.
 

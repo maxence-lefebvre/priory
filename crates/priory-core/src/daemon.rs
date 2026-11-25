@@ -1480,9 +1480,11 @@ fn tend(
 ) -> Result<(), Error> {
     let factory = trace.factory;
     let live = state::live(db)?;
-    priory_runtime::trust::forget_direnv(home, &|session| {
-        live.iter().any(|run| run.session == session)
-    });
+    for folder in ["direnv", "news"] {
+        priory_runtime::trust::forget(&home.join(folder), &|session| {
+            live.iter().any(|run| run.session == session)
+        });
+    }
     starting.retain(|id, _| live.iter().any(|run| run.id == *id && !run.ready));
     for mut run in live {
         if !run.ready && !scope.is_empty() {
@@ -2792,7 +2794,7 @@ fn start(
     // The new run is the task's only live one, so a session of this name is an ended run's agent.
     runtime::kill(&tmux);
     let first = match agent.value.harness {
-        Harness::Codex => state::claim(db, run)?,
+        Harness::Codex => state::claim(db, run)?.map(|text| runtime::typable(&text)),
         Harness::ClaudeCode => None,
     };
     let env: Vec<String> = factory

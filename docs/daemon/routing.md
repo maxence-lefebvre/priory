@@ -452,8 +452,9 @@ Ana moved ENG-7 to Duplicate (canceled), as a duplicate of ENG-9. https://linear
 
 Priory pairs the two tasks and records that the duplicate's task relates to the other. Each of them
 gets a line that names the other task. A running one reads it as news. Any other, such as one that is
-queued, asleep or in a debate, reads it with the first prompt of its next run outside a debate. So
-does a running one that no held call showed the line to. Only a new pair tells the other task.
+queued, asleep or in a debate, reads it in the first prompt of its next run outside a debate. So
+does a running one that no held call showed the line to. Priory holds one copy of the line, and drops
+it when the pair ends. Only a new pair tells the other task.
 
 A Linear webhook names no duplicate, so when the webhook is first, the pair starts at the next poll.
 The poll then publishes its own copy of the state change, which requests no second task but which

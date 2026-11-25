@@ -134,7 +134,7 @@ fn agree(
                 let text = format!(
                     "A task on runner {runner} works on {of}. Priory pairs only tasks of one runner, so neither can message the other: ask the person with the ask tool which one continues."
                 );
-                let waits = later(tx, task, &text)?;
+                let waits = later(tx, task, None, &text)?;
                 Ok((text, waits))
             })
             .transpose();
@@ -152,14 +152,14 @@ fn agree(
             "Task {task} (linear:{issue}) works on {issue}, now a duplicate of {of}, your issue. {}",
             agreement(task)
         );
-        let waits = later(tx, other, &text)?;
+        let waits = later(tx, other, Some(task), &text)?;
         tell(tx, other, Some(seq), &text, Some(waits))?;
     }
     let text = format!(
         "Task {other} (linear:{of}) works on {of}. {}",
         agreement(other)
     );
-    let waits = later(tx, task, &text)?;
+    let waits = later(tx, task, Some(other), &text)?;
     Ok(Some((text, waits)))
 }
 
@@ -178,13 +178,40 @@ pub(crate) fn paired(tx: &Transaction, task: i64, other: i64) -> rusqlite::Resul
 }
 
 /// Keeps `text` for the first prompt of the next run of `task` that no debate runs. Returns its
-/// outbox id.
-fn later(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<i64> {
+/// outbox id, the one already held when there is one. `pair` is the other task the text is about:
+/// it goes with their pair.
+fn later(tx: &Transaction, task: i64, pair: Option<i64>, text: &str) -> rusqlite::Result<i64> {
+    let held = tx
+        .query_row(
+            "SELECT id FROM outbox WHERE task = ?1 AND state = 'held' AND text = ?2",
+            params![task, text],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(held) = held {
+        return Ok(held);
+    }
     tx.execute(
-        "INSERT INTO outbox (task, text, state) VALUES (?1, ?2, 'held')",
-        params![task, text],
+        "INSERT INTO outbox (task, text, state, pair) VALUES (?1, ?2, 'held', ?3)",
+        params![task, text, pair],
     )?;
     Ok(tx.last_insert_rowid())
+}
+
+/// Withdraws what is held for `task` about pairs that ended.
+pub(crate) fn expire(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
+    let held: Vec<(i64, i64)> = tx
+        .prepare(
+            "SELECT id, pair FROM outbox WHERE task = ?1 AND state = 'held' AND pair IS NOT NULL",
+        )?
+        .query_map([task], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (id, other) in held {
+        if !paired(tx, task, other)? {
+            tx.execute("UPDATE outbox SET state = 'withdrawn' WHERE id = ?1", [id])?;
+        }
+    }
+    Ok(())
 }
 
 /// How two tasks on the same work agree which continues, for the agent whose pair is `other`.

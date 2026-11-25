@@ -53,7 +53,8 @@ The prompt that moved or woke the task is already queued.
 Once a task's run is idle, and at least 1 second after the run's `SessionStart`, the daemon types
 its oldest queued prompt:
 
-1. It loads the text into a tmux buffer from stdin.
+1. It loads the text into a tmux buffer from stdin, without its control characters. Newline and tab
+   stay.
 2. It pastes the buffer as one bracketed paste. So newlines in the text do not submit it, and key
    names in the text stay literal.
 3. 0.3 seconds later, it presses Enter as a key press of its own.
@@ -61,6 +62,12 @@ its oldest queued prompt:
    the text again.
 5. If none arrives within 10 seconds of the second Enter, the prompt becomes `uncertain` and shows
    on the desk.
+
+An escape sequence in the text could end the paste, and the rest would reach the terminal as
+keystrokes. So a text a person pastes into `say` or an answer loses the escape character of each
+colour code (its `[31m` stays), carriage returns, form feeds, backspaces and NULs. CRLF becomes a
+newline, and a lone carriage return joins its lines. Codex's first prompt, which is an argument, loses
+the same. The outbox keeps the text as it came.
 
 Claude fires `SessionStart` before its input reads keys. Keys typed before then wait, and Claude
 reads them in one burst as a paste, Enter included, so the prompt sits in its input unsent. The

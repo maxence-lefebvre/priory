@@ -250,6 +250,10 @@ pub(crate) fn call(
         ("result" | "ask" | "wait" | "consult" | "hand_over", ..) if kept(&tx, run.task)? => {
             Some("feedback for this run is queued: end your turn to read it".to_owned())
         }
+        // A hand-over drops the task, and what a person said to it.
+        ("hand_over", ..) if said(&tx, run.task)? => {
+            Some("a message for this run is queued: end your turn to read it".to_owned())
+        }
         // Its end would wake the task at whatever step the result moved it to.
         ("result" | "hand_over", ..) if commanding(&tx, run.task)? => Some(
             "an answer's command for this task runs: end your turn, and its end wakes the task"
@@ -1115,6 +1119,15 @@ fn kept(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
         }
     }
     Ok(false)
+}
+
+/// Whether a prompt that wakes the task, such as a person's `say`, is queued.
+fn said(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM outbox WHERE task = ?1 AND state = 'queued' AND wakes)",
+        [task],
+        |row| row.get(0),
+    )
 }
 
 fn commanding(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
@@ -3325,14 +3338,7 @@ pub(crate) fn settle(
         return Ok(None);
     }
     // A person's `say` that beat the Stop is the run's next prompt, as an answer would be.
-    let said = tx
-        .query_row(
-            "SELECT 1 FROM outbox WHERE task = ?1 AND state = 'queued' AND wakes",
-            [run.task],
-            |_| Ok(()),
-        )
-        .optional()?;
-    if said.is_some() {
+    if said(tx, run.task)? {
         return Ok(None);
     }
     end(tx, run.id, "asleep")?;

@@ -530,7 +530,7 @@ pub(crate) fn tools() -> Value {
         },
         {
             "name": "hand_over",
-            "description": "Stop your task and hand its work to the task a duplicate's news names, which continues it, once you two agreed. Commit and push all your work first: it is refused while a file is uncommitted or origin lacks a commit. The other agent gets your branch name and your summary, it takes up your task, and your task is dropped with a link to it. It ends your turn and your run.",
+            "description": "Stop your task and hand its work to the task a duplicate's news names, which continues it, once you two agreed. Commit and push first: it is refused while your worktree has a changed or untracked file, or origin lacks a commit of your checkout, your branch, a branch named after it or an open pull request's branch. It does not see ignored files or other branches. The other agent gets your branch names and your summary, it takes up your task, and your task is dropped with a link to it. It ends your turn and your run.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

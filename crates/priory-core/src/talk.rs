@@ -251,6 +251,20 @@ pub(crate) fn hand_over(
             None,
         ));
     }
+    let decided: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM asks WHERE task = ?1 AND kind = 'step'
+         AND answer IS NULL AND withdrawn IS NULL)",
+        [to],
+        |row| row.get(0),
+    )?;
+    if decided {
+        return Ok((
+            Err(format!(
+                "task {to} waits for a person's answer at its step ask, which may end it: ask the person with the ask tool"
+            )),
+            None,
+        ));
+    }
     let branches = match branches(tx, task)? {
         Ok(branches) => branches,
         Err(refused) => return Ok((Err(refused), None)),

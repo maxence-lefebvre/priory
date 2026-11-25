@@ -2658,13 +2658,19 @@ pub fn type_text(pane: &str, text: &str) -> Result<(), String> {
     press(pane, "Enter")
 }
 
-/// Pastes `text` into `pane` as one bracketed paste, read from stdin so no part of it is an
-/// argument tmux could take for a key name or a command.
+/// `text` without its control characters, newline and tab kept: an escape sequence would end a
+/// bracketed paste, and what follows would reach the terminal as keystrokes.
+pub fn typable(text: &str) -> String {
+    text.replace(|c: char| c.is_control() && !matches!(c, '\n' | '\t'), "")
+}
+
+/// Pastes the `typable` part of `text` into `pane` as one bracketed paste, read from stdin so no
+/// part of it is an argument tmux could take for a key name or a command.
 pub fn paste(pane: &str, text: &str) -> Result<(), String> {
     let buffer = format!("priory{pane}");
     fed(
         tmux().args(["load-buffer", "-b", &buffer, "-"]),
-        Some(text.as_bytes().to_vec()),
+        Some(typable(text).into_bytes()),
     )?;
     run(tmux().args(["paste-buffer", "-p", "-d", "-b", &buffer, "-t", pane]))?;
     Ok(())

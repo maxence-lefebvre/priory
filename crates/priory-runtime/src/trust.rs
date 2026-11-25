@@ -343,12 +343,14 @@ fn linked(home: &Path) -> bool {
     home.join("direnv").is_symlink()
 }
 
-/// Removes the direnv config folder under Priory `home` of each session that is not `live`. It logs
-/// a folder it cannot remove once.
-pub fn forget_direnv(home: &Path, live: &dyn Fn(&str) -> bool) {
-    let root = home.join("direnv");
-    if linked(home) {
-        return kept(root, &"is a symlink, so nothing in it is removed");
+/// Removes the folder in `root` of each session that is not `live`. It logs a folder it cannot
+/// remove once.
+pub fn forget(root: &Path, live: &dyn Fn(&str) -> bool) {
+    if root.is_symlink() {
+        return kept(
+            root.to_owned(),
+            &"is a symlink, so nothing in it is removed",
+        );
     }
     for entry in fs::read_dir(root).into_iter().flatten().flatten() {
         if !entry.file_name().to_str().is_some_and(live)
@@ -956,7 +958,7 @@ mod tests {
         fs::create_dir_all(&home).unwrap();
         fs::create_dir_all(other.join("s")).unwrap();
         std::os::unix::fs::symlink(&other, home.join("direnv")).unwrap();
-        forget_direnv(&home, &|_| false);
+        forget(&home.join("direnv"), &|_| false);
         assert!(other.join("s").exists());
     }
 

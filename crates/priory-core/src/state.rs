@@ -2159,10 +2159,12 @@ CREATE TABLE news (
 PRAGMA user_version = 120;
 ";
 
-// The prompt that carries a message after the turn, withdrawn once the message is read, the
+// The prompt that carries a message after the turn, withdrawn once the message is read, the other
+// task of the pair a held prompt is about, the
 // pairs a duplicate lets talk and since when, and each message a pair sent. Not `relations`, which agents write.
 const SCHEMA_121: &str = "
 ALTER TABLE news ADD COLUMN outbox INTEGER;
+ALTER TABLE outbox ADD COLUMN pair INTEGER;
 CREATE TABLE pairs (
   task  INTEGER NOT NULL REFERENCES tasks (id),
   other INTEGER NOT NULL REFERENCES tasks (id),
@@ -4370,7 +4372,10 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
     }
     let held = match run.debate {
         Some(_) => Vec::new(),
-        None => held(&tx, run.task)?,
+        None => {
+            crate::news::expire(&tx, run.task)?;
+            held(&tx, run.task)?
+        }
     };
     for (_, said) in &held {
         if !text.is_empty() {
@@ -4378,13 +4383,11 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
         }
         text.push_str(said);
     }
-    // The step after a debate reads what came during it with the entry prompt the debate queued.
+    // A resumed run reads what waited for it with the prompt that woke it, in its first turn.
     let entry: Option<i64> = match run.prompt {
         None if !text.is_empty() => tx.query_row(
-            "SELECT min(outbox.id) FROM outbox WHERE task = ?1 AND state = 'queued' AND compact = 0
-                 AND (SELECT debate FROM runs WHERE task = ?1 AND id < ?2 ORDER BY id DESC LIMIT 1)
-                   IS NOT NULL",
-            params![run.task, id],
+            "SELECT min(id) FROM outbox WHERE task = ?1 AND state = 'queued' AND compact = 0",
+            [run.task],
             |row| row.get(0),
         )?,
         _ => None,
@@ -4422,8 +4425,8 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
     Ok(id)
 }
 
-/// The texts a person said to `task` during a debate, by outbox id, which its next run after the
-/// debate reads with its first prompt.
+/// The texts held for `task`, such as what a person said during a debate or a pair's line, by
+/// outbox id. Its next run outside a debate reads them with its first prompt.
 fn held(tx: &Transaction, task: i64) -> rusqlite::Result<Vec<(i64, String)>> {
     let mut statement =
         tx.prepare("SELECT id, text FROM outbox WHERE task = ?1 AND state = 'held' ORDER BY id")?;
@@ -4873,7 +4876,7 @@ pub(crate) fn signal(
                 && signal.prompt.as_deref().is_some_and(|prompt| {
                     pasted(prompt)
                         .split_whitespace()
-                        .eq(text.split_whitespace())
+                        .eq(priory_runtime::runtime::typable(&text).split_whitespace())
                 })
             {
                 tx.execute(

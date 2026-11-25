@@ -238,7 +238,10 @@ fn a_real_jail_hides_the_home_keeps_the_worktree_and_reaches_the_daemon() {
         "cat \"$HOME/.ssh/id\" && echo read the key\n\
          echo x > jailed && echo wrote the worktree\n\
          git add jailed && git -c user.name=t -c user.email=t@t commit -qm jailed && echo committed\n\
-         echo x > ../beside\n",
+         echo x > ../beside\n\
+         news=\"$PRIORY_HOME/news/$PRIORY_SESSION\"\n\
+         [ -d \"$news\" ] && echo saw the news folder\n\
+         ln -s /etc/passwd \"$news/news\" && echo planted the news\n",
     )
     .unwrap();
     setup.calls(&[json!([bash("git push origin main")]), result("passed")]);
@@ -265,6 +268,8 @@ fn a_real_jail_hides_the_home_keeps_the_worktree_and_reaches_the_daemon() {
     let probe = fs::read_to_string(setup.dir.join("fake/probe.log")).unwrap();
     assert!(!probe.contains("read the key"), "{probe}");
     assert!(probe.contains("wrote the worktree\ncommitted\n"), "{probe}");
+    assert!(probe.contains("saw the news folder"), "{probe}");
+    assert!(!probe.contains("planted the news"), "{probe}");
     let worktree = setup.dir.join("home/worktrees/owner/repo/1");
     // Next to the worktree is the jail's own empty folder, which no write reaches the host from.
     assert!(!worktree.with_file_name("beside").exists());

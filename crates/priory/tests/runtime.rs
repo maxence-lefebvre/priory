@@ -100,7 +100,7 @@ macro_rules! undo_pre {
   ALTER TABLE memory_candidates DROP COLUMN step; ALTER TABLE gates DROP COLUMN lessons; ALTER TABLE gates DROP COLUMN ask; ALTER TABLE gates DROP COLUMN judges;
   ALTER TABLE runs DROP COLUMN session_started; ALTER TABLE runs DROP COLUMN harness;
   ALTER TABLE runs DROP COLUMN resumes; ALTER TABLE runs DROP COLUMN sandbox; ALTER TABLE runs DROP COLUMN direnv; DROP TABLE lapses;
-  DROP TRIGGER ask_answered_by; DROP TRIGGER push_a_landed_wrong; DROP TRIGGER push_a_stall; ALTER TABLE push_subscriptions DROP COLUMN kinds; DROP TABLE messages; DROP TABLE pairs; DROP TABLE news;
+  DROP TRIGGER ask_answered_by; DROP TRIGGER push_a_landed_wrong; DROP TRIGGER push_a_stall; ALTER TABLE push_subscriptions DROP COLUMN kinds; DROP TABLE messages; DROP TABLE pairs; DROP TABLE news; ALTER TABLE outbox DROP COLUMN pair;
   ")
     };
 }
@@ -3153,7 +3153,7 @@ fn a_state_file_at_111_keeps_its_stall_runs_and_takes_scheduled_ones() {
            'exit 3', 'nope', 42, 43);
          INSERT INTO tasks (id, key, workflow, step, state, trigger, source)
            VALUES (1, 'k', 'w', 's', 'done', 't', 'e');
-         DROP TABLE messages; DROP TABLE pairs; DROP TABLE news;
+         DROP TABLE messages; DROP TABLE pairs; DROP TABLE news; ALTER TABLE outbox DROP COLUMN pair;
          PRAGMA user_version = 111;"
     ))
     .unwrap();
@@ -22305,10 +22305,17 @@ fn a_cancel_during_the_turn_refuses_the_result_once_with_the_news() {
     setup.written("fake/submitted");
     setup.publish(&moved_to("Canceled", "canceled"));
     setup.until("inbox", |rows| rows.len() == 2 && rows[1][4] == "kept");
+    let news = setup.dir.join("home/news").join(&setup.rows("runs")[0][4]);
+    assert!(news.join("news").exists());
 
     setup.release("hold-call");
 
     setup.until("tasks", |rows| rows[0][4] == "done");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while news.exists() {
+        assert!(Instant::now() < deadline, "the run's news folder stays");
+        std::thread::sleep(Duration::from_millis(50));
+    }
     let (text, error) = reply(&setup.replies()[0]);
     assert!(error, "{text}");
     assert!(
@@ -22367,6 +22374,22 @@ fn two_tasks(name: &str, paired: bool) -> (Setup, String) {
 }
 
 impl Setup {
+    /// Waits for the first prompt the fake `claude` read that holds `text`, and returns it.
+    fn typed_with(&self, text: &str) -> String {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let typed = self.typed();
+            if let Some(found) = typed.iter().find(|prompt| prompt.contains(text)) {
+                return found.clone();
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{text} was never typed: {typed:?}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     fn edit(&self, statement: &str) {
         let db = rusqlite::Connection::open(self.dir.join("priory.db")).unwrap();
         db.busy_timeout(Duration::from_secs(10)).unwrap();
@@ -22652,13 +22675,115 @@ fn a_duplicate_tells_a_sleeping_task_how_to_agree_with_its_next_prompt() {
     });
     setup.priory(&["say", "1", "Go on."]);
 
-    setup.until("outbox", |rows| {
-        rows.iter().any(|row| {
-            row[1] == "1"
-                && row[4].contains("Task 2 (linear:ENG-9) works on ENG-9. Agree with task 2 which of you continues")
-                && row[3] != "held"
-        })
+    let woken = setup.typed_with("Go on.");
+    assert!(
+        woken.contains(
+            "Task 2 (linear:ENG-9) works on ENG-9. Agree with task 2 which of you continues"
+        ),
+        "{woken}"
+    );
+}
+
+#[test]
+fn a_duplicate_that_wakes_a_gate_says_how_to_agree_in_the_prompt_that_wakes_it() {
+    let mut setup = Setup::new("talk-duplicate-gate");
+    setup.calls(&[
+        wait(on_pull_7("review")),
+        passed_at("abc0000000000000000000000000000000000000"),
+    ]);
+    setup.publish(&linear_requested("ENG-7", "first"));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.publish(&reviewed());
+    setup.until("runs", |rows| rows.len() == 2 && rows[1][7] != "-");
+    setup.gone("priory-1");
+    setup.until("tasks", |rows| rows[0][4] == "asleep");
+    setup.hold("hold-stop");
+    setup.publish(&linear_requested("ENG-9", "second"));
+    setup.until("runs", |rows| rows.len() == 3);
+
+    setup.publish(&moved_to("Duplicate", "canceled"));
+
+    let woken = setup.typed_with("wait 2 fired: Ana moved ENG-7 to Duplicate");
+    assert!(
+        woken.contains("Agree with task 2 which of you continues"),
+        "{woken}"
+    );
+}
+
+#[test]
+fn a_second_duplicate_event_holds_one_line_and_a_day_old_pair_drops_it() {
+    let (setup, _) = two_tasks("talk-duplicate-expired", false);
+    setup.publish(&moved_to("Duplicate", "canceled"));
+    setup.publish(&moved_to("Duplicate", "canceled"));
+    setup.until("inbox", |rows| {
+        with(rows, 1, "linear.issue.state_changed") == 2
     });
+    assert_eq!(carrying(&setup, "Agree with task 2"), ["held"]);
+    setup.edit("UPDATE pairs SET created = datetime('now', '-25 hours')");
+
+    setup.priory(&["say", "1", "Go on."]);
+
+    let woken = setup.typed_with("Go on.");
+    assert!(!woken.contains("Agree with task 2"), "{woken}");
+    assert_eq!(carrying(&setup, "Agree with task 2"), ["withdrawn"]);
+}
+
+#[test]
+fn a_message_that_ends_the_paste_types_no_keystrokes() {
+    let (setup, session) = two_tasks("talk-control", true);
+
+    let text = "a\u{1b}[201~b\u{3}c\u{7f}d\u{9b}e\r\n\tf";
+    let replies = setup.mcp(
+        &session,
+        &[tool_call("message", json!({ "task": 1, "text": text }))],
+    );
+
+    let (said, error) = reply(&replies[0]);
+    assert!(!error, "{said}");
+    let typed = setup.typed_with("[201~");
+    assert!(typed.contains("> a[201~bcde\n> \tf\n"), "{typed:?}");
+    setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[3] == "confirmed" && row[4].contains("[201~"))
+    });
+}
+
+#[test]
+fn a_hand_over_with_a_persons_say_queued_is_refused_and_keeps_it() {
+    let (setup, session) = a_pair_in_a_turn("talk-hand-over-said", json!([]));
+    setup.priory(&["say", "1", "Wait for me."]);
+    setup.until("outbox", |rows| {
+        rows.iter().any(|row| row[4].contains("Wait for me."))
+    });
+
+    let (text, error) = reply(&setup.mcp(&session, &[hand_over_to(2)])[0]);
+
+    assert!(error, "{text}");
+    assert_eq!(
+        text,
+        "a message for this run is queued: end your turn to read it"
+    );
+    assert_eq!(carrying(&setup, "Wait for me."), ["queued"]);
+    assert_eq!(setup.rows("tasks")[0][4], "running");
+}
+
+#[test]
+fn a_hand_over_to_a_task_at_its_step_ask_is_refused() {
+    let (setup, session) = two_tasks("talk-hand-over-step-ask", true);
+    setup.edit(
+        "INSERT INTO asks (task, step, kind, question, options)
+         VALUES (1, 'merge', 'step', 'Merge?', '[]')",
+    );
+
+    let (text, error) = reply(&setup.mcp(&session, &[hand_over_to(1)])[0]);
+
+    assert!(error, "{text}");
+    assert!(
+        text.starts_with("task 1 waits for a person's answer at its step ask"),
+        "{text}"
+    );
+    assert_eq!(setup.rows("tasks")[1][4], "running");
 }
 
 #[test]
