@@ -10,6 +10,7 @@ use serde_json::json;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::time::{Duration, Instant};
 
@@ -35,6 +36,9 @@ type Starting = Receiver<Result<Started, NotStarted>>;
 
 /// When each task's checks before a cloud start last ran out of time.
 static SLOW: Mutex<BTreeMap<i64, Instant>> = Mutex::new(BTreeMap::new());
+
+/// How many polls' threads run.
+static POLLS: AtomicUsize = AtomicUsize::new(0);
 
 /// What the daemon knows of each live cloud run past what the state holds.
 static WATCHED: Mutex<BTreeMap<i64, Watch>> = Mutex::new(BTreeMap::new());
@@ -641,7 +645,9 @@ fn follow(
         let worktree = Path::new(&run.worktree).to_path_buf();
         let (branch, head) = (run.branch.clone(), run.head.clone());
         let (seen, id) = (watch.seen.clone(), run.id);
+        let poll = Poll::begin();
         std::thread::spawn(move || {
+            let _poll = poll;
             let found = look(&worktree, &pushes, &branch, &head, seen, || still_live(id));
             let _ = sender.send(found);
         });
@@ -662,8 +668,23 @@ fn still_live(run: i64) -> Result<bool, String> {
 
 /// Whether a poll works on a worktree, which an upgrade must not cut short.
 pub(crate) fn polling() -> bool {
-    let watched = WATCHED.lock().expect("no poll panics");
-    watched.values().any(|watch| watch.polling.is_some())
+    POLLS.load(Ordering::SeqCst) > 0
+}
+
+/// Counts a poll's thread until it exits, which may be after its run ended.
+struct Poll;
+
+impl Poll {
+    fn begin() -> Self {
+        POLLS.fetch_add(1, Ordering::SeqCst);
+        Poll
+    }
+}
+
+impl Drop for Poll {
+    fn drop(&mut self) {
+        POLLS.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// Polls `pushes`, and takes the commit a poll before found there as `seen`, while `live` says so.
@@ -874,6 +895,18 @@ fn write(into: &str, bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn a_poll_counts_until_its_thread_exits_by_a_panic_too() {
+        let poll = Poll::begin();
+        assert!(polling());
+        let thread = std::thread::spawn(move || {
+            let _poll = poll;
+            panic!("the poll fails");
+        });
+        assert!(thread.join().is_err());
+        assert!(!polling());
+    }
 
     #[test]
     fn a_step_prompt_leaves_the_queue_once_and_a_persons_quote_of_it_stays() {
