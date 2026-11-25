@@ -767,8 +767,9 @@ fn host(upgrade: &Upgrade) -> Result<Host, String> {
     })
 }
 
-/// What an upgrade must wait for, if anything: a pause, a memory grant, a compaction, or a run inside a tool
-/// call, or with `none_live` any live run. A run whose transcript does not tell counts as busy.
+/// What an upgrade must wait for, if anything: a pause, a memory grant, a compaction, a cloud session that starts, or a run inside a tool
+/// call, or with `none_live` any live run. A run whose transcript does not tell counts as busy. A
+/// cloud run whose session started outlives the daemon.
 pub(crate) fn busy(db: &Connection, none_live: bool) -> rusqlite::Result<Option<String>> {
     let count = |query: &str| db.query_row(query, [], |row| row.get::<_, i64>(0));
     if count("SELECT count(*) FROM pause")? > 0 {
@@ -781,12 +782,18 @@ pub(crate) fn busy(db: &Connection, none_live: bool) -> rusqlite::Result<Option<
         return Ok(Some("a shared session is compacted".to_owned()));
     }
     let mut statement =
-        db.prepare("SELECT id, transcript FROM runs WHERE ended IS NULL ORDER BY id")?;
+        db.prepare("SELECT id, transcript, harness IS 'claude-cloud', thread IS NOT NULL FROM runs WHERE ended IS NULL ORDER BY id")?;
     let mut rows = statement.query([])?;
     while let Some(row) = rows.next()? {
         let (run, path): (i64, Option<String>) = (row.get(0)?, row.get(1)?);
         if none_live {
             return Ok(Some(format!("run {run} is live and the release migrates")));
+        }
+        if row.get(2)? {
+            if row.get(3)? {
+                continue;
+            }
+            return Ok(Some(format!("run {run} starts its cloud session")));
         }
         let path = path.map(PathBuf::from);
         match path.and_then(|path| transcript::in_tool_call_at(&path).ok().flatten()) {
@@ -1168,5 +1175,28 @@ mod tests {
             Some("run 7 is live and the release migrates")
         );
         fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn a_cloud_run_is_quiet_once_its_session_started_and_never_for_a_migration() {
+        let db = state::memory();
+        db.execute_batch(
+            "INSERT INTO tasks (id, key, workflow, step, state, trigger, source)
+               VALUES (1, 'k', 'w', 's', 'running', 't', 's');
+             INSERT INTO runs (id, task, step, tmux, session, harness)
+               VALUES (7, 1, 's', 'm', 'n', 'claude-cloud');",
+        )
+        .unwrap();
+        assert_eq!(
+            busy(&db, false).unwrap().as_deref(),
+            Some("run 7 starts its cloud session")
+        );
+        db.execute("UPDATE runs SET thread = 'session_1'", [])
+            .unwrap();
+        assert_eq!(busy(&db, false).unwrap(), None);
+        assert_eq!(
+            busy(&db, true).unwrap().as_deref(),
+            Some("run 7 is live and the release migrates")
+        );
     }
 }

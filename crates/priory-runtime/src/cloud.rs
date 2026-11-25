@@ -2,8 +2,8 @@
 //! runs in, and the commit its session pushes. Nothing here moves a commit it did not check.
 
 use crate::runtime::{
-    ClaudeCode, Harness, NESTED, changes, command_timeout, descends, fed, fed_within, git, head,
-    kill, one_line, run, tmux, tmux_socket, tmux_socket_fits, write_private,
+    ClaudeCode, Harness, NESTED, as_one, changes, command_timeout, descends, fed_soon, fed_within,
+    git, kill, one_line, run, soon, tmux, tmux_socket, tmux_socket_fits, write_private,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -17,6 +17,8 @@ const POLL_TIMEOUT: Duration = Duration::from_secs(15);
 pub enum NotStarted {
     /// No session exists.
     Refused(String),
+    /// No session exists, and a person must act before one may.
+    Denied(String),
     /// A session may exist, so a second start could double it.
     Uncertain(String),
 }
@@ -50,9 +52,14 @@ pub fn folder(home: &Path, repo: &str) -> PathBuf {
     home.join("cloud").join(repo)
 }
 
-/// The commit `branch` is at, or why `worktree` is not on it with nothing uncommitted.
+/// The commit `branch` is at, or why `worktree` is not on it with nothing uncommitted. Its git
+/// commands share one `loop_timeout`.
 pub fn clean_head(worktree: &Path, branch: &str) -> Result<String, String> {
-    let on = run(git(worktree).args(["branch", "--show-current"]))?;
+    as_one(|| clean_head_now(worktree, branch))
+}
+
+fn clean_head_now(worktree: &Path, branch: &str) -> Result<String, String> {
+    let on = soon(git(worktree).args(["branch", "--show-current"]))?;
     let on = on.trim();
     if on != branch {
         return Err(format!(
@@ -61,7 +68,7 @@ pub fn clean_head(worktree: &Path, branch: &str) -> Result<String, String> {
             if on.is_empty() { "no branch" } else { on }
         ));
     }
-    let changed = changes(&run(git(worktree).args([
+    let changed = changes(&soon(git(worktree).args([
         "status",
         "--porcelain=v1",
         "--untracked-files=all",
@@ -72,13 +79,24 @@ pub fn clean_head(worktree: &Path, branch: &str) -> Result<String, String> {
             worktree.display()
         ));
     }
-    head(worktree, branch).ok_or_else(|| format!("branch {branch} is gone"))
+    let commit = format!("refs/heads/{branch}^{{commit}}");
+    soon(git(worktree).args(["rev-parse", "--verify", &commit])).map(|head| head.trim().to_owned())
 }
 
 /// Whether `at` holds a commit of the local branch `parent`, or of one of the commits `started` the
 /// task started from, that no branch of `origin` has, as Priory's clone last saw `origin`. The
-/// branch may have lost such a commit to an amend, or be gone.
+/// branch may have lost such a commit to an amend, or be gone. Its git commands share one
+/// `loop_timeout`.
 pub fn holds_unpushed(
+    worktree: &Path,
+    at: &str,
+    parent: &str,
+    started: &[String],
+) -> Result<bool, String> {
+    as_one(|| holds_unpushed_now(worktree, at, parent, started))
+}
+
+fn holds_unpushed_now(
     worktree: &Path,
     at: &str,
     parent: &str,
@@ -91,14 +109,16 @@ pub fn holds_unpushed(
     }
     let mut check = git(worktree);
     check.args(["cat-file", "--batch-check=%(objectname)"]);
-    let found = fed(&mut check, Some(asked.into_bytes()))?;
+    let found = fed_soon(&mut check, asked.into_bytes())?;
     // A commit the clone no longer has is not below `at`.
     for tip in found.lines().filter(|line| !line.ends_with(" missing")) {
-        let shared = run(git(worktree).args(["merge-base", at, tip]))?;
+        let shared = soon(git(worktree).args(["merge-base", at, tip]))?;
         let listed = ["rev-list", "--max-count=1", shared.trim()];
-        let unpushed = run(git(worktree)
-            .args(listed)
-            .args(["--not", "--remotes=origin"]))?;
+        let unpushed = soon(
+            git(worktree)
+                .args(listed)
+                .args(["--not", "--remotes=origin"]),
+        )?;
         if !unpushed.trim().is_empty() {
             return Ok(true);
         }

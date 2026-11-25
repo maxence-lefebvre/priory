@@ -3,14 +3,14 @@
 
 use crate::trace::Trace;
 use priory_factory::factory::{Agent, Factory, Harness, Step};
-use priory_runtime::cloud::{NotStarted, NotTaken, Start, Started};
+use priory_runtime::cloud::{NotStarted, NotTaken, Pushed, Start, Started};
 use priory_runtime::{cloud, runtime};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 type Error = Box<dyn std::error::Error>;
@@ -33,6 +33,9 @@ static STARTING: Mutex<Option<(i64, Starting)>> = Mutex::new(None);
 
 type Starting = Receiver<Result<Started, NotStarted>>;
 
+/// When each task's checks before a cloud start last ran out of time.
+static SLOW: Mutex<BTreeMap<i64, Instant>> = Mutex::new(BTreeMap::new());
+
 /// What the daemon knows of each live cloud run past what the state holds.
 static WATCHED: Mutex<BTreeMap<i64, Watch>> = Mutex::new(BTreeMap::new());
 
@@ -41,7 +44,9 @@ static WATCHED: Mutex<BTreeMap<i64, Watch>> = Mutex::new(BTreeMap::new());
 #[derive(Default)]
 struct Watch {
     polled: Option<Instant>,
-    polling: Option<Receiver<Result<Option<String>, String>>>,
+    polling: Option<Receiver<Result<Found, NotTaken>>>,
+    /// Gone once the run ended, so a poll that still runs moves nothing.
+    live: Arc<()>,
     /// When its first poll past the deadline started.
     late: Option<Instant>,
     /// The last poll, past the deadline, found no push.
@@ -52,6 +57,16 @@ struct Watch {
     trouble: Option<String>,
     /// What the CLI said when it uploaded the clone.
     upload: Option<String>,
+}
+
+/// What a poll found on `origin`.
+enum Found {
+    /// No push, or the commit the session started at.
+    Nothing,
+    /// A push that no earlier poll saw.
+    Seen(String),
+    /// A push that the poll took.
+    Taken(Pushed),
 }
 
 /// Whether `agent` starts its steps in a cloud session. A run says itself whether it is one.
@@ -99,7 +114,10 @@ pub(crate) fn spent(
     task: i64,
 ) -> rusqlite::Result<Option<String>> {
     let started: u32 = db.query_row(
-        &format!("SELECT count(*) FROM runs WHERE task = ?1 AND harness = ?2 AND NOT ({REFUSED})"),
+        &format!(
+            "SELECT count(*) FROM runs WHERE task = ?1 AND harness = ?2 AND NOT ({REFUSED})
+             AND ended_as IS NOT 'denied'"
+        ),
         params![task, HARNESS],
         |row| row.get(0),
     )?;
@@ -109,6 +127,13 @@ pub(crate) fn spent(
             "the task started {started} of at most {max} cloud sessions: raise `[cloud] sessions` in factory.toml, then resume the task"
         )
     }))
+}
+
+/// Holds back `task`'s next try to start a cloud run: git ran out of time on its worktree.
+pub(crate) fn slow(task: i64) {
+    let mut slow = SLOW.lock().expect("no insert panics");
+    slow.retain(|_, at| at.elapsed() < SOON);
+    slow.insert(task, Instant::now());
 }
 
 /// Why a task cannot start a cloud run now.
@@ -134,6 +159,12 @@ pub(crate) fn waits(
         return Ok(Some(format!(
             "waits to start a cloud session again: {failed} starts in a row failed, so the next one is in {left}s"
         )));
+    }
+    let slow = SLOW.lock().expect("no insert panics").get(&task).copied();
+    if slow.is_some_and(|at| at.elapsed() < SOON) {
+        return Ok(Some(
+            "waits to check its worktree again: git was too slow".to_owned(),
+        ));
     }
     let live: u32 = db.query_row(
         "SELECT count(*) FROM runs WHERE ended IS NULL AND harness = ?1",
@@ -207,6 +238,7 @@ fn entry(tx: &Transaction, task: i64, step: &Step) -> rusqlite::Result<String> {
 
 /// Starts the cloud session of the recorded run `run` on a thread, with the agent's prompt, which
 /// `start` holds, the step's, the task's event, what is queued for the task and the push rules.
+/// `screen` says first, on that thread, why nothing may be pushed.
 pub(crate) fn dispatch(
     db: &mut Connection,
     step: &Step,
@@ -214,6 +246,7 @@ pub(crate) fn dispatch(
     task: i64,
     session: &str,
     mut start: Start,
+    screen: impl FnOnce() -> Result<(), String> + Send + 'static,
 ) -> Result<(), Error> {
     let mut queued = Vec::new();
     while let Some(text) = crate::state::claim(db, run)? {
@@ -249,7 +282,10 @@ pub(crate) fn dispatch(
     let (sender, receiver) = channel();
     *STARTING.lock().expect("no start panics") = Some((run, receiver));
     std::thread::spawn(move || {
-        let _ = sender.send(cloud::start(&start));
+        let started = screen()
+            .map_err(NotStarted::Denied)
+            .and_then(|()| cloud::start(&start));
+        let _ = sender.send(started);
     });
     Ok(())
 }
@@ -293,7 +329,7 @@ fn collect(db: &mut Connection, trace: &Trace, kit: crate::kit::Current<'_>) -> 
             Err(NotStarted::Uncertain(reason)) => format!(
                 "it may have started a cloud session: {reason}. Look for it at https://claude.ai/code"
             ),
-            Err(NotStarted::Refused(_)) => return Ok(()),
+            Err(NotStarted::Refused(_) | NotStarted::Denied(_)) => return Ok(()),
         };
         eprintln!("priory daemon: cloud run {run} ended during its start: {left}");
         db.execute(
@@ -327,6 +363,10 @@ fn collect(db: &mut Connection, trace: &Trace, kit: crate::kit::Current<'_>) -> 
                 "cloud run {run} may have started a cloud session: {reason}. Look for it at https://claude.ai/code before you resume the task"
             );
             crate::state::block(db, trace, task, "uncertain", &reason)?;
+        }
+        Err(NotStarted::Denied(reason)) => {
+            give_back(db, run, task, step_of(trace, &workflow, &step))?;
+            crate::state::block(db, trace, task, "denied", &reason)?;
         }
         Err(NotStarted::Refused(reason)) => {
             let step = step_of(trace, &workflow, &step);
@@ -504,32 +544,28 @@ fn follow(
     watch: &mut Watch,
 ) -> Result<bool, Error> {
     let pushes = branch(run.task, &run.session);
-    let worktree = Path::new(&run.worktree);
     let step = step_of(trace, &run.workflow, &run.step);
     if let Some(polling) = &watch.polling {
         let found = match polling.try_recv() {
             Ok(found) => found,
             Err(TryRecvError::Empty) => return Ok(true),
-            Err(TryRecvError::Disconnected) => Err("its thread stopped".into()),
+            Err(TryRecvError::Disconnected) => Err(NotTaken::Later("its thread stopped".into())),
         };
         watch.polling = None;
         watch.absent = false;
         let taken = match found {
-            Ok(commit) if commit.as_deref().is_none_or(|commit| commit == run.head) => {
+            Ok(Found::Nothing) => {
                 watch.seen = None;
                 watch.absent = watch.late.is_some();
                 Ok(None)
             }
             // A push may be a first part of the work, or be replaced: the next poll confirms it.
-            Ok(commit) if commit != watch.seen => {
-                watch.seen = commit;
+            Ok(Found::Seen(commit)) => {
+                watch.seen = Some(commit);
                 Ok(None)
             }
-            Ok(commit) => {
-                let commit = commit.expect("a push has a commit");
-                cloud::adopt(worktree, &run.branch, &run.head, &commit)
-            }
-            Err(reason) => Err(NotTaken::Later(reason)),
+            Ok(Found::Taken(pushed)) => Ok(Some(pushed)),
+            Err(reason) => Err(reason),
         };
         watch.trouble = None;
         match taken {
@@ -613,12 +649,42 @@ fn follow(
         watch.polled = Some(Instant::now());
         let (sender, receiver) = channel();
         watch.polling = Some(receiver);
-        let worktree = worktree.to_path_buf();
+        let worktree = Path::new(&run.worktree).to_path_buf();
+        let (branch, head) = (run.branch.clone(), run.head.clone());
+        let (seen, live) = (watch.seen.clone(), Arc::downgrade(&watch.live));
         std::thread::spawn(move || {
-            let _ = sender.send(cloud::poll(&worktree, &pushes));
+            let found = look(&worktree, &pushes, &branch, &head, seen, || {
+                live.strong_count() > 0
+            });
+            let _ = sender.send(found);
         });
     }
     Ok(true)
+}
+
+/// Polls `pushes`, and takes the commit a poll before found there as `seen`, while `live` says so.
+fn look(
+    worktree: &Path,
+    pushes: &str,
+    branch: &str,
+    head: &str,
+    seen: Option<String>,
+    live: impl Fn() -> bool,
+) -> Result<Found, NotTaken> {
+    let Some(commit) = cloud::poll(worktree, pushes).map_err(NotTaken::Later)? else {
+        return Ok(Found::Nothing);
+    };
+    if commit == head {
+        return Ok(Found::Nothing);
+    }
+    if seen.as_ref() != Some(&commit) {
+        return Ok(Found::Seen(commit));
+    }
+    if !live() {
+        return Ok(Found::Nothing);
+    }
+    let taken = cloud::adopt(worktree, branch, head, &commit)?;
+    Ok(taken.map_or(Found::Nothing, Found::Taken))
 }
 
 /// Stores the result the session's harness session `session` would have sent, then ends its turn as
@@ -687,9 +753,10 @@ fn end(
 
 /// Shows what came during the run on the ask it led to, since no session read it.
 fn tell(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
+    crate::news::expire(tx, task)?;
     let kept: Vec<String> = tx
         .prepare(
-            "SELECT text FROM outbox WHERE task = ?1 AND state = 'queued' AND compact = 0 ORDER BY id",
+            "SELECT text FROM outbox WHERE task = ?1 AND state IN ('queued', 'held') AND compact = 0 ORDER BY id",
         )?
         .query_map([task], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()?;

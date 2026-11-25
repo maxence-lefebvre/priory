@@ -90,6 +90,12 @@ pub(crate) fn soon(command: &mut Command) -> Result<String, String> {
     within(command, loop_left())
 }
 
+/// As `soon`, with `input` on the command's stdin.
+pub(crate) fn fed_soon(command: &mut Command, input: Vec<u8>) -> Result<String, String> {
+    fed_raw_within(command, Some(input), loop_left())
+        .map(|out| String::from_utf8_lossy(&out).into_owned())
+}
+
 fn within(command: &mut Command, timeout: Duration) -> Result<String, String> {
     fed_raw_within(command, None, timeout).map(|out| String::from_utf8_lossy(&out).into_owned())
 }
@@ -218,7 +224,7 @@ pub fn run(command: &mut Command) -> Result<String, String> {
 }
 
 /// As `run`, with `input` on the command's stdin.
-pub(crate) fn fed(command: &mut Command, input: Option<Vec<u8>>) -> Result<String, String> {
+fn fed(command: &mut Command, input: Option<Vec<u8>>) -> Result<String, String> {
     fed_raw(command, input).map(|out| String::from_utf8_lossy(&out).into_owned())
 }
 

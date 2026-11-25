@@ -28,7 +28,8 @@ When a task reaches a step whose agent runs in the cloud, the daemon:
 1. creates the task's worktree as for any run, on the task's own branch, `priory/<task>`;
 2. checks that the repository opted in with `cloud = true`, and that the worktree is on that branch
    with no staged, unstaged or untracked file, since the session would not see it. Otherwise the
-   task blocks and says which;
+   task blocks and says which. When git runs past 30 seconds here, the task waits and the daemon
+   tries again 15 seconds later;
 3. records the run, with a harness session id of its own and the commit the branch is at;
 4. records Claude's trust of the folder below, when the factory sets `trust_worktrees`, since
    `claude --cloud` shows Claude's trust dialog in a folder it does not trust;
@@ -45,6 +46,9 @@ Some tasks start no cloud run:
   request does not matter. Push those commits, or rebase the task's branch onto a branch that is on
   `origin`, then resume the task. Priory turns off `fetch.prune` in its clone, so a merged parent's
   branch still counts as pushed once GitHub deletes it.
+- A task whose commits past the default branch hold a private term of the factory, in a repository
+  [`[private]`](../reference/factory.md#private) lists. It blocks before the push, and the reason
+  names the rule and the place, never the term. It does not count as a session.
 - A task that started `[cloud] sessions` cloud sessions, 10 when unset. It blocks until a person
   raises the limit.
 
@@ -91,7 +95,7 @@ Neither prompts. The daemon takes the commit only when all of these hold:
 - it descends from the commit the session started at;
 - the worktree is on the task's branch, at that same commit, with nothing uncommitted.
 
-Then it moves the branch forward with `git merge --ff-only --no-overwrite-ignore`, so a local file
+Then, off the tick and while the run is still live, it moves the branch forward with `git merge --ff-only --no-overwrite-ignore`, so a local file
 that git ignores is never replaced by one the push tracks, and stores the run's result as the run
 would with the `result` tool: outcome `pushed`, the commit's subject as the summary, its body as the
 evidence, and its SHA as the commit. It ends the turn as a `Stop` hook does, so the task moves by
@@ -117,6 +121,9 @@ first late look, and then the run ends `failed` with the error.
 
 A step with no `pushed` or `failed` outcome cannot store that result, so the task blocks with the
 summary and the refusal. `priory check` refuses such a step first.
+
+The daemon's self-upgrade waits for a cloud session that starts, and for any live run when the
+release migrates. It does not wait for a cloud run whose session started.
 
 A daemon restart keeps a live cloud run: it has no tmux pane to lose, so it is never `lost`, and the
 next poll looks for its branch. A run stays what it started as when a person changes its agent's
@@ -144,6 +151,8 @@ Feedback that comes before the start is in the prompt. The session sorts none of
 a local run's result gives. A person's own items are still recorded as `persons-call`. The rest
 has no class, so the human step after it is where a person reads what it did. Feedback that comes
 during the run does not hold up its push: the next model step's prompt has it, and an ask that opens next shows it.
+News that may end the work, such as an issue marked a duplicate, does the same: no session reads it,
+so it never refuses the push, and the ask shows it with the task to agree with.
 
 ## What still applies, and what a cloud run gives up
 
@@ -153,6 +162,10 @@ during the run does not hold up its push: the next model step's prompt has it, a
 | A bound on concurrent runs | `[cloud] max`, 4 when unset, on each runner |
 | A bound on sessions per task | `[cloud] sessions`, 10 when unset |
 | Worktree, sweep and recipes | Apply: the run has a worktree, and the sweep removes it as any other |
+| Lane caps, time windows and runner filters | Apply: a live cloud run counts toward its lane's cap |
+| Overlap holds | See a cloud run's files only once its push is taken |
+| direnv | None: the session reads no `.envrc` of the runner |
+| Private terms | The commits a start pushes are screened. What the session pushes is screened at `open-pr` only |
 | Approvals, `open-pr`, checks and merge | Apply: they act on the task's branch after the push |
 | Hooks, health checks and nudges | None: the deadline replaces them |
 | Tool guard and `permissions` | None: the cloud environment's own policy applies |

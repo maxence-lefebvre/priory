@@ -47,7 +47,8 @@ which a jail hides, until all of these hold:
   session is being compacted, and
 - no live run is inside a tool call: its transcript holds a result for each call of its last message.
 
-A run whose transcript cannot be read counts as busy. After a day, the desk says what it waits for.
+A run whose transcript cannot be read counts as busy. A [cloud run](cloud.md) counts only
+until its session started. After a day, the desk says what it waits for.
 It never forces its way in.
 
 An edit of a key that only a restart applies, such as `[serve]`, puts the upgrade off until the

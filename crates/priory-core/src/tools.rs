@@ -223,11 +223,14 @@ pub(crate) fn call(
         ));
     }
     let cloud = crate::cloud::is_cloud_run(&tx, run.id)?;
-    // News refuses the call once and is then read, so this refusal commits.
-    if matches!(
-        call.tool.as_str(),
-        "result" | "ask" | "wait" | "consult" | "hand_over"
-    ) && run.debate.is_none()
+    // News refuses the call once and is then read, so this refusal commits. No cloud session reads
+    // it, so the ask its step leads to shows it.
+    if !cloud
+        && matches!(
+            call.tool.as_str(),
+            "result" | "ask" | "wait" | "consult" | "hand_over"
+        )
+        && run.debate.is_none()
         && let Some(held) = crate::news::refusal(&tx, &run.session)?
     {
         tx.commit()?;

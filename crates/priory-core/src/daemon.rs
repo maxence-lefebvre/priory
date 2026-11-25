@@ -2814,6 +2814,10 @@ fn start(
         }
         let head = match priory_runtime::cloud::clean_head(&worktree, &branch) {
             Ok(head) => head,
+            Err(reason) if runtime::timed_out(&reason) => {
+                crate::cloud::slow(admission.task);
+                return Ok(Ok(()));
+            }
             Err(reason) => return Ok(Err(reason)),
         };
         if let Some((parent, started)) = parent_branch(db, admission.task)? {
@@ -2824,8 +2828,16 @@ fn start(
                         "{branch} holds commits of {parent} that are not on origin, and a cloud run would push them. Push them to {parent}, or rebase {branch} onto a branch that is on origin, then resume the task"
                     )));
                 }
+                Err(reason) if runtime::timed_out(&reason) => {
+                    crate::cloud::slow(admission.task);
+                    return Ok(Ok(()));
+                }
                 Err(reason) => return Ok(Err(reason)),
             }
+        }
+        // Preparing the worktree takes time, in which a filter's window can open.
+        if state::filtered(db, factory, runner, admission.task)?.is_some() {
+            return Ok(Ok(()));
         }
         let session = uuid::Uuid::new_v4().to_string();
         let definition = definition(factory, &agent.value, &sources).to_string();
@@ -2864,6 +2876,17 @@ fn start(
             }
             tx.commit()?;
         }
+        let private = factory.private().cloned();
+        let screen = {
+            let (worktree, repo) = (worktree.clone(), repo.to_owned());
+            let head = head.clone();
+            move || match private {
+                Some(private) => {
+                    crate::private::screen_push(&private, &worktree, &repo, &head, base.as_deref())
+                }
+                None => Ok(()),
+            }
+        };
         let start = priory_runtime::cloud::Start {
             tmux: crate::cloud::tmux(admission.task),
             home: home.to_path_buf(),
@@ -2873,7 +2896,7 @@ fn start(
             head,
             prompt: factory.prompt(&agent.value),
         };
-        crate::cloud::dispatch(db, step, run, admission.task, &session, start)?;
+        crate::cloud::dispatch(db, step, run, admission.task, &session, start, screen)?;
         return Ok(Ok(()));
     }
     let turn = match &step.debate {

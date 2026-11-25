@@ -117,13 +117,42 @@ pub(crate) fn screen_stack(
     let mut hits = Vec::new();
     note(&mut hits, &terms, "PR title", title);
     note(&mut hits, &terms, "PR body", body);
+    published(worktree, commit, base, &terms, &mut hits)
+        .map_err(|_| "git could not list the commits the pull request publishes".to_owned())?;
+    refused("the pull request", hits)
+}
+
+/// Refuses the push of `commit` that a cloud run starts from, as `screen` does.
+pub(crate) fn screen_push(
+    rules: &Private,
+    worktree: &Path,
+    repo: &str,
+    commit: &str,
+    base: Option<&str>,
+) -> Result<(), String> {
+    if !rules.lists(repo) {
+        return Ok(());
+    }
+    let terms = rules.compile()?;
+    let mut hits = Vec::new();
+    published(worktree, commit, base, &terms, &mut hits)
+        .map_err(|_| "git could not list the commits the cloud run publishes".to_owned())?;
+    refused("the push a cloud run starts with", hits)
+}
+
+/// Adds the private terms in the commits that a push of `commit` publishes, stacked on `base`.
+fn published(
+    worktree: &Path,
+    commit: &str,
+    base: Option<&str>,
+    terms: &Terms,
+    hits: &mut Vec<String>,
+) -> Result<(), String> {
     let mut range = [commit, "--not", "refs/remotes/origin/HEAD"]
         .map(str::to_owned)
         .to_vec();
     range.extend(base.and_then(|base| tracked(worktree, "origin", base)));
-    commits(worktree, &range, &terms, &mut hits)
-        .map_err(|_| "git could not list the commits the pull request publishes".to_owned())?;
-    refused("the pull request", hits)
+    commits(worktree, &range, terms, hits)
 }
 
 fn refused(what: &str, hits: Vec<String>) -> Result<(), String> {
