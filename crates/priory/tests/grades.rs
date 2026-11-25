@@ -719,6 +719,32 @@ fn a_run_of_the_same_workflow_on_a_tag_at_the_merge_commit_supersedes_no_red() {
 }
 
 #[test]
+fn a_second_run_of_a_workflow_no_push_started_supersedes_no_red_on_a_merge_commit() {
+    for event in [
+        "workflow_run",
+        "issue_comment",
+        "workflow_dispatch",
+        "repository_dispatch",
+        "schedule",
+    ] {
+        let setup = merged_task(&format!("merge-{event}"));
+        suites_at(&setup, "m10", "m10", &[(1, "failure"), (2, "success")]);
+        let runs = [10, 20].map(|suite| {
+            json!({ "check_suite_id": suite, "workflow_id": 1, "event": event, "head_branch": "main" })
+        });
+        let runs = json!({ "workflow_runs": runs });
+        fs::write(setup.dir.join("runs.json"), runs.to_string()).unwrap();
+
+        setup.poll();
+
+        assert_eq!(setup.red_after_merge(), 1, "{event}");
+        let checks = setup.completed_checks();
+        let origins: Vec<_> = checks.iter().map(|check| &check["origin"]).collect();
+        assert_eq!(origins, ["suite:10", "suite:20"], "{event}");
+    }
+}
+
+#[test]
 fn a_red_run_on_a_merge_commit_keeps_one_origin_when_a_second_run_appears() {
     let setup = merged_task("merge-one-origin");
     pushed(&setup, &[(10, "main"), (20, "main")]);
