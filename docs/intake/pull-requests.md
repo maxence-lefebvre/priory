@@ -94,23 +94,36 @@ Commit statuses are not published. A re-run gets a new check run id, so it publi
 ### Superseded runs
 
 One commit can hold several runs of a check: a re-run, or a second workflow run that GitHub started
-for the same commit. The intake counts each check once, as GitHub's pull request page does.
+for the same commit. The intake counts each check once.
 
 - A check is the runs of one app, workflow, workflow event and name on one commit. The newest, with
-  the highest id, stands for it. `pending`, `failing` and the snapshot's `runs` count only that one,
+  the highest id, stands for it, except for a `skipped` or `neutral` run. `pending`, `failing` and the snapshot's `runs` count only that one,
   and only that one publishes.
-- The newest counts whatever its conclusion, so a cancelled newest run stays red.
+- A completed `skipped` or `neutral` run stands for a check only when nothing else ran. So it hides no
+  failure, and a success does. `gh pr checks` differs: it keeps the run that started last, whatever its
+  conclusion, so a skipped run hides a failure there.
+- A cancelled newest run stays red.
 - Two workflows with a job of the same name stay apart, and so do a `push` and a `pull_request` run of
   one workflow.
+- Two pull requests can share one head with different bases, and GitHub does not say which of them a run
+  is for. Their checks count by check suite instead of by workflow. A closed pull request the poll does
+  not read, or a tag or second branch without a pull request, at that head is not seen, so its newer run of
+  the same workflow, event and job can supersede.
 - The GraphQL query names the workflow run of each check's suite, so this adds no request. A token that
   may not read Actions gets `Resource not accessible`, and the intake asks again without the workflows.
-- On a merge commit, the intake reads `repos/{repo}/actions/runs?head_sha={sha}` once per poll, only when
-  two check suites hold one name. The `Actions` permission (read) covers it too.
-- With no workflow, as for another app or a refused token, the check suite takes the place of the
-  workflow and event.
+- On a merge commit, the intake also reads the branch of each run, since a tag or second branch at that
+  commit starts the same workflow on the same event. A run there supersedes none of the base branch's.
+  It reads `repos/{repo}/actions/runs?head_sha={sha}` once per poll while the commit is read, when it
+  has a GitHub Actions check. The first 100 runs count. The `Actions` permission (read) covers it too.
+- With no workflow, as for another app, a workflow or branch GitHub does not name, or a refused token,
+  the check suite takes the place of the workflow. Without a suite, the run is a check of its own.
 
-The event's `origin` holds the workflow and event, or the suite, so that the daemon applies the same
-rule to the events it stored ([waits.md](../daemon/waits.md#done-and-checks)).
+The event's `origin` holds the workflow, event and any branch, or the suite, or the run, so that the
+daemon applies the same rule to the events it stored ([waits.md](../daemon/waits.md#done-and-checks)).
+
+The origin of a check can change at one commit: the token gains or loses `Actions`, or a second pull
+request starts or stops sharing the head. The older runs then keep their old origin in the stored events,
+and no new run supersedes them there. The counts follow the latest poll.
 
 ### Check runs at a merge
 
@@ -124,7 +137,7 @@ also raises a `landed wrong` alarm on the desk, once per merge commit (see
 - It reads the pull requests that a task owns, by its stack or its head branch, and that merged in the
   last 7 days, in a repository it polls. It learns them from the state file, so without `PRIORY_DB` it reads none.
 - It makes one call per merge commit and poll, `repos/{repo}/commits/{sha}/check-runs`, up to 100 runs.
-- It stops reading a commit once a poll saw every run completed and the daemon stored every failing event of it. It also stops, until the next start, when the commit has no run 5 minutes after the merge.
+- It stops reading a commit once a poll saw every run completed and the daemon stored every failing event of it. A stored red run that a later one superseded stands for no failing event. It also stops, until the next start, when the commit has no run 5 minutes after the merge.
 - A restart reads once more only a commit that had no run, since the daemon's record of the others persists.
 - A merge into a branch other than the default counts too: the event names the pull request's base branch as it is.
 - Past 100 runs on a commit, the first 100 are read and `pending` stays above 0, so the commit is read until the 7 days end.
@@ -136,7 +149,8 @@ also raises a `landed wrong` alarm on the desk, once per merge commit (see
   `superseded_by` set to the tip. It then counts as passing and is left out of `failing`. A tip run
   that is still running or was cancelled too keeps the cancelled run pending, so the commit is read
   again on the next poll. So does a tip with no run of that name, for 5 minutes after the cancel,
-  while a newer push's run may not exist yet. Any other answer, and any failed read, such as a 404
+  while a newer push's run may not exist yet. A cancelled run after a failed run of the same check is
+  published as it is, so a later pass does not hide that failure. Any other answer, and any failed read, such as a 404
   for a base branch deleted after the merge, publishes the cancelled run as it is.
 
 ### When the base branch recovers
@@ -162,6 +176,9 @@ that failed on the merge commit passed on a commit of the base branch that conta
   one with a failing run that has no id. A poll that could not read the merges clears nothing.
 - GitHub's 404 or 422, as for a deleted base branch, keeps the report. Any other failed read, such as a rate
   limit, keeps it too and counts as a failed poll in the intake's health.
+- A run the tip [superseded](#superseded-runs) does not count. When two check suites there hold one name, it
+  makes one more call per failed check and poll, `repos/{repo}/actions/runs?head_sha={tip}`, for the
+  workflow and branch of each suite.
 - It makes one call per failed check and poll while the report is unread. It makes one call per Actions run
   and one per commit compared, and keeps their answers until the next start.
 - The report of a revert stays. The [`red-after-merge`](../daemon/trace.md#outcome-labels) label stays too.

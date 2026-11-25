@@ -12109,6 +12109,66 @@ fn a_red_check_of_one_workflow_fires_though_another_workflow_has_a_later_green_j
 }
 
 #[test]
+fn a_red_check_stored_without_an_origin_fires_though_a_later_check_of_its_name_has_one() {
+    let mut green = stored_gate(2, "success");
+    green.data["origin"] = json!("workflow:13:pull_request");
+    green.data["failing"] = json!(1);
+    let checks = [stored_gate(1, "failure"), green];
+    let setup = gated_after(Setup::new("gate-no-origin"), &checks);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    assert!(
+        typed[2].starts_with(&format!(
+            "wait 2 fired: check gate at {ABC} concluded failure\n"
+        )),
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn a_red_check_a_later_run_skipped_fires() {
+    let of = |id: u64, conclusion: &str| {
+        let mut check = stored_gate(id, conclusion);
+        check.data["origin"] = json!("workflow:12:pull_request");
+        check.data["failing"] = json!(1);
+        check
+    };
+    let checks = [of(1, "failure"), of(2, "skipped")];
+    let setup = gated_after(Setup::new("gate-skipped"), &checks);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+}
+
+#[test]
+fn a_fix_that_fails_the_same_check_stops_the_loop_though_one_commit_has_a_superseded_red() {
+    let setup = gated("breaker-superseded");
+    setup.calls(&[passed_at(DEF), passed_at(FED)]);
+    setup.publish(&red_at(1, "test", ABC));
+    setup.until("runs", |rows| rows.len() == 3 && rows[2][7] == "asleep");
+    setup.publish(&red_at(2, "lint", DEF));
+    setup.until("runs", |rows| rows.len() == 4 && rows[3][7] == "asleep");
+    let of_unit = |id: u64, conclusion: &str| {
+        let mut check = red_at(id, "unit", FED);
+        check.data["conclusion"] = json!(conclusion);
+        check.data["failing"] = json!(0);
+        check.data["pending"] = json!(1);
+        check
+    };
+    // The green rerun is stored first, so the older red is superseded when its event comes.
+    setup.publish(&of_unit(4, "success"));
+    setup.publish(&of_unit(3, "failure"));
+
+    setup.publish(&red_at(5, "lint", FED));
+
+    setup.until("asks", |rows| rows.len() == 1);
+    assert_eq!(
+        open_asks(&setup)[0]["title"],
+        "ci-fix-exhausted: lint (failure)"
+    );
+}
+
+#[test]
 fn green_checks_at_the_result_commit_do_not_finish_the_task_when_the_head_moved_before_it() {
     let mut setup = Setup::new("gate-moved-before");
     setup.calls(&[
@@ -21747,7 +21807,7 @@ impl Setup {
         let answers = [
             (
                 "open",
-                json!([{ "data": { "repository": { "pullRequests": { "nodes": pulls } } } }]),
+                json!({ "data": { "repository": { "pullRequests": { "nodes": pulls } } } }),
             ),
             ("named", json!({ "data": { "repository": named } })),
             ("issues", json!(issues)),
@@ -21762,7 +21822,7 @@ impl Setup {
         let fake = self.dir.join("fake");
         let script = format!(
             "#!/bin/sh\necho \"$*\" >> '{0}/gh-api.log'\ncase \"$*\" in\n  \
-             \"api graphql --paginate\"*) cat '{0}/gh-open.json' ;;\n  \
+             \"api graphql -F\"*) cat '{0}/gh-open.json' ;;\n  \
              \"api graphql\"*) cat '{0}/gh-named.json' ;;\n  \
              \"api repos/owner/repo/issues?\"*) cat '{0}/gh-issues.json' ;;\n  *) echo '[]' ;;\nesac\n",
             fake.display()

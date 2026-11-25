@@ -320,7 +320,8 @@ A task with no result at all changed nothing, such as a runbook a pull request l
 is done with no gate.
 
 A later run supersedes a red check at the same commit: one with a higher check run id, and the same
-app, name and `origin` ([pull-requests.md](../intake/pull-requests.md#superseded-runs)).
+app, name and `origin`, unless it is `skipped` or `neutral`
+([pull-requests.md](../intake/pull-requests.md#superseded-runs)).
 
 The daemon judges this wait on every event the inbox kept, ignored or woke a task on about the pull
 request. That includes events the agent already read, such as a check that woke it through a
@@ -441,7 +442,12 @@ Known limits:
   takes it.
 - A check event from an intake older than `failing` cannot mark a task done.
 - A check event from an intake older than `origin` names no workflow, so any later run of the same app
-  and name supersedes it. Its `failing` may count superseded runs. Such a commit neither wakes the agent
-  nor marks the task done, until a later check, a push or the merge.
+  and name that also has none supersedes it. Its `failing` may count superseded runs. Such a commit
+  neither wakes the agent nor marks the task done, until a later check, a push or the merge.
+- A later check with an `origin` supersedes no red check without one. When it counts `failing`, the
+  agent wakes, and the wake can name a red check that a rerun already passed.
+- The `origin` of a check can change at one commit (see
+  [Superseded runs](../intake/pull-requests.md#superseded-runs)). The older red check then counts as not
+  superseded, with the same effect.
 - Feedback after the task is done reopens it instead (see
   [routing.md](routing.md#feedback-reopens-a-done-task)).

@@ -73,7 +73,7 @@
           ]
         },
         "origin": {
-          "description": "What started the run: `workflow:<id>:<event>` for a GitHub Actions workflow, or else\n`suite:<id>`, its check suite. A run with a higher id of the same app, name and origin on the\nsame commit supersedes it. Absent from an older intake's event.",
+          "description": "What started the run: `workflow:<id>:<event>` for a GitHub Actions workflow, with `:<branch>`\non a merge commit, or else `suite:<id>`, its check suite, or else `run:<id>`. A run with a\nhigher id of the same app, name and origin on the same commit supersedes it, unless it is\nskipped or neutral and this one is not. Absent from an older intake's event.",
           "type": [
             "string",
             "null"

@@ -2742,7 +2742,7 @@ fn a_comment_a_poll_published_publishes_nothing_more_from_its_webhook() {
         "pull_request_url": "https://api.github.com/repos/owner/repo/pulls/43",
         "user": { "login": "ana", "type": "User" }
     });
-    let open = json!([{ "data": { "repository": { "pullRequests": { "nodes": [{
+    let open = json!({ "data": { "repository": { "pullRequests": { "nodes": [{
         "number": 43,
         "headRefName": "priory/3",
         "headRefOid": "abc123",
@@ -2759,9 +2759,9 @@ fn a_comment_a_poll_published_publishes_nothing_more_from_its_webhook() {
             "author": { "login": "ana", "__typename": "User" }
         }] },
         "commits": { "nodes": [] }
-    }] } } } }]);
+    }] } } } });
     setup.poll_answering(&[
-        ("graphql --paginate", open),
+        ("graphql -F", open),
         (
             "repos/owner/repo/pulls/comments?sort=created&direction=desc&per_page=100",
             json!([thread]),

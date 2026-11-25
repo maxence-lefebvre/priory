@@ -70,9 +70,10 @@ The events' ids are on their own pages.
 | Poll | Calls |
 | ---- | ----- |
 | A repository with N open pull requests and nothing new | 5 `gh` calls: 4 REST requests (`issues/events`, `issues`, `pulls/comments` and `issues/comments`, one page each) and 1 GraphQL query |
-| N over 25 | the query pages itself: ceil(N/25) requests |
-| New pull request events | 1 more GraphQL query per 25 pull requests they name |
-| A task pull request merged in the last 7 days | 1 more REST request per merge commit whose checks have not all completed ([why](pull-requests.md#check-runs-at-a-merge)), and another when two check suites there hold one name ([why](pull-requests.md#superseded-runs)) |
+| N over 25 | 1 GraphQL request per page: ceil(N/25), or ceil(N/size) at a [smaller size](#page-size) |
+| New pull request events | 1 more GraphQL query per 25 pull requests they name, or per the smaller size |
+| A task pull request merged in the last 7 days | 1 more REST request per merge commit whose checks have not all completed ([why](pull-requests.md#check-runs-at-a-merge)), and another when it has a GitHub Actions check ([why](pull-requests.md#superseded-runs)) |
+| An unread report of a red merge | the requests of [the recovery](pull-requests.md#when-the-base-branch-recovers) |
 | A token that may not read Actions | each GraphQL query above twice ([why](pull-requests.md#superseded-runs)) |
 | A review by `gh`'s login that is `COMMENTED` with an empty body | 1 more REST request for its thread comments, at most 20 per poll, newest first within equal failed tries, and none for a review already on `factory.intake` ([why](pull-requests.md#events)) |
 | Over 100 new events in a stream since the last poll | 1 more REST page per 100 |
@@ -89,6 +90,21 @@ and the first 100 check runs of its head commit, so a request returns at most 5,
 pull requests a request, it returned up to 20,200, and GitHub answered a busy repository's query
 with a 504. Review thread comments come from REST because the query would
 pay for every thread of every open pull request: about 20 more points per poll at 20 threads each.
+
+### Page size
+
+A large repository can fail at 25: GitHub answers 502 or 504, times out or cuts the answer short. The
+intake then asks for the same page again with half as many pull requests, down to 3: 25, 12, 6, 3. Only
+at 3 does it wait and retry as [Failures](#failures) says. A page that fails there fails the repository's
+poll, which publishes nothing.
+
+The repository keeps the size that answered for an hour, in memory, then starts at 25 again. A failed
+poll keeps nothing, and neither does a restart or an `--once` run.
+
+A step down costs at most 3 failed requests, then 2 retries at 3. At 3 a page, N open pull requests take
+ceil(N/3) requests a poll for that hour, up to 8.3 times as many. A smaller page asks GitHub for fewer
+nodes, at most 606 at 3, so its cost per request is lower. An outage of GitHub shrinks the page too when
+a smaller one happens to answer.
 
 Each `gh api` call runs in its own process group. Past `command_timeout` in `factory.toml`, 5
 minutes by default, the call is killed and the poll fails with `timed out after <n>s`.
@@ -117,7 +133,7 @@ A poll publishes reviews and checks before the issue streams. So a crash after a
 
 | What fails | Then |
 | ---------- | ---- |
-| `gh` with a 5xx or GitHub's GraphQL timeout | the call is tried again after 1 second, then after 3 seconds. If the third try fails too, it fails like any other `gh` error |
+| `gh` with a 5xx, GitHub's GraphQL timeout or an answer cut short | the pull request query asks for a [smaller page](#page-size) first. Otherwise the call is tried again after 1 second, then after 3 seconds. If the third try fails too, it fails like any other `gh` error |
 | `gh` for one repository | that repository publishes nothing; the others still publish |
 | `gh` for a review's thread comments | that review is not published, and the next poll tries again; the rest publishes. A rate limit or a timeout ends the poll's other such calls. The tenth failed try of a review, rate limits aside, publishes it as the person's |
 | `gh`, without `--once` | the error is logged and retried on the next poll. With `PRIORY_DB` set, it shows as a banner on the desk until a poll succeeds, and as an alarm once it has failed for `[intake] alarm_after`: see [desk.md](../daemon/desk.md#intake-banner) |

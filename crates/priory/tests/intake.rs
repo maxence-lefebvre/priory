@@ -510,18 +510,130 @@ fn a_graphql_timeout_and_a_rest_502_are_retried_too() {
 }
 
 #[test]
-fn a_504_that_outlasts_two_retries_fails_the_poll() {
+fn a_504_that_outlasts_the_smaller_pages_and_two_retries_fails_the_poll() {
     let setup = Setup::baseline("gh-504-thrice");
-    setup.fail_first("graphql", 3, "gh: HTTP 504", &[]);
+    setup.fail_first("graphql", 6, "gh: HTTP 504", &[]);
 
     let output = setup.intake();
 
     assert_eq!(output.status.code(), Some(1));
-    assert_eq!(setup.calls("graphql"), 3);
+    assert_eq!(setup.calls("graphql"), 6, "25, 12, 6, then 3 three times");
     assert!(
         String::from_utf8_lossy(&output.stderr).contains("gh api graphql failed: gh: HTTP 504"),
         "{output:?}"
     );
+}
+
+/// A fake `gh` with two pages of open pull requests, 43 then 44, whose first call for the second
+/// runs `failure`. `gh.log` holds each GraphQL call's `first` and cursor.
+fn paged(setup: &Setup, failure: &str) {
+    let page = |number, info| {
+        let nodes = [pull(number, false, json!([]), json!([]))];
+        json!({ "data": { "repository": { "pullRequests": { "pageInfo": info, "nodes": nodes } } } })
+    };
+    let first = page(43, json!({ "hasNextPage": true, "endCursor": "c1" }));
+    let second = page(44, json!({ "hasNextPage": false, "endCursor": "c2" }));
+    write(&setup.dir.join("first.json"), &first.to_string());
+    write(&setup.dir.join("second.json"), &second.to_string());
+    let script = format!(
+        "#!/bin/sh\ncase \"$*\" in\n  \"api graphql -F\"*endCursor=c1*) echo \"$4 c1\" >> '{0}/gh.log'\n    \
+         [ -f '{0}/failed' ] || {{ touch '{0}/failed'; {failure}; }}\n    cat '{0}/second.json' ;;\n  \
+         \"api graphql -F\"*) echo \"$4\" >> '{0}/gh.log'; cat '{0}/first.json' ;;\n  *) echo '[]' ;;\nesac\n",
+        setup.dir.display()
+    );
+    Setup::fake_gh(&setup.dir, &script);
+}
+
+/// The pull requests of the snapshots a poll published, whose heads had no check run.
+fn snapshot_pulls(setup: &Setup) -> Vec<serde_json::Value> {
+    let published = setup.published();
+    let snapshots = published
+        .iter()
+        .filter(|event| event.message.kind == "github.pull_request.check_runs");
+    snapshots
+        .map(|event| event.message.data["pull_request"].clone())
+        .collect()
+}
+
+#[test]
+fn a_page_github_fails_or_truncates_is_asked_again_with_half_as_many_from_the_same_cursor() {
+    for (name, failure) in [
+        ("page-504", "echo 'gh: HTTP 504' >&2; exit 1"),
+        ("page-502", "echo 'HTTP 502: Bad Gateway' >&2; exit 1"),
+        (
+            "page-cut-gh",
+            "echo 'unexpected end of JSON input' >&2; exit 1",
+        ),
+        ("page-cut", "echo '{\"data\": {'; exit 0"),
+    ] {
+        let setup = Setup::baseline(name);
+        paged(&setup, failure);
+        for page in ["first.json", "second.json"] {
+            let old = fs::read_to_string(setup.dir.join(page)).unwrap();
+            let old = old.replace("2999-01-01", "2020-01-01");
+            write(&setup.dir.join(page), &old);
+        }
+
+        succeeded(&setup.intake());
+
+        let log = fs::read_to_string(setup.dir.join("gh.log")).unwrap();
+        assert_eq!(log, "first=25\nfirst=25 c1\nfirst=12 c1\n", "{name}");
+        assert_eq!(snapshot_pulls(&setup), [43, 44], "{name}");
+    }
+}
+
+#[test]
+fn a_page_that_names_no_next_cursor_fails_the_poll() {
+    let setup = Setup::baseline("page-no-cursor");
+    paged(&setup, "true");
+    let answer = fs::read_to_string(setup.dir.join("second.json")).unwrap();
+    let answer = answer.replace("\"hasNextPage\":false", "\"hasNextPage\":true");
+    write(
+        &setup.dir.join("second.json"),
+        &answer.replace("\"c2\"", "\"c1\""),
+    );
+
+    let output = setup.intake();
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(snapshot_pulls(&setup).is_empty());
+}
+
+#[test]
+fn a_repository_whose_query_failed_keeps_the_smaller_page() {
+    let setup = Setup::baseline("page-kept");
+    let numbers: Vec<u64> = (43..53).collect();
+    let issues: Vec<_> = numbers.iter().map(|number| pull_issue(*number)).collect();
+    let named: Vec<_> = numbers
+        .iter()
+        .map(|number| pull(*number, false, json!([]), json!([])))
+        .collect();
+    setup.fail_first(
+        "graphql -f",
+        1,
+        "gh: HTTP 504",
+        &[(ISSUES_PATH, json!(issues)), (PULLS, pulls(&named))],
+    );
+    let gh = setup.dir.join("bin/gh");
+    let log = setup.dir.join("gh.log");
+    let script = fs::read_to_string(&gh).unwrap().replacen(
+        "#!/bin/sh\n",
+        &format!(
+            "#!/bin/sh\n[ \"$2 $3\" = 'graphql -F' ] && echo \"$4\" >> '{}'\n",
+            log.display()
+        ),
+        1,
+    );
+    Setup::fake_gh(&setup.dir, &script);
+
+    succeeded(&setup.intake());
+
+    assert_eq!(
+        setup.calls("graphql -f"),
+        3,
+        "ten that failed, then five twice"
+    );
+    assert_eq!(fs::read_to_string(log).unwrap(), "first=5\n");
 }
 
 #[test]
@@ -857,7 +969,7 @@ fn a_baseline_requests_tasks_only_for_backfill_triggers() {
     assert_eq!(tasks, [json!("agent-backfill")]);
 }
 
-const OPEN_PULLS: &str = "graphql --paginate";
+const OPEN_PULLS: &str = "graphql -F";
 const PULLS: &str = "graphql -f";
 
 /// A pull request as `issues` lists it.
@@ -906,9 +1018,9 @@ fn pulls(pulls: &[serde_json::Value]) -> serde_json::Value {
     json!({ "data": { "repository": repository } })
 }
 
-/// The answer to the paginated query for open pull requests.
+/// The one page of the query for open pull requests.
 fn open_pulls(pulls: &[serde_json::Value]) -> serde_json::Value {
-    json!([{ "data": { "repository": { "pullRequests": { "nodes": pulls } } } }])
+    json!({ "data": { "repository": { "pullRequests": { "nodes": pulls } } } })
 }
 
 fn pr_trigger(setup: &Setup, name: &str, toml: &str) {
@@ -1281,7 +1393,7 @@ fn a_token_refused_the_workflows_still_polls_and_counts_suites_apart() {
         &open_pulls(&[pull(43, false, json!([]), runs)]).to_string(),
     );
     let script = format!(
-        "#!/bin/sh\ncase \"$*\" in\n  *workflowRun*) echo 'gh: Resource not accessible by personal access token' >&2; exit 1 ;;\n  \"api graphql --paginate\"*) cat '{}' ;;\n  *) echo '[]' ;;\nesac\n",
+        "#!/bin/sh\ncase \"$*\" in\n  *workflowRun*) echo 'gh: Resource not accessible by personal access token' >&2; exit 1 ;;\n  \"api graphql -F\"*) cat '{}' ;;\n  *) echo '[]' ;;\nesac\n",
         answer.display()
     );
     Setup::fake_gh(&setup.dir, &script);
@@ -1307,6 +1419,70 @@ fn a_token_refused_the_workflows_still_polls_and_counts_suites_apart() {
         ]
     );
     assert_eq!(published.last().unwrap().message.data["failing"], 1);
+}
+
+#[test]
+fn a_skipped_or_neutral_run_supersedes_nothing_that_ran() {
+    for other in ["SKIPPED", "NEUTRAL"] {
+        let other = Some(other);
+        let polled = |name: &str, conclusions: &[Option<&str>]| {
+            let runs = (1..).zip(conclusions);
+            let runs = runs.map(|(id, conclusion)| check_run(id, "gate", id, CI, *conclusion));
+            polled_checks(&format!("check-{name}"), runs.collect())
+        };
+        let red = polled("skip-red", &[FAILURE, other]);
+        assert_eq!(red, (vec![(1, 0, 1)], 1));
+        let green = polled("skip-green", &[FAILURE, SUCCESS, other]);
+        assert_eq!(green, (vec![(2, 0, 0)], 1));
+        let running = polled("skip-running", &[None, other]);
+        assert_eq!(running, (vec![], 1));
+        let alone = polled("skip-alone", &[other]);
+        assert_eq!(alone, (vec![(1, 0, 0)], 1));
+    }
+}
+
+#[test]
+fn a_workflow_without_an_id_counts_as_its_suite() {
+    let setup = Setup::baseline("check-null-workflow");
+    let mut run = check_run(1, "gate", 10, CI, FAILURE);
+    run["checkSuite"]["workflowRun"]["workflow"]["databaseId"] = json!(null);
+    let mut no_suite = check_run(2, "lint", 10, None, FAILURE);
+    no_suite["checkSuite"]["databaseId"] = json!(null);
+    let open = open_pulls(&[pull(43, false, json!([]), json!([run, no_suite]))]);
+    setup.answer(&[(OPEN_PULLS, open)]);
+
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    let origins: Vec<_> = published
+        .iter()
+        .filter(|event| event.message.kind == "github.check_run.completed")
+        .map(|event| event.message.data["origin"].clone())
+        .collect();
+    assert_eq!(origins, ["suite:10", "run:2"]);
+}
+
+#[test]
+fn two_pull_requests_with_one_head_count_their_suites_apart() {
+    let setup = Setup::baseline("check-shared-head");
+    let runs = json!([
+        check_run(1, "gate", 10, CI, FAILURE),
+        check_run(2, "gate", 20, CI, SUCCESS),
+    ]);
+    let mut other = pull(44, false, json!([]), runs.clone());
+    other["baseRefName"] = json!("release");
+    let open = open_pulls(&[pull(43, false, json!([]), runs), other]);
+    setup.answer(&[(OPEN_PULLS, open)]);
+
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    let failing: Vec<_> = published
+        .iter()
+        .filter(|event| event.message.kind == "github.check_run.completed")
+        .map(|event| event.message.data["failing"].clone())
+        .collect();
+    assert_eq!(failing, [1, 1, 1, 1]);
 }
 
 #[test]
