@@ -147,7 +147,7 @@ impl LinearWebhook {
                     fields["from"] = Value::Null;
                     fields["to"] = data["state"]["name"].clone();
                     fields["to_type"] = data["state"]["type"].clone();
-                    // The payload names no relations; the poll's copy of this change is a repeat.
+                    // The payload names no relations; the poll's copy of this change adds them.
                     fields["duplicate_of"] = Value::Null;
                     // Signed fields that a redelivery keeps, unlike the body's `webhookTimestamp`.
                     let name = format!(

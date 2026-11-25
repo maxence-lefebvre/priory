@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 120;
+const VERSION: i64 = 121;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -2159,6 +2159,26 @@ CREATE TABLE news (
 PRAGMA user_version = 120;
 ";
 
+// The prompt that carries a message after the turn, withdrawn once the message is read, the other
+// task of the pair a held prompt is about, the
+// pairs a duplicate lets talk and since when, and each message a pair sent. Not `relations`, which agents write.
+const SCHEMA_121: &str = "
+ALTER TABLE news ADD COLUMN outbox INTEGER;
+ALTER TABLE outbox ADD COLUMN pair INTEGER;
+CREATE TABLE pairs (
+  task  INTEGER NOT NULL REFERENCES tasks (id),
+  other INTEGER NOT NULL REFERENCES tasks (id),
+  created TEXT NOT NULL,
+  PRIMARY KEY (task, other)
+);
+CREATE TABLE messages (
+  task  INTEGER NOT NULL REFERENCES tasks (id),
+  other INTEGER NOT NULL REFERENCES tasks (id),
+  at    TEXT NOT NULL
+);
+PRAGMA user_version = 121;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -2175,7 +2195,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
     SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112, SCHEMA_113,
-    SCHEMA_114, SCHEMA_115, SCHEMA_116, SCHEMA_117, SCHEMA_118, SCHEMA_119, SCHEMA_120,
+    SCHEMA_114, SCHEMA_115, SCHEMA_116, SCHEMA_117, SCHEMA_118, SCHEMA_119, SCHEMA_120, SCHEMA_121,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -4352,7 +4372,10 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
     }
     let held = match run.debate {
         Some(_) => Vec::new(),
-        None => held(&tx, run.task)?,
+        None => {
+            crate::news::expire(&tx, run.task)?;
+            held(&tx, run.task)?
+        }
     };
     for (_, said) in &held {
         if !text.is_empty() {
@@ -4360,13 +4383,11 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
         }
         text.push_str(said);
     }
-    // The step after a debate reads what came during it with the entry prompt the debate queued.
+    // A resumed run reads what waited for it with the prompt that woke it, in its first turn.
     let entry: Option<i64> = match run.prompt {
         None if !text.is_empty() => tx.query_row(
-            "SELECT min(outbox.id) FROM outbox WHERE task = ?1 AND state = 'queued' AND compact = 0
-                 AND (SELECT debate FROM runs WHERE task = ?1 AND id < ?2 ORDER BY id DESC LIMIT 1)
-                   IS NOT NULL",
-            params![run.task, id],
+            "SELECT min(id) FROM outbox WHERE task = ?1 AND state = 'queued' AND compact = 0",
+            [run.task],
             |row| row.get(0),
         )?,
         _ => None,
@@ -4404,8 +4425,8 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
     Ok(id)
 }
 
-/// The texts a person said to `task` during a debate, by outbox id, which its next run after the
-/// debate reads with its first prompt.
+/// The texts held for `task`, such as what a person said during a debate or a pair's line, by
+/// outbox id. Its next run outside a debate reads them with its first prompt.
 fn held(tx: &Transaction, task: i64) -> rusqlite::Result<Vec<(i64, String)>> {
     let mut statement =
         tx.prepare("SELECT id, text FROM outbox WHERE task = ?1 AND state = 'held' ORDER BY id")?;
@@ -4855,7 +4876,7 @@ pub(crate) fn signal(
                 && signal.prompt.as_deref().is_some_and(|prompt| {
                     pasted(prompt)
                         .split_whitespace()
-                        .eq(text.split_whitespace())
+                        .eq(priory_runtime::runtime::typable(&text).split_whitespace())
                 })
             {
                 tx.execute(

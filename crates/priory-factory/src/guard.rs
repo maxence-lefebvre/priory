@@ -550,7 +550,7 @@ pub fn holds_for_news(tool: &str, command: Option<&str>) -> bool {
     if let Some(name) = tool.strip_prefix("mcp__") {
         return name.rsplit_once("__").is_some_and(|(server, short)| {
             if server == "priory" {
-                return matches!(short, "result" | "ask" | "wait" | "consult");
+                return matches!(short, "result" | "ask" | "wait" | "consult" | "hand_over");
             }
             short == "create_pull_request"
         });

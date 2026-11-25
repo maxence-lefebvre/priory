@@ -735,6 +735,81 @@ pub fn pushed_head(home: &Path, worktree: &Path, branch: &str) -> Option<String>
         .map(|head| head.trim().to_owned())
 }
 
+/// `worktree`, or Priory's clone of its repository under `home` when it is gone.
+fn repository(home: &Path, worktree: &Path) -> Result<PathBuf, String> {
+    if worktree.exists() {
+        return Ok(worktree.to_path_buf());
+    }
+    worktree
+        .parent()
+        .and_then(|parent| parent.strip_prefix(home.join("worktrees")).ok())
+        .map(|repo| home.join("repos").join(repo))
+        .ok_or_else(|| format!("{} is gone", worktree.display()))
+}
+
+/// The branches a task stacks on its own, `own`, named after it: `priory/7-api` for `priory/7`.
+pub fn stacked(home: &Path, worktree: &Path, own: &str) -> Result<Vec<String>, String> {
+    let dir = repository(home, worktree)?;
+    let named = format!("refs/heads/{own}-*");
+    let found = run(git(&dir).args(["for-each-ref", "--format=%(refname:strip=2)", &named]))?;
+    Ok(found.lines().map(str::to_owned).collect())
+}
+
+/// The ones of `branches` that origin has, or why another task could not take over all the work of
+/// `worktree` from origin: a changed or untracked file, a commit of the checkout or of a branch that
+/// no branch of origin reaches, or a branch that is gone. Read from Priory's clone under `home` when
+/// the worktree is gone.
+pub fn unpushed(home: &Path, worktree: &Path, branches: &[String]) -> Result<Vec<String>, String> {
+    let live = worktree.exists();
+    let dir = repository(home, worktree)?;
+    let mut heads = Vec::new();
+    if live {
+        let status = run(git(&dir).args(["status", "--porcelain=v1", "--untracked-files=all"]))?;
+        let changed = changes(&status);
+        if !changed.is_empty() {
+            return Err(format!(
+                "the worktree has {changed}: commit and push them first, since the other task takes over only what is pushed"
+            ));
+        }
+    }
+    let mut pushed = Vec::new();
+    for branch in branches {
+        let reference = format!("refs/remotes/origin/{branch}^{{commit}}");
+        let on_origin =
+            run(git(&dir).args(["rev-parse", "--verify", "--quiet", &reference])).is_ok();
+        if on_origin {
+            pushed.push(branch.clone());
+        }
+        match head(&dir, branch) {
+            Some(head) => heads.push((format!("branch {branch}"), head)),
+            None if !on_origin => {
+                return Err(format!(
+                    "branch {branch} is gone, here and on origin: push its work first, since the other task takes over only what is pushed"
+                ));
+            }
+            None => {}
+        }
+    }
+    if live {
+        heads.extend(checked_out(&dir).map(|head| ("the checkout".to_owned(), head)));
+    }
+    for (name, head) in heads {
+        let missing = run(git(&dir).args([
+            "rev-list",
+            "--max-count=1",
+            &head,
+            "--not",
+            "--remotes=origin",
+        ]))?;
+        if !missing.trim().is_empty() {
+            return Err(format!(
+                "{name} has commits origin lacks: push it first, or delete what you abandoned, since the other task takes over only what is pushed"
+            ));
+        }
+    }
+    Ok(pushed)
+}
+
 /// The files `branch` changes against the default branch, read as `kept_head` reads, or `None`
 /// when git cannot say.
 pub fn changed_files(home: &Path, worktree: &Path, branch: &str) -> Option<Vec<String>> {
@@ -2583,13 +2658,19 @@ pub fn type_text(pane: &str, text: &str) -> Result<(), String> {
     press(pane, "Enter")
 }
 
-/// Pastes `text` into `pane` as one bracketed paste, read from stdin so no part of it is an
-/// argument tmux could take for a key name or a command.
+/// `text` without its control characters, newline and tab kept: an escape sequence would end a
+/// bracketed paste, and what follows would reach the terminal as keystrokes.
+pub fn typable(text: &str) -> String {
+    text.replace(|c: char| c.is_control() && !matches!(c, '\n' | '\t'), "")
+}
+
+/// Pastes the `typable` part of `text` into `pane` as one bracketed paste, read from stdin so no
+/// part of it is an argument tmux could take for a key name or a command.
 pub fn paste(pane: &str, text: &str) -> Result<(), String> {
     let buffer = format!("priory{pane}");
     fed(
         tmux().args(["load-buffer", "-b", &buffer, "-"]),
-        Some(text.as_bytes().to_vec()),
+        Some(typable(text).into_bytes()),
     )?;
     run(tmux().args(["paste-buffer", "-p", "-d", "-b", &buffer, "-t", pane]))?;
     Ok(())
@@ -3505,6 +3586,62 @@ mod tests {
 
         assert_eq!(at_risk(&tree, Some("priory/1"), 1), Ok(0));
         assert_eq!(at_risk(&tree, Some("priory/1"), 0), Ok(1));
+    }
+
+    #[test]
+    fn work_that_origin_lacks_is_unpushed_wherever_it_is() {
+        let home = Home::new("unpushed");
+        let tree = home.tree();
+        let of = |branches: &[&str]| {
+            let branches: Vec<String> = branches.iter().map(|name| (*name).to_owned()).collect();
+            unpushed(&home.dir, &tree, &branches)
+        };
+        assert_eq!(of(&["priory/1"]), Ok(vec![]), "no commits");
+
+        fs::write(tree.join("new.txt"), "n\n").unwrap();
+        assert!(of(&["priory/1"]).unwrap_err().contains("1 untracked file"));
+        sh(&tree, &["add", "new.txt"]);
+        assert!(of(&["priory/1"]).unwrap_err().contains("1 staged file"));
+        commit(&tree, "new.txt", "n\n");
+        assert!(
+            of(&["priory/1"])
+                .unwrap_err()
+                .contains("has commits origin lacks")
+        );
+        sh(&tree, &["push", "--quiet", "origin", "priory/1"]);
+        assert_eq!(of(&["priory/1"]), Ok(vec!["priory/1".to_owned()]));
+
+        sh(&tree, &["branch", "--quiet", "priory/10-api"]);
+        sh(&tree, &["checkout", "--quiet", "-b", "priory/1-api"]);
+        assert_eq!(
+            stacked(&home.dir, &tree, "priory/1"),
+            Ok(vec!["priory/1-api".to_owned()])
+        );
+        commit(&tree, "api.txt", "a\n");
+        sh(&tree, &["checkout", "--quiet", "priory/1"]);
+        assert_eq!(
+            of(&["priory/1", "priory/1-api"])
+                .unwrap_err()
+                .split(':')
+                .next(),
+            Some("branch priory/1-api has commits origin lacks")
+        );
+        sh(&tree, &["push", "--quiet", "origin", "priory/1-api"]);
+        assert_eq!(of(&["priory/1", "priory/1-api"]).unwrap().len(), 2);
+
+        sh(&tree, &["checkout", "--quiet", "--detach"]);
+        commit(&tree, "lost.txt", "l\n");
+        assert!(
+            of(&["priory/1"])
+                .unwrap_err()
+                .starts_with("the checkout has commits")
+        );
+        sh(&tree, &["checkout", "--quiet", "--detach", "priory/1"]);
+        assert!(of(&["priory/1"]).is_ok());
+
+        sh(&tree, &["branch", "--quiet", "-D", "priory/1-api"]);
+        assert!(of(&["priory/1-api"]).is_ok(), "origin still has it");
+        assert!(of(&["priory/gone"]).unwrap_err().contains("is gone"));
     }
 
     #[test]

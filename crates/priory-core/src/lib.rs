@@ -76,6 +76,7 @@ pub mod subscribe;
 mod summary;
 pub mod swap;
 pub mod sweep;
+mod talk;
 pub mod todo;
 pub mod tools;
 pub mod trace;

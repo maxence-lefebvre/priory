@@ -139,6 +139,8 @@ may consult with a fifth, [`consult`](../reference/tools.md#consultagent-questio
 result, or an open ask, an open wait or both. A `result` after an open ask or wait is refused, as
 is a second `ask` or a second `wait`. An ask and a wait side by side wake the task on the first answer or event (see An ask
 beside a wait in [waits.md](waits.md)).
+[`hand_over`](../reference/tools.md#hand_overtask-summary) ends the turn and the run: it drops the
+task in favour of another (see [Two tasks on the same work](routing.md#two-tasks-on-the-same-work)).
 
 Feedback the task kept while the agent ran waits in a queued prompt (see
 [routing.md](routing.md#what-a-kept-message-does)). Feedback is a person's comment, reply or review

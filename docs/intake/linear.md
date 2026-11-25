@@ -70,7 +70,7 @@ A `linear.issue.state_changed` carries the new state's name in `to` and its type
 `triage`, `backlog`, `unstarted`, `started`, `completed` or `canceled`. Linear's Duplicate state is
 of type `canceled`. When the issue has a `duplicate` relation, `duplicate_of` names the issue it
 duplicates. A webhook delivery carries `to_type` but no `duplicate_of`, since its payload names no
-relations; the poll's copy of the same change is then dropped as a repeat.
+relations; the poll's copy of the same change is then dropped as a repeat, unless it names a `duplicate_of`.
 
 The daemon hands a change to `canceled` or `completed` to the running task that owns the issue
 during its turn (see [News during a turn](../daemon/routing.md#news-during-a-turn)). A change to

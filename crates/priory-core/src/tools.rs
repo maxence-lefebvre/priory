@@ -211,7 +211,7 @@ pub(crate) fn call(
     if let Some(consult) = crate::consult::open(&tx, run.task)?
         && matches!(
             call.tool.as_str(),
-            "result" | "compact" | "ask" | "wait" | "consult"
+            "result" | "compact" | "ask" | "wait" | "consult" | "hand_over"
         )
     {
         return Ok((
@@ -223,32 +223,39 @@ pub(crate) fn call(
         ));
     }
     // News refuses the call once and is then read, so this refusal commits.
-    if matches!(call.tool.as_str(), "result" | "ask" | "wait" | "consult")
-        && run.debate.is_none()
+    if matches!(
+        call.tool.as_str(),
+        "result" | "ask" | "wait" | "consult" | "hand_over"
+    ) && run.debate.is_none()
         && let Some(held) = crate::news::refusal(&tx, &run.session)?
     {
         tx.commit()?;
         return Ok((Err(held), None));
     }
     let refused = match (call.tool.as_str(), open_ask, open_wait) {
-        ("result" | "ask" | "wait" | "consult", ..) if run.debate.is_some() => {
+        ("result" | "ask" | "wait" | "consult" | "hand_over", ..) if run.debate.is_some() => {
             Some(crate::debate::ENDS_WITH_POSITION.to_owned())
         }
-        ("ask" | "consult", Some(ask), _) | ("result" | "compact", Some(ask), _) => {
+        ("ask" | "consult", Some(ask), _) | ("result" | "compact" | "hand_over", Some(ask), _) => {
             Some(format!("run {} already waits on ask {ask}", run.id))
         }
-        ("wait" | "consult", _, Some(wait)) | ("result" | "compact", _, Some(wait)) => {
+        ("wait" | "consult", _, Some(wait))
+        | ("result" | "compact" | "hand_over", _, Some(wait)) => {
             Some(format!("run {} already waits on wait {wait}", run.id))
         }
-        ("ask" | "wait" | "consult", ..) if woken(&tx, &run)? => {
+        ("ask" | "wait" | "consult" | "hand_over", ..) if woken(&tx, &run)? => {
             Some("an answer or event for this run is queued: end your turn to read it".to_owned())
         }
         // A result, ask or wait would end or sleep the task over feedback it has not read yet.
-        ("result" | "ask" | "wait" | "consult", ..) if kept(&tx, run.task)? => {
+        ("result" | "ask" | "wait" | "consult" | "hand_over", ..) if kept(&tx, run.task)? => {
             Some("feedback for this run is queued: end your turn to read it".to_owned())
         }
+        // A hand-over drops the task, and what a person said to it.
+        ("hand_over", ..) if said(&tx, run.task)? => {
+            Some("a message for this run is queued: end your turn to read it".to_owned())
+        }
         // Its end would wake the task at whatever step the result moved it to.
-        ("result", ..) if commanding(&tx, run.task)? => Some(
+        ("result" | "hand_over", ..) if commanding(&tx, run.task)? => Some(
             "an answer's command for this task runs: end your turn, and its end wakes the task"
                 .to_owned(),
         ),
@@ -258,12 +265,12 @@ pub(crate) fn call(
         return Ok((Err(refused), None));
     }
     // A result moves the task, maybe to another agent's conversation, before the compact is typed.
-    if call.tool == "result" && compact_queued(&tx, run.task)? {
+    if matches!(call.tool.as_str(), "result" | "hand_over") && compact_queued(&tx, run.task)? {
         return Ok((
-            Err(
-                "a compact is queued for this run; end your turn and call result after the compaction"
-                    .to_owned(),
-            ),
+            Err(format!(
+                "a compact is queued for this run; end your turn and call {} after the compaction",
+                call.tool
+            )),
             None,
         ));
     }
@@ -304,6 +311,11 @@ pub(crate) fn call(
         }
         "wait" => {
             let (stored, ended) = wait(&tx, &run, &call.arguments, factory)?;
+            kill = ended;
+            stored
+        }
+        "hand_over" => {
+            let (stored, ended) = crate::talk::hand_over(&tx, &run, &call.arguments, factory)?;
             kill = ended;
             stored
         }
@@ -1107,6 +1119,15 @@ fn kept(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
         }
     }
     Ok(false)
+}
+
+/// Whether a prompt that wakes the task, such as a person's `say`, is queued.
+fn said(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM outbox WHERE task = ?1 AND state = 'queued' AND wakes)",
+        [task],
+        |row| row.get(0),
+    )
 }
 
 fn commanding(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
@@ -3317,14 +3338,7 @@ pub(crate) fn settle(
         return Ok(None);
     }
     // A person's `say` that beat the Stop is the run's next prompt, as an answer would be.
-    let said = tx
-        .query_row(
-            "SELECT 1 FROM outbox WHERE task = ?1 AND state = 'queued' AND wakes",
-            [run.task],
-            |_| Ok(()),
-        )
-        .optional()?;
-    if said.is_some() {
+    if said(tx, run.task)? {
         return Ok(None);
     }
     end(tx, run.id, "asleep")?;
@@ -3646,6 +3660,8 @@ pub(crate) fn queue_first(tx: &Transaction, task: i64, text: &str) -> rusqlite::
     )?;
     let id = tx.last_insert_rowid();
     for old in queued {
+        // The merged prompt holds more than the news, so reading the news must not withdraw it.
+        tx.execute("UPDATE news SET outbox = NULL WHERE outbox = ?1", [old])?;
         tx.execute("UPDATE inbox SET outbox = ?1 WHERE outbox = ?2", [id, old])?;
         tx.execute(
             "UPDATE subscription_deliveries SET outbox = ?1 WHERE outbox = ?2",

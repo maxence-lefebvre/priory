@@ -516,6 +516,32 @@ pub(crate) fn tools() -> Value {
             },
         },
         {
+            "name": "message",
+            "description": "Send a message to the agent of the task that a duplicate's news names, to agree which task continues. It reaches that agent during its turn, or wakes it. Its answer reaches you the same way. A pair lasts 24 hours and may send six messages an hour, each of at most 4000 characters; past that, ask the person. It does not end your turn.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task": { "type": "integer", "description": "The other task's id." },
+                    "text": text("What you tell it, such as your branch, commits and findings."),
+                },
+                "required": ["task", "text"],
+                "additionalProperties": false,
+            },
+        },
+        {
+            "name": "hand_over",
+            "description": "Stop your task and hand its work to the task a duplicate's news names, which continues it, once you two agreed. Commit and push first: it is refused while your worktree has a changed or untracked file, or origin lacks a commit of your checkout, your branch, a branch named after it or an open pull request's branch. It does not see ignored files or other branches. The other agent gets your branch names and your summary, it takes up your task, and your task is dropped with a link to it. It ends your turn and your run.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task": { "type": "integer", "description": "The task that continues." },
+                    "summary": text("What you found and what is left, for the agent that continues on your pushed branch."),
+                },
+                "required": ["task", "summary"],
+                "additionalProperties": false,
+            },
+        },
+        {
             "name": "finding",
             "description": "Hand one problem you found to a fix task. The same key in a later run opens no second task: use one stable key per problem, such as disk-full. A key you skipped for a run and report again opens a new task. A finding reported several runs in a row moves its fix task up a band. Your next prompt lists your earlier findings. Call it once per problem. It does not end your turn.",
             "inputSchema": {

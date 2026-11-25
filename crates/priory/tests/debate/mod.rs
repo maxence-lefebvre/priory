@@ -750,3 +750,42 @@ fn a_debater_gets_no_news_of_a_cancel() {
 
     assert_eq!(setup.hook_call(&session, "ls", None), "");
 }
+
+#[test]
+fn a_hand_over_to_a_task_in_a_debate_reaches_the_step_after_it_and_no_debater() {
+    let mut setup = debating("debate-hand-over", DEBATE_THEN_IMPLEMENT);
+    fs::write(setup.dir.join("factory/workflows/plain.toml"), WORKFLOW).unwrap();
+    setup.calls(&[
+        serde_json::Value::Null,
+        position("daemon", "No new service file."),
+        position("daemon", "Agreed."),
+        result("passed"),
+    ]);
+    setup.hold("hold-stop");
+    let mut plain = requested(41);
+    plain.data["workflow"] = json!("plain");
+    setup.publish(&plain);
+    setup.start();
+    let runs = setup.until("runs", |rows| rows.len() == 1);
+    setup.calls_left(3);
+    setup.publish(&requested(42));
+    setup.until("runs", |rows| rows.len() == 2);
+    setup.pair();
+
+    let replies = setup.mcp(&runs[0][4], &[hand_over_to(2)]);
+    setup.release("hold-stop");
+
+    let (text, error) = reply(&replies[0]);
+    assert!(!error, "{text}");
+    setup.until("tasks", |rows| rows[1][4] == "done");
+    let typed = setup.typed();
+    let readers: Vec<_> = typed
+        .iter()
+        .filter(|turn| turn.contains("> The fix is left."))
+        .collect();
+    assert_eq!(readers.len(), 1, "{typed:?}");
+    assert!(
+        readers[0].starts_with("Implement the verdict."),
+        "{readers:?}"
+    );
+}
