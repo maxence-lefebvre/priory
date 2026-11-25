@@ -517,7 +517,7 @@ pub(crate) fn tools() -> Value {
         },
         {
             "name": "message",
-            "description": "Send a message to the agent of the task that a duplicate's news names, to agree which task continues. It reaches that agent during its turn, or wakes it. Its answer reaches you the same way. A pair may send six messages an hour; past that, ask the person. It does not end your turn.",
+            "description": "Send a message to the agent of the task that a duplicate's news names, to agree which task continues. It reaches that agent during its turn, or wakes it. Its answer reaches you the same way. A pair lasts 24 hours and may send six messages an hour, each of at most 4000 characters; past that, ask the person. It does not end your turn.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -530,7 +530,7 @@ pub(crate) fn tools() -> Value {
         },
         {
             "name": "hand_over",
-            "description": "Stop your task and hand its work to the task a duplicate's news names, which continues it, once you two agreed. Push your branch first: it is refused while origin lacks commits of it. The other agent gets your branch name and your summary, it takes up your task, and your task is dropped with a link to it. It ends your turn and your run.",
+            "description": "Stop your task and hand its work to the task a duplicate's news names, which continues it, once you two agreed. Commit and push all your work first: it is refused while a file is uncommitted or origin lacks a commit. The other agent gets your branch name and your summary, it takes up your task, and your task is dropped with a link to it. It ends your turn and your run.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

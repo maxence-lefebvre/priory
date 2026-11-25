@@ -13,15 +13,40 @@ use std::path::Path;
 /// each other without end.
 const MESSAGES_AN_HOUR: i64 = 6;
 
-/// The caller's task and its key, from its live run.
-fn caller(tx: &Transaction, session: &str) -> rusqlite::Result<Option<(i64, String)>> {
+/// The longest text a task may send another, in characters.
+const TEXT_LIMIT: usize = crate::debate::ARGUMENT_LIMIT;
+
+/// The caller's live run, its task, the task's key and whether the run is a debate turn.
+fn caller(tx: &Transaction, session: &str) -> rusqlite::Result<Option<(i64, i64, String, bool)>> {
     tx.query_row(
-        "SELECT tasks.id, tasks.key FROM runs JOIN tasks ON tasks.id = runs.task
+        "SELECT runs.id, tasks.id, tasks.key, runs.debate IS NOT NULL
+         FROM runs JOIN tasks ON tasks.id = runs.task
          WHERE runs.session = ?1 AND runs.ended IS NULL ORDER BY runs.id DESC LIMIT 1",
         [session],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     )
     .optional()
+}
+
+/// The outcome the live run of `task` already ended its step with, if it did.
+fn stored(tx: &Transaction, task: i64) -> rusqlite::Result<Option<String>> {
+    let run: Option<i64> = tx.query_row(
+        "SELECT max(id) FROM runs WHERE task = ?1 AND ended IS NULL",
+        [task],
+        |row| row.get(0),
+    )?;
+    let Some(run) = run else {
+        return Ok(None);
+    };
+    let result = tx
+        .query_row("SELECT outcome FROM results WHERE run = ?1", [run], |row| {
+            row.get(0)
+        })
+        .optional()?;
+    match result {
+        Some(outcome) => Ok(Some(outcome)),
+        None => crate::gates::grading(tx, run),
+    }
 }
 
 /// The other task's key and state, or why `task` cannot reach it: it is itself, missing, ended, or
@@ -42,12 +67,7 @@ fn other(
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
-    let paired: bool = tx.query_row(
-        "SELECT EXISTS (SELECT 1 FROM pairs
-           WHERE (task = ?1 AND other = ?2) OR (task = ?2 AND other = ?1))",
-        params![task, other],
-        |row| row.get(0),
-    )?;
+    let paired = crate::news::paired(tx, task, other)?;
     Ok(match found {
         None => Err(format!("no task {other}")),
         Some((_, state)) if ["done", "failed", "dropped"].contains(&state.as_str()) => {
@@ -74,12 +94,19 @@ fn read(arguments: &Value, tool: &str, field: &str) -> Result<(i64, String), Str
         .as_str()
         .filter(|text| !text.trim().is_empty())
         .ok_or_else(|| format!("{field} must be text"))?;
+    let length = text.chars().count();
+    if length > TEXT_LIMIT {
+        return Err(format!(
+            "{field} is {length} characters; it is at most {TEXT_LIMIT}"
+        ));
+    }
     Ok((task, text.to_owned()))
 }
 
-/// Puts `text` before the other task's agent once. A running agent reads it on its next tool call,
-/// and else after its turn from a prompt of its own, which that call withdraws. Otherwise it wakes
-/// the task, or goes on its open step ask while a person decides.
+/// Queues `text` for the other task's agent as a person's `say` is: typed after a running agent's
+/// turn, waking a sleeping task, held during a debate, or on its open step ask while a person
+/// decides. A running agent also reads it on its next tool call. A held call that reads it withdraws
+/// the prompt, unless that prompt carries more.
 fn deliver(
     tx: &Transaction,
     other: i64,
@@ -87,16 +114,24 @@ fn deliver(
     text: &str,
     factory: &Factory,
 ) -> rusqlite::Result<Result<(), String>> {
-    if state != "running" {
-        return crate::tools::say_or_hold(tx, other, text, state, &factory.workflows)
-            .map(|said| said.map(drop));
+    let queued = |tx: &Transaction| -> rusqlite::Result<Option<i64>> {
+        tx.query_row(
+            "SELECT max(id) FROM outbox WHERE task = ?1 AND state = 'queued' AND compact = 0",
+            [other],
+            |row| row.get(0),
+        )
+    };
+    let before = queued(tx)?;
+    if let Err(refused) = crate::tools::say_or_hold(tx, other, text, state, &factory.workflows)? {
+        return Ok(Err(refused));
     }
-    tx.execute(
-        "INSERT INTO outbox (task, text) VALUES (?1, ?2)",
-        params![other, text],
-    )?;
-    let prompt = tx.last_insert_rowid();
-    crate::news::tell(tx, other, None, text, Some(prompt))?;
+    if state == "running" {
+        let alone = match before {
+            None => queued(tx)?,
+            Some(_) => None,
+        };
+        crate::news::tell(tx, other, None, text, alone)?;
+    }
     Ok(Ok(()))
 }
 
@@ -112,9 +147,17 @@ pub(crate) fn message(
         Err(refused) => return Ok(Err(refused)),
     };
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let Some((task, key)) = caller(&tx, session)? else {
+    let Some((run, task, key, debater)) = caller(&tx, session)? else {
         return Ok(Err(format!("no live run has session {session}")));
     };
+    if debater {
+        return Ok(Err(crate::debate::ENDS_WITH_POSITION.to_owned()));
+    }
+    if let Some(outcome) = stored(&tx, task)? {
+        return Ok(Err(format!(
+            "run {run} already has a result, {outcome}; a result is final"
+        )));
+    }
     let state = match other(&tx, task, to)? {
         Ok((_, state)) => state,
         Err(refused) => return Ok(Err(refused)),
@@ -131,7 +174,9 @@ pub(crate) fn message(
         )));
     }
     let text = format!(
-        "Task {task} ({key}) says: {text}\nAnswer it with the message tool, giving task {task}."
+        "Task {task} ({key}) says:\n{}\n{}\nAnswer it with the message tool, giving task {task}.",
+        crate::consult::DATA,
+        crate::consult::quoted(&text)
     );
     if let Err(refused) = deliver(&tx, to, &state, &text, factory)? {
         return Ok(Err(refused));
@@ -144,25 +189,31 @@ pub(crate) fn message(
     Ok(Ok(format!("task {to} has your message")))
 }
 
-/// Why the branch of `task` holds commits its remote lacks, if it does: the other task takes over
-/// only what is pushed.
-fn unpushed(tx: &Transaction, task: i64) -> rusqlite::Result<Option<String>> {
-    let found: Option<(Option<String>, Option<String>)> = tx
-        .query_row(
-            "SELECT worktree, branch FROM tasks WHERE id = ?1",
-            [task],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?;
-    let Some((Some(worktree), Some(branch))) = found else {
-        return Ok(None);
+/// The branches of `task`, its own first and then those of its open pull requests, and why the other
+/// task could not take them all over from origin, if it could not.
+fn branches(tx: &Transaction, task: i64) -> rusqlite::Result<Result<Vec<String>, String>> {
+    let found: (Option<String>, Option<String>) = tx.query_row(
+        "SELECT worktree, branch FROM tasks WHERE id = ?1",
+        [task],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let (Some(worktree), Some(own)) = found else {
+        return Ok(Ok(Vec::new()));
     };
-    let home = runtime::home();
-    let local = runtime::kept_head(&home, Path::new(&worktree), &branch);
-    let pushed = runtime::pushed_head(&home, Path::new(&worktree), &branch);
-    Ok((local.is_some() && local != pushed).then(|| {
-        format!("branch {branch} has commits origin lacks: push it first, since the other task takes over only what is pushed")
-    }))
+    let mut branches = vec![own];
+    for pull in crate::stack::of(tx, task)? {
+        if pull.state == "open" && !branches.contains(&pull.branch) {
+            branches.push(pull.branch);
+        }
+    }
+    Ok(
+        runtime::unpushed(&runtime::home(), Path::new(&worktree), &branches).map(|pushed| {
+            branches
+                .into_iter()
+                .filter(|branch| pushed.contains(branch))
+                .collect()
+        }),
+    )
 }
 
 /// The `hand_over` tool: tells the related task what it takes over, records that it takes up the
@@ -175,9 +226,6 @@ pub(crate) fn hand_over(
     factory: &Factory,
 ) -> rusqlite::Result<(Result<String, String>, Option<String>)> {
     let task = run.task;
-    if run.debate.is_some() {
-        return Ok((Err(crate::debate::ENDS_WITH_POSITION.to_owned()), None));
-    }
     let (to, summary) = match read(arguments, "hand_over", "summary") {
         Ok(read) => read,
         Err(refused) => return Ok((Err(refused), None)),
@@ -186,17 +234,37 @@ pub(crate) fn hand_over(
         Ok(found) => found,
         Err(refused) => return Ok((Err(refused), None)),
     };
-    if let Some(refused) = unpushed(tx, task)? {
-        return Ok((Err(refused), None));
+    if ["held", "blocked"].contains(&state.as_str()) {
+        return Ok((
+            Err(format!(
+                "task {to} is {state}, so it would not continue the work: ask the person with the ask tool"
+            )),
+            None,
+        ));
     }
-    let (key, branch): (String, Option<String>) = tx.query_row(
-        "SELECT key, branch FROM tasks WHERE id = ?1",
-        [task],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
-    let branch = branch.map_or_else(String::new, |branch| format!(" Its branch is {branch}."));
+    if let Some(outcome) = stored(tx, to)? {
+        return Ok((
+            Err(format!(
+                "task {to} already ended its step with {outcome}, so it may never read this: message it, or ask the person with the ask tool"
+            )),
+            None,
+        ));
+    }
+    let branches = match branches(tx, task)? {
+        Ok(branches) => branches,
+        Err(refused) => return Ok((Err(refused), None)),
+    };
+    let key: String = tx.query_row("SELECT key FROM tasks WHERE id = ?1", [task], |row| {
+        row.get(0)
+    })?;
+    let pushed = match branches.as_slice() {
+        [] => "It pushed no branch.".to_owned(),
+        branches => format!("On origin: {}.", branches.join(", ")),
+    };
     let text = format!(
-        "Task {task} ({key}) stopped and handed its work over to you.{branch} It says: {summary}"
+        "Task {task} ({key}) stopped and handed its work over to you. {pushed} It says:\n{}\n{}",
+        crate::consult::DATA,
+        crate::consult::quoted(&summary)
     );
     if let Err(refused) = deliver(tx, to, &state, &text, factory)? {
         return Ok((Err(refused), None));

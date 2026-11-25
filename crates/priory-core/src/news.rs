@@ -85,70 +85,118 @@ pub(crate) fn keep(
     let Some(text) = line(kind, data) else {
         return Ok(());
     };
-    let text = match agree(tx, task, Some(seq), data)? {
-        Some(agree) => format!("{text} {agree}"),
-        None => text,
+    let Some((agree, waits)) = agree(tx, task, seq, data)? else {
+        return tell(tx, task, Some(seq), &text, None);
     };
-    tell(tx, task, Some(seq), &text, None)
+    tell(tx, task, Some(seq), &format!("{text} {agree}"), Some(waits))
 }
 
 /// When `data` marks the issue of `task` a duplicate of an issue another active task works on: how
-/// the two agree which continues. It relates the two tasks, which lets them message each other, and
-/// tells the other task, if it runs. `seq`, the event's inbox entry, keeps a second call for the
-/// same event from telling it twice.
-pub(crate) fn agree(
+/// the two agree which continues, and the prompt that says it to the next run of `task`. It pairs
+/// the two, which lets them message each other for `PAIRED`, and tells the other task the first
+/// time.
+fn agree(
     tx: &Transaction,
     task: i64,
-    seq: Option<i64>,
+    seq: i64,
     data: &Value,
-) -> rusqlite::Result<Option<String>> {
-    let Some(of) = data["duplicate_of"].as_str() else {
-        return Ok(None);
-    };
-    let other: Option<(i64, String)> = tx
-        .query_row(
-            "SELECT id, key FROM tasks WHERE key = ?1 AND id != ?2
-             AND state NOT IN ('done', 'failed', 'dropped') ORDER BY id DESC LIMIT 1",
-            params![format!("linear:{of}"), task],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?;
-    let Some((other, other_key)) = other else {
+) -> rusqlite::Result<Option<(String, i64)>> {
+    let (Some(of), Some(issue)) = (data["duplicate_of"].as_str(), data["issue"].as_str()) else {
         return Ok(None);
     };
     let key: String = tx.query_row("SELECT key FROM tasks WHERE id = ?1", [task], |row| {
         row.get(0)
     })?;
-    let issue = data["issue"].as_str().unwrap_or("-");
     // A task that only subscribes to the issue does not work on it.
     if key != format!("linear:{issue}") {
         return Ok(None);
     }
+    let of_key = format!("linear:{of}");
+    let other: Option<i64> = tx
+        .query_row(
+            "SELECT id FROM tasks WHERE key = ?1 AND id != ?2
+             AND state NOT IN ('done', 'failed', 'dropped') ORDER BY id DESC LIMIT 1",
+            params![of_key, task],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let (issue, of) = (plain(issue), plain(of));
+    let Some(other) = other else {
+        let elsewhere: Option<String> = tx
+            .query_row(
+                "SELECT runner FROM claims WHERE key = ?1 AND hold != 'ended'",
+                [&of_key],
+                |row| row.get(0),
+            )
+            .optional()?;
+        return elsewhere
+            .map(|runner| {
+                let text = format!(
+                    "A task on runner {runner} works on {of}. Priory pairs only tasks of one runner, so neither can message the other: ask the person with the ask tool which one continues."
+                );
+                let waits = later(tx, task, &text)?;
+                Ok((text, waits))
+            })
+            .transpose();
+    };
     crate::relate::insert(tx, task, "relates", other, "priory")?;
-    tx.execute(
-        "INSERT OR IGNORE INTO pairs (task, other) VALUES (?1, ?2)",
-        params![task, other],
-    )?;
-    tell(
-        tx,
-        other,
-        seq,
-        &format!(
-            "Task {task} ({key}) works on {issue}, now a duplicate of {of}, your issue. It may message you to agree which task continues. {AGREE}"
-        ),
-        None,
-    )?;
-    Ok(Some(format!(
-        "Task {other} ({other_key}) works on {of}. {AGREE}"
-    )))
+    let new = !paired(tx, task, other)?;
+    if new {
+        tx.execute(
+            "INSERT INTO pairs (task, other, created)
+             VALUES (?1, ?2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+             ON CONFLICT (task, other) DO UPDATE SET created = excluded.created",
+            params![task, other],
+        )?;
+        let text = format!(
+            "Task {task} (linear:{issue}) works on {issue}, now a duplicate of {of}, your issue. {}",
+            agreement(task)
+        );
+        let waits = later(tx, other, &text)?;
+        tell(tx, other, Some(seq), &text, Some(waits))?;
+    }
+    let text = format!(
+        "Task {other} (linear:{of}) works on {of}. {}",
+        agreement(other)
+    );
+    let waits = later(tx, task, &text)?;
+    Ok(Some((text, waits)))
 }
 
-/// How two tasks on the same work agree which continues.
-const AGREE: &str = "Agree with the other task which one continues: send it a message with the message tool. The task that stops pushes its branch, then hands over with the hand_over tool, whose summary says what it found and what is left. If you disagree, ask the person with the ask tool.";
+/// How long a duplicate lets two tasks talk, as a SQLite modifier of now.
+const PAIRED: &str = "-24 hours";
+
+/// Whether a duplicate paired `task` and `other` within `PAIRED`.
+pub(crate) fn paired(tx: &Transaction, task: i64, other: i64) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM pairs
+           WHERE ((task = ?1 AND other = ?2) OR (task = ?2 AND other = ?1))
+           AND julianday(created) > julianday('now', ?3))",
+        params![task, other, PAIRED],
+        |row| row.get(0),
+    )
+}
+
+/// Keeps `text` for the first prompt of the next run of `task` that no debate runs. Returns its
+/// outbox id.
+fn later(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<i64> {
+    tx.execute(
+        "INSERT INTO outbox (task, text, state) VALUES (?1, ?2, 'held')",
+        params![task, text],
+    )?;
+    Ok(tx.last_insert_rowid())
+}
+
+/// How two tasks on the same work agree which continues, for the agent whose pair is `other`.
+fn agreement(other: i64) -> String {
+    format!(
+        "Agree with task {other} which of you continues: send it a message with the message tool. Unless you two agree otherwise, the duplicate's task stops: it pushes its branch, then calls hand_over, whose summary says what it found and what is left. If you disagree, do not go on: ask the person with the ask tool."
+    )
+}
 
 /// Records `text` for the live run of `task`, if it runs, and marks it for the hook. `seq` is the
 /// inbox entry it came from, if any. `outbox` is a queued prompt that carries the same text after
-/// the turn, which a call that shows the news withdraws.
+/// the turn or with the next run, which a call that reads the news withdraws.
 pub(crate) fn tell(
     tx: &Transaction,
     task: i64,
@@ -186,17 +234,9 @@ pub(crate) fn tell(
     Ok(())
 }
 
-/// Marks the news `ids` of `session`'s live run shown, and withdraws the queued prompt of each, so
-/// it reaches the agent once.
+/// Marks the news `ids` of `session`'s live run shown.
 fn mark_shown(tx: &Transaction, session: &str, ids: &[i64]) -> rusqlite::Result<()> {
     let ids = serde_json::to_string(ids).expect("ids serialize");
-    tx.execute(
-        "UPDATE outbox SET state = 'withdrawn' WHERE state = 'queued' AND id IN (
-           SELECT news.outbox FROM news JOIN runs ON runs.id = news.run
-           WHERE runs.session = ?1 AND runs.ended IS NULL
-           AND news.id IN (SELECT value FROM json_each(?2)))",
-        params![session, ids],
-    )?;
     tx.execute(
         "UPDATE news SET shown = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE shown IS NULL AND run IN (SELECT id FROM runs WHERE session = ?1 AND ended IS NULL)
@@ -207,10 +247,19 @@ fn mark_shown(tx: &Transaction, session: &str, ids: &[i64]) -> rusqlite::Result<
 }
 
 /// Marks the news `ids` of `session`'s live run shown and read, and removes the marker once none
-/// is left unread.
+/// is left unread. The prompt that carries the same text is withdrawn, so a news that is only shown
+/// keeps its durable copy.
 fn mark_read(tx: &Transaction, session: &str, ids: &[i64]) -> rusqlite::Result<()> {
     mark_shown(tx, session, ids)?;
     let ids = serde_json::to_string(ids).expect("ids serialize");
+    // Unread news only: an id of news read before names a prompt that may carry something new.
+    tx.execute(
+        "UPDATE outbox SET state = 'withdrawn' WHERE state IN ('queued', 'held') AND id IN (
+           SELECT news.outbox FROM news JOIN runs ON runs.id = news.run
+           WHERE runs.session = ?1 AND runs.ended IS NULL AND runs.task = outbox.task
+           AND news.read IS NULL AND news.id IN (SELECT value FROM json_each(?2)))",
+        params![session, ids],
+    )?;
     tx.execute(
         "UPDATE news SET read = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE read IS NULL AND run IN (SELECT id FROM runs WHERE session = ?1 AND ended IS NULL)

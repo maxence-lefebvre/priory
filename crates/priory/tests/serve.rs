@@ -6077,6 +6077,38 @@ fn a_linear_webhook_then_a_poll_of_the_same_changes_make_one_message_each() {
 }
 
 #[test]
+fn a_poll_adds_what_the_issue_duplicates_to_a_webhooks_state_change_and_requests_no_second_task() {
+    let mut setup = Setup::linear_hooks("linear-hook-duplicate");
+    setup.poll_linear(json!([]), json!([]));
+    let address = setup.start(&["serve", &setup.factory()]);
+    assert_eq!(setup.send_linear(&address, &linear_state_change()).0, 200);
+    let requests = |setup: &Setup| {
+        setup
+            .published()
+            .iter()
+            .filter(|message| message.kind == "factory.task.requested")
+            .count()
+    };
+    let before = requests(&setup);
+    let mut issue = polled_issue();
+    issue["relations"] = json!({ "nodes": [
+        { "type": "duplicate", "relatedIssue": { "id": "issue-9", "identifier": "ENG-9" } }] });
+
+    setup.poll_linear(json!([issue.clone()]), json!([]));
+    setup.poll_linear(json!([issue]), json!([]));
+
+    let named: Vec<_> = setup
+        .published()
+        .into_iter()
+        .filter(|message| message.kind == "linear.issue.state_changed")
+        .map(|message| message.data["duplicate_of"].clone())
+        .collect();
+    assert_eq!(named, [serde_json::Value::Null, json!("ENG-9")]);
+    // The poll also publishes the issue's creation, which requests its own task.
+    assert_eq!(requests(&setup), before + 1);
+}
+
+#[test]
 fn a_linear_poll_then_a_webhook_of_the_same_changes_make_one_message_each() {
     let mut setup = Setup::linear_hooks("linear-poll-then-hook");
     setup.poll_linear(json!([]), json!([]));

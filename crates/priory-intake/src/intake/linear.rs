@@ -173,6 +173,13 @@ impl<'a> Linear<'a> {
                         // One delivery stands for one history entry.
                         let other = delivered.remove(found);
                         super::counted("linear", "poll", "duplicate");
+                        // A webhook names no relation: the poll's copy says what the issue
+                        // duplicates. The delivery's triggers alone request tasks.
+                        if event.data["duplicate_of"].is_string()
+                            && !other.data["duplicate_of"].is_string()
+                        {
+                            publish(bus, &event)?;
+                        }
                         dispatch(bus, &self.triggers, &other)?;
                         continue;
                     }

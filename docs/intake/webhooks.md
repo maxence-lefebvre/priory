@@ -201,7 +201,8 @@ looks for the other's report of the same change before it publishes: same issue 
 within 60 seconds. The look, its limits and its lock file are as in [Duplicates](#duplicates).
 A webhook's state change gets the id `linear:webhook:state_changed:{issue id}:{state id}:{createdAt}`,
 from signed fields a redelivery keeps, so Linear's retry makes the same id. When the poll finds a
-history entry that matches a delivery, it consumes that delivery, so two moves to one state within
+history entry that matches a delivery, it consumes that delivery, and publishes its own copy only
+when the issue's `duplicate` relation names what the delivery could not, so two moves to one state within
 a minute stay two messages.
 
 A delivery does not move a poll's position or marker, so the poll still reads the change.

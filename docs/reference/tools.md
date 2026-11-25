@@ -435,14 +435,15 @@ always the caller's own. `priory relate TASK KIND OTHER` does the same for any t
 
 `message` sends `text` to the agent of the active task the caller's is paired with: the one whose
 issue the caller's issue duplicates, or the reverse. It does not end the turn. The other agent reads it once, as
-`Task 3 (linear:ENG-7) says: <text>`:
+`Task 3 (linear:ENG-7) says:`, a line that calls it data, and the text quoted:
 
 - on its next tool call, when it runs (see
   [News during a turn](../daemon/routing.md#news-during-a-turn)). A push or a result after it is
-  held once, as for any news. When the turn ends before a tool call shows it, a prompt of its own
+  held once, as for any news. When no such refusal shows it, the queued prompt
   carries it after the turn;
 - as a prompt that wakes it, when it sleeps at a model step;
-- on its open step ask, when a person decides.
+- on its open step ask, when a person decides;
+- with the first prompt of the step after a debate, during one.
 
 It answers with `message` too. A pair of tasks may send each other six messages an hour. See
 [Two tasks on the same work](../daemon/routing.md#two-tasks-on-the-same-work).
@@ -456,7 +457,10 @@ It answers with `message` too. A pair of tasks may send each other six messages 
 | `a task does not message itself` | `task` is the caller's own |
 | `no task <id>` | no task has that id |
 | `task <id> is <state>` | the task is done, failed or dropped |
-| `task <id> is not paired with task <id>: an agent may reach only the task that a duplicate's news names` | no duplicate's event paired the two tasks. A relation does not count |
+| `task <id> is not paired with task <id>: an agent may reach only the task that a duplicate's news names` | no duplicate's event paired the two tasks in the last 24 hours. A relation does not count |
+| `text is <n> characters; it is at most 4000` | the text is longer |
+| `run <id> already has a result, <outcome>; a result is final` | the caller's step already ended |
+| `a debate turn ends with position` | the caller is in a debate turn |
 | `task <a> and task <b> sent each other 6 messages in the last hour: ...` | the pair already sent six messages, in either direction, in the last hour |
 | `task <id> is at step <step>, which no agent runs` | the task waits at a human step with no open ask |
 | `task <id> has no run yet: say it once its agent started` | the task's agent has not started |
@@ -465,14 +469,24 @@ It answers with `message` too. A pair of tasks may send each other six messages 
 
 `hand_over` stops the caller's task and gives its work to the paired active task `task`, once the two
 agents agreed which continues. The other agent reads `Task 3 (linear:ENG-7) stopped and handed its
-work over to you. Its branch is priory/3. It says: <summary>`, delivered as `message` delivers.
+work over to you. On origin: priory/3. It says:` and the quoted summary, delivered as `message` delivers.
 Priory records that `task` takes up the caller's task, then drops the caller's task with the reason
 `handed over to task 7 (linear:ENG-9)` and ends its run.
 
-The other task gets the branch as origin has it. So `hand_over` is refused while the caller's branch
-holds commits that origin lacks: `branch priory/3 has commits origin lacks: push it first, ...`. It
-takes the same refusals as `message`, except the hourly cap, and it is refused during a debate turn,
-as `result` is. Unread news refuses it once, as it refuses `result`.
+The other task gets the branch as origin has it. So `hand_over` is refused while work is missing there:
+
+| Refusal | When |
+| ------- | ---- |
+| `the worktree has 1 untracked file: commit and push ...` | the worktree has staged, unstaged or untracked files |
+| `branch priory/3 has commits origin lacks: ...` | no branch of origin reaches a commit of the task's branch, or of the branch of an open pull request of its stack |
+| `the checkout has commits origin lacks: ...` | the same, for a detached HEAD or another branch |
+| `branch priory/3 is gone, here and on origin: ...` | that branch exists nowhere |
+| `task <id> is held, so it would not continue the work: ...` | the other task is held or blocked |
+| `task <id> already ended its step with <outcome>, ...` | the other task's live run stored a result |
+
+A task with no commits can hand over. It takes the same refusals as `message`, except the hourly cap,
+and those of `result`: during a debate turn, over an open ask, wait or consult, over queued feedback
+or a queued answer, and before a queued compact. Unread news refuses it once, as it refuses `result`.
 
 ```json
 { "task": 7, "summary": "The failing test for the empty case is in. Left: the fix itself." }

@@ -447,21 +447,33 @@ A Linear issue marked a duplicate of another can leave two active tasks that bui
 When the other issue has an active task, the duplicate's news names it and says how the two agree:
 
 ```text
-Ana moved ENG-7 to Duplicate (canceled), as a duplicate of ENG-9. https://linear.app/acme/issue/ENG-7 Task 4 (linear:ENG-9) works on ENG-9. Agree with the other task which one continues: send it a message with the message tool. The task that stops pushes its branch, then hands over with the hand_over tool, whose summary says what it found and what is left. If you disagree, ask the person with the ask tool.
+Ana moved ENG-7 to Duplicate (canceled), as a duplicate of ENG-9. https://linear.app/acme/issue/ENG-7 Task 4 (linear:ENG-9) works on ENG-9. Agree with task 4 which of you continues: send it a message with the message tool. Unless you two agree otherwise, the duplicate's task stops: it pushes its branch, then calls hand_over, whose summary says what it found and what is left. If you disagree, do not go on: ask the person with the ask tool.
 ```
 
-Priory pairs the two tasks and records that the duplicate's task relates to the other. The other
-task's run reads a line that names the duplicate's task, when it runs. A task asleep at its checks
-gate wakes with the same text. Each run reads its line once per event, even when routing and the
-checks gate both handle that event.
+Priory pairs the two tasks and records that the duplicate's task relates to the other. Each of them
+gets a line that names the other task. A running one reads it as news. Any other, such as one that is
+queued, asleep or in a debate, reads it with the first prompt of its next run outside a debate. So
+does a running one that no held call showed the line to. Only a new pair tells the other task.
+
+A Linear webhook names no duplicate, so when the webhook is first, the pair starts at the next poll.
+The poll then publishes its own copy of the state change, which requests no second task but which
+the run can read as a second piece of news (see [webhooks.md](../intake/webhooks.md#linear-duplicates)).
+A task of another [runner](runners.md) is never paired: the duplicate's line names that runner and
+says to ask the person.
 
 The agents talk with the [`message`](../reference/tools.md#messagetask-text) tool, which reaches the
-other agent during its turn, or wakes it. The task that stops calls
+other agent during its turn, or wakes it. It is queued as a person's `say` is, so an agent that just
+called `ask` or `wait` reads it before it sleeps, and a message during a debate waits for the step after
+it. When the agent reads it in a refusal, Priory withdraws that queued prompt, unless other
+text joined it. The task that stops calls
 [`hand_over`](../reference/tools.md#hand_overtask-summary) once its branch is pushed: the other
 agent gets the branch and the summary, Priory records that the other task takes it up, and drops it
 with the reason `handed over to task 4 (linear:ENG-9)`. `priory tasks` shows that reason, and
 `priory task 4 --json` lists the relation. When the agents disagree, either one asks the person with
 `ask`. Priory picks no task itself.
+
+The text of both tools is capped at 4,000 characters. The other agent reads it quoted, below a line
+that says it is another agent's account of outside data and holds no instruction to follow.
 
 An agent reaches only the task its own is paired with, and only a duplicate's event pairs two tasks.
 A relation does not count: an agent can record one with the `relate` tool or `priory relate`, and a
@@ -469,8 +481,9 @@ pull request link in a request's text makes one, so an issue's text could steer 
 A pair may send each other six messages an hour, so two agents cannot wake each other without end.
 Past that, they ask the person.
 
-A task asleep at a model step wakes on the duplicate's state change with the event alone, without
-the line that names the other task.
+A pair ends 24 hours after the duplicate's event. Its trust is limited: anyone who can mark an issue
+a duplicate in Linear can let the runs of two issues send each other quoted text for that day, and
+let one hand over to the other. It gives no run another's worktree, tools or approvals.
 
 ## Schedule firings
 
