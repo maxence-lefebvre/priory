@@ -3437,6 +3437,38 @@ mod tests {
     use proptest::prelude::*;
 
     #[test]
+    fn a_daemon_before_call_ids_gets_the_plain_line_once() {
+        let dir = std::env::temp_dir().join(format!("priory-plain-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("old.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let daemon = std::thread::spawn(move || {
+            let mut got = Vec::new();
+            for reply in [
+                r#"{"Err":"unreadable line: unknown field `call`"}"#,
+                r#"{"Ok":"done"}"#,
+            ] {
+                let (stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(&stream).read_line(&mut line).unwrap();
+                got.push(line.trim_end().to_owned());
+                (&stream)
+                    .write_all(format!("{reply}\n").as_bytes())
+                    .unwrap();
+            }
+            got
+        });
+
+        let reply = call_at(&path, r#"{"todo":1}"#, REPLY, Duration::ZERO).unwrap();
+
+        assert_eq!(reply, r#"{"Ok":"done"}"#);
+        let got = daemon.join().unwrap();
+        assert!(got[0].starts_with(r#"{"call":"#), "{got:?}");
+        assert_eq!(got[1], r#"{"todo":1}"#);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn a_hook_that_opened_the_spool_the_daemon_takes_writes_to_the_next_one() {
         let dir = std::env::temp_dir().join(format!("priory-spool-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();

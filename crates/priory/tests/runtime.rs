@@ -19554,6 +19554,44 @@ fn a_tool_call_in_flight_when_the_daemon_stops_is_answered() {
     assert_eq!(daemon.wait().unwrap().signal(), Some(15));
 }
 
+/// Sends `line` on the daemon's socket, once it listens, and returns its reply.
+fn on_socket(setup: &Setup, line: &str) -> String {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut stream = loop {
+        match std::os::unix::net::UnixStream::connect(setup.socket()) {
+            Ok(stream) => break stream,
+            Err(error) => assert!(Instant::now() < deadline, "{error}"),
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    std::io::Write::write_all(&mut stream, format!("{line}\n").as_bytes()).unwrap();
+    let mut reply = String::new();
+    std::io::BufRead::read_line(&mut std::io::BufReader::new(&stream), &mut reply).unwrap();
+    reply.trim_end().to_owned()
+}
+
+#[test]
+fn a_line_sent_again_with_its_call_id_is_applied_once_across_a_restart() {
+    let mut setup = Setup::new("call-id");
+    setup.start();
+    listening(&setup);
+    let todo = json!({ "todo": { "add": { "text": "Once." } } }).to_string();
+    let line = json!({ "call": "c-1", "line": todo }).to_string();
+
+    let first = on_socket(&setup, &line);
+    setup.crash();
+    setup.start();
+    let resent = on_socket(&setup, &line);
+
+    assert_eq!(resent, first);
+    let listed = setup.priory(&["todo", "list"]);
+    let listed = String::from_utf8_lossy(&listed.stdout).into_owned();
+    assert_eq!(listed.matches("Once.").count(), 1, "{listed}");
+    // A daemon before call ids could read the plain line, and a client falls back to it.
+    let plain = on_socket(&setup, &todo);
+    assert!(plain.contains("Ok"), "{plain}");
+}
+
 #[test]
 fn a_verb_run_while_the_daemon_restarts_waits_for_it() {
     let mut setup = Setup::new("verb-restart");
