@@ -17783,7 +17783,7 @@ fn an_acquire_that_loses_the_give_up_reply_gives_up_at_the_next_poll_and_sends_n
 }
 
 #[test]
-fn a_stale_socket_fails_the_command_fast_and_it_never_runs() {
+fn a_stale_socket_fails_the_command_after_its_wait_and_it_never_runs() {
     let setup = Setup::new("gate-stale-socket");
     fs::create_dir_all(setup.socket().parent().unwrap()).unwrap();
     drop(std::os::unix::net::UnixListener::bind(setup.socket()).unwrap());
@@ -17794,7 +17794,8 @@ fn a_stale_socket_fails_the_command_fast_and_it_never_runs() {
         .unwrap();
 
     assert_eq!(done.status.code(), Some(125));
-    assert!(start.elapsed() < Duration::from_secs(10));
+    // It waited for a daemon that could be restarting, and no longer.
+    assert!((30..40).contains(&start.elapsed().as_secs()));
     assert!(!setup.dir.join("fake/ran").exists());
 }
 
