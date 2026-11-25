@@ -193,9 +193,9 @@ fn a_second_agent_that_changes_its_verdict_in_round_one_ends_the_step_with_the_s
     );
 }
 
-#[test]
-fn agents_that_never_agree_leave_the_task_asleep_on_an_ask_the_persons_answer_decides() {
-    let mut setup = debating("debate-split", &debate_workflow(2, "$5.00", "15m"));
+/// A setup whose task 1 sleeps on the ask of a debate that never agreed.
+pub(super) fn split(name: &str) -> Setup {
+    let mut setup = debating(name, &debate_workflow(2, "$5.00", "15m"));
     setup.calls(&[
         position("process", "Isolate the crash."),
         position("daemon", "Keep one service."),
@@ -209,6 +209,12 @@ fn agents_that_never_agree_leave_the_task_asleep_on_an_ask_the_persons_answer_de
     setup.start();
 
     until_state(&setup, "asleep");
+    setup
+}
+
+#[test]
+fn agents_that_never_agree_leave_the_task_asleep_on_an_ask_the_persons_answer_decides() {
+    let setup = split("debate-split");
     assert_eq!(setup.rows("runs").len(), 6);
     let asks = asks_json(&setup);
     let ask = &asks["asks"][0];

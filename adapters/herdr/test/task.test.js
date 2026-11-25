@@ -16,7 +16,7 @@ const now = Date.parse("2026-11-20T12:00:00Z");
 test("a task shows its state, step, asks, pull request and its runs newest first", () => {
   const view = taskView(task, { now });
   assert.deepEqual([view.key, view.state, view.context, view.title], ["cli:PRI-61", "asleep", ["implement", "merge", "none/misc"], "Export the board as CSV."]);
-  assert.deepEqual(view.asks, [{ id: 1, tile: "answered", text: "Merge #212 into main? Checks are green.", note: "Answered Merge", age: "1 h", confidence: null, bars: 0, rationale: null, auto: false }]);
+  assert.deepEqual(view.asks, [{ id: 1, tile: "answered", text: "Merge #212 into main? Checks are green.", note: "Answered Merge", age: "1 h", confidence: null, bars: 0, rationale: null, auto: false, course: null }]);
   assert.deepEqual(view.pr, {
     title: "#212 Export the board as CSV",
     url: "https://github.com/acme/board/pull/212",
@@ -208,6 +208,13 @@ test("each answered ask says who answered, newest answer first, with its confide
   assert.equal(view.asks[2].rationale, null, "only an auto answer opens its rationale");
   const { answeredBy } = await import("../../../crates/priory-core/web/asks.js");
   for (const ask of answered.slice(0, 3)) assert.ok(view.asks.find((row) => row.id === ask.id).note.includes(`by ${answeredBy(ask.answered_by)}`));
+});
+
+test("autopilot's answer is named as its own, with its rationale as an auto answer's", () => {
+  const [ask] = taskView({ ...task, asks: [{ ...answered[0], answered_by: "autopilot" }] }, { now }).asks;
+  assert.deepEqual([ask.tile, ask.note, ask.rationale, ask.course], ["autopilot", "Answered every order, as today by autopilot", "The brief asks for it in so many words.", "Until the agent gets it, priory answer replaces it. After that, say to the agent."]);
+  const [plan] = taskView({ ...task, asks: [{ ...answered[0], answered_by: "autopilot", confidence: null }] }, { now }).asks;
+  assert.equal(plan.course, "To change course, cancel the task, then revive it at the plan's step.");
 });
 
 test("the Task panel draws an auto answer with its answerer's icon, confidence, rationale and how to change course", async () => {

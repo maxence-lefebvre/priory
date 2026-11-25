@@ -1028,7 +1028,7 @@ What starts next and why. Saved views: Waiting, Held and Last day, each with a c
   level.
 - **Answered asks**, after Say: a `--type-body` heading with the count, "3, newest first", then
   one bordered card of rows split by hairlines, newest answer first. Each row has a 16 px icon for
-  who answered (`cog` for auto or a lead agent, `terminal` for a session, `user` for a person),
+  who answered (`cog` for auto, autopilot or a lead agent, `terminal` for a session, `user` for a person),
   the ask's title, "Answered **40** by a person. Recommended 50." with the recommendation only when
   another option won, and the age at the right. A session reads "by session `7f3c2a`" in mono.
   When the agent stated a confidence, a `--text-3` caption shows it as three bars, filled in
@@ -1036,7 +1036,10 @@ What starts next and why. Saved views: Waiting, Held and Last day, each with a c
   answer's row opens wider: its title in 600, "**high** confidence, the agent's own. The task
   answers at high and above.", then a `--raised` box of Why, Trade-off and The ask, then a caption
   "The first answer stands. To change course, tell the agent." with underlined links to Say and to
-  the ask. There is no overturn control: the daemon refuses a second answer.
+  the ask. There is no overturn control: the daemon refuses a second answer. An autopilot answer's
+  row opens the same way, without the task's level, and its box adds Autopilot: why it could answer.
+  Its caption reads "Until the agent gets it, priory answer replaces it. After that, tell the
+  agent.", or for a plan "To change course, cancel the task, then revive it at the plan's step."
 - **Actions**, in `.btn secondary`: Resume and Cancel for a blocked task, Revive for a failed or
   dropped one, Cancel for any other active task. Cancel and Revive arm on the first tap, as a
   command option does: the button turns `--emph`, reads "Tap again to cancel" over its verb, and a
@@ -1660,7 +1663,9 @@ open it.
   its answerer's icon in `--text-2`, as on the web's Answered asks, with the age at the right and
   "Answered after by session 7f3c2a, medium" as its caption. An auto answer adds its three
   confidence bars and the word, its rationale in a bordered `--surface` box, and "The first answer
-  stands. Say to the agent to change course."
+  stands. Say to the agent to change course." An autopilot answer does too, with "Until the agent
+  gets it, priory answer replaces it. After that, say to the agent.", or for a plan "To change
+  course, cancel the task, then revive it at the plan's step."
 - Asks, Pull request, Inbox and History, each a caption heading with its count, then rows with an
   18 px tile and a `--type-small` line over a `--text-3` caption, split by hairlines. Inbox lists
   the latest 20 events routed to the task, newest first, with the web's tiles and wording and the

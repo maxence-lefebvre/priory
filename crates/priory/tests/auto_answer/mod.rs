@@ -3,6 +3,8 @@
 
 use super::*;
 
+mod autopilot;
+
 const RATIONALE: &str = "one file, no server to run";
 
 /// A setup whose trigger sets `auto_answer = "<level>"`, with `extra` lines after it.

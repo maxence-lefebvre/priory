@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 119;
+const VERSION: i64 = 120;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -2086,9 +2086,67 @@ CREATE TABLE IF NOT EXISTS envrc_bases (
 PRAGMA user_version = 118;
 ";
 
+// What a person let the daemon answer, for how long, and what became of each open ask meanwhile.
+const SCHEMA_119: &str = concat!(
+    "CREATE TABLE IF NOT EXISTS autopilot_windows (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  setting  TEXT NOT NULL UNIQUE,
+  started  TEXT NOT NULL,
+  until    TEXT NOT NULL,
+  level    TEXT NOT NULL CHECK (level IN ('high', 'medium')),
+  lanes    TEXT NOT NULL,
+  ended    TEXT,
+  why      TEXT CHECK (why IN ('off', 'time', 'replaced', 'clock')),
+  reported TEXT
+);
+CREATE TABLE IF NOT EXISTS autopilot_asks (
+  window   INTEGER NOT NULL REFERENCES autopilot_windows (id),
+  ask      INTEGER NOT NULL REFERENCES asks (id),
+  revision INTEGER NOT NULL,
+  verdict  TEXT NOT NULL CHECK (verdict IN ('answered', 'left')),
+  option   TEXT,
+  why      TEXT NOT NULL,
+  noted    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  PRIMARY KEY (window, ask)
+);
+CREATE TABLE IF NOT EXISTS autopilot_state (
+  id      INTEGER PRIMARY KEY CHECK (id = 1),
+  unread  TEXT,
+  clock   TEXT NOT NULL DEFAULT ''
+);
+INSERT OR IGNORE INTO autopilot_state (id) VALUES (1);
+CREATE TABLE IF NOT EXISTS ask_answerers (
+  ask      INTEGER NOT NULL REFERENCES asks (id),
+  revision INTEGER NOT NULL,
+  by       TEXT NOT NULL,
+  PRIMARY KEY (ask, revision)
+);
+INSERT OR IGNORE INTO ask_answerers (ask, revision, by)
+  SELECT id, revision, answered_by FROM asks WHERE answer IS NOT NULL AND answered_by IS NOT NULL;
+CREATE TRIGGER IF NOT EXISTS ask_answered_by AFTER UPDATE OF answered_by ON asks
+  WHEN NEW.answer IS NOT NULL AND NEW.answered_by IS NOT NULL BEGIN
+  INSERT OR REPLACE INTO ask_answerers (ask, revision, by)
+  VALUES (NEW.id, NEW.revision, NEW.answered_by);
+  UPDATE ask_revisions SET answered = NEW.answered WHERE ask = NEW.id AND revision = NEW.revision;
+END;
+CREATE INDEX IF NOT EXISTS autopilot_by_ask ON autopilot_asks (ask);
+CREATE TRIGGER IF NOT EXISTS ask_version_autopilot AFTER INSERT ON autopilot_asks BEGIN
+  INSERT INTO ask_versions (ask, version) VALUES (NEW.ask, 2)
+    ON CONFLICT (ask) DO UPDATE SET version = version + 1;
+END;
+CREATE TRIGGER IF NOT EXISTS ask_version_autopilot_again AFTER UPDATE ON autopilot_asks BEGIN
+  INSERT INTO ask_versions (ask, version) VALUES (NEW.ask, 2)
+    ON CONFLICT (ask) DO UPDATE SET version = version + 1;
+END;
+",
+    bumps!("autopilot_windows", "autopilot_asks"),
+    "PRAGMA user_version = 119;
+"
+);
+
 // News that may end a task's work, kept for its live run: shown to its next call, and read once a
 // held call takes it.
-const SCHEMA_119: &str = "
+const SCHEMA_120: &str = "
 CREATE TABLE news (
   id   INTEGER PRIMARY KEY,
   run  INTEGER NOT NULL REFERENCES runs (id),
@@ -2098,7 +2156,7 @@ CREATE TABLE news (
   read TEXT,
   UNIQUE (run, seq)
 );
-PRAGMA user_version = 119;
+PRAGMA user_version = 120;
 ";
 
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
@@ -2117,7 +2175,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
     SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112, SCHEMA_113,
-    SCHEMA_114, SCHEMA_115, SCHEMA_116, SCHEMA_117, SCHEMA_118, SCHEMA_119,
+    SCHEMA_114, SCHEMA_115, SCHEMA_116, SCHEMA_117, SCHEMA_118, SCHEMA_119, SCHEMA_120,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -2504,7 +2562,9 @@ pub(crate) fn route_in(
         record(tx, message, None, "outsider", None)?;
         return Ok(Vec::new());
     }
-    if crate::memories::handle(tx, message)?.is_some() {
+    if crate::memories::handle(tx, message)?.is_some()
+        || crate::autopilot::handle(tx, message, trace.runner.is_some())?.is_some()
+    {
         return Ok(Vec::new());
     }
     if let Some(me) = trace.runner.as_deref()

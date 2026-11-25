@@ -155,12 +155,23 @@ fn desk_items() -> String {
 const UNPARKED: &str = "NOT EXISTS (SELECT 1 FROM holds AS parked WHERE parked.task = tasks.id
   AND parked.kind = 'parked' AND parked.released IS NULL)";
 
+/// Why autopilot left the open ask at its current revision, or null.
+macro_rules! autopilot_left {
+    () => {
+        "(SELECT noted.why FROM autopilot_asks AS noted WHERE noted.ask = asks.id
+           AND noted.revision = asks.revision AND noted.verdict = 'left'
+           AND asks.answer IS NULL AND asks.withdrawn IS NULL ORDER BY noted.window DESC LIMIT 1)"
+    };
+}
+
 const DESK: &str = concat!(
     "SELECT 0 AS part, asks.created AS since, 'ask' AS kind,
                  ",
     ask_id!(),
     " AS id, asks.task AS task, tasks.lane AS lane,
-                 coalesce('routed to ' || asks.routed || ': ', '') || asks.question || ' '
+                 coalesce('autopilot left this (' || ",
+    autopilot_left!(),
+    " || '): ', '') || coalesce('routed to ' || asks.routed || ': ', '') || asks.question || ' '
                    || asks.options AS what
                FROM asks LEFT JOIN tasks ON tasks.id = asks.task
                WHERE asks.answer IS NULL AND asks.withdrawn IS NULL
@@ -313,7 +324,10 @@ fn asks_query() -> String {
        ELSE asks.withdrawn_reason END AS withdrawn_why,
      asks.revision, asks.question, asks.options, asks.recommendation, asks.tradeoff, asks.answer,
      asks.answered AS answered_at, asks.answered_by, asks.routed AS routed_to, asks.created AS since, asks.title, asks.text,
-     asks.confidence, asks.rationale,
+     asks.confidence, asks.rationale, {} AS autopilot_left,
+     (SELECT noted.why FROM autopilot_asks AS noted WHERE noted.ask = asks.id
+        AND noted.revision = asks.revision AND noted.verdict = 'answered'
+        AND asks.answered_by = 'autopilot' ORDER BY noted.window DESC LIMIT 1) AS autopilot_why,
      asks.what_waits, asks.next_action, asks.command, asks.coordinator, asks.run_id, asks.session,
      (SELECT json_object('state', state, 'revision', revision, 'tries', tries, 'error', error,
         'since', coalesce(ended, created), 'cleared', cleared)
@@ -341,6 +355,7 @@ fn asks_query() -> String {
      AND (?3 IS NULL OR (asks.answer IS NULL AND asks.withdrawn IS NULL)
        OR coalesce(asks.answered, asks.withdrawn_at, asks.created) >= ?3)
    ORDER BY asks.id",
+        autopilot_left!(),
         snooze::FIELDS
     )
 }
@@ -1394,6 +1409,9 @@ fn since_you_looked(db: &Connection, person: &str) -> rusqlite::Result<Value> {
                    || ' answered ' || json_quote(json_extract(event, '$.data.option')) || ' by auto ('
                    || json_extract(event, '$.data.confidence') || '): '
                    || json_extract(event, '$.data.rationale')
+                 WHEN 'factory.ask.autopilot_answered' THEN 'ask ' || json_extract(event, '$.data.ask')
+                   || ' answered ' || json_quote(json_extract(event, '$.data.option'))
+                   || ' by autopilot: ' || json_extract(event, '$.data.why')
                  WHEN 'factory.ask.session_answered' THEN 'ask ' || json_extract(event, '$.data.ask')
                    || ' answered ' || json_quote(json_extract(event, '$.data.option'))
                    || ' by session ' || json_extract(event, '$.data.session')
@@ -1534,19 +1552,29 @@ fn acts(db: &Connection, items: &mut [Value]) -> rusqlite::Result<()> {
 }
 
 /// Gives each `ask` item the lead it is routed to, and the confidence and rationale its agent
-/// stated, each or null.
+/// stated, and why autopilot left it, each or null.
 fn routed_to(db: &Connection, items: &mut [Value]) -> rusqlite::Result<()> {
-    let mut routed = db.prepare("SELECT routed, confidence, rationale FROM asks WHERE id = ?1")?;
+    let mut routed = db.prepare(concat!(
+        "SELECT routed, confidence, rationale, ",
+        autopilot_left!(),
+        " FROM asks WHERE id = ?1"
+    ))?;
     for item in items.iter_mut().filter(|item| item["kind"] == "ask") {
-        let [to, confidence, rationale] = match item["id"].as_i64() {
+        let [to, confidence, rationale, left] = match item["id"].as_i64() {
             Some(ask) => routed.query_row([ask], |row| {
-                Ok([row.get::<_, Option<String>>(0)?, row.get(1)?, row.get(2)?])
+                Ok([
+                    row.get::<_, Option<String>>(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                ])
             })?,
-            None => [None, None, None],
+            None => [None, None, None, None],
         };
         item["routed_to"] = json!(to);
         item["confidence"] = json!(confidence);
         item["rationale"] = json!(rationale);
+        item["autopilot_left"] = json!(left);
     }
     Ok(())
 }
@@ -1640,6 +1668,7 @@ pub fn desk(
         .map_or(0, Vec::len);
     Ok(json!({
         "paused": state::pause_banner(db)?,
+        "autopilot": crate::autopilot::status(db)?,
         "caps": crate::spend::desk_lines(db)?,
         "reviews": crate::review::desk_lines(db)?,
         "banner": stall::banner(db)?,
