@@ -91,6 +91,27 @@ The intake reads check runs, not check suites. Branch protection and R6.6 name r
 check run, such as `test (ubuntu)`, while a suite folds every run of one app into one conclusion.
 Commit statuses are not published. A re-run gets a new check run id, so it publishes again.
 
+### Superseded runs
+
+One commit can hold several runs of a check: a re-run, or a second workflow run that GitHub started
+for the same commit. The intake counts each check once, as GitHub's pull request page does.
+
+- A check is the runs of one app, workflow, workflow event and name on one commit. The newest, with
+  the highest id, stands for it. `pending`, `failing` and the snapshot's `runs` count only that one,
+  and only that one publishes.
+- The newest counts whatever its conclusion, so a cancelled newest run stays red.
+- Two workflows with a job of the same name stay apart, and so do a `push` and a `pull_request` run of
+  one workflow.
+- The GraphQL query names the workflow run of each check's suite, so this adds no request. A token that
+  may not read Actions gets `Resource not accessible`, and the intake asks again without the workflows.
+- On a merge commit, the intake reads `repos/{repo}/actions/runs?head_sha={sha}` once per poll, only when
+  two check suites hold one name. The `Actions` permission (read) covers it too.
+- With no workflow, as for another app or a refused token, the check suite takes the place of the
+  workflow and event.
+
+The event's `origin` holds the workflow and event, or the suite, so that the daemon applies the same
+rule to the events it stored ([waits.md](../daemon/waits.md#done-and-checks)).
+
 ### Check runs at a merge
 
 A check that fails on the base branch after a merge is how a task turns out red

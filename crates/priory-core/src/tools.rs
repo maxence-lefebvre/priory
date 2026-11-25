@@ -12,7 +12,7 @@ use priory_intake::intake::{
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 type Workflows = BTreeMap<String, Loaded<Workflow>>;
@@ -137,11 +137,7 @@ fn branches(value: &Value, own: Option<&str>) -> Result<Option<Vec<String>>, Str
         own.and_then(|own| branch.strip_prefix(own)?.strip_prefix('-'))
             .is_some_and(|name| !name.is_empty())
     };
-    let unique = branches
-        .iter()
-        .collect::<std::collections::BTreeSet<_>>()
-        .len()
-        == branches.len();
+    let unique = branches.iter().collect::<BTreeSet<_>>().len() == branches.len();
     if Some(top.as_str()) != own || !lower.iter().all(named) || !unique {
         return Err(wrong());
     }
@@ -1754,6 +1750,15 @@ impl Seen {
             && !PASSING.contains(&self.data["conclusion"].as_str().unwrap_or("none"))
             && self.data["superseded_by"].is_null()
     }
+
+    /// Whether the check is red and no later run of it, among `events`, superseded it.
+    fn red_among<'a>(&self, mut events: impl Iterator<Item = &'a Seen>) -> bool {
+        let supersedes = |later: &Seen| {
+            later.kind == CHECKED
+                && route::supersedes((later.seq, &later.data), (self.seq, &self.data))
+        };
+        self.red() && !events.any(supersedes)
+    }
 }
 
 /// Judges the daemon's checks wait `wait` on every event the inbox kept, ignored or woke on about its pull
@@ -1860,9 +1865,9 @@ fn judge(tx: &Transaction, wait: i64, factory: &Factory) -> rusqlite::Result<Fir
     };
     let failing = check.data["failing"].as_u64();
     let red = match failing {
-        _ if check.red() => Some(check),
+        _ if check.red_among(seen.iter()) => Some(check),
         // The red check counted here came earlier, or its event follows from the same poll.
-        Some(1..) => checks.find(|event| event.red()),
+        Some(1..) => checks.find(|event| event.red_among(seen.iter())),
         _ => None,
     };
     if let Some(red) = red {
@@ -1897,24 +1902,23 @@ fn judge(tx: &Transaction, wait: i64, factory: &Factory) -> rusqlite::Result<Fir
     done(tx, wait, task, check.seq, factory)
 }
 
-/// The failure's signature at `commit`: each check's newest event in `seen` up to the event
-/// `upto`, kept when red, as `name (conclusion)` sorted by name.
+/// The failure's signature at `commit`: each red check in `seen` up to the event `upto` that no
+/// later run superseded by then, as `name (conclusion)` sorted by name.
 fn signature(seen: &[Seen], commit: &str, upto: i64) -> Vec<String> {
-    let mut newest = BTreeMap::new();
-    for event in seen {
-        if event.kind == CHECKED && event.head == commit && event.seq <= upto {
+    let known: Vec<&Seen> = seen
+        .iter()
+        .filter(|event| event.head == commit && event.seq <= upto)
+        .collect();
+    let red: BTreeSet<String> = known
+        .iter()
+        .filter(|event| event.red_among(known.iter().copied()))
+        .map(|event| {
             let name = event.data["name"].as_str().unwrap_or("-");
-            newest.entry(name).or_insert(event);
-        }
-    }
-    newest
-        .into_iter()
-        .filter(|(_, event)| event.red())
-        .map(|(name, event)| {
             let conclusion = event.data["conclusion"].as_str().unwrap_or("none");
             format!("{name} ({conclusion})")
         })
-        .collect()
+        .collect();
+    red.into_iter().collect()
 }
 
 /// Stops the fix loop of `task` when its gate `wait` turns red at `commit` with the signature of

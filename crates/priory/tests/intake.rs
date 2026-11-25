@@ -1154,6 +1154,161 @@ fn a_submitted_review_and_a_completed_check_publish_once() {
     );
 }
 
+/// The check run `id` of `name` in `suite`, of the workflow and event of `origin`, completed with
+/// `conclusion` or still running.
+fn check_run(
+    id: u64,
+    name: &str,
+    suite: u64,
+    origin: Option<(u64, &str)>,
+    conclusion: Option<&str>,
+) -> serde_json::Value {
+    json!({
+        "__typename": "CheckRun",
+        "databaseId": id,
+        "name": name,
+        "status": if conclusion.is_some() { "COMPLETED" } else { "IN_PROGRESS" },
+        "conclusion": conclusion,
+        "completedAt": conclusion.map(|_| "2026-11-17T12:05:00Z"),
+        "url": format!("https://github.com/owner/repo/runs/{id}"),
+        "checkSuite": {
+            "databaseId": suite,
+            "app": { "slug": "github-actions" },
+            "workflowRun": origin.map(|(workflow, event)| {
+                json!({ "event": event, "workflow": { "databaseId": workflow } })
+            })
+        }
+    })
+}
+
+/// The id, `pending` and `failing` of each check event a poll of `runs` publishes, then the
+/// snapshot's `runs`.
+fn polled_checks(name: &str, runs: serde_json::Value) -> (Vec<(u64, u64, u64)>, u64) {
+    let setup = Setup::baseline(name);
+    setup.answer(&[(OPEN_PULLS, open_pulls(&[pull(43, false, json!([]), runs)]))]);
+    succeeded(&setup.intake());
+    let published = setup.published();
+    let checks = published
+        .iter()
+        .filter(|event| event.message.kind == "github.check_run.completed")
+        .map(|event| {
+            let number = |field: &str| event.message.data[field].as_u64().unwrap();
+            (number("github_id"), number("pending"), number("failing"))
+        })
+        .collect();
+    let snapshot = published
+        .iter()
+        .find(|event| event.message.kind == "github.pull_request.check_runs")
+        .unwrap();
+    (checks, snapshot.message.data["runs"].as_u64().unwrap())
+}
+
+const CI: Option<(u64, &str)> = Some((12, "pull_request"));
+const FAILURE: Option<&str> = Some("FAILURE");
+const SUCCESS: Option<&str> = Some("SUCCESS");
+
+#[test]
+fn a_rerun_check_of_a_duplicate_workflow_run_counts_once_as_its_newest_run() {
+    let runs = json!([
+        check_run(1, "gate", 10, CI, FAILURE),
+        check_run(2, "gate", 20, CI, FAILURE),
+        check_run(3, "gate", 20, CI, SUCCESS),
+    ]);
+    assert_eq!(polled_checks("check-rerun", runs), (vec![(3, 0, 0)], 1));
+}
+
+#[test]
+fn a_failure_nothing_superseded_stays_red() {
+    let runs = json!([
+        check_run(1, "gate", 10, CI, FAILURE),
+        check_run(2, "lint", 10, CI, FAILURE),
+        check_run(3, "gate", 20, CI, SUCCESS),
+    ]);
+    assert_eq!(
+        polled_checks("check-real-red", runs),
+        (vec![(2, 0, 1), (3, 0, 1)], 2)
+    );
+    let runs = json!([
+        check_run(1, "gate", 10, CI, SUCCESS),
+        check_run(2, "gate", 20, CI, Some("CANCELLED")),
+    ]);
+    assert_eq!(
+        polled_checks("check-newest-cancelled", runs),
+        (vec![(2, 0, 1)], 1)
+    );
+}
+
+#[test]
+fn a_check_name_two_workflows_or_two_events_share_counts_apart() {
+    for (name, other) in [
+        ("check-workflows", (13, "pull_request")),
+        ("check-events", (12, "push")),
+    ] {
+        let runs = json!([
+            check_run(1, "gate", 10, CI, FAILURE),
+            check_run(2, "gate", 20, Some(other), SUCCESS),
+        ]);
+        assert_eq!(
+            polled_checks(name, runs),
+            (vec![(1, 0, 1), (2, 0, 1)], 2),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_running_newest_run_is_pending_and_a_running_superseded_one_is_not() {
+    let runs = json!([
+        check_run(1, "gate", 10, CI, FAILURE),
+        check_run(2, "gate", 20, CI, None),
+        check_run(3, "lint", 10, CI, None),
+        check_run(4, "lint", 20, CI, SUCCESS),
+    ]);
+    assert_eq!(polled_checks("check-running", runs), (vec![(4, 1, 0)], 2));
+}
+
+#[test]
+fn a_token_refused_the_workflows_still_polls_and_counts_suites_apart() {
+    let setup = Setup::baseline("check-refused");
+    let runs = json!([
+        check_run(1, "gate", 10, None, FAILURE),
+        check_run(2, "gate", 20, None, FAILURE),
+        check_run(3, "gate", 20, None, SUCCESS),
+    ]);
+    let answer = setup.dir.join("pulls.json");
+    write(
+        &answer,
+        &open_pulls(&[pull(43, false, json!([]), runs)]).to_string(),
+    );
+    let script = format!(
+        "#!/bin/sh\ncase \"$*\" in\n  *workflowRun*) echo 'gh: Resource not accessible by personal access token' >&2; exit 1 ;;\n  \"api graphql --paginate\"*) cat '{}' ;;\n  *) echo '[]' ;;\nesac\n",
+        answer.display()
+    );
+    Setup::fake_gh(&setup.dir, &script);
+
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    let checks: Vec<_> = published
+        .iter()
+        .filter(|event| event.message.kind == "github.check_run.completed")
+        .map(|event| {
+            (
+                &event.message.data["github_id"],
+                &event.message.data["origin"],
+            )
+        })
+        .collect();
+    assert_eq!(
+        checks,
+        [
+            (&json!(1), &json!("suite:10")),
+            (&json!(3), &json!("suite:20"))
+        ]
+    );
+    assert_eq!(published.last().unwrap().message.data["failing"], 1);
+}
+
 #[test]
 fn a_check_counts_the_runs_past_the_first_page_as_pending() {
     let setup = Setup::baseline("pr-check-page");

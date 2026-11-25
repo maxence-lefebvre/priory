@@ -72,7 +72,8 @@ The events' ids are on their own pages.
 | A repository with N open pull requests and nothing new | 5 `gh` calls: 4 REST requests (`issues/events`, `issues`, `pulls/comments` and `issues/comments`, one page each) and 1 GraphQL query |
 | N over 25 | the query pages itself: ceil(N/25) requests |
 | New pull request events | 1 more GraphQL query per 25 pull requests they name |
-| A task pull request merged in the last 7 days | 1 more REST request per merge commit whose checks have not all completed ([why](pull-requests.md#check-runs-at-a-merge)) |
+| A task pull request merged in the last 7 days | 1 more REST request per merge commit whose checks have not all completed ([why](pull-requests.md#check-runs-at-a-merge)), and another when two check suites there hold one name ([why](pull-requests.md#superseded-runs)) |
+| A token that may not read Actions | each GraphQL query above twice ([why](pull-requests.md#superseded-runs)) |
 | A review by `gh`'s login that is `COMMENTED` with an empty body | 1 more REST request for its thread comments, at most 20 per poll, newest first within equal failed tries, and none for a review already on `factory.intake` ([why](pull-requests.md#events)) |
 | Over 100 new events in a stream since the last poll | 1 more REST page per 100 |
 

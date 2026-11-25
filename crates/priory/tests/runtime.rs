@@ -12014,6 +12014,100 @@ fn a_green_check_counting_a_failure_wakes_the_agent_with_the_failed_check() {
     );
 }
 
+/// The run `id` of the check `gate` as an intake that counted each suite apart stored it.
+fn stored_gate(id: u64, conclusion: &str) -> Message {
+    let mut gate = check(id, 0);
+    gate.data["name"] = json!("gate");
+    gate.data["app"] = json!("github-actions");
+    gate.data["conclusion"] = json!(conclusion);
+    gate.data["failing"] = json!(6);
+    gate
+}
+
+/// As `gated`, with `checks` stored before the result.
+fn gated_after(mut setup: Setup, checks: &[Message]) -> Setup {
+    setup.calls(&[
+        wait(on_pull_7("review")),
+        passed_at(ABC),
+        json!({ "name": "result", "arguments": { "outcome": "quiet", "summary": "all quiet" } }),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.hold("hold-submit");
+    setup.publish(&reviewed());
+    setup.until("outbox", |rows| with(rows, 3, "attempted") == 1);
+    for check in checks {
+        setup.publish(check);
+    }
+    setup.until("inbox", |rows| rows.len() == 2 + checks.len());
+    setup.release("hold-submit");
+    setup.until("runs", |rows| rows.len() >= 2 && rows[1][7] == "asleep");
+    setup
+}
+
+fn superseded_gate() -> [Message; 3] {
+    [
+        stored_gate(1, "failure"),
+        stored_gate(2, "failure"),
+        stored_gate(3, "success"),
+    ]
+}
+
+#[test]
+fn a_red_check_a_later_run_of_it_superseded_wakes_no_agent_and_a_later_real_one_does() {
+    let setup = gated_after(Setup::new("gate-superseded"), &superseded_gate());
+    stays_asleep_after(&setup, 2);
+
+    setup.publish(&red_at(9, "lint", ABC));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    assert!(
+        typed[2].starts_with(&format!(
+            "wait 2 fired: check lint at {ABC} concluded failure\n"
+        )),
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn a_superseded_red_check_lets_the_merge_enter_the_step_after_it() {
+    let setup = gated_after(
+        Setup::with_workflow("after-merge-superseded", AFTER_MERGE),
+        &superseded_gate(),
+    );
+    stays_asleep_after(&setup, 2);
+
+    setup.publish(&closed());
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    let runs = setup.rows("runs");
+    assert_eq!(runs.len(), 3, "{runs:?}");
+    assert_eq!(runs[2][2], "watch");
+}
+
+#[test]
+fn a_red_check_of_one_workflow_fires_though_another_workflow_has_a_later_green_job_of_its_name() {
+    let of = |id: u64, conclusion: &str, workflow: u64| {
+        let mut check = stored_gate(id, conclusion);
+        check.data["origin"] = json!(format!("workflow:{workflow}:pull_request"));
+        check.data["failing"] = json!(1);
+        check
+    };
+    let checks = [of(1, "failure", 12), of(2, "success", 13)];
+    let setup = gated_after(Setup::new("gate-two-workflows"), &checks);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    assert!(
+        typed[2].starts_with(&format!(
+            "wait 2 fired: check gate at {ABC} concluded failure\n"
+        )),
+        "{typed:?}"
+    );
+}
+
 #[test]
 fn green_checks_at_the_result_commit_do_not_finish_the_task_when_the_head_moved_before_it() {
     let mut setup = Setup::new("gate-moved-before");
@@ -24080,6 +24174,29 @@ fn a_comment_on_a_merged_pull_request_of_an_open_stack_wakes_the_task() {
         "{outbox:?}"
     );
     setup.until("runs", |rows| rows.len() == 2);
+}
+
+#[test]
+fn a_superseded_red_check_fires_no_gate_of_a_stack() {
+    let setup = opened_stack("stack-superseded");
+    let gate = |id: u64, conclusion: &str| {
+        on_stack(
+            7,
+            "github.check_run.completed",
+            json!({ "name": "gate", "app": "github-actions", "conclusion": conclusion,
+                    "github_id": id, "pending": 0, "failing": 6 }),
+        )
+    };
+    setup.until("waits", |rows| rows.len() == 3);
+
+    // The cancelled duplicate's job ends after the rerun of the other run passed.
+    setup.publish(&gate(3, "success"));
+    setup.publish(&gate(1, "failure"));
+    setup.publish(&gate(2, "failure"));
+
+    setup.until("inbox", |rows| rows.len() == 4);
+    stays_asleep_after(&setup, 1);
+    assert_eq!(setup.rows("waits").len(), 3);
 }
 
 #[test]

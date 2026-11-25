@@ -294,3 +294,20 @@ pub(crate) fn satisfies(
     };
     kind == expected && names && checked
 }
+
+/// Whether the check event `later` is a newer run of the check of `event`, at the same commit: the
+/// same app, name and origin. An older intake's event holds no origin, so it matches any. Each comes
+/// with its seq, which orders events without a run id.
+pub(crate) fn supersedes(
+    later: (i64, &serde_json::Value),
+    event: (i64, &serde_json::Value),
+) -> bool {
+    let ((later_seq, later), (seq, event)) = (later, event);
+    let same = |field: &str| later[field] == event[field];
+    let newer = match (later["github_id"].as_u64(), event["github_id"].as_u64()) {
+        (Some(later), Some(id)) => later > id,
+        _ => later_seq > seq,
+    };
+    let origin = same("origin") || later["origin"].is_null() || event["origin"].is_null();
+    newer && origin && ["repo", "head_sha", "app", "name"].into_iter().all(same)
+}

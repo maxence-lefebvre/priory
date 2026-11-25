@@ -389,6 +389,8 @@ impl Setup {
              cat \"{dir}/checks-$sha.json\" 2>/dev/null || \
              echo '{{\"total_count\":0,\"check_runs\":[]}}' ;;\n  repos/owner/repo/compare/*)\n    \
              cat \"{dir}/compare.json\" 2>/dev/null || echo '{{\"status\":\"diverged\"}}' ;;\n  \
+             repos/owner/repo/actions/runs\\?head_sha=*)\n    \
+             cat \"{dir}/runs.json\" ;;\n  \
              repos/owner/repo/actions/runs/*)\n    \
              [ -f \"{dir}/403-run-${{2##*/}}\" ] && {{ echo 'gh: Resource not accessible by personal access token (HTTP 403)' >&2; exit 1; }}\n    \
              cat \"{dir}/workflow-${{2##*/}}.json\" 2>/dev/null || \
@@ -608,6 +610,57 @@ fn a_merge_commit_is_read_until_every_check_completed_then_not_again() {
         "the poll that saw them all complete was the last"
     );
     assert_eq!(setup.red_after_merge(), 1);
+}
+
+/// A merge of task 1 at `m10` with three runs of `ci` in suites 10, 20 and 20, only the last green,
+/// where suites 10 and 20 are runs of the workflows `workflows`.
+fn rerun_at_merge(name: &str, workflows: [u64; 2]) -> Setup {
+    let setup = Setup::new(name);
+    setup.polled_repo();
+    setup.task(1, "green");
+    setup.handle(&[merged_on(10, 1, "aaa", "m10", "2026-11-20T10:00:00Z")]);
+    let runs = [(1, 10, "failure"), (2, 20, "failure"), (3, 20, "success")].map(
+        |(id, suite, conclusion)| {
+            json!({ "id": id, "name": "ci", "status": "completed", "conclusion": conclusion,
+                    "completed_at": "2026-11-20T10:05:00Z", "check_suite": { "id": suite },
+                    "html_url": format!("https://github.com/owner/repo/actions/runs/{suite}/job/{id}"),
+                    "app": { "slug": "github-actions" } })
+        },
+    );
+    let checks = json!({ "total_count": 3, "check_runs": runs });
+    fs::write(setup.dir.join("checks-m10.json"), checks.to_string()).unwrap();
+    let runs = [(10, workflows[0]), (20, workflows[1])].map(|(suite, workflow)| {
+        json!({ "check_suite_id": suite, "workflow_id": workflow, "event": "push" })
+    });
+    let runs = json!({ "workflow_runs": runs });
+    fs::write(setup.dir.join("runs.json"), runs.to_string()).unwrap();
+    setup
+}
+
+#[test]
+fn a_superseded_run_on_a_merge_commit_is_not_red() {
+    let setup = rerun_at_merge("merge-superseded", [12, 12]);
+
+    setup.poll();
+
+    assert_eq!(setup.red_after_merge(), 0);
+    let checks = setup.completed_checks();
+    assert_eq!(checks.len(), 1, "{checks:?}");
+    assert_eq!(checks[0]["origin"], "workflow:12:push");
+    assert_eq!(
+        (&checks[0]["pending"], &checks[0]["failing"]),
+        (&json!(0), &json!(0))
+    );
+}
+
+#[test]
+fn a_red_run_on_a_merge_commit_stays_red_when_another_workflow_passed() {
+    let setup = rerun_at_merge("merge-two-workflows", [12, 13]);
+
+    setup.poll();
+
+    assert_eq!(setup.red_after_merge(), 1);
+    assert_eq!(setup.completed_checks().len(), 2);
 }
 
 /// A merge of task 1 at `m10` whose `ci` run was cancelled.

@@ -126,13 +126,77 @@ struct Context {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Suite {
+    #[serde(default)]
+    database_id: Option<u64>,
     app: Option<App>,
+    #[serde(default)]
+    workflow_run: Option<WorkflowRun>,
+}
+
+#[derive(Deserialize)]
+struct WorkflowRun {
+    event: String,
+    workflow: Workflow,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Workflow {
+    database_id: u64,
 }
 
 #[derive(Deserialize)]
 struct App {
     slug: String,
+}
+
+impl Context {
+    fn suite_id(&self) -> Option<u64> {
+        self.check_suite.as_ref()?.database_id
+    }
+
+    fn app(&self) -> Option<&str> {
+        Some(self.check_suite.as_ref()?.app.as_ref()?.slug.as_str())
+    }
+
+    /// See `origin`.
+    fn origin(&self) -> Option<String> {
+        let run = self.check_suite.as_ref()?.workflow_run.as_ref();
+        let run = run.map(|run| (run.workflow.database_id, run.event.as_str()));
+        origin(run, self.suite_id())
+    }
+}
+
+/// What started a check run: the workflow id and event of its Actions run, or else its check suite.
+/// The daemon compares it as one string. A suite alone never joins two runs of a workflow.
+fn origin(workflow: Option<(u64, &str)>, suite: Option<u64>) -> Option<String> {
+    match workflow {
+        Some((workflow, event)) => Some(format!("workflow:{workflow}:{event}")),
+        None => suite.map(|suite| format!("suite:{suite}")),
+    }
+}
+
+/// The app, origin and name of a check; a run of unknown origin is a check of its own.
+type Check<'a> = (Option<&'a str>, Result<String, u64>, &'a str);
+
+/// The newest run of each check, as GitHub shows them: a higher id supersedes a lower one, whatever
+/// its conclusion.
+fn newest<'a, T>(
+    runs: impl Iterator<Item = &'a T>,
+    check: impl Fn(&'a T) -> Check<'a>,
+    id: impl Fn(&T) -> u64,
+) -> Vec<&'a T> {
+    let runs: Vec<&T> = runs.collect();
+    let mut newest = HashMap::new();
+    for run in &runs {
+        let top = newest.entry(check(run)).or_insert(id(run));
+        *top = id(run).max(*top);
+    }
+    runs.into_iter()
+        .filter(|run| newest[&check(run)] == id(run))
+        .collect()
 }
 
 /// The submitted reviews and completed check runs of `pulls`, oldest first, and a snapshot of
@@ -216,25 +280,28 @@ pub(super) fn reviews_and_checks<'a>(
             .map(|rollup| &rollup.contexts)
             .collect();
         // Contexts past the first page may be check runs still running, so they count as pending.
-        let pending: usize = pages
+        let unread: usize = pages
             .iter()
-            .map(|page| {
-                let running = page.nodes.iter().filter(|check| {
-                    check.database_id.is_some() && check.status.as_deref() != Some("COMPLETED")
-                });
-                running.count() + page.total_count.saturating_sub(page.nodes.len())
-            })
+            .map(|page| page.total_count.saturating_sub(page.nodes.len()))
             .sum();
-        let runs: usize = pages
-            .iter()
-            .map(|page| {
-                let runs = page
-                    .nodes
-                    .iter()
-                    .filter(|check| check.database_id.is_some());
-                runs.count() + page.total_count.saturating_sub(page.nodes.len())
-            })
-            .sum();
+        let contexts = newest(
+            pages
+                .iter()
+                .flat_map(|page| &page.nodes)
+                .filter(|check| check.database_id.is_some()),
+            |check| {
+                let origin = check.origin().ok_or(check.database_id.unwrap_or_default());
+                (
+                    check.app(),
+                    origin,
+                    check.name.as_deref().unwrap_or_default(),
+                )
+            },
+            |check| check.database_id.unwrap_or_default(),
+        );
+        let completed = |check: &&&Context| check.status.as_deref() == Some("COMPLETED");
+        let pending = unread + contexts.iter().filter(|check| !completed(check)).count();
+        let runs = unread + contexts.len();
         let now = Timestamp::now();
         let quiet = pull
             .updated_at
@@ -255,12 +322,9 @@ pub(super) fn reviews_and_checks<'a>(
             data.insert("updated_at".into(), json!(pull.updated_at));
             checks.push(observed);
         }
-        let contexts = pages.iter().flat_map(|page| &page.nodes);
         let failing = contexts
-            .clone()
-            .filter(|check| {
-                check.database_id.is_some() && check.status.as_deref() == Some("COMPLETED")
-            })
+            .iter()
+            .filter(completed)
             .filter(|check| {
                 let conclusion = check
                     .conclusion
@@ -270,7 +334,7 @@ pub(super) fn reviews_and_checks<'a>(
                 !super::PASSING.contains(&conclusion.as_str())
             })
             .count();
-        for check in contexts.filter(|check| check.status.as_deref() == Some("COMPLETED")) {
+        for check in contexts.iter().filter(completed) {
             let (Some(id), Some(time)) = (check.database_id, check.completed_at.as_deref()) else {
                 continue;
             };
@@ -285,11 +349,10 @@ pub(super) fn reviews_and_checks<'a>(
                     .as_ref()
                     .map(|conclusion| conclusion.to_lowercase())
             );
-            let app = check
-                .check_suite
-                .as_ref()
-                .and_then(|suite| suite.app.as_ref());
-            observed.data["app"] = json!(app.map(|app| &app.slug));
+            observed.data["app"] = json!(check.app());
+            if let Some(origin) = check.origin() {
+                observed.data["origin"] = json!(origin);
+            }
             observed.data["pending"] = json!(pending);
             observed.data["failing"] = json!(failing);
             checks.push(observed);
@@ -316,6 +379,86 @@ struct Run {
     completed_at: Option<String>,
     html_url: String,
     app: Option<App>,
+    #[serde(default)]
+    check_suite: Option<RunSuite>,
+}
+
+#[derive(Deserialize)]
+struct RunSuite {
+    id: u64,
+}
+
+impl Run {
+    fn app(&self) -> Option<&str> {
+        self.app.as_ref().map(|app| app.slug.as_str())
+    }
+
+    fn suite_id(&self) -> Option<u64> {
+        self.check_suite.as_ref().map(|suite| suite.id)
+    }
+
+    /// See `origin`; `workflows` is the workflow and event of each suite.
+    fn origin(&self, workflows: &Workflows) -> Option<String> {
+        let suite = self.suite_id();
+        let workflow = suite.and_then(|suite| workflows.get(&suite));
+        origin(
+            workflow.map(|(workflow, event)| (*workflow, event.as_str())),
+            suite,
+        )
+    }
+}
+
+type Workflows = HashMap<u64, (u64, String)>;
+
+#[derive(Deserialize)]
+struct ActionsRuns {
+    workflow_runs: Vec<SuiteRun>,
+}
+
+#[derive(Deserialize)]
+struct SuiteRun {
+    check_suite_id: u64,
+    workflow_id: u64,
+    event: String,
+}
+
+/// The workflow and event of each check suite at `sha`, read only when `runs` hold one app and name
+/// in two suites. None when the token may not read Actions, so the suites count apart.
+fn workflows(repo: &str, sha: &str, runs: &[Run]) -> Result<Workflows, String> {
+    let mut suites = HashMap::new();
+    let repeated = runs
+        .iter()
+        .filter(|run| run.app() == Some("github-actions"))
+        .filter_map(|run| run.suite_id().map(|suite| (run.name.as_str(), suite)))
+        .any(|(name, suite)| *suites.entry(name).or_insert(suite) != suite);
+    if !repeated {
+        return Ok(Workflows::new());
+    }
+    let path = format!("repos/{repo}/actions/runs?head_sha={sha}&per_page=100");
+    let answer = match gh::<ActionsRuns>(&path, &[]) {
+        Err(error) if refused(&error) => None,
+        answer => found(answer)?,
+    };
+    let runs = answer.map_or_else(Vec::new, |answer| answer.workflow_runs);
+    Ok(runs
+        .into_iter()
+        .map(|run| (run.check_suite_id, (run.workflow_id, run.event)))
+        .collect())
+}
+
+/// The newest of `runs` of each check. See `newest`.
+fn newest_runs<'a>(runs: impl Iterator<Item = &'a Run>, workflows: &Workflows) -> Vec<&'a Run> {
+    let check = |run: &'a Run| {
+        let origin = run.origin(workflows).ok_or(run.id);
+        (run.app(), origin, run.name.as_str())
+    };
+    newest(runs, check, |run| run.id)
+}
+
+/// Whether `error` says the token may not read what was asked, as a fine-grained one without Actions.
+/// A rate limit's 403 says something else.
+fn refused(error: &str) -> bool {
+    error.contains("Resource not accessible")
 }
 
 /// The completed check runs on the merge commits of `merges` in `repo`, as events of the pull
@@ -349,12 +492,11 @@ pub(super) fn merge_checks(
             unchecked.insert(merge.commit.clone());
         }
         let conclusion = |run: &Run| run.conclusion.as_deref().unwrap_or_default().to_lowercase();
+        let workflows = workflows(repo, &merge.commit, &found.check_runs)?;
+        let runs = newest_runs(found.check_runs.iter(), &workflows);
+        let superseded = found.check_runs.len() - runs.len();
         let mut done = Vec::new();
-        for run in found
-            .check_runs
-            .iter()
-            .filter(|run| run.status == "completed")
-        {
+        for run in runs.into_iter().filter(|run| run.status == "completed") {
             let later = match conclusion(run).as_str() {
                 // A base branch deleted after the merge answers 404: count the run as it was.
                 "cancelled" => {
@@ -372,7 +514,7 @@ pub(super) fn merge_checks(
                 done.push((run, later));
             }
         }
-        let pending = found.total_count - done.len();
+        let pending = found.total_count - superseded - done.len();
         let failing = done
             .iter()
             .filter(|(run, later)| {
@@ -399,6 +541,9 @@ pub(super) fn merge_checks(
                 "pending": pending,
                 "failing": failing,
             });
+            if let Some(origin) = run.origin(&workflows) {
+                data["origin"] = json!(origin);
+            }
             if let Later::Succeeded(sha) = later {
                 data["superseded_by"] = json!(sha);
             }
@@ -516,11 +661,11 @@ fn passed_tip(red: &Red, check: &RedCheck) -> Result<Option<Passed>, String> {
     let Some(found) = found(gh::<CommitRuns>(&path, &fields))? else {
         return Ok(None);
     };
-    let runs: Vec<&Run> = found
-        .check_runs
-        .iter()
-        .filter(|run| run.app.as_ref().map(|app| &app.slug) == check.app.as_ref())
-        .collect();
+    let sha = found.check_runs.first().map(|run| run.head_sha.as_str());
+    let workflows = workflows(&red.repo, sha.unwrap_or_default(), &found.check_runs)?;
+    let of_app = found.check_runs.iter();
+    let of_app = of_app.filter(|run| run.app() == check.app.as_deref());
+    let runs = newest_runs(of_app, &workflows);
     let passed = found.total_count == found.check_runs.len()
         && runs.iter().all(|run| {
             run.id > check.id
@@ -577,8 +722,7 @@ fn workflow(repo: &str, url: &str, known: &mut Known) -> Result<Option<u64>, Str
         return Ok(Some(*workflow));
     }
     let answer = match gh::<ActionsRun>(&format!("repos/{repo}/actions/runs/{run}"), &[]) {
-        // The token may read checks and not Actions. A rate limit's 403 says something else.
-        Err(error) if error.contains("Resource not accessible") => return Ok(None),
+        Err(error) if refused(&error) => return Ok(None),
         answer => found(answer)?,
     };
     let Some(answer) = answer else {
@@ -622,8 +766,24 @@ const PULL_FIELDS: &str = "fragment pull on PullRequest { number headRefName hea
     reviews(last: 50) { nodes { databaseId state body submittedAt url commit { oid } author { login __typename } authorAssociation } } \
     comments(last: 50) { nodes { databaseId body url createdAt author { login __typename } authorAssociation } } \
     updatedAt commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { totalCount nodes { \
-    __typename ... on CheckRun { databaseId name status conclusion completedAt url checkSuite { app { slug } } } \
+    __typename ... on CheckRun { databaseId name status conclusion completedAt url checkSuite { databaseId app { slug } workflowRun { event workflow { databaseId } } } } \
     } } } } } } }";
+
+/// The answer to `query`, with `fields` beside it. A token that may not read Actions gets it without
+/// the workflows, so that check suites count apart.
+fn graphql<T: serde::de::DeserializeOwned>(query: &str, fields: &[&str]) -> Result<T, String> {
+    let ask = |query: &str| {
+        let query = format!("query={query}");
+        let fields = [fields, &["-f", &query]].concat();
+        gh("graphql", &fields)
+    };
+    match ask(query) {
+        Err(error) if refused(&error) => {
+            ask(&query.replace("workflowRun { event workflow { databaseId } }", ""))
+        }
+        answer => answer,
+    }
+}
 
 /// How many pull requests one GraphQL request reads. Each brings up to 50 reviews, 50 comments and
 /// 100 check runs, so 100 per request made about 20,000 nodes, which GitHub on a busy repository
@@ -641,8 +801,8 @@ fn open_pulls_query() -> String {
 /// The open pull requests of `repo`, `PULLS_PER_REQUEST` per page.
 pub(super) fn open_pulls(repo: &str) -> Result<Vec<Pull>, String> {
     let (owner, name) = repo.split_once('/').unwrap_or_default();
-    let pages: Vec<serde_json::Value> = gh(
-        "graphql",
+    let pages: Vec<serde_json::Value> = graphql(
+        &open_pulls_query(),
         &[
             "--paginate",
             "--slurp",
@@ -650,8 +810,6 @@ pub(super) fn open_pulls(repo: &str) -> Result<Vec<Pull>, String> {
             &format!("owner={owner}"),
             "-f",
             &format!("name={name}"),
-            "-f",
-            &format!("query={}", open_pulls_query()),
         ],
     )?;
     let nodes = pages
@@ -691,15 +849,13 @@ pub(super) fn pull_requests(
     let (owner, name) = repo.split_once('/').unwrap_or_default();
     let mut pulls = BTreeMap::new();
     for query in by_number_queries(numbers) {
-        let answer: serde_json::Value = gh(
-            "graphql",
+        let answer: serde_json::Value = graphql(
+            &query,
             &[
                 "-f",
                 &format!("owner={owner}"),
                 "-f",
                 &format!("name={name}"),
-                "-f",
-                &format!("query={query}"),
             ],
         )?;
         let found = answer["data"]["repository"]

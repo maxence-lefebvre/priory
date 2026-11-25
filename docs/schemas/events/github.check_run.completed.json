@@ -33,7 +33,7 @@
           ]
         },
         "failing": {
-          "description": "Check runs on the same commit completed with a conclusion other than success, neutral or\nskipped, leaving out a cancelled run that `superseded_by` passed.",
+          "description": "Check runs on the same commit completed with a conclusion other than success, neutral or\nskipped, leaving out superseded ones and a cancelled run that `superseded_by` passed.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
@@ -72,8 +72,15 @@
             "null"
           ]
         },
+        "origin": {
+          "description": "What started the run: `workflow:<id>:<event>` for a GitHub Actions workflow, or else\n`suite:<id>`, its check suite. A run with a higher id of the same app, name and origin on the\nsame commit supersedes it. Absent from an older intake's event.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "pending": {
-          "description": "Check runs on the same commit not completed at the poll, counting those past the first 100.",
+          "description": "Check runs on the same commit not completed at the poll, counting those past the first 100\nand leaving out superseded ones.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"

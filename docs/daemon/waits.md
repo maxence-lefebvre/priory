@@ -301,7 +301,8 @@ A wait that fires queues one prompt ahead of the task's other queued prompts: th
 time, task and disk waits, it is `wait <id> fired: <until> passed`, `wait <id> fired: task <id> is <state>` or `wait <id> fired: <N> GB of disk free`. Then a line for each event the task kept while it slept. A wait fires in any active state. An asleep task becomes `ready`, and its next run resumes the session of its step's agent with that prompt. A ready, blocked or held task keeps its state, and its next run gets that prompt. An event that does not satisfy the wait stays kept until the wake.
 
 A check event also carries `failing`: how many of the completed check runs on the head commit had a
-conclusion other than `success`, `neutral` or `skipped` in the same poll.
+conclusion other than `success`, `neutral` or `skipped` in the same poll. Neither count holds a run
+that a newer run of the same check [superseded](../intake/pull-requests.md#superseded-runs).
 
 `priory waits` prints each open wait: id, task, run, kind, what it waits on, such as `50.0 GB free`
 for a disk wait, and when it was stored.
@@ -318,6 +319,9 @@ the agent that made it fixes what the checks find. A task with neither commit is
 A task with no result at all changed nothing, such as a runbook a pull request label started, so it
 is done with no gate.
 
+A later run supersedes a red check at the same commit: one with a higher check run id, and the same
+app, name and `origin` ([pull-requests.md](../intake/pull-requests.md#superseded-runs)).
+
 The daemon judges this wait on every event the inbox kept, ignored or woke a task on about the pull
 request. That includes events the agent already read, such as a check that woke it through a
 subscription, and those an earlier task kept. It judges when it stores the
@@ -330,7 +334,7 @@ wait and at each new event:
 | The newest event is `github.pull_request.closed` without `merged` true              | wakes the agent: `wait <id> fired: <pull request> closed without a merge`, or `closed, and GitHub no longer says whether it merged` when `merged` is null |
 | Else, the newest event names another head and came after the result              | wakes the agent: `wait <id> fired: the head of <pull request> moved to <sha>, away from your result's commit <commit>` |
 | Else, the newest event names another head and came before the result             | the task sleeps on, since a later event tells whether the head is the commit |
-| Else, the newest check at the commit is red, or counts `failing` and a red check at the commit was seen | wakes the agent with that red check: `wait <id> fired: check <name> at <commit> concluded <conclusion> <url>`, or asks a person when the fix failed the same way (see [A fix that fails the same way](#a-fix-that-fails-the-same-way)) |
+| Else, the newest check at the commit is red, or counts `failing` and a red check at the commit was seen, and no later run superseded that red one | wakes the agent with that red check: `wait <id> fired: check <name> at <commit> concluded <conclusion> <url>`, or asks a person when the fix failed the same way (see [A fix that fails the same way](#a-fix-that-fails-the-same-way)) |
 | Else, the newest check at the commit has `pending` 0 and `failing` 0             | marks the task done and starts no run  |
 | Else, no check at the commit, and the newest `github.pull_request.check_runs` snapshot at it has `runs` 0 | marks the task done and starts no run  |
 | Otherwise                                                                           | the task sleeps on                     |
@@ -436,5 +440,8 @@ Known limits:
 - An agent's own checks wait does not fire on `github.pull_request.check_runs`. Only the done gate
   takes it.
 - A check event from an intake older than `failing` cannot mark a task done.
+- A check event from an intake older than `origin` names no workflow, so any later run of the same app
+  and name supersedes it. Its `failing` may count superseded runs. Such a commit neither wakes the agent
+  nor marks the task done, until a later check, a push or the merge.
 - Feedback after the task is done reopens it instead (see
   [routing.md](routing.md#feedback-reopens-a-done-task)).
