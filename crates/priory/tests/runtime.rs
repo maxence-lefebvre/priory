@@ -39431,13 +39431,19 @@ fn a_push_of_a_cancelled_cloud_run_moves_nothing() {
 #[test]
 fn a_slow_worktree_check_delays_a_cloud_start_and_blocks_nothing() {
     let mut setup = cloud("cloud-slow", CLOUD);
-    setup.settings(&format!("command_timeout = \"2s\"\n{CLOUD_ON}"));
+    setup.settings(&format!("command_timeout = \"8s\"\n{CLOUD_ON}"));
     setup.hold("git-hang-status");
     setup.publish(&requested(42));
 
     setup.start();
 
-    let tasks = setup.until("tasks", |rows| rows[0][7].contains("git was too slow"));
+    let tasks = setup.until("tasks", |rows| {
+        with(
+            rows,
+            7,
+            "waits to check its worktree again: git was too slow",
+        ) == 1
+    });
     assert_ne!(tasks[0][4], "blocked");
     setup.release("git-hang-status");
     setup.settings(CLOUD_ON);
