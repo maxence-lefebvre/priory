@@ -41,21 +41,21 @@ A verified release waits in `$PRIORY_HOME/upgrade/`, which only the daemon's use
 which a jail hides, until all of these hold:
 
 - it is outside `[upgrade.not_during]`,
-- priory is not paused,
-- no memory grant is held or waits,
+- priory is not paused, and
 - the daemon runs no command, recipe, sweep script, handler, summary or delivery, and no shared
-  session is being compacted, and
-- no live run is inside a tool call: its transcript holds a result for each call of its last message.
+  session is being compacted.
 
-A run whose transcript cannot be read counts as busy. After a day, the desk says what it waits for.
+A restart would end each of those `interrupted`, which loses its work. A live run, a tool call or
+a memory grant does not hold the upgrade back: the run's agent stays in tmux, and its tool calls,
+hooks and `priory memory` wait for the next daemon. After a day, the desk says what it waits for.
 It never forces its way in.
 
 An edit of a key that only a restart applies, such as `[serve]`, puts the upgrade off until the
 daemon restarted with it: nothing shows yet that a daemon starts with it.
 
-The transcript can lag behind a call by a moment. A tool call the agent makes while the daemon is
-down waits up to 30 seconds, as in an upgrade by hand. A call in flight at the stop is answered first,
-within 20 seconds of it.
+A tool call the agent makes while the daemon is down waits up to 30 seconds, as in an upgrade by
+hand. A call in flight at the stop is answered first, within 20 seconds of it. The tool guard does
+not wait: a guarded command the agent starts in the gap is denied, and the agent sees why.
 
 ## The rehearsal
 
