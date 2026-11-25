@@ -12,4 +12,5 @@ pub mod slice;
 pub mod ticks;
 pub mod transcript;
 pub mod trust;
+pub mod upgrade;
 pub mod worktrees;

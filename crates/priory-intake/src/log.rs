@@ -73,6 +73,7 @@ pub trait Log {
 /// The log the factory's `[log]` table names: herdr-bus's SQLite file on this machine unless it
 /// names Postgres.
 pub fn open(log: &EventLog) -> Result<Box<dyn Log>> {
+    priory_runtime::upgrade::barrier()?;
     match log.backend {
         Backend::HerdrBus => Ok(Box::new(Bus::open_default()?)),
         Backend::Postgres => open_postgres(log),

@@ -1934,6 +1934,7 @@ dependencies = [
  "proptest",
  "regex",
  "rusqlite",
+ "rustls",
  "schemars",
  "serde",
  "serde_json",
@@ -1986,6 +1987,7 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "sha2",
  "toml",
 ]
 

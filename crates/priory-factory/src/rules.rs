@@ -10,6 +10,7 @@ use crate::lanes::{self, Lanes};
 use priory_runtime::servers;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 const ENDS: [&str; 2] = ["done", "stop"];
 
@@ -27,8 +28,52 @@ pub fn validated(dir: &Path) -> Result<Factory, Vec<Problem>> {
     }
 }
 
+/// The gate's default timeout, which `[memory] give_up_after` stays below.
+const GIVE_UP_LIMIT: Duration = Duration::from_secs(60 * 60);
+
+fn check_give_up<T>(
+    loaded: &Loaded<T>,
+    give_up_after: Option<Duration>,
+    problems: &mut Vec<Problem>,
+) {
+    if give_up_after.is_some_and(|after| after >= GIVE_UP_LIMIT) {
+        problems.push(problem(
+            loaded,
+            loaded.lines.field("memory"),
+            "`[memory] give_up_after` is below 1h, the default timeout of a gated command".into(),
+        ));
+    }
+}
+
 pub fn check(factory: &Factory) -> Vec<Problem> {
     let mut problems = Vec::new();
+    // Each machine shows when the others' windows lift, so none may mean its own local zone.
+    for runner in factory
+        .runners
+        .values()
+        .filter(|_| factory.runners.len() > 1)
+    {
+        for filter in &runner.value.filters {
+            let Some(when) = &filter.when else { continue };
+            if when.timezone.is_none() {
+                problems.push(problem(
+                    runner,
+                    runner.lines.field("filters"),
+                    format!(
+                        "filter `{}` has a window with no `timezone`, which a factory of {} runners needs",
+                        filter.matches,
+                        factory.runners.len()
+                    ),
+                ));
+            }
+        }
+    }
+    if let Some(settings) = &factory.settings {
+        check_give_up(settings, settings.value.memory.give_up_after, &mut problems);
+    }
+    for runner in factory.runners.values() {
+        check_give_up(runner, runner.value.memory.give_up_after, &mut problems);
+    }
     let bands = factory.bands();
     if let Some(settings) = &factory.settings {
         let unique: BTreeSet<_> = bands.iter().collect();
@@ -258,6 +303,26 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
             }
             if telemetry.metrics_cap == Some(0) {
                 refuse("`metrics_cap` is 0: it needs to be 1 or more".to_owned());
+            }
+        }
+        if let Some(upgrade) = &settings.value.upgrade {
+            let line = settings.lines.field("upgrade");
+            let mut refuse = |message: &str| {
+                problems.push(problem(settings, line, message.to_owned()));
+            };
+            if settings.value.log.backend == crate::factory::Backend::Postgres {
+                refuse(
+                    "`[upgrade]` needs the herdr-bus log: Priory cannot tell whether a release \
+                     changes a Postgres log's tables, so upgrade these machines by hand",
+                );
+            }
+            if upgrade.units[0] == upgrade.units[1] {
+                refuse(
+                    "`[upgrade] units` names one unit twice: give the daemon's, then the intake's",
+                );
+            }
+            if upgrade.every.is_some_and(|every| every.as_secs() < 600) {
+                refuse("`[upgrade] every` is under 10 minutes: GitHub limits anonymous requests");
             }
         }
         if settings

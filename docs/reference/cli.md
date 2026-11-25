@@ -62,9 +62,9 @@ a group. `PRIORY_METRICS` replaces that list for one process, such as `process,l
 
 ## Asking for work
 
-- `priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... <text>`:
+- `priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... [--label KEY=VALUE]... <text>`:
   asks for a task from one line of text and prints its key. See [cli.md](../intake/cli.md).
-- `priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... [--hold <reason> [CONDITION]...] <text>`:
+- `priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... [--label KEY=VALUE]... [--hold <reason> [CONDITION]...] <text>`:
   asks for a task with a key of your own, and every field as a flag. See
   [cli.md](../intake/cli.md).
 - `priory adopt [DIR] TRIGGER [PR...]`: parks a task on each open pull request of a comment or
@@ -146,6 +146,9 @@ a group. `PRIORY_METRICS` replaces that list for one process, such as `process,l
 - `priory (resume | cancel | release | revive [--step STEP]) [--generation N] [DIR] RUNNER:KEY`,
   `priory say [--generation N] [DIR] RUNNER:KEY TEXT`: sends the action to another runner's task.
   See [runners.md](../daemon/runners.md#acting-on-another-runners-task).
+- `priory cancel [DIR] KEY`: drops the requests of a key that no runner claimed. A key that waits here
+  wins over `RUNNER:KEY`, when a runner is named like the key's first part. See
+  [runners.md](../daemon/runners.md#placing-tasks-with-filters).
 - `priory give [DIR] KEY RUNNER [--force]`: moves a task to another runner, once its runner's lease
   ended or with `--force`. See
   [runners.md](../daemon/runners.md#giving-a-task-to-another-runner).
@@ -241,8 +244,8 @@ See [Columns](#columns).
 
 An agent's settings and its shell call these. A person rarely does.
 
-- `priory mcp --session ID [--debate] [--consult | --investigator]`: the MCP server of one run, on
-  stdio. `--debate` adds the `position` tool, for a debate turn's run. `--consult` adds the
+- `priory mcp --session ID [--debate] [--gives-up] [--consult | --investigator]`: the MCP server of
+  one run, on stdio. `--gives-up` tells the agent what to do when the memory gate gives up. `--debate` adds the `position` tool, for a debate turn's run. `--consult` adds the
   `consult` tool; `--investigator` serves `result`, `memory` and `search` alone. See
   [tools.md](../daemon/tools.md#the-mcp-server).
 - `priory mcp --eval LOG [--describe TOOL TEXT]`: the fake MCP server of `priory eval`. See
@@ -257,6 +260,17 @@ An agent's settings and its shell call these. A person rarely does.
 - `priory hook PreToolUse --outside`: the `PreToolUse` hook of a person's own session. It denies a
   shell call that runs a verb only a person runs, and asks no daemon. See
   [tools.md](../daemon/tools.md#the-outside-hook).
+- `priory upgrade retry VERSION`: forgets that an automatic upgrade to the version was refused or put
+  off, so the daemon tries it again. It exits 1 for a version that is neither. Only a person runs
+  `priory upgrade`.
+- `priory upgrade resume`: the helper of an automatic upgrade, which the daemon starts. It takes the
+  upgrade in progress to its end, and does nothing without one. See
+  [upgrades.md](../daemon/upgrades.md).
+- `priory upgrade probe DIR`: migrates the state and opens the log, on the copies an upgrade's
+  rehearsal makes.
+- `priory upgrade startable DIR [ADDR]`: exits 1 when a daemon could not start in this environment: a
+  token or a webhook secret is unset, or the `[serve]` address is taken. `ADDR` is the address the
+  running daemon holds, which counts as free.
 - `priory gate`: runs the factory's `gate` in the run's worktree and records its exit code for the
   branch's head.
   See [tools.md](../daemon/tools.md#proofs).
@@ -264,8 +278,8 @@ An agent's settings and its shell call these. A person rarely does.
   worktree to the run's result, once it passes the admission checks. It refuses an image or a
   video. See [evidence.md](../daemon/evidence.md#a-cast-the-agent-adds).
 - `priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]`: runs a heavy command once
-  the machine has the memory for it, or prints the grants. See
-  [memory-gate.md](../daemon/memory-gate.md).
+  the machine has the memory for it, or prints the grants. `acquire` exits 75 when its wait passes
+  the factory's `[memory] give_up_after`. See [memory-gate.md](../daemon/memory-gate.md).
 
 ## Columns
 

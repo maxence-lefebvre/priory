@@ -294,6 +294,13 @@
           "description": "The task's key, which Priory prefixes with `cli:` unless it names a GitHub issue or pull\nrequest, `github:owner/name#42`.",
           "type": "string"
         },
+        "labels": {
+          "description": "The task's labels, each `key=value`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "lane": {
           "type": [
             "string",

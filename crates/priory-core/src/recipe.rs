@@ -100,6 +100,12 @@ pub(crate) fn owe(
 #[derive(Default)]
 pub struct Running(Vec<(i64, Script)>);
 
+impl Running {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
 /// Where a task's run stands once its recipes are looked at.
 pub(crate) enum Before {
     /// No recipe is owed: the run starts.

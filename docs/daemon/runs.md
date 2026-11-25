@@ -17,7 +17,7 @@ has blocks the task with `step <id> is not in workflow <name>`. A human step wit
 its ask and the task falls `asleep`, as a move into the step does, so a workflow can start at a human
 step. A held task gets its ask once its hold releases it.
 
-The daemon creates the worktree on a new branch from `origin/HEAD`, and stores that commit as the
+The daemon creates the worktree on a new branch from the head that GitHub gives for the default branch, and stores that commit as the
 task's `base_sha` the first time. A revived task keeps it, so a scorer and a benchmark know where
 the task started. When the repository has recipes, a setup or resume runs first (see Recipes). The
 daemon then records the run and task as `running`, and starts the agent's

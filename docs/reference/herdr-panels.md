@@ -142,9 +142,9 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
   A press on another option moves the arm, and a new revision of the ask drops it. An option that
   runs the ask's command shows the command word by word under it while armed, and its answer adds
   `--run`. A press within 250 ms of the arm does nothing, so a double-click cannot send by
-  accident. "Write an answer…" sends free text at once. Dismiss runs `priory dismiss` at once. A
-  step's ask and a hold's ask take only their options, so they offer neither "Write an answer…",
-  its `w` key, nor Dismiss.
+  accident. "Write an answer…" sends free text at once. Dismiss runs `priory dismiss` at once. Every
+  open ask offers "Write an answer…" and its `w` key. A step's ask and a hold's ask need an
+  answer, so they offer no Dismiss.
 - **Refused answers.** When a verb fails, the panel reads the asks again and says why on the ask:
   the question changed to another revision, someone else answered, the ask was withdrawn, or the
   CLI's error. When the ask has left the view, the reason shows in a strip under the header
