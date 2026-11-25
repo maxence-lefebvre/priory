@@ -75,9 +75,11 @@ An answer or a dismiss may carry a `call`, an id the client makes once per press
 with each resend. The daemon stores it in the transaction that applies the write, and answers a
 resend with the first reply for 7 days, so a lost reply never answers twice.
 
-The daemon applies answers and dismisses between two phases of a tick, between two messages of the
-log and between two task starts, ahead of the other lines on its socket. A single step, such as a
-`git fetch`, is not cut. A runner applies none while it reads the log, since a task may have moved.
+The daemon applies a person's answers, dismisses and desk actions (cancel, hold, release, resume,
+revive and say) between two phases of a tick, between two messages of the log and between two task
+starts, in the order they arrived and ahead of the other lines on its socket. So a cancel sent before
+an answer still applies first. A single step, such as a `git fetch`, is not cut. A runner applies
+none while it reads the log, since a task may have moved.
 
 A cancel may carry the state's revision the client showed, as `priory
 cancel --expected` does: a newer state gets `409`, and nothing is dropped.
@@ -162,6 +164,7 @@ kept a revision from a replaced state file does not hang.
 | Writes handled at once | 8 | Others wait for a worker, with their connection open |
 | Listings computed at once | 2 | The same |
 | Other requests handled at once | 6 | The same |
+| Time a request waits for a worker | 10 seconds | `503` with `Retry-After: 1` |
 | `/api/events` requests held at once | 128 | `503` |
 | Run screens read at once | 2 | `503` |
 | Time for tmux to show a run screen | 2 seconds | `404` |

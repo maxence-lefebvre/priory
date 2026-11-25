@@ -3768,30 +3768,60 @@ fn a_resent_answer_gets_the_first_reply_and_applies_once_also_after_a_restart() 
 }
 
 #[test]
-fn an_answer_is_stored_while_long_polls_and_listing_reads_wait() {
+fn an_answer_is_stored_while_slow_listing_reads_and_long_polls_wait() {
     let mut setup = Setup::new("web-busy", SERVE);
     setup.asleep_on_ask();
+    // Enough asks that each read of all of them is slow, as a long inbox makes it.
+    setup
+        .db()
+        .execute_batch(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1500)
+             INSERT INTO asks (kind, name, question, options, text)
+             SELECT 'outside', 'bulk-' || i, 'q', '[\"yes\"]', printf('%.*c', 2000, 't') FROM n",
+        )
+        .unwrap();
     let address = setup.start(&["daemon", &setup.factory()]);
     let revision = api(&address, "/api/tasks")["revision"].as_i64().unwrap();
-    let held: Vec<_> = (0..40)
-        .map(|at| {
-            let address = address.clone();
-            let path = match at % 4 {
-                0 => format!("/api/asks?all=1&band={at}"),
-                _ => format!("/api/events?since={revision}&timeout=25"),
-            };
-            std::thread::spawn(move || get(&address, &path, Some(TOKEN)).0)
+    let timed = |path: String| {
+        let address = address.clone();
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            let status = get(&address, &path, Some(TOKEN)).0;
+            (status, started.elapsed())
         })
+    };
+    let reads: Vec<_> = (0..16)
+        .map(|_| timed("/api/asks?all=1".to_owned()))
+        .collect();
+    let polls: Vec<_> = (0..16)
+        .map(|_| timed(format!("/api/events?since={revision}&timeout=25")))
         .collect();
     std::thread::sleep(Duration::from_millis(300));
 
+    let started = Instant::now();
     let body = r#"{"option": "left", "revision": 2}"#;
+
     let (status, reply) = post(&address, "/api/asks/1/answer", "", body);
+    let answered = started.elapsed();
 
     assert_eq!(status, 200, "{reply}");
     assert_eq!(setup.ask()["state"], "answered");
-    for request in held {
-        assert!([200, 400].contains(&request.join().unwrap()));
+    let fastest = reads
+        .into_iter()
+        .map(|read| read.join().unwrap())
+        .map(|(status, took)| {
+            assert_eq!(status, 200, "after {took:?}");
+            took
+        })
+        .min()
+        .unwrap();
+    // Behind the reads, the answer would wait for at least one of them.
+    assert!(
+        answered * 2 < fastest,
+        "answered in {answered:?}, the fastest read took {fastest:?}"
+    );
+    for poll in polls {
+        assert_eq!(poll.join().unwrap().0, 200);
     }
 }
 

@@ -34,6 +34,8 @@ pub enum Lane {
     Wait,
 }
 
+/// How long a request waits for a worker of its lane before it gets `503`.
+const QUEUED: Duration = Duration::from_secs(10);
 /// The handlers run at once in each lane; a request read while its lane's are busy waits for one.
 const WRITES: usize = 8;
 const LISTINGS: usize = 2;
@@ -265,10 +267,30 @@ fn answer<W: Fn(&Request) -> Reply>(
                     arrived: request.arrived,
                     reply,
                 };
-                jobs.send(job)
-                    .ok()
-                    .and_then(|()| replied.recv().ok())
-                    .unwrap_or_else(|| Reply::error(500, "the request failed inside Priory"))
+                // A request that finds no worker in time frees its connection for others.
+                let deadline = Instant::now() + QUEUED;
+                let mut job = job;
+                loop {
+                    match jobs.try_send(job) {
+                        Ok(()) => break,
+                        Err(mpsc::TrySendError::Full(back)) if Instant::now() < deadline => {
+                            job = back;
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(mpsc::TrySendError::Full(_)) => {
+                            return Reply::error(
+                                503,
+                                "every worker of this kind is busy: retry in a second",
+                            );
+                        }
+                        Err(mpsc::TrySendError::Disconnected(_)) => {
+                            return Reply::error(500, "the request failed inside Priory");
+                        }
+                    }
+                }
+                replied
+                    .recv()
+                    .unwrap_or_else(|_| Reply::error(500, "the request failed inside Priory"))
             };
             respond(&mut stream, deadline, &read, end, gate, &mut pooled)
         }
