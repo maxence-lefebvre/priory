@@ -1238,7 +1238,8 @@ fn the_upgrade_marks_read_the_alarms_of_merges_whose_only_red_checks_were_cancel
     setup
         .db()
         .execute_batch(
-            "DROP TABLE messages; DROP TABLE pairs; DROP TABLE news; PRAGMA user_version = 115;",
+            "DROP TABLE messages; DROP TABLE pairs; DROP TABLE news; ALTER TABLE tasks DROP COLUMN labels; DROP INDEX inbox_unaccepted;
+             ALTER TABLE inbox DROP COLUMN reason; PRAGMA user_version = 115;",
         )
         .unwrap();
 

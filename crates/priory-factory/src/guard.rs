@@ -150,6 +150,7 @@ pub const PERSON_VERBS: &[&str] = &[
     "eval",
     "bench",
     "label",
+    "upgrade",
 ];
 
 /// Whether `args`, the arguments after `priory`, run a person verb.
@@ -559,7 +560,10 @@ pub fn holds_for_news(tool: &str, command: Option<&str>) -> bool {
     commands(command).iter().any(|words| {
         let pushes = words[0] == "git"
             && positional(words).first() == Some(&"push")
-            && !words.iter().any(|word| word == "--dry-run" || word == "-n");
+            && words
+                .iter()
+                .position(|word| word == "push")
+                .is_some_and(|at| !dry_run(&words[at + 1..]));
         !help(words) && (pushes || starts(words, &["gh", "pr", "create"], &[]))
     })
 }
@@ -1706,6 +1710,8 @@ mod tests {
         assert!(held("git push -u origin priory/7"));
         assert!(held("git -C repo push"));
         assert!(!held("git push --dry-run origin priory/7"));
+        assert!(!held("git push -n origin priory/7"));
+        assert!(held("git push --dry-run --no-dry-run origin priory/7"));
         assert!(!held("gh pr create --help"));
         assert!(!held("gh pr view 7"));
         assert!(!held("git status"));
@@ -2157,6 +2163,8 @@ mod tests {
             "priory give github:o/r#12 b",
             "priory eval prompts/review.md",
             "priory label 7 wrong --evidence https://example.com/pull/9",
+            "priory upgrade resume",
+            "priory upgrade retry 1.4.0",
             "priory memories accept 3",
             "priory memories drop ~/factory 3",
             "priory score --budget 5 --calibrate review",

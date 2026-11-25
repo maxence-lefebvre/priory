@@ -1839,6 +1839,56 @@ fn a_sweep_script_runs_every_10_seconds_at_most_and_every_36500_days_at_least() 
 }
 
 #[test]
+fn a_memory_gate_limit_passes_in_both_files_and_a_bad_one_names_its_line() {
+    let gate = |file: &str, line: &str| match file {
+        "factory.toml" => format!("name = \"demo\"\n\n[memory]\n{line}\n"),
+        _ => format!("platform = {{ os = \"linux\" }}\n\n[memory]\n{line}\n"),
+    };
+    for (file, name) in [
+        ("factory.toml", "factory"),
+        ("runners/laptop.toml", "runner"),
+    ] {
+        let run = |case: &str, line: &str| {
+            let text = gate(file, line);
+            let mut files = valid();
+            files.retain(|(path, _)| *path != file);
+            files.push((file, &text));
+            check(&factory(&format!("give-up-{name}-{case}"), &files))
+        };
+
+        for limit in ["10m", "59m"] {
+            let ok = run("ok", &format!("give_up_after = \"{limit}\""));
+            assert_eq!((ok.code, ok.stderr.as_str()), (0, ""), "{file}");
+        }
+        let long = run("long", "give_up_after = \"1h\"");
+        assert_eq!(
+            (long.code, long.stderr),
+            (
+                1,
+                format!(
+                    "{file}:3: `[memory] give_up_after` is below 1h, the default timeout of a gated command\n"
+                )
+            )
+        );
+        let bad = run("bad", "give_up_after = \"soon\"");
+        assert_eq!(bad.code, 1);
+        assert!(
+            bad.stderr
+                .contains("\"soon\" is not a duration such as 90s, 15m or 2h"),
+            "{}",
+            bad.stderr
+        );
+        let unknown = run("unknown", "give_up = \"10m\"");
+        assert_eq!(unknown.code, 1);
+        assert!(
+            unknown.stderr.contains("unknown field `give_up`"),
+            "{}",
+            unknown.stderr
+        );
+    }
+}
+
+#[test]
 fn repository_recipes_pass_and_a_bad_one_names_its_line() {
     let good = "name = \"demo\"\n\n[repos.\"owner/repo\"]\nsetup = { argv = [\"npm\", \"ci\"], timeout = \"15m\" }\nresume = { shell = \"npm ci --prefer-offline\" }\nteardown = { shell = \"docker compose down\" }\n";
     let ok = check(&factory("recipes-ok", &with("factory.toml", good)));
@@ -4957,4 +5007,95 @@ fn a_sandbox_kind_other_than_bwrap_is_refused_with_its_line() {
         "{}",
         outcome.stderr
     );
+}
+
+#[test]
+fn a_filter_window_names_its_timezone_in_a_factory_of_several_runners() {
+    let runner = format!(
+        "{RUNNER}\n[[filters]]\nmatch = \"!project=oss\"\nwhen = {{ hours = \"08:00-18:00\" }}\n"
+    );
+    let mut files = with("runners/server.toml", RUNNER);
+    files.retain(|(path, _)| *path != "runners/desktop.toml");
+    files.push(("runners/desktop.toml", &runner));
+
+    let several = check(&factory("filter-zone-several", &files));
+    files.retain(|(path, _)| *path != "runners/server.toml");
+    let one = check(&factory("filter-zone-one", &files));
+
+    assert_eq!(
+        (several.code, several.stderr.as_str()),
+        (
+            1,
+            "runners/desktop.toml:2: filter `!project=oss` has a window with no `timezone`, which a factory of 2 runners needs\n"
+        )
+    );
+    assert_eq!(one.code, 0, "{}", one.stderr);
+}
+
+#[test]
+fn trigger_labels_and_runner_filters_pass_and_each_bad_one_names_its_line() {
+    let trigger = format!("{TRIGGER}labels = {{ project = \"oss\" }}\n");
+    let runner = format!(
+        "{RUNNER}\n[[filters]]\nmatch = \"!project=oss\"\n\
+         when = {{ days = [\"mon\", \"fri\"], hours = \"08:00-18:00\", timezone = \"Europe/Paris\" }}\n"
+    );
+    let mut files = with("triggers/agent-label.toml", &trigger);
+    files.retain(|(path, _)| *path != "runners/desktop.toml");
+    files.push(("runners/desktop.toml", &runner));
+    let outcome = check(&factory("filters-valid", &files));
+    assert_eq!(outcome.code, 0, "{}", outcome.stderr);
+
+    let cases = [
+        (
+            "triggers/agent-label.toml",
+            "\"oss\" }",
+            "\"o s\" }",
+            "triggers/agent-label.toml:8:10: label project has value \"o s\": use letters, digits, `_`, `.`, `:`, `/` or `-`\n",
+        ),
+        (
+            "runners/desktop.toml",
+            "\"!project=oss\"",
+            "\"project\"",
+            "runners/desktop.toml:3:9: \"project\" is not a match such as \"project=oss\" or \"!project=oss\"\n",
+        ),
+        (
+            "runners/desktop.toml",
+            "\"08:00-18:00\"",
+            "\"8am-6pm\"",
+            "runners/desktop.toml:4:41: \"8am-6pm\" is not hours such as \"08:00-18:00\"\n",
+        ),
+        (
+            "runners/desktop.toml",
+            "\"fri\"",
+            "\"fry\"",
+            "runners/desktop.toml:4:17: \"fry\" is not a day: use mon, tue, wed, thu, fri, sat or sun\n",
+        ),
+        (
+            "runners/desktop.toml",
+            "[\"mon\", \"fri\"]",
+            "\"mon-fri\"",
+            "runners/desktop.toml:4:17: `days` is not a list such as [\"mon\", \"fri\"]\n",
+        ),
+        (
+            "runners/desktop.toml",
+            "Europe/Paris",
+            "Europe/Atlantis",
+            "runners/desktop.toml:4:67: \"Europe/Atlantis\" is not a time zone such as \"Europe/Paris\"\n",
+        ),
+    ];
+    for (index, (path, from, to, error)) in cases.into_iter().enumerate() {
+        let (trigger, runner) = match path {
+            "triggers/agent-label.toml" => (trigger.replace(from, to), runner.clone()),
+            _ => (trigger.clone(), runner.replace(from, to)),
+        };
+        let mut files = with("triggers/agent-label.toml", &trigger);
+        files.retain(|(path, _)| *path != "runners/desktop.toml");
+        files.push(("runners/desktop.toml", &runner));
+        let outcome = check(&factory(&format!("filters-bad-{index}"), &files));
+        assert_eq!(
+            (outcome.code, outcome.stderr.as_str()),
+            (1, error),
+            "{to:?}"
+        );
+    }
 }

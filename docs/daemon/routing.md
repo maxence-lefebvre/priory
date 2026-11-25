@@ -237,7 +237,9 @@ Each inbox entry gets one of these outcomes:
 | A GitHub comment or review whose `association` is not `OWNER`, `MEMBER` or `COLLABORATOR` | `outsider` | none: it wakes, reopens, claims and reaches no task |
 | A task request whose key no runner holds, with several runners | `claiming` | none until this runner's claim wins (see [runners.md](runners.md)) |
 | A task request whose key another runner holds | `elsewhere` | none                                    |
-| Any task request, on a [view-only machine](runners.md#a-machine-that-only-views) | `elsewhere` | none: it claims nothing |
+| A task request whose key no runner holds and this runner's filters refuse, or on a [view-only machine](runners.md#a-machine-that-only-views) | `unaccepted`, then `elsewhere` once another runner's claim wins | none until a claim wins |
+| An `unaccepted` task request, or a `claiming` one whose claim this runner has not published, that a person, a close or a withdrawal dropped | `dropped` | none |
+| `priory.task.dropped` | `noted`, or `refused` when it drops nothing | none |
 | `priory.task.claimed` that wins its key   | `claimed` | the task this runner creates, when it is the new owner |
 | `priory.task.claimed` that loses          | `refused` | none; this runner's own losing claim drops its copy of the task, `owned by runner <name>` |
 | `priory.task.held` or `priory.runner.alive` | `noted` | none                                         |
@@ -406,8 +408,11 @@ these events, kept by the task itself or through a subscription:
 | `github.pull_request.closed` | `merged` is `false` |
 | `github.issues.closed` | always |
 
-The daemon records the news for the task's live run and writes a marker file, `news`, in the run's
-spool folder, `<home>/spools/<session>/`. The run's [tool guard hook](guard.md#news-before-a-pull-request)
+The daemon records the news for the task's live run and creates a marker file, `news`, in
+`<home>/news/<session>/`. Only the daemon writes that folder, and a sandboxed run reads it, so no
+run can plant a link or a pipe where the daemon writes. A run in a [debate](debates.md) gets no news:
+the step after the debate reads the event. A name from outside, such as the actor or the state, goes
+on one line, without control characters and cut to 100 characters. The run's [tool guard hook](guard.md#news-before-a-pull-request)
 checks for that file on every call, and asks the daemon for the news only when it exists. Each
 piece of news is one line, such as:
 
@@ -419,10 +424,14 @@ The hook adds that line to the next call the agent makes, once. The news stays u
 that opens a pull request, pushes, or ends or sleeps the run: the hook refuses that call once with
 the news as its reason, and only then is the news read. So a push after a few reads is still held.
 The `result`, `ask`, `wait`, `consult` and `hand_over` tools refuse once the same way, for a harness
-whose hook does not reach them. The queued prompt still carries the event after the turn.
+whose hook does not reach them. The agent can so read one event up to three times: on an ordinary call, in
+the refusal, and in the queued prompt that still carries the event after the turn. Two calls the
+agent makes at once can each show it. Priory repeats news rather than lose it.
 
 News counts whoever closed the pull request or issue, so an agent that closes its own gets its next
-push or result held once too.
+push or result held once too. An agent that merges its own pull request hears no close, since a
+merge is no news. But the merge moves the Linear issue to Done, which is, so its next such call is
+held once.
 
 `completed` counts whoever moved the issue: agents move Linear issues with the person's key, so the
 actor cannot tell the agent from the person. An agent that moved its own issue to Done gets one

@@ -1614,12 +1614,10 @@ pub(crate) fn gate_feedback(
     // Only a cancel: a merge moves a Linear issue to Done and closes issues, and ends the task.
     let news = crate::news::line(&message.kind, &message.data)
         .filter(|_| message.data["to_type"] == "canceled");
+    let resource = feedback_on(&message.kind, &message.data)
+        .filter(|_| !FEEDBACK.contains(&message.kind.as_str()));
     // The news itself, or else the resource a comment or reply is on.
-    let Some(about) = news.map(Ok).or_else(|| {
-        feedback_on(&message.kind, &message.data)
-            .filter(|_| !FEEDBACK.contains(&message.kind.as_str()))
-            .map(Err)
-    }) else {
+    let Some(about) = news.map(Ok).or(resource.map(Err)) else {
         return Ok(false);
     };
     let gate: Option<i64> = tx.query_row(
@@ -1633,10 +1631,7 @@ pub(crate) fn gate_feedback(
         return Ok(false);
     };
     let said = match about {
-        Ok(news) => match crate::news::agree(tx, task, seq, &message.data)? {
-            Some(agree) => format!("{news} {agree}"),
-            None => news,
-        },
+        Ok(news) => news,
         Err(resource) => reopened_by(&resource, None, &message.kind, &message.data),
     };
     let mut text = format!("wait {gate} fired: {said}");
@@ -4033,14 +4028,21 @@ pub(crate) fn answer_in_tx(
 ) -> rusqlite::Result<Result<String, String>> {
     let applied = answer_in(tx, answer, trace, head)?;
     if let Err(why) = &applied {
+        let refused: String = answer.text.chars().take(REFUSED_CHARS).collect();
         tx.execute(
             "INSERT INTO ask_refusals (ask, revision, answer, by, why)
              SELECT id, ?2, ?3, ?4, ?5 FROM asks WHERE id = ?1",
-            params![answer.ask, answer.revision, answer.text, answer.by, why],
+            params![answer.ask, answer.revision, refused, answer.by, why],
         )?;
     }
     Ok(applied)
 }
+
+/// The longest answer an ask takes.
+const ANSWER_BYTES: usize = 16 * 1024;
+
+/// How much of a refused answer an ask keeps.
+const REFUSED_CHARS: usize = 200;
 
 /// Applies `answer` in `tx`. A refusal writes nothing, except that a plan that changed since the
 /// ask showed it is shown as the ask's next revision.
@@ -4065,6 +4067,15 @@ fn answer_in(
         Err(error) => return Ok(Err(error)),
     };
     let options: Vec<String> = serde_json::from_str(&options).expect("options are stored as JSON");
+    if answer.text.trim().is_empty() {
+        return Ok(Err(format!("ask {label} takes no blank answer")));
+    }
+    if answer.text.len() > ANSWER_BYTES {
+        return Ok(Err(format!(
+            "ask {label} takes an answer of at most {ANSWER_BYTES} bytes, not {}",
+            answer.text.len()
+        )));
+    }
     if let Some(applied) = crate::gates::answered(tx, answer.ask, &answer.text, &answer.by)? {
         return Ok(applied);
     }
@@ -4085,13 +4096,81 @@ fn answer_in(
         .filter(|_| kind == "agent" || kind == "step")
         .and_then(|command| serde_json::from_str::<command::Command>(command).ok())
         .filter(|command| command.runs.contains(&chosen));
+    let asked = step(workflows, &workflow, &at);
+    if (kind == "step" || hold.is_some())
+        && !options.contains(&chosen)
+        && let Some(meant) = meant(&chosen, &options)
+    {
+        return Ok(Err(format!(
+            "ask {label} takes one of: {}; did you mean {meant}?",
+            options.join(", ")
+        )));
+    }
+    let written = hold.is_some()
+        || (kind == "step"
+            && asked.is_some_and(|asked| asked.decides == Decider::Human)
+            // Going back can rerun an autonomous irreversible step with no person deciding.
+            && !answer.by.starts_with(SESSION));
+    if written
+        && !options.contains(&chosen)
+        && let Some(task) = task
+    {
+        let by = decider(&answer.by);
+        if let Some(hold) = hold {
+            let text = format!("{by} wrote on ask {label}: {}", answer.text);
+            let unstarted: bool = tx.query_row(
+                "SELECT resume = 'queued' FROM holds WHERE id = ?1",
+                [hold],
+                |row| row.get(0),
+            )?;
+            // A first run's prompt and a debate's turn are built at the start: queued text would
+            // precede them.
+            if unstarted || asked.is_some_and(|asked| asked.debate.is_some()) {
+                tx.execute(
+                    "INSERT INTO outbox (task, text, state) VALUES (?1, ?2, 'held')",
+                    params![task, text],
+                )?;
+            } else {
+                queue_first(tx, task, &text)?;
+            }
+            void_approvals(tx, task)?;
+            return Ok(Ok(format!(
+                "ask {label}: the text waits for the task's next run; its hold still takes one of: {}",
+                options.join(", ")
+            )));
+        }
+        let Some(back) = last_model_step(tx, workflows, &workflow, task)? else {
+            return Ok(Err(format!(
+                "ask {label} takes one of: {}; no earlier model step reads a written answer",
+                options.join(", ")
+            )));
+        };
+        if let Some(refused) = plan_changed(tx, answer, &label)? {
+            return Ok(Err(refused));
+        }
+        tx.execute(
+            &format!(
+                "UPDATE asks SET answer = ?2, answered = {NOW}, answered_by = ?3 WHERE id = ?1"
+            ),
+            params![answer.ask, answer.text, answer.by],
+        )?;
+        drop_lead(tx, answer.ask, &format!("ask {label} was answered first"))?;
+        void_approvals(tx, task)?;
+        trace::ended(tx, trace, task, "written", None)?;
+        queue_first(
+            tx,
+            task,
+            &format!("{by} answered step {at} in writing: {}", answer.text),
+        )?;
+        enter(tx, task, &workflow, &back, None, "", trace.factory)?;
+        return Ok(Ok(format!("ask {label} answered: back to step {back}")));
+    }
     if (kind == "step" || hold.is_some()) && !options.contains(&chosen) {
         return Ok(Err(format!(
             "ask {label} takes one of: {}",
             options.join(", ")
         )));
     }
-    let asked = step(workflows, &workflow, &at);
     let target = match (kind == "step", asked) {
         (false, _) => None,
         // A `plan` task's grading step: an approval moves it by its grade.
@@ -4122,8 +4201,9 @@ fn answer_in(
     // question, or the dropped task's reason.
     let reads_note = |target: &str| {
         target == "stop"
-            || step(workflows, &workflow, target)
-                .is_some_and(|next| matches!(next.decides, Decider::Model | Decider::Human))
+            || step(workflows, &workflow, target).is_some_and(|next| {
+                next.debate.is_none() && matches!(next.decides, Decider::Model | Decider::Human)
+            })
     };
     if let (Some(_), Some(target)) = (note, target.as_deref())
         && (runs.is_some() || !reads_note(target))
@@ -4154,18 +4234,8 @@ fn answer_in(
             return Ok(Err(refused));
         }
     }
-    if crate::plan::changed(tx, answer.ask)? {
-        crate::plan::again(tx, answer.ask)?;
-        tx.execute(
-            "UPDATE asks SET revision = revision + 1 WHERE id = ?1",
-            [answer.ask],
-        )?;
-        unroute(tx, answer.ask)?;
-        return Ok(Err(format!(
-            "the plan of ask {label} changed since revision {}: read revision {} and answer again",
-            answer.revision,
-            answer.revision + 1
-        )));
+    if let Some(refused) = plan_changed(tx, answer, &label)? {
+        return Ok(Err(refused));
     }
     tx.execute(
         &format!("UPDATE asks SET answer = ?2, answered = {NOW}, answered_by = ?3 WHERE id = ?1"),
@@ -4290,6 +4360,105 @@ fn answer_in(
         }
     }
     Ok(Ok(format!("ask {label} answered")))
+}
+
+/// Why `answer` is refused when the plan its ask showed changed: the ask then shows the plan as its
+/// next revision.
+fn plan_changed(
+    tx: &Transaction,
+    answer: &Answer,
+    label: &str,
+) -> rusqlite::Result<Option<String>> {
+    if !crate::plan::changed(tx, answer.ask)? {
+        return Ok(None);
+    }
+    crate::plan::again(tx, answer.ask)?;
+    tx.execute(
+        "UPDATE asks SET revision = revision + 1 WHERE id = ?1",
+        [answer.ask],
+    )?;
+    unroute(tx, answer.ask)?;
+    Ok(Some(format!(
+        "the plan of ask {label} changed since revision {}: read revision {} and answer again",
+        answer.revision,
+        answer.revision + 1
+    )))
+}
+
+/// The option that `text`, or its part before a colon, misspells: it differs from the option only
+/// by case and whitespace, or is a lone word a letter or two away from one of 5 letters or more.
+fn meant<'a>(text: &str, options: &'a [String]) -> Option<&'a String> {
+    let squeeze = |text: &str| -> Vec<char> {
+        text.chars()
+            .filter(|char| !char.is_whitespace())
+            .flat_map(char::to_lowercase)
+            .collect()
+    };
+    let head = text.split(':').next().unwrap_or_default();
+    options
+        .iter()
+        .flat_map(|option| [text, head].map(|typed| (typed.trim(), option)))
+        .map(|(typed, option)| {
+            let known = squeeze(option);
+            let lone = !typed.contains(char::is_whitespace);
+            let most = if lone && known.len() >= 5 { 2 } else { 0 };
+            (distance(&squeeze(typed), &known), most, option)
+        })
+        .filter(|(far, most, _)| far <= most)
+        .min_by_key(|(far, ..)| *far)
+        .map(|(.., option)| option)
+}
+
+/// The Levenshtein distance between `left` and `right`.
+fn distance(left: &[char], right: &[char]) -> usize {
+    let mut row: Vec<usize> = (0..=right.len()).collect();
+    for (at, a) in left.iter().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = at + 1;
+        for (to, b) in right.iter().enumerate() {
+            let cost = diagonal + usize::from(a != b);
+            diagonal = row[to + 1];
+            row[to + 1] = cost.min(diagonal + 1).min(row[to] + 1);
+        }
+    }
+    row[right.len()]
+}
+
+/// Voids the approvals of `task`'s current generation, so each irreversible step asks again.
+fn void_approvals(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
+    tx.execute(
+        "UPDATE approvals SET commit_sha = NULL WHERE task = ?1
+           AND generation IS (SELECT generation FROM tasks WHERE id = ?1)",
+        [task],
+    )
+    .map(drop)
+}
+
+/// The model step of `workflow`, neither irreversible nor a debate, that `task` ran last in its
+/// current generation, which reads a written answer to a human step.
+fn last_model_step(
+    tx: &Transaction,
+    workflows: &Workflows,
+    workflow: &str,
+    task: i64,
+) -> rusqlite::Result<Option<String>> {
+    let ran = tx
+        .prepare(
+            "SELECT step FROM runs WHERE task = ?1
+               AND id > (SELECT coalesce(max(task_ends.run), 0) FROM task_ends
+                 JOIN tasks ON tasks.id = task_ends.task
+                 WHERE tasks.id = ?1 AND task_ends.generation < tasks.generation)
+             ORDER BY id DESC",
+        )?
+        .query_map([task], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(ran.into_iter().find(|ran| {
+        step(workflows, workflow, ran).is_some_and(|ran| {
+            ran.decides == Decider::Model
+                && ran.effect != Effect::Irreversible
+                && ran.debate.is_none()
+        })
+    }))
 }
 
 /// Where answer `answer` to the ask of step `at` leads.
@@ -5482,13 +5651,12 @@ pub(crate) fn approved(
     if current && commit.as_deref() == Some(head) {
         return Ok(true);
     }
-    let moved = if current {
-        format!(
-            "\nasked again: the branch moved from {} to {head} since this was answered",
-            commit.as_deref().unwrap_or("-"),
-        )
-    } else {
-        "\nasked again: this was answered in an earlier generation of the task, or before Priory kept generations".to_owned()
+    let moved = match commit {
+        _ if !current => "\nasked again: this was answered in an earlier generation of the task, or before Priory kept generations".to_owned(),
+        Some(commit) => format!(
+            "\nasked again: the branch moved from {commit} to {head} since this was answered"
+        ),
+        None => "\nasked again: a person wrote an answer since this was answered, or the branch had no commit then".to_owned(),
     };
     let unplanned = crate::plan::missing(&tx, ask)?;
     tx.execute(
@@ -5637,20 +5805,31 @@ fn unqueue(tx: &Transaction, task: i64, prompt: &str) -> rusqlite::Result<()> {
     let Some((id, text)) = queued else {
         return Ok(());
     };
-    match text.strip_prefix(prompt) {
-        Some("") => {
-            tx.execute("UPDATE inbox SET outbox = NULL WHERE outbox = ?1", [id])?;
-            tx.execute("DELETE FROM outbox WHERE id = ?1", [id])?;
-        }
-        Some(rest) if rest.starts_with('\n') => {
-            tx.execute(
-                "UPDATE outbox SET text = ?2 WHERE id = ?1",
-                params![id, &rest[1..]],
-            )?;
-        }
-        _ => {}
+    // Text written on a hold's ask may precede the prompt.
+    let Some((before, after)) = text
+        .match_indices(prompt)
+        .map(|(at, _)| (&text[..at], &text[at + prompt.len()..]))
+        .find(|(before, after)| {
+            (before.is_empty() || before.ends_with('\n'))
+                && (after.is_empty() || after.starts_with('\n'))
+        })
+    else {
+        return Ok(());
+    };
+    let kept = match after.strip_prefix('\n') {
+        Some(after) => format!("{before}{after}"),
+        None => before.trim_end_matches('\n').to_owned(),
+    };
+    if kept.is_empty() {
+        tx.execute("UPDATE inbox SET outbox = NULL WHERE outbox = ?1", [id])?;
+        tx.execute("DELETE FROM outbox WHERE id = ?1", [id])?;
+        return Ok(());
     }
-    Ok(())
+    tx.execute(
+        "UPDATE outbox SET text = ?2 WHERE id = ?1",
+        params![id, kept],
+    )
+    .map(drop)
 }
 
 /// What an action did: its status, a key of the step's `next`, and what it opened or why it failed.

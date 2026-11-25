@@ -35,7 +35,7 @@ Each type has a JSON Schema in [`docs/schemas/events/`](../schemas/events/), nam
 - Runners: [`priory.task.claimed`](#priorytaskclaimed), [`priory.task.held`](#priorytaskheld),
   [`priory.runner.alive`](#prioryrunneralive), [`priory.ask.answered`](#prioryaskanswered),
   [`priory.ask.dismissed`](#prioryaskdismissed), [`priory.ask.posted`](#prioryaskposted),
-  [`priory.ask.applied`](#prioryaskapplied)
+  [`priory.ask.applied`](#prioryaskapplied), [`priory.task.dropped`](#priorytaskdropped)
 - Memories: [`priory.memory.written`](#priorymemorywritten),
   [`priory.memory.accepted`](#priorymemoryaccepted), [`priory.memory.dropped`](#priorymemorydropped)
 
@@ -1388,6 +1388,7 @@ Schema: [`factory.task.requested.json`](../schemas/events/factory.task.requested
 | `relates` | array, optional | `priory request` or `priory add --relates`: each `{ "kind", "task" }`, the relation's kind and the other task's id. See [relations.md](../daemon/relations.md) |
 | `intervention` | `plan` or `hands-off`, optional | `priory request` or `priory add --intervention`; the task takes its trigger's when absent |
 | `session` | string, optional | The outside session that added the task through [`priory mcp --outside`](../daemon/tools.md#the-outside-server): its hc terminal, then a space and its Claude session id, or `outside` without an hc terminal. The task keeps it as `added_by` |
+| `labels` | object, optional | The trigger's `labels`, or `priory request` or `priory add --label`: each key and value a string. [Runner filters](runners.md#filters) match them |
 | `auto_answer` | `high` or `medium`, optional | `priory request` or `priory add --auto-answer`; the task takes its trigger's when absent. See [triggers.md](triggers.md#auto_answer) |
 | `batch` | object, optional | `priory batch add`: `issues`, the batch's issues as task keys, and `entries`, the workflow of each entry's task. The task it creates plans that batch. See [batches.md](../daemon/batches.md) |
 | `scheduled` | RFC 3339, optional | When the firing was due. Schedule sources only |
@@ -1807,6 +1808,30 @@ A runner applied or refused an action that another machine sent to one of its ta
     "submission": "0196f1c5-3d4e-7f60-8b1c-2d3e4f5a6b7c",
     "outcome": "applied"
   },
+  "links": []
+}
+```
+
+### `priory.task.dropped`
+
+A person dropped the requests of a key that no runner claimed, with `priory cancel [DIR] KEY`. Every
+machine drops the ones it holds as `unaccepted`, or as `claiming` with a claim it has not published,
+and refuses the message when it holds none. A claim on the log still wins. See [runners.md](../daemon/runners.md#placing-tasks-with-filters). Subject: the key.
+Schema: [`priory.task.dropped.json`](../schemas/events/priory.task.dropped.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `key` | string | The key |
+| `by` | string | `cli` |
+
+<!-- example: events/priory.task.dropped.json -->
+```json
+{
+  "id": "0196f1c5-4e5f-7a61-9c2d-3e4f5a6b7c8d",
+  "type": "priory.task.dropped",
+  "subject": "github:acme/widgets#42",
+  "time": "2026-11-24T10:22:00Z",
+  "data": { "key": "github:acme/widgets#42", "by": "cli" },
   "links": []
 }
 ```

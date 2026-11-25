@@ -62,6 +62,7 @@ trusted and a path the sweep reads in `/proc` then mean the same file on both si
 | for a run that starts under direnv ([sessions.md](sessions.md#with-trust_worktrees)): the run's `direnv/<session>/` folder in Priory home, the person's `direnvrc` and `lib` it links to, and the `direnv` program as the harness's | read-only |
 | the daemon's socket folder | read-write |
 | `spools/<session>/` in Priory home, the run's own spool | read-write |
+| `news/<session>/` in Priory home, where the daemon marks news for the run's hook | read-only |
 | the sandbox's `read` and `write` paths | as declared, skipped when missing |
 
 A write anywhere else lands in the jail's own folders in memory, and is gone when the run ends.
@@ -75,6 +76,8 @@ Claude Code runs the hooks, plugins, MCP servers and scripts that its settings a
 `~/.claude.json` name. Its shell sources the scripts in `session-env` and `shell-snapshots`, so a
 run writes its own in memory. The daemon's git also runs with `core.hooksPath=/dev/null` and
 `core.fsmonitor=false` in the clones under `repos/` and their worktrees, jailed or not.
+Outside a jail an agent can write the clone's `config`, and its `core.sshCommand`, filters and
+credential helpers can then run commands as the daemon.
 
 The pane's command is the [agents slice's](agents-slice.md) scope, then `bwrap` with these binds
 and `--die-with-parent`, `--new-session` and `--unshare-pid`, then a shell that clears the

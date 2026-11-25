@@ -143,6 +143,12 @@ pub fn spool_dir(home: &Path, session: &str) -> PathBuf {
     home.join("spools").join(session)
 }
 
+/// The folder that holds the marker of `session`'s news. Only the daemon writes it: a jail binds it
+/// read-only.
+pub fn news_dir(home: &Path, session: &str) -> PathBuf {
+    home.join("news").join(session)
+}
+
 impl Jail {
     /// The command that starts `launch`'s harness in the jail: `bwrap`, its binds and a shell that
     /// clears every variable the run does not keep, before the harness's own command. `files` are
@@ -213,8 +219,8 @@ impl Jail {
         }
         if let Some(folder) = launch.direnv {
             binds.add(folder, Mode::Read, true);
-            // Its direnvrc and lib lead to the person's, which the jail empties with their home.
-            for name in ["direnvrc", "lib"] {
+            // Its links lead to the person's, which the jail empties with their home.
+            for name in [crate::trust::PERSONS_DIRENVRC, "lib"] {
                 if let Ok(target) = std::fs::canonicalize(folder.join(name)) {
                     binds.add(&target, Mode::Read, true);
                 }
@@ -248,9 +254,15 @@ impl Jail {
             Mode::Write,
             true,
         );
+        // A file in it becomes the daemon's binary.
+        crate::upgrade::private(&home)?;
+        binds.add(&crate::upgrade::dir(&home), Mode::Empty, true);
         let spool = spool_dir(&home, launch.session);
         std::fs::create_dir_all(&spool).map_err(|error| format!("{}: {error}", spool.display()))?;
         binds.add(&spool, Mode::Write, true);
+        let news = news_dir(&home, launch.session);
+        std::fs::create_dir_all(&news).map_err(|error| format!("{}: {error}", news.display()))?;
+        binds.add(&news, Mode::Read, true);
         for (paths, mode) in [(&self.read, Mode::Read), (&self.write, Mode::Write)] {
             for path in paths.iter().filter_map(|path| expand(path, user)) {
                 binds.add(&path, mode, false);
