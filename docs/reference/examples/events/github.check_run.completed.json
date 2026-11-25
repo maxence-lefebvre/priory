@@ -13,6 +13,7 @@
     "name": "test (ubuntu)",
     "conclusion": "success",
     "app": "github-actions",
+    "origin": "workflow:161335:pull_request",
     "pending": 1,
     "failing": 0,
     "time": "2026-11-17T16:12:37Z",
