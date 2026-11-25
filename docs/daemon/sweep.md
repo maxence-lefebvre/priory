@@ -110,7 +110,8 @@ Until the entry and the branch are gone, or the folder is back, a start that add
 clone back waits with `waits to fetch <owner>/<name>: the sweep removes a worktree of it`. Its
 `git worktree prune` would drop the entry of the moved folder. So a `git worktree remove` that hangs
 holds those starts for `command_timeout`. A prune that a person runs in the clone in that time drops the
-entry too. Then the folder moves to `PRIORY_HOME/trash/` with its files.
+entry too. Then the folder moves to `PRIORY_HOME/trash/` with its files, or stays
+beside the worktrees on another filesystem.
 
 A branch whose delete runs past 30 seconds goes at a later sweep, one per sweep, unless its task woke. A daemon that
 restarts forgets it, and the branch stays.
@@ -121,7 +122,8 @@ repository changes, so a worktree that cannot go is not walked at every sweep.
 A thread that runs for over 10 minutes is logged once. After a delete that slow, the sweep goes on with
 the next worktree, and later sweeps start. After a check or a walk by the first thread that slow, the
 daemon starts one reclaim, and a repair that waits for a sweep goes on. No new sweep, reclaim or retirement starts until that thread ends. So a walk
-of it that never ends, such as on a hung network disk, stops all three until a restart, also on a full disk. A
+of it that never ends, such as on a hung network disk, stops all three until a restart, also on a full disk. So
+does the walk of a retirement. A
 thread cannot be cancelled, and a time limit would keep a large worktree for good.
 
 While the thread fetches a clone, a start that needs a fetch of it waits with

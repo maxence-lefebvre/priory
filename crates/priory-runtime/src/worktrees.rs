@@ -884,7 +884,7 @@ pub fn detach(
             Ok(()) => {
                 let _ = fs::set_permissions(&path, taken.before.clone());
                 match lost_entry(&path) {
-                    true => trashed(home, &path, reason),
+                    true => trashed(home, &path, &taken.aside, reason),
                     false => reason,
                 }
             }
@@ -905,14 +905,17 @@ fn lost_entry(path: &Path) -> bool {
     entry.is_some_and(|entry| fs::symlink_metadata(entry).is_err())
 }
 
-/// Moves `path` to the trash, since a run's start deletes a worktree without its entry. Returns
-/// `reason` and where it is.
-fn trashed(home: &Path, path: &Path, reason: String) -> String {
+/// Moves `path` to the trash, or to `aside` on another filesystem, since a run's start deletes a
+/// worktree without its entry. Returns `reason` and where it is.
+fn trashed(home: &Path, path: &Path, aside: &Path, reason: String) -> String {
     match move_aside(home, path) {
         Ok(()) => {
             format!("{reason}; its entry in the clone is gone, so it moved to the trash folder")
         }
-        Err(error) => format!("{reason}; {error}"),
+        Err(error) => match fs::rename(path, aside) {
+            Ok(()) => format!("{reason}; {error}; it stays in {}", aside.display()),
+            Err(_) => format!("{reason}; {error}"),
+        },
     }
 }
 
@@ -1756,11 +1759,27 @@ mod tests {
             let refused = detach(&home.0, &mut taken, None, true).unwrap_err();
 
             assert!(refused.contains("moved to the trash folder"), "{refused}");
+            assert!(!found.path.exists());
             let trash = fs::read_dir(home.0.join("trash")).unwrap().next().unwrap();
             assert!(trash.unwrap().path().join("new").exists());
             drop(taken);
             crate::runtime::worktree(&home.0, "o/n", "1", None, false).unwrap();
         }
+    }
+
+    #[test]
+    fn a_pruned_worktree_the_trash_cannot_take_stays_out_of_a_starts_way() {
+        let (home, found) = Home::new("no-trash");
+        fs::write(found.path.join("new"), "x").unwrap();
+        // A rename into another filesystem fails as this does.
+        fs::write(home.0.join("trash"), "").unwrap();
+        let mut taken = take(&home.0, &found).unwrap();
+        let clone = home.0.join("repos/o/n");
+        sh(&clone, &["worktree", "prune"]);
+
+        detach(&home.0, &mut taken, None, true).unwrap_err();
+
+        assert!(!found.path.exists() && taken.aside.join("new").exists());
     }
 
     #[test]
