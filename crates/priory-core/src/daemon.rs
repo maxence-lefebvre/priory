@@ -129,6 +129,9 @@ fn view(factory: &Factory) -> Result<(), Error> {
     let mut live = Live::new(factory, watch, trace.revision.clone(), server);
     let mut link = Link::default();
     loop {
+        if runtime::stopping() {
+            return listening.stop(|line| seen(&db, line));
+        }
         live.poll(&mut db, &trace, false)?;
         let trace = live.trace(&trace);
         let mut behind = false;
@@ -140,20 +143,24 @@ fn view(factory: &Factory) -> Result<(), Error> {
         }
         let wait = if behind { Duration::ZERO } else { EVERY };
         match listening.lines.recv_timeout(wait) {
-            Ok(line) => {
-                let reply = match serde_json::from_str::<Input>(&line.text) {
-                    // Since you looked is this machine's own.
-                    Ok(Input::Seen(line)) => state::seen(&db, &line.seen.person, line.seen.at)
-                        .map_err(|error| error.to_string()),
-                    _ => Err(VIEW_ONLY.to_owned()),
-                };
-                let reply = serde_json::to_string(&reply).expect("a result serializes");
-                let _ = line.applied.send(reply);
-            }
+            Ok(line) => seen(&db, line)?,
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
         }
     }
+}
+
+/// Answers a line on a view-only machine, where since you looked is its own and the rest is refused.
+fn seen(db: &Connection, line: Line) -> Result<(), Error> {
+    let reply = match serde_json::from_str::<Input>(&line.text) {
+        Ok(Input::Seen(line)) => {
+            state::seen(db, &line.seen.person, line.seen.at).map_err(|error| error.to_string())
+        }
+        _ => Err(VIEW_ONLY.to_owned()),
+    };
+    let reply = serde_json::to_string(&reply).expect("a result serializes");
+    let _ = line.applied.send(reply);
+    Ok(())
 }
 
 /// Reads the messages past the view's cursor into its mirrors, as `drain_some` does, and returns
@@ -424,6 +431,13 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     // Passes that hold work are one tick for the watchdog, which the first other pass ends.
     let mut holding = false;
     loop {
+        if runtime::stopping() {
+            let trace = live.trace(&trace);
+            return listening.stop(|line| {
+                let counter = counting.get(&home);
+                apply(&mut db, line, &trace, counter, kit.current(), &searching)
+            });
+        }
         let tick = Instant::now();
         if !std::mem::take(&mut holding) {
             ticks::begin();
@@ -1156,6 +1170,17 @@ fn version(_: &VersionLine) -> Result<String, String> {
     Ok(env!("CARGO_PKG_VERSION").to_owned())
 }
 
+/// Answers a line while the upgrade holds the daemon, with its version alone.
+fn held_back(line: Line) -> Result<(), String> {
+    let reply = match serde_json::from_str::<Input>(&line.text) {
+        Ok(Input::Version(line)) => version(&line),
+        _ => Err(upgrade::IN_PROGRESS.to_owned()),
+    };
+    let reply = serde_json::to_string(&reply).map_err(|error| error.to_string())?;
+    let _ = line.applied.send(reply);
+    Ok(())
+}
+
 /// Waits until a migration's upgrade is committed. The daemon then answers its version alone, so a
 /// rollback to the backups loses nothing.
 fn hold(factory: &Factory, home: &Path, lock: runtime::Lock) -> Result<runtime::Listening, Error> {
@@ -1164,15 +1189,12 @@ fn hold(factory: &Factory, home: &Path, lock: runtime::Lock) -> Result<runtime::
         drop(std::net::TcpListener::bind(config.listen)?);
     }
     while upgrade::uncommitted(home) {
+        if runtime::stopping() {
+            listening.stop(|line| held_back(line).map_err(Error::from))?;
+            return Err("the daemon stopped".into());
+        }
         match listening.lines.recv_timeout(EVERY) {
-            Ok(line) => {
-                let reply = match serde_json::from_str::<Input>(&line.text) {
-                    Ok(Input::Version(line)) => version(&line),
-                    _ => Err(upgrade::IN_PROGRESS.to_owned()),
-                };
-                let reply = serde_json::to_string(&reply).expect("a result serializes");
-                let _ = line.applied.send(reply);
-            }
+            Ok(line) => held_back(line)?,
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
         }

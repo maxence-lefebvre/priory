@@ -19513,6 +19513,57 @@ fn a_tool_call_made_while_the_daemon_restarts_succeeds_once_it_is_back() {
     assert!(!error, "{text}\ndaemon: {log}");
 }
 
+/// Sends `signal` to the process `pid`.
+fn send_signal(pid: u32, signal: &str) {
+    let sent = harness::command("kill")
+        .args([&format!("-{signal}"), &pid.to_string()])
+        .status();
+    assert!(sent.unwrap().success());
+}
+
+#[test]
+fn a_tool_call_in_flight_when_the_daemon_stops_is_answered() {
+    use std::os::unix::process::ExitStatusExt;
+    let mut setup = Setup::new("stop-in-flight");
+    setup.calls(&[]);
+    setup.publish(&requested(42));
+    setup.start();
+    let session = live_session(&setup, "1");
+    let mut kept = Kept::new(&setup, &session);
+    let mut daemon = setup.daemon.take().unwrap();
+    send_signal(daemon.id(), "STOP");
+    let call = std::thread::spawn(move || kept.call("tldr", json!({ "text": "At the stop." })));
+    std::thread::sleep(Duration::from_secs(1));
+    send_signal(daemon.id(), "TERM");
+    send_signal(daemon.id(), "CONT");
+
+    let (text, error) = call.join().unwrap();
+
+    assert!(!error, "{text}");
+    // systemd and an upgrade's helper read this as a stop, not as a failure.
+    assert_eq!(daemon.wait().unwrap().signal(), Some(15));
+}
+
+#[test]
+fn a_verb_run_while_the_daemon_restarts_waits_for_it() {
+    let mut setup = Setup::new("verb-restart");
+    setup.calls(&[]);
+    setup.publish(&requested(42));
+    setup.start();
+    live_session(&setup, "1");
+    setup.crash();
+    let mut say = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args(["say", "1", "Through the restart."])
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(say.try_wait().unwrap().is_none());
+    setup.start();
+
+    assert!(say.wait().unwrap().success());
+}
+
 #[test]
 fn a_tool_call_is_answered_while_a_search_waits_on_its_embedder() {
     let mut setup = Setup::new("mcp-slow-search");

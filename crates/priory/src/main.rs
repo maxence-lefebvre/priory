@@ -2923,8 +2923,6 @@ fn acquire(args: &[OsString], lease: bool) -> ExitCode {
                 },
                 runtime::call_through_restart,
             ),
-            // Until a daemon took the request, none may be coming back: fail at once.
-            None if !sent => call(&acquire, runtime::call),
             None => call(&acquire, runtime::call_through_restart),
         };
         sent |= !matches!(&asked, Err(error) if error.starts_with(runtime::NO_DAEMON));
@@ -3183,7 +3181,7 @@ fn project_gate() -> ExitCode {
     };
     let call = |line: &proof::Line| {
         let line = serde_json::to_string(line).expect("a gate line serializes");
-        runtime::call(&runtime::home(), &line, runtime::REPLY).and_then(|reply| {
+        runtime::call_through_restart(&runtime::home(), &line, runtime::REPLY).and_then(|reply| {
             serde_json::from_str::<Result<String, String>>(&reply)
                 .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
         })
@@ -3339,8 +3337,8 @@ fn evidence_add(file: &str, caption: &str) -> ExitCode {
         Err(error) => return exit("evidence add", Err(format!("{file}: {error}"))),
     };
     let line = json!({ "evidence": evidence::Add { session, file, caption: caption.to_owned() } });
-    let sent =
-        runtime::call(&runtime::home(), &line.to_string(), runtime::REPLY).and_then(|reply| {
+    let sent = runtime::call_through_restart(&runtime::home(), &line.to_string(), runtime::REPLY)
+        .and_then(|reply| {
             serde_json::from_str::<Result<String, String>>(&reply)
                 .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
         });
@@ -4317,10 +4315,11 @@ fn drop_waiting(factory: &factory::Factory, key: &str) -> Result<String, String>
 
 /// Sends `line` to the daemon and prints its reply.
 fn send(verb: &str, line: &str) -> ExitCode {
-    let reply = runtime::call(&runtime::home(), line, runtime::REPLY).and_then(|reply| {
-        serde_json::from_str::<Result<String, String>>(&reply)
-            .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
-    });
+    let reply =
+        runtime::call_through_restart(&runtime::home(), line, runtime::REPLY).and_then(|reply| {
+            serde_json::from_str::<Result<String, String>>(&reply)
+                .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
+        });
     match reply {
         Ok(text) => {
             println!("{text}");

@@ -356,11 +356,13 @@ const GONE: Duration = Duration::from_secs(30);
 /// How long past its time to get ready a helper may still stop the services.
 const LATE: u64 = 10;
 
-/// Waits while the helper works, until it stops this process, puts the upgrade off or ran out of
+/// Waits while the helper works, until it tells this process to stop, puts the upgrade off or ran out of
 /// time to stop anything. A helper that is gone for good before it changed anything is given up.
 pub fn wait(home: &Path) -> Result<(), String> {
     let mut gone = None;
-    while let Some(journal) = read(home)? {
+    while !crate::runtime::stopping()
+        && let Some(journal) = read(home)?
+    {
         let late = journal.ready_by.is_some_and(|by| now() > by + LATE);
         match lock(home, Duration::ZERO)? {
             None if late && journal.running.is_none() => return Ok(()),
