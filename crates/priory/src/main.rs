@@ -5101,10 +5101,7 @@ fn hook(event: &str) -> ExitCode {
             // Best effort: a lookup that fails or hangs adds nothing and never holds the call.
             let (sender, receiver) = std::sync::mpsc::channel();
             std::thread::spawn(move || sender.send(scoped_context(&input)));
-            receiver
-                .recv_timeout(within(SCOPED_DEADLINE, by))
-                .ok()
-                .flatten()
+            receiver.recv_timeout(SCOPED_DEADLINE).ok().flatten()
         });
         let news = news.map(|news| {
             format!("Priory news for this task, which may end its work. {}\n{news}\nDecide with it before you open a pull request, push or end the step.", priory_core::news::DATA)
