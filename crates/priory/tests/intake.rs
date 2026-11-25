@@ -445,6 +445,11 @@ impl Setup {
         answers: &[(&str, serde_json::Value)],
     ) {
         self.answer(answers);
+        self.count(path, failures, stderr);
+    }
+
+    /// Does what `fail_first` does to the fake `gh` that already answers.
+    fn count(&self, path: &str, failures: u32, stderr: &str) {
         let gh = self.dir.join("bin/gh");
         let answering = fs::read_to_string(&gh).unwrap();
         let count = self.dir.join(format!("calls-{}", path.replace('/', "-")));
@@ -1631,6 +1636,398 @@ fn a_bot_review_starts_a_task_only_when_the_commenter_filter_names_the_bot() {
         .unwrap();
     assert_eq!(bot.message.data["bot"], true);
     assert_eq!(bot.message.data["triggers"], json!(["bot-reviews"]));
+}
+
+/// A COMMENTED review by `max`, the login `gh` runs as, written when `review_comment` is.
+fn own_review(id: u64, body: &str) -> serde_json::Value {
+    json!({
+        "databaseId": id,
+        "state": "COMMENTED",
+        "body": body,
+        "submittedAt": "2026-11-17T12:10:00Z",
+        "url": format!("https://github.com/owner/repo/pull/43#pullrequestreview-{id}"),
+        "commit": { "oid": "abc123" },
+        "author": { "login": "max", "__typename": "User" },
+        "authorAssociation": "OWNER"
+    })
+}
+
+/// A thread reply by `max`, with the agent comment marker when `marked`.
+fn own_reply(id: u64, marked: bool) -> serde_json::Value {
+    let mut reply = review_comment(id, Some(801), "max", "User");
+    if marked {
+        reply["body"] = json!("Fixed in abc123.\n\n<!-- agent-comment -->");
+    }
+    reply
+}
+
+/// Pull request 43 by `max` with `reviews`, the newest thread comments `delivered`, and what GitHub
+/// answers for the comments of each review in `threads`.
+fn answer_reviews(
+    setup: &Setup,
+    reviews: serde_json::Value,
+    delivered: serde_json::Value,
+    threads: &[(u64, serde_json::Value)],
+) {
+    let mut mine = pull(43, false, reviews, json!([]));
+    mine["author"] = json!({ "login": "max" });
+    let paths: Vec<String> = threads
+        .iter()
+        .map(|(id, _)| format!("repos/owner/repo/pulls/43/reviews/{id}/comments?per_page=100"))
+        .collect();
+    let mut answers = vec![
+        ("user", json!({ "login": "max" })),
+        (OPEN_PULLS, open_pulls(&[mine])),
+        (REVIEW_COMMENTS, delivered),
+    ];
+    let threads = threads.iter().map(|(_, thread)| thread.clone());
+    answers.extend(paths.iter().map(String::as_str).zip(threads));
+    setup.answer(&answers);
+}
+
+/// A trigger on the reviews `max` submits.
+fn own_review_setup(name: &str) -> Setup {
+    let setup = Setup::baseline(name);
+    pr_trigger(
+        &setup,
+        "my-reviews",
+        "on = \"pull_request_review.submitted\"\nfilter = { author = \"max\", commenter = \"max\" }\n",
+    );
+    setup
+}
+
+/// Each published review's id, and whether it is an agent's, oldest first.
+fn review_agents(setup: &Setup) -> Vec<(u64, serde_json::Value)> {
+    setup
+        .published()
+        .iter()
+        .map(|stored| &stored.message)
+        .filter(|message| message.kind == "github.pull_request_review.submitted")
+        .map(|message| {
+            let id = message.data["github_id"].as_u64().unwrap();
+            (id, message.data["agent"].clone())
+        })
+        .collect()
+}
+
+#[test]
+fn an_empty_review_counts_as_its_thread_comments_and_an_agents_starts_no_task() {
+    let setup = own_review_setup("pr-wrapper-review");
+    answer_reviews(
+        &setup,
+        json!([
+            own_review(501, ""),
+            own_review(502, ""),
+            own_review(503, ""),
+            own_review(504, "One thing."),
+            own_review(505, ""),
+        ]),
+        json!([]),
+        &[
+            (501, json!([own_reply(811, true), own_reply(812, true)])),
+            (502, json!([own_reply(821, false)])),
+            (503, json!([own_reply(831, true), own_reply(832, false)])),
+            // A body makes the review the person's, whatever its comments hold.
+            (504, json!([own_reply(841, true)])),
+        ],
+    );
+
+    succeeded(&setup.intake());
+    succeeded(&setup.intake());
+
+    assert_eq!(
+        review_agents(&setup),
+        [
+            (501, json!(true)),
+            (502, json!(false)),
+            (503, json!(false)),
+            (504, json!(false)),
+            (505, json!(false)),
+        ]
+    );
+    let request = || ("my-reviews".to_owned(), "github:owner/repo#43".to_owned());
+    assert_eq!(
+        requests(&setup),
+        [request(), request(), request(), request()]
+    );
+}
+
+#[test]
+fn an_agents_empty_review_is_dropped_once_its_comments_are_delivered_and_a_persons_is_kept() {
+    let setup = own_review_setup("pr-wrapper-delivered");
+    let marked = own_reply(811, true);
+    let unmarked = own_reply(821, false);
+    answer_reviews(
+        &setup,
+        json!([own_review(5001, ""), own_review(5002, "")]),
+        json!([unmarked, marked]),
+        &[(5001, json!([marked])), (5002, json!([unmarked]))],
+    );
+
+    succeeded(&setup.intake());
+    succeeded(&setup.intake());
+
+    assert_eq!(review_agents(&setup), [(5002, json!(false))]);
+    assert_eq!(requests(&setup).len(), 1);
+}
+
+#[test]
+fn an_empty_review_whose_comments_cannot_be_read_waits_for_the_next_poll() {
+    let setup = own_review_setup("pr-wrapper-unread");
+    let reviews = json!([own_review(501, "")]);
+    answer_reviews(&setup, reviews.clone(), json!([]), &[(501, json!({}))]);
+    assert!(!setup.intake().status.success());
+    assert_eq!(review_agents(&setup), []);
+    answer_reviews(
+        &setup,
+        reviews,
+        json!([]),
+        &[(501, json!([own_reply(811, true)]))],
+    );
+
+    succeeded(&setup.intake());
+
+    assert_eq!(review_agents(&setup), [(501, json!(true))]);
+    assert!(requests(&setup).is_empty());
+}
+
+/// The path of every lookup of pull request 43's review comments.
+const LOOKUPS: &str = "repos/owner/repo/pulls/43/reviews/";
+
+#[test]
+fn a_first_poll_that_cannot_read_a_review_stays_a_baseline() {
+    let setup = Setup::new("pr-wrapper-baseline", &[]);
+    pr_trigger(
+        &setup,
+        "my-reviews",
+        "on = \"pull_request_review.submitted\"\nfilter = { author = \"max\", commenter = \"max\" }\n",
+    );
+    let marked = || {
+        let markers = setup.output();
+        markers.iter().any(|stored| {
+            stored.message.kind == "factory.intake.baseline"
+                && stored.message.data["stream"] == "github.pull_request_review.submitted"
+        })
+    };
+    let reviews = json!([own_review(501, "")]);
+    answer_reviews(&setup, reviews.clone(), json!([]), &[(501, json!({}))]);
+    assert!(!setup.intake().status.success());
+    assert!(!marked());
+    answer_reviews(
+        &setup,
+        reviews,
+        json!([]),
+        &[(501, json!([own_reply(821, false)]))],
+    );
+
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    assert_eq!(review_agents(&setup), [(501, json!(false))]);
+    assert_eq!(published[0].message.data["baseline"], true);
+    assert_eq!(requests(&setup), []);
+    assert!(marked());
+}
+
+#[test]
+fn a_restart_looks_up_no_review_on_the_output_and_requests_the_task_a_crash_left_out() {
+    let setup = own_review_setup("pr-wrapper-restart");
+    answer_reviews(
+        &setup,
+        json!([own_review(501, ""), own_review(502, "")]),
+        json!([]),
+        &[
+            (501, json!([own_reply(811, true)])),
+            (502, json!([own_reply(821, false)])),
+        ],
+    );
+    succeeded(&setup.intake());
+    let request = [("my-reviews".to_owned(), "github:owner/repo#43".to_owned())];
+    assert_eq!(requests(&setup), request);
+    let bus = rusqlite::Connection::open(setup.dir.join("bus.db")).unwrap();
+    // Older than the 7 days one poll reads back, so only the start's own read finds them.
+    bus.execute("UPDATE messages SET published = '2026-01-01T00:00:00Z'", [])
+        .unwrap();
+    bus.execute(
+        "DELETE FROM messages WHERE type = 'factory.task.requested'",
+        [],
+    )
+    .unwrap();
+    drop(bus);
+    setup.count(LOOKUPS, 0, "");
+
+    succeeded(&setup.intake());
+
+    assert_eq!(setup.calls(LOOKUPS), 0);
+    assert_eq!(requests(&setup), request);
+}
+
+#[test]
+fn one_poll_looks_up_at_most_20_reviews() {
+    let setup = own_review_setup("pr-wrapper-bound");
+    let reviews: Vec<_> = (501..526).map(|id| own_review(id, "")).collect();
+    let threads: Vec<_> = (501..526)
+        .map(|id| (id, json!([own_reply(id + 1000, true)])))
+        .collect();
+    answer_reviews(&setup, json!(reviews), json!([]), &threads);
+    setup.count(LOOKUPS, 0, "");
+
+    succeeded(&setup.intake());
+    assert_eq!(setup.calls(LOOKUPS), 20);
+    assert_eq!(review_agents(&setup).len(), 20);
+    let banner = setup.desk()["intake"].to_string();
+    assert!(
+        banner.contains(": over 20 reviews wait for a lookup of their comments"),
+        "{banner}"
+    );
+
+    succeeded(&setup.intake());
+    assert_eq!(setup.calls(LOOKUPS), 25);
+    assert_eq!(review_agents(&setup).len(), 25);
+    assert_eq!(setup.desk()["intake"], serde_json::Value::Null);
+}
+
+/// Empty reviews 5001 to 5025 whose only comments are marked and delivered, with their threads.
+fn answer_repeats(setup: &Setup, newer: Option<(u64, serde_json::Value)>) {
+    let repeats = 5001..5026;
+    let comment = |id: u64| own_reply(id - 4000, true);
+    let delivered: Vec<_> = repeats.clone().map(comment).collect();
+    let mut threads: Vec<_> = repeats.map(|id| (id, json!([comment(id)]))).collect();
+    threads.extend(newer);
+    let reviews: Vec<_> = threads.iter().map(|(id, _)| own_review(*id, "")).collect();
+    answer_reviews(setup, json!(reviews), json!(delivered), &threads);
+    setup.count(LOOKUPS, 0, "");
+}
+
+#[test]
+fn a_newer_review_is_published_while_more_dropped_ones_than_one_poll_looks_up_are_read_again() {
+    let setup = own_review_setup("pr-wrapper-newest");
+    answer_repeats(&setup, Some((5026, json!([own_reply(2026, false)]))));
+
+    succeeded(&setup.intake());
+    assert_eq!(review_agents(&setup), [(5026, json!(false))]);
+    succeeded(&setup.intake());
+
+    assert_eq!(setup.calls(LOOKUPS), 40);
+    assert_eq!(review_agents(&setup), [(5026, json!(false))]);
+    assert_eq!(requests(&setup).len(), 1);
+}
+
+#[test]
+fn a_first_poll_of_more_repeats_than_it_looks_up_ends_its_baseline_on_the_next_one() {
+    let setup = Setup::new("pr-wrapper-baseline-repeats", &[]);
+    pr_trigger(
+        &setup,
+        "my-reviews",
+        "on = \"pull_request_review.submitted\"\nfilter = { author = \"max\", commenter = \"max\" }\n",
+    );
+    answer_repeats(&setup, None);
+
+    succeeded(&setup.intake());
+    assert_eq!(setup.calls(LOOKUPS), 20);
+    let published = review_agents(&setup);
+    assert_eq!(published.len(), 20);
+    assert!(published.iter().all(|(_, agent)| *agent == true));
+    succeeded(&setup.intake());
+
+    assert_eq!(setup.calls(LOOKUPS), 25);
+    // With nothing unread, the last 5 are dropped as repeats.
+    assert_eq!(review_agents(&setup), published);
+    let marked = setup.output().iter().any(|stored| {
+        stored.message.kind == "factory.intake.baseline"
+            && stored.message.data["stream"] == "github.pull_request_review.submitted"
+    });
+    assert!(marked);
+    assert_eq!(requests(&setup), []);
+}
+
+#[test]
+fn a_rate_limit_or_a_timeout_ends_the_lookups_of_a_poll() {
+    for (name, failing) in [
+        (
+            "limit",
+            "echo 'gh: API rate limit exceeded for user ID 1. (HTTP 403)' >&2; exit 1",
+        ),
+        ("timeout", "exec sleep 60"),
+    ] {
+        let setup = own_review_setup(&format!("pr-wrapper-{name}"));
+        write(
+            &setup.dir.join("factory/factory.toml"),
+            "name = \"demo\"\ncommand_timeout = \"5s\"\n",
+        );
+        answer_reviews(
+            &setup,
+            json!([
+                own_review(501, ""),
+                own_review(502, ""),
+                own_review(503, "One thing.")
+            ]),
+            json!([]),
+            &[],
+        );
+        let gh = setup.dir.join("bin/gh");
+        let script = fs::read_to_string(&gh).unwrap().replacen(
+            "#!/bin/sh\n",
+            &format!("#!/bin/sh\ncase \"$*\" in \"api {LOOKUPS}\"*) {failing} ;; esac\n"),
+            1,
+        );
+        Setup::fake_gh(&setup.dir, &script);
+        setup.count(LOOKUPS, 0, "");
+
+        assert!(!setup.intake().status.success());
+
+        assert_eq!(setup.calls(LOOKUPS), 1, "{name}");
+        assert_eq!(review_agents(&setup), [(503, json!(false))], "{name}");
+    }
+}
+
+#[test]
+fn an_empty_list_of_comments_is_unread_while_its_review_is_under_a_minute_old() {
+    let setup = own_review_setup("pr-wrapper-young");
+    answer_reviews(
+        &setup,
+        json!([own_review(501, "")]),
+        json!([]),
+        &[(501, json!([]))],
+    );
+
+    succeeded(&setup.intake_at("2026-11-17T12:10:59Z"));
+    assert_eq!(review_agents(&setup), []);
+
+    succeeded(&setup.intake_at("2026-11-17T12:11:00Z"));
+    assert_eq!(review_agents(&setup), [(501, json!(false))]);
+}
+
+#[test]
+fn an_empty_verdict_and_another_logins_review_are_not_judged_by_their_comments() {
+    let setup = own_review_setup("pr-wrapper-others");
+    let mut approved = own_review(501, "");
+    approved["state"] = json!("APPROVED");
+    let mut rejected = own_review(502, "");
+    rejected["state"] = json!("CHANGES_REQUESTED");
+    let mut other = own_review(503, "");
+    other["author"]["login"] = json!("ana");
+    let marked = |id| (id, json!([own_reply(id + 1000, true)]));
+    answer_reviews(
+        &setup,
+        json!([approved, rejected, other]),
+        json!([]),
+        &[marked(501), marked(502), marked(503)],
+    );
+    setup.count(LOOKUPS, 0, "");
+
+    succeeded(&setup.intake());
+
+    assert_eq!(setup.calls(LOOKUPS), 0);
+    assert_eq!(
+        review_agents(&setup),
+        [
+            (501, json!(false)),
+            (502, json!(false)),
+            (503, json!(false)),
+        ]
+    );
+    assert_eq!(requests(&setup).len(), 2);
 }
 
 /// An RFC 3339 time `seconds` ago.

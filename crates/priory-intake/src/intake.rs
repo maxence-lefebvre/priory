@@ -16,6 +16,7 @@ pub mod schedule;
 mod sentry;
 mod shortcut;
 mod slack;
+mod threads;
 mod webhook;
 
 pub use cloudwatch::CloudwatchWebhook;
@@ -28,7 +29,7 @@ pub use sentry::SentryWebhook;
 pub use webhook::Github;
 
 use serde_json::json;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::Duration;
 
 pub const OUTPUT: &str = "factory.intake";
@@ -204,6 +205,9 @@ type Stream = (String, &'static str);
 /// Where polling stopped, per stream: the highest issue event id for labeled events, the highest
 /// issue number for opened issues. A stream without one is still in its baseline.
 type Cursors = BTreeMap<Stream, u64>;
+
+/// What a start reads back from the output: see `newest`.
+type ReadBack = (BTreeMap<Stream, Message>, Cursors, HashMap<Uuid, Message>);
 
 /// The `factory.intake` declaration, shared with `priory request`, which publishes on it too.
 pub fn output() -> Output {
@@ -411,7 +415,8 @@ pub fn run(
         .copied()
         .chain(waiting.iter().filter_map(pull_request_repo))
         .collect();
-    let (newest, mut cursors) = newest(bus, &resumed).map_err(|error| error.to_string())?;
+    let (newest, mut cursors, stored) = newest(bus, &resumed).map_err(|error| error.to_string())?;
+    let mut threads = threads::Threads::new(stored);
     for (stream, source) in newest {
         // A crash may have stopped between this source and its task requests.
         if source.data["baseline"] != true {
@@ -474,8 +479,18 @@ pub fn run(
         let (found, errors) = fetch(&polled, &cursors, &merges, &mut unchecked);
         // A publish error ends the intake: its restart recovers the source it left behind.
         let hooked = factory.github_webhook().is_some().then_some(&repos);
-        publish_all(bus, &triggers, found, &mut cursors, &mut published, hooked)?;
-        failed.entry("github").or_default().extend(errors);
+        let unread = publish_all(
+            bus,
+            &triggers,
+            found,
+            &mut cursors,
+            &mut published,
+            &mut threads,
+            hooked,
+        )?;
+        let github = failed.entry("github").or_default();
+        github.extend(errors);
+        github.extend(unread);
         // A commit still read may turn another check red, which posts no second report.
         let settled = |red: &Red| {
             merges_read
@@ -525,8 +540,16 @@ pub fn run(
             .into_iter()
             .filter(|(source, on)| *on || failed.contains_key(source))
             .map(|(source, _)| {
-                let errors = failed.get(source).filter(|errors| !errors.is_empty());
-                (source, errors.map(|errors| errors.join("; ")))
+                // A backlog shows in the health but fails no poll, so `--once` still succeeds.
+                let backlog = (source == "github").then(|| threads.backlog()).flatten();
+                let errors: Vec<String> = failed
+                    .get(source)
+                    .into_iter()
+                    .flatten()
+                    .cloned()
+                    .chain(backlog)
+                    .collect();
+                (source, (!errors.is_empty()).then(|| errors.join("; ")))
             })
             .collect();
         for (source, errors) in &failed {
@@ -578,13 +601,11 @@ pub fn now() -> Result<Timestamp, String> {
     }
 }
 
-/// The newest source event per stream, and the baseline position of each stream that finished
-/// its baseline, read back newest first.
-fn newest(
-    bus: &dyn Log,
-    repos: &BTreeSet<&str>,
-) -> log::Result<(BTreeMap<Stream, Message>, Cursors)> {
+/// The newest source event per stream, the baseline position of each stream that finished its
+/// baseline, and the reviews that stand for their threads by id, read back newest first.
+fn newest(bus: &dyn Log, repos: &BTreeSet<&str>) -> log::Result<ReadBack> {
     let wanted = repos.len() * STREAMS.len();
+    let mut reviews = HashMap::new();
     let mut newest = BTreeMap::new();
     let mut baselines = Cursors::new();
     let mut before = None;
@@ -598,6 +619,9 @@ fn newest(
         before = Some(oldest.seq);
         for stored in &page {
             let data = &stored.message.data;
+            if threads::wraps(&stored.message.kind, data) {
+                reviews.insert(stored.message.id, stored.message.clone());
+            }
             // Polling owns its streams' positions; a delivery can arrive out of order.
             if data.get("delivery").is_some() {
                 continue;
@@ -625,7 +649,7 @@ fn newest(
             }
         }
     }
-    Ok((newest, baselines))
+    Ok((newest, baselines, reviews))
 }
 
 /// The stream a message type belongs to: issue events, the issues list, reviews or checks.
@@ -683,8 +707,12 @@ fn publish_all(
     polled: Vec<Polled>,
     cursors: &mut Cursors,
     published: &mut HashSet<Uuid>,
+    threads: &mut threads::Threads,
     hooked: Option<&BTreeSet<&str>>,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
+    let events = || polled.iter().flat_map(|polled| &polled.events);
+    let viewer = viewer(events().map(|event| event.kind));
+    let failed = threads.read(bus, events(), published, viewer)?;
     // Taken at the first event a webhook may also report, and held so none publishes meanwhile.
     let mut delivered: Option<(std::fs::File, Vec<Message>)> = None;
     for Polled {
@@ -693,10 +721,32 @@ fn publish_all(
         top,
     } in polled
     {
+        let unread = events.iter().any(|event| threads.unread(&id(&event.name)));
         for event in events {
-            let source = event.message(triggers, gh::viewer)?;
+            let id = id(&event.name);
+            if threads.unread(&id) {
+                continue;
+            }
+            if let Some(stored) = threads.stored(&id) {
+                if published.insert(id) {
+                    if stored.data.get("delivery").is_some() {
+                        counted("github", "poll", "duplicate");
+                    }
+                    // A crash may have stopped between the review and its task requests.
+                    dispatch(bus, triggers, stored)?;
+                }
+                continue;
+            }
+            let thread = threads.thread(&id);
+            let source = event.message(triggers, viewer, thread)?;
             // Reviews and checks are read again on every poll; herdr-bus would drop them too.
             if !published.insert(source.id) {
+                continue;
+            }
+            let said = |comment: &Uuid| published.contains(comment) || threads.said(comment);
+            // `--once` forgets a drop, so an unfinished baseline publishes repeats to make progress.
+            let kept = event.baseline && unread;
+            if !kept && event.repeats(&source, thread, said) {
                 continue;
             }
             if CHANGES.contains(&source.kind.as_str()) {
@@ -720,11 +770,15 @@ fn publish_all(
         let cursor = cursors.get(&stream).copied();
         let top = top.max(cursor).unwrap_or_default();
         if cursor.is_none() {
+            // Its next poll is still a baseline, so the unread event starts no task then.
+            if unread {
+                continue;
+            }
             publish(bus, &baseline(&stream, top))?;
         }
         cursors.insert(stream, top);
     }
-    Ok(())
+    Ok(failed)
 }
 
 /// The types whose webhook id cannot be the poll's, since the payload lacks GitHub's issue event
@@ -757,9 +811,14 @@ fn reported(bus: &dyn Log, message: &Message) -> Result<bool, String> {
     Ok(recent(bus)?.iter().any(|other| same_change(other, message)))
 }
 
-/// The source events of `CHANGES` types on the output, newest first, back 7 days and at most
-/// `LOOKBACK_MESSAGES` messages.
+/// The source events of `CHANGES` types on the output, as `lately` finds them.
 fn recent(bus: &dyn Log) -> Result<Vec<Message>, String> {
+    lately(bus, |message| CHANGES.contains(&message.kind.as_str()))
+}
+
+/// The messages on the output that `wanted` takes, newest first, back 7 days and at most
+/// `LOOKBACK_MESSAGES` messages.
+fn lately(bus: &dyn Log, wanted: impl Fn(&Message) -> bool) -> Result<Vec<Message>, String> {
     let since = Timestamp::now().as_second() - LOOKBACK_SECONDS;
     let mut found = Vec::new();
     let mut before = None;
@@ -778,7 +837,7 @@ fn recent(bus: &dyn Log) -> Result<Vec<Message>, String> {
             page.into_iter()
                 .filter(|stored| stored.published.as_second() >= since)
                 .map(|stored| stored.message)
-                .filter(|message| CHANGES.contains(&message.kind.as_str())),
+                .filter(|message| wanted(message)),
         );
         if old {
             break;
@@ -892,24 +951,33 @@ pub fn request_for(name: &str, trigger: &Trigger, source: &Message) -> Message {
 
 /// Marks a GitHub comment or review `own` when `viewer`, the login a worker's `gh` posts as, wrote
 /// it, and `agent` when it is also marked `AGENT_COMMENT`: the person shares that login, so their
-/// unmarked comment is theirs. Unmarked while `gh` cannot say who it is.
-fn mark_own(message: &mut Message, viewer: Viewer) {
-    let feedback = [COMMENTED, THREAD_COMMENTED, REVIEWED, ISSUE_COMMENTED];
-    if !feedback.contains(&message.kind.as_str()) {
+/// unmarked comment is theirs. A review that stands for its `thread` is marked when every comment
+/// there is. Unmarked while `gh` cannot say who it is.
+fn mark_own(message: &mut Message, viewer: Option<&str>, thread: &[serde_json::Value]) {
+    if !FEEDBACK.contains(&message.kind.as_str()) {
         return;
     }
-    if let Some(viewer) = viewer() {
+    if let Some(viewer) = viewer {
         let own = message.data["actor"] == viewer;
-        let marked = message.data["body"]
-            .as_str()
-            .is_some_and(|body| body.contains(priory_runtime::runtime::AGENT_COMMENT));
+        let marked = |said: &serde_json::Value| {
+            said["body"]
+                .as_str()
+                .is_some_and(|body| body.contains(priory_runtime::runtime::AGENT_COMMENT))
+        };
+        let marked = marked(&message.data) || (!thread.is_empty() && thread.iter().all(marked));
         message.data["own"] = json!(own);
         message.data["agent"] = json!(own && marked);
     }
 }
 
-/// Who `gh` runs as: `gh::viewer`, or none where a test must not run `gh`.
-type Viewer = fn() -> Option<&'static str>;
+/// The types `mark_own` marks.
+const FEEDBACK: [&str; 4] = [COMMENTED, THREAD_COMMENTED, REVIEWED, ISSUE_COMMENTED];
+
+/// The login `gh` runs as, asked only when one of `kinds` is feedback.
+fn viewer(mut kinds: impl Iterator<Item = &'static str>) -> Option<&'static str> {
+    let feedback = kinds.any(|kind| FEEDBACK.contains(&kind));
+    feedback.then(gh::viewer).flatten()
+}
 
 fn publish(bus: &dyn Log, message: &Message) -> Result<(), String> {
     bus.publish(OUTPUT, message)
@@ -932,7 +1000,13 @@ struct Observed {
 }
 
 impl Observed {
-    fn message(&self, triggers: &[(&str, &Trigger)], viewer: Viewer) -> Result<Message, String> {
+    /// `thread` holds the comments a review stands for, as `Observed::read_thread` reads them.
+    fn message(
+        &self,
+        triggers: &[(&str, &Trigger)],
+        viewer: Option<&str>,
+        thread: &[serde_json::Value],
+    ) -> Result<Message, String> {
         let raw = self.data["time"].as_str().unwrap_or_default();
         let time: Timestamp = raw
             .parse()
@@ -950,7 +1024,7 @@ impl Observed {
             .subject(format!("{}#{}", self.repo, self.number))
             .time(time)
             .link(link, &url);
-        mark_own(&mut message, viewer);
+        mark_own(&mut message, viewer, thread);
         // An agent's comment must not start a task, or its task could restart itself.
         let agent = message.data["agent"] == true;
         message.data["triggers"] = json!(self.matching(triggers, agent));

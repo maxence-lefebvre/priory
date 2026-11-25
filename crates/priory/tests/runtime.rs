@@ -10576,6 +10576,37 @@ fn a_persons_comment_written_during_the_agents_last_turn_fires_the_checks_gate()
 }
 
 #[test]
+fn an_agents_review_written_during_its_last_turn_does_not_fire_the_checks_gate() {
+    let mut setup = Setup::new("gate-agent-review-during-turn");
+    setup.calls(&[
+        wait(on_pull_7("review")),
+        passed_at("abc0000000000000000000000000000000000000"),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.hold("hold-stop");
+    setup.publish(&reviewed());
+    setup.until("runs", |rows| rows.len() == 2);
+    std::thread::sleep(Duration::from_millis(1100));
+    setup.release("hold-stop");
+    setup.until("waits", |rows| rows.iter().any(|row| row[3] == "checks"));
+    setup.until("tasks", |rows| rows[0][4] == "asleep");
+    let during: herdr_bus::Timestamp = setup.rows("runs")[1][5].parse().unwrap();
+    let reply = on_pull(
+        "github.pull_request_review.submitted",
+        json!({ "state": "commented", "actor": "max", "body": "", "github_id": 301, "own": true, "agent": true }),
+    )
+    .time(during);
+
+    setup.publish(&reply);
+    setup.publish(&check(1, 0));
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    assert_eq!(setup.rows("runs").len(), 2);
+}
+
+#[test]
 fn a_result_commit_in_capitals_matches_the_same_head_in_lower_case() {
     let setup = gated_at("gate-capitals", "ABC0000000000000000000000000000000000000");
 

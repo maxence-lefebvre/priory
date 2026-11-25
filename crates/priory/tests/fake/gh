@@ -31,6 +31,9 @@ case "$1 $2" in
     echo "https://github.com/owner/repo/pull/$3#issuecomment-1" ;;
   "api repos/{owner}/{repo}")
     if [ -e "$FAKE_DIR/repo" ]; then cat "$FAKE_DIR/repo"; else echo 'none of the git remotes configured for this repository point to a known GitHub host' >&2; exit 1; fi ;;
+  "api repos/"*"/reviews/"*"/comments?per_page=100")
+    if [ -e "$FAKE_DIR/review-comments-fail" ]; then echo 'gh: HTTP 404' >&2; exit 1; fi
+    if [ -e "$FAKE_DIR/review-comments" ]; then cat "$FAKE_DIR/review-comments"; else echo '[]'; fi ;;
   "api repos/"*"/rules/branches/"*)
     if [ -e "$FAKE_DIR/rules" ]; then cat "$FAKE_DIR/rules"; else echo '[]'; fi ;;
   "api repos/"*"/branches/"*)

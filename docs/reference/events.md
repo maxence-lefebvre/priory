@@ -371,7 +371,7 @@ The pull request fields, and:
 | `github_id` | integer | GitHub's review id |
 | `association` | string, optional | GitHub's `author_association`, such as `OWNER`, `COLLABORATOR` or `NONE`. Feedback from anyone but `OWNER`, `MEMBER` or `COLLABORATOR` reaches no task (see [routing.md](../daemon/routing.md#outcomes)) |
 | `own` | boolean, optional | Whether the login `gh api user` names wrote it; absent while `gh` cannot say. `false` wakes a task even when written during its agent's turn (see [Subscriptions](../daemon/tools.md#subscriptions)) |
-| `agent` | boolean, optional | Whether an agent wrote it: `own`, and its body holds `<!-- agent-comment -->`; absent while `gh` cannot say. `true` starts no task, and `false` wakes a task even when written during its agent's turn (see [routing.md](../daemon/routing.md#an-agents-own-comments)) |
+| `agent` | boolean, optional | Whether an agent wrote it: `own`, and its body holds `<!-- agent-comment -->`, or its body is empty and every thread comment it wraps holds that; absent while `gh` cannot say. `true` starts no task, and `false` wakes a task even when written during its agent's turn (see [routing.md](../daemon/routing.md#an-agents-own-comments)) |
 
 <!-- example: events/github.pull_request_review.submitted.json -->
 ```json

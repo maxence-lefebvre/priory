@@ -222,6 +222,9 @@ A tick that polls no Linear or Slack source records only `github`.
 - When a source the triggers need cannot start, such as Linear without `LINEAR_API_KEY`, the
   intake records the failure the same way, but posts its report at once, then exits, and systemd
   restarts it.
+- When a `github` poll has more reviews to look up than
+  [one poll reads](../intake/github-polling.md#calls-and-cost), it counts as failing here until a poll
+  looks them all up.
 - `priory desk` prints one banner per failing source, joined by `; `.
 - When no source polled in the last 5 minutes, the banner is instead `the intake has not polled
   since <time>: waits on GitHub, Linear and Slack cannot fire`. A factory whose intake never ran

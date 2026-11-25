@@ -168,7 +168,8 @@ since no later wake would carry it.
 A GitHub comment or review whose `own` or `agent` is `false` is exempt: the intake knows no agent
 wrote it, so it wakes the task and fires the gate whenever it was written. `own` compares the
 author with the login that `gh api user` names, which a worker's `gh` posts as too. `agent` is
-`true` only when the comment is also `own` and its body holds `<!-- agent-comment -->` (see
+`true` only when the comment is also `own` and its body holds `<!-- agent-comment -->`, or it is a
+review with an empty body whose thread comments all hold it (see
 [An agent's own comments](routing.md#an-agents-own-comments)). So the person's unmarked comment is
 exempt even when agents post with the person's own account. The poll and the webhook each ask `gh`
 once per process, and both fields are absent when that ask failed, until the process restarts.
