@@ -4,6 +4,8 @@
 # holds an `.envrc`: after a fetch into a clone, and after a `worktree add` of priory/1, the ref that
 # the daemon could read next points to a commit with it, as another task's agent can arrange.
 # FAKE_DIR/git-ls-remotes gets a line per ls-remote, which FAKE_DIR/git-unreachable makes fail.
+# FAKE_DIR/git-crash holds a subcommand, with hash-object's kind, such as `hash-object -t tree` or
+# `ls-files`, that git crashes on when it checks an `.envrc`, or `fetch` for every fetch.
 case " $* " in
   *" status "*) echo "$*" >> "$FAKE_DIR/git-statuses" ;;
   *" fetch "*) echo fetch >> "$FAKE_DIR/git-fetches"; if [ -e "$FAKE_DIR/git-hang" ]; then (trap '' TERM; sleep 60) & sleep 60; fi ;;
@@ -11,6 +13,17 @@ case " $* " in
     echo ls-remote >> "$FAKE_DIR/git-ls-remotes"
     if [ -e "$FAKE_DIR/git-unreachable" ]; then echo 'fatal: unreachable' >&2; exit 128; fi ;;
 esac
+if [ -e "$FAKE_DIR/git-crash" ]; then
+  read -r crash < "$FAKE_DIR/git-crash" || true
+  case " $* " in
+    *" hash-object --literally -t "*" --stdin "*) ran="hash-object -t ${*: -2:1}" ;;
+    *" ls-files --error-unmatch -- .envrc "*) ran=ls-files ;;
+    *" cat-file commit "*) ran="cat-file commit" ;;
+    *" fetch "*) ran=fetch ;;
+    *) ran= ;;
+  esac
+  [ "$ran" != "$crash" ] || kill -SEGV $$
+fi
 PATH=${PATH#*:}
 [ -e "$FAKE_DIR/git-hostile" ] || exec git "$@"
 git "$@"

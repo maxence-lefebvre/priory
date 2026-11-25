@@ -1,13 +1,15 @@
 //! The folder trust Priory records for its own worktrees and clones, when the factory turns on
 //! `trust_worktrees`, so no run stops on its harness's trust dialog (docs/daemon/sessions.md).
 
-use crate::runtime::{Harness, clone_of, fed, fed_raw, fed_raw_within, git, run};
+use crate::runtime::{Harness, clone_of, command_timeout, fed_raw_within, fed_within, git};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::{ErrorKind, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
@@ -225,47 +227,77 @@ fn vouched(
     if content.len() as u64 > ENVRC_CAP {
         return Err(format!(".envrc is over {ENVRC_CAP} bytes"));
     }
-    let blob = hash("blob", content.clone())?;
-    if base.is_some_and(|base| envrc_at(clone, base).is_ok_and(|at| at.as_ref() == Some(&blob))) {
+    let unchecked = |why: String| format!(".envrc could not be checked: {why}");
+    let blob = hash("blob", content.clone()).map_err(unchecked)?;
+    let at_base = base.map(|base| envrc_at(clone, base));
+    if matches!(&at_base, Some(Ok(Some(at))) if *at == blob) {
         return Ok(content);
     }
-    // No commit can vouch for it, so GitHub is not asked.
-    if run(git(worktree).args(["ls-files", "--error-unmatch", "--", ".envrc"])).is_err() {
-        return Err(
-            ".envrc is untracked, so neither the commit the task started from nor the default \
-             branch vouches for it"
-                .to_owned(),
-        );
+    // No commit can vouch for an untracked file, so GitHub is not asked.
+    let listed = output(
+        "ls-files",
+        git(worktree).args(["ls-files", "--error-unmatch", "--", ".envrc"]),
+        None,
+    )
+    .map_err(unchecked)?;
+    if listed.status.code() == Some(1) {
+        return Err(match at_base {
+            Some(Err(why)) => format!(
+                ".envrc is untracked, and it could not be checked against the commit the task \
+                 started from ({why})"
+            ),
+            _ => {
+                ".envrc is untracked, so neither the commit the task started from nor the default \
+                  branch vouches for it"
+                    .to_owned()
+            }
+        });
     }
+    succeeded("ls-files", listed).map_err(unchecked)?;
+    let on_base = match at_base {
+        Some(Ok(_)) => ".envrc differs from the commit the task started from".to_owned(),
+        Some(Err(why)) => {
+            format!(".envrc could not be checked against the commit the task started from ({why})")
+        }
+        None => "no commit the task started from is known to check .envrc against".to_owned(),
+    };
     match envrc_on_trunk(clone, repo) {
         Ok(Some(at)) if at == blob => Ok(content),
-        Ok(_) => Err(
-            ".envrc differs from the commit the task started from and from the default branch"
-                .to_owned(),
-        ),
-        Err(why) => {
-            eprintln!("priory daemon: the default branch of {repo}: {why}");
-            Err(
-                ".envrc differs from the commit the task started from, and the default branch \
-                 could not be read"
-                    .to_owned(),
-            )
-        }
+        Ok(_) => Err(format!("{on_base}, and it differs from the default branch")),
+        Err(why) => Err(format!("{on_base}, and the default branch {why}")),
     }
 }
 
 /// The blob id of the `.envrc` on `repo`'s default branch as GitHub has it. An agent can write the
-/// clone, so its objects are hashed again.
+/// clone, so its objects are hashed again. The error says what the default branch could not be.
 fn envrc_on_trunk(clone: &Path, repo: &str) -> Result<Option<String>, String> {
-    let trunk = crate::runtime::trunk(repo, TRUNK_WITHIN)?;
-    envrc_at(clone, &trunk).or_else(|_| {
-        fed_raw_within(
-            git(clone).args(["fetch", "--quiet", "origin", &trunk]),
-            None,
-            TRUNK_WITHIN,
-        )?;
-        envrc_at(clone, &trunk)
-    })
+    // The error holds the command line, which names paths.
+    let unread = |why: String| {
+        eprintln!("priory daemon: the default branch of {repo}: {why}");
+        "could not be read".to_owned()
+    };
+    let trunk = crate::runtime::trunk(repo, TRUNK_WITHIN).map_err(unread)?;
+    // A clone that only lacks the new head is the normal case, and git then exits 1.
+    let held = output(
+        "cat-file",
+        git(clone).args(["--no-replace-objects", "cat-file", "-e", &trunk]),
+        None,
+    );
+    let lacking = matches!(&held, Ok(held) if held.status.code() == Some(1));
+    let mut after = String::new();
+    if !lacking {
+        match envrc_at(clone, &trunk) {
+            Ok(at) => return Ok(at),
+            Err(first) => after = format!(", after its check failed ({first})"),
+        }
+    }
+    fed_raw_within(
+        git(clone).args(["fetch", "--quiet", "origin", &trunk]),
+        None,
+        TRUNK_WITHIN,
+    )
+    .map_err(|why| format!("{}{after}", unread(why)))?;
+    envrc_at(clone, &trunk).map_err(|why| format!("could not be checked ({why})"))
 }
 
 /// The largest `.envrc` a run can start in.
@@ -275,24 +307,59 @@ const ENVRC_CAP: u64 = 1 << 20;
 // shortcut: they hold the daemon's thread, move them off when one often nears the limit.
 const TRUNK_WITHIN: Duration = Duration::from_secs(10);
 
+/// The output of `command`, git's `name`. The error names no path, since a person reads it on the
+/// task.
+fn output(name: &str, command: &mut Command, input: Option<Vec<u8>>) -> Result<Output, String> {
+    let timeout = command_timeout();
+    fed_within(command, input, timeout)
+        .map_err(|error| format!("git {name}: {error}"))?
+        .ok_or_else(|| {
+            let seconds = timeout.as_secs_f64().ceil();
+            format!("git {name}: timed out after {seconds}s")
+        })
+}
+
+/// The stdout of git's `name`, or its exit code as a shell gives it, so a crash is 128 and the
+/// signal.
+fn succeeded(name: &str, output: Output) -> Result<Vec<u8>, String> {
+    if output.status.success() {
+        return Ok(output.stdout);
+    }
+    let code = output
+        .status
+        .code()
+        .or_else(|| output.status.signal().map(|signal| 128 + signal))
+        .unwrap_or(-1);
+    eprintln!(
+        "priory daemon: git {name}: exit {code}: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    Err(format!("git {name}: exit {code}"))
+}
+
 /// The id git gives an object of `kind` with `content`.
 fn hash(kind: &str, content: Vec<u8>) -> Result<String, String> {
-    fed(
-        git(Path::new("/")).args(["hash-object", "-t", kind, "--stdin"]),
+    // Outside a repository, git's format check crashes on a tree with `.gitattributes`.
+    let hashed = output(
+        "hash-object",
+        git(Path::new("/")).args(["hash-object", "--literally", "-t", kind, "--stdin"]),
         Some(content),
-    )
-    .map(|id| id.trim().to_owned())
+    )?;
+    let id = succeeded("hash-object", hashed)?;
+    Ok(String::from_utf8_lossy(&id).trim().to_owned())
 }
 
 /// The content of the object `id` of `clone`, hashed again: git does not check a loose object on
 /// read, and an agent can write one.
 fn object(clone: &Path, kind: &str, id: &str) -> Result<Vec<u8>, String> {
-    let content = fed_raw(
+    let read = output(
+        "cat-file",
         git(clone).args(["--no-replace-objects", "cat-file", kind, id]),
         None,
     )?;
+    let content = succeeded("cat-file", read)?;
     if hash(kind, content.clone())? != id {
-        return Err(format!("{kind} {id} of {} is forged", clone.display()));
+        return Err(format!("{kind} {id} is forged"));
     }
     Ok(content)
 }
@@ -1094,6 +1161,26 @@ printf %s "$EDITED" > "$1/.envrc"; direnv exec "$1" sh -c 'echo $V $D'"#,
                 "{good}"
             );
         }
+    }
+
+    #[test]
+    fn a_commit_whose_tree_holds_git_attributes_names_its_envrc() {
+        let dir = temp();
+        sh_git(dir.path(), &["init", "-q"]);
+        for name in [".envrc", ".gitattributes", ".gitmodules"] {
+            fs::write(dir.path().join(name), "").unwrap();
+        }
+        sh_git(dir.path(), &["add", "."]);
+        let identity = ["-c", "user.name=t", "-c", "user.email=t@t"];
+        sh_git(
+            dir.path(),
+            &[&identity[..], &["commit", "-qm", "i"]].concat(),
+        );
+        let id = |name| crate::runtime::run(git(dir.path()).args(["rev-parse", name])).unwrap();
+
+        let blob = envrc_at(dir.path(), id("HEAD").trim()).unwrap();
+
+        assert_eq!(blob.as_deref(), Some(id("HEAD:.envrc").trim()));
     }
 
     #[test]
