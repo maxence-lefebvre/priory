@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fixBranch, fixText, sayRoute } from "../lib/task.js";
+import { fixBranch, fixText, said, sayRoute } from "../lib/task.js";
 
 const FLOWS = {
   workflows: [{
@@ -37,6 +37,11 @@ test("a done task the daemon lists reopens with say, whatever step it ended at",
     enabled: true,
     note: "Task 61 is done. Say reopens it: its agent resumes its session, works and pushes.",
   });
+});
+
+test("say to a done task names the pull request on screen", () => {
+  assert.equal(said({ state: "done" }, PR, "Fix it."), "On https://github.com/owner/repo/pull/7: Fix it.");
+  assert.equal(said({ state: "asleep" }, PR, "Fix it."), "Fix it.");
 });
 
 test("without the factory's flows, say is off and the note does not guess the step's kind", () => {

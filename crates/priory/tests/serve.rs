@@ -1334,6 +1334,8 @@ fn the_tasks_endpoint_finds_the_done_tasks_say_reopens_once_no_active_task_holds
         Vec::<i64>::new(),
         "say reopens nothing once it merged"
     );
+    let upper = api(&address, "/api/tasks?pr=github%3AOwner%2FRepo%237");
+    assert_eq!(upper["tasks"], json!([]), "a close counts in any case");
 }
 
 #[test]

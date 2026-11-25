@@ -5058,7 +5058,13 @@ pub(crate) fn says_reopens(
     };
     match factory {
         Some(factory) => Ok(reopens_at(tx, &factory.workflows, task, &resource)?.map(drop)),
-        None => Ok(Ok(())),
+        None => {
+            let key: String =
+                tx.query_row("SELECT key FROM tasks WHERE id = ?1", [task], |row| {
+                    row.get(0)
+                })?;
+            Ok(rival_on(tx, task, &key, Some(&resource))?.map_or(Ok(()), Err))
+        }
     }
 }
 
@@ -5111,6 +5117,8 @@ pub(crate) fn open_pull_request(
             "SELECT DISTINCT resource FROM owned WHERE task = ?1 AND EXISTS (SELECT 1 FROM inbox
                WHERE 'github:' || json_extract(data, '$.repo') || '#'
                  || json_extract(data, '$.pull_request') = owned.resource)
+             UNION SELECT resource FROM waits WHERE task = ?1
+               AND kind IN ('pull_request', 'checks', 'review')
              ORDER BY resource",
         )?
         .query_map([task], |row| row.get::<_, String>(0))?
@@ -5147,7 +5155,7 @@ pub(crate) fn last_read(tx: &Connection, resource: &str) -> rusqlite::Result<Str
            SELECT seq, CASE WHEN type = ?2 AND json_extract(data, '$.merged') = 1 THEN 'merged'
              WHEN type != ?2 AND json_extract(data, '$.open') = 1 THEN 'open' ELSE 'closed' END AS state
            FROM inbox
-           WHERE 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1
+           WHERE 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1 COLLATE NOCASE
            AND (type = ?2 OR json_extract(data, '$.open') IS NOT NULL))
          ORDER BY state = 'merged' DESC, seq DESC LIMIT 1",
         params![resource, CLOSED],

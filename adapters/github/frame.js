@@ -6,7 +6,7 @@ import { parsePr } from "./lib/pr.js";
 import { blank, connectForm as sharedForm } from "./lib/connect.js";
 import { call } from "./lib/request.js";
 import { clear, get, put, remove } from "./lib/store.js";
-import { fixBranch, fixText, sayRoute } from "./lib/task.js";
+import { fixBranch, fixText, said, sayRoute } from "./lib/task.js";
 
 const params = new URLSearchParams(location.search);
 // command.html is not web-accessible, so no page can embed its Run button.
@@ -381,7 +381,7 @@ function taskTab() {
         h("button", { class: "btn secondary", disabled: !canSay || !fix, onclick: () => say(fixText("conflicts", fix.branch, fix.base)) }, icon("merge", "s14"), "Resolve conflicts")),
       fix ? null : h("div", { class: "note" }, icon("lock", "s14"), h("span", {}, `Task ${task.id} does not own this pull request's branch: Update branch and Resolve conflicts stay off.`)),
       h("div", { class: "note" }, icon("corner", "s14"), h("span", {}, S.unreachable ? "Reconnect to say." : route.note))),
-    h("form", { class: "field", onsubmit: (event) => { event.preventDefault(); if (S.say.trim()) say(S.say.trim(), true); } },
+    h("form", { class: "field", onsubmit: (event) => { event.preventDefault(); if (S.say.trim()) say(said(S.task, S.pr, S.say.trim()), true); } },
       h("label", { for: "say" }, "Say to the agent"),
       h("textarea", { id: "say", class: "input", rows: 3, value: S.say, oninput: (event) => { S.say = event.target.value; } }),
       h("div", { class: "end" }, h("button", { class: "btn primary", type: "submit", disabled: !canSay }, "Say"))),

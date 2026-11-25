@@ -21,6 +21,9 @@ export function sayRoute(task, flows) {
   return { enabled: true, note: `Sent with say to task ${task.id}'s agent. ${wakes} in its worktree and pushes.${stays}` };
 }
 
+/** What say sends: a done task can hold several pull requests, so its text names the one on screen. */
+export const said = (task, pr, text) => (task.state === "done" ? `On ${pr.url}: ${text}` : text);
+
 /**
  * The branch and base Update branch and Resolve conflicts name, or null when `holds` says the task
  * does not own the pull request's branch: it only waits on, reviews or subscribes to it.

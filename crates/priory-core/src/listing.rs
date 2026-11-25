@@ -857,7 +857,7 @@ pub fn holding(db: &Connection, repo: &str, number: u64) -> rusqlite::Result<Val
 /// The done tasks that hold the open pull request `number` of `repo` and that `say` reopens.
 fn done_holding(db: &Connection, repo: &str, number: u64) -> rusqlite::Result<Value> {
     let resource = format!("github:{repo}#{number}");
-    let mut tasks = rows(
+    let done = rows(
         db,
         &holders(
             "state = 'done' AND held.how != 'review'",
@@ -865,24 +865,18 @@ fn done_holding(db: &Connection, repo: &str, number: u64) -> rusqlite::Result<Va
         ),
         params![resource, format!("github:{repo}:pulls/{number}:review:*")],
     )?;
-    if tasks.as_array().is_some_and(Vec::is_empty)
-        || crate::tools::last_read(db, &resource)? != "open"
-    {
+    let done = done.as_array().cloned().unwrap_or_default();
+    if done.is_empty() || crate::tools::last_read(db, &resource)? != "open" {
         return Ok(json!([]));
     }
-    let mut failed = None;
-    let list = tasks.as_array_mut().expect("rows are an array");
-    list.retain(|task| {
+    let mut reopen = Vec::new();
+    for task in done {
         let id = task["id"].as_i64().expect("a task has an id");
-        match crate::tools::says_reopens(db, id, None) {
-            Ok(reopens) => reopens.is_ok(),
-            Err(error) => {
-                failed = Some(error);
-                false
-            }
+        if crate::tools::says_reopens(db, id, None)?.is_ok() {
+            reopen.push(task);
         }
-    });
-    failed.map_or(Ok(tasks), Err)
+    }
+    Ok(Value::Array(reopen))
 }
 
 /// The query of the tasks in `state` that hold a pull request, in `order`.
