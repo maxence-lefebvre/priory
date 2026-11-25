@@ -142,16 +142,18 @@ pub(crate) fn tick(
     for mut delivering in running.drain(..) {
         let ended = match &mut delivering.script {
             Some(script) => script.poll(),
-            // A pid the kernel reused has another start time.
-            None if delivering.started.is_some()
-                && memory::started(delivering.pid) == delivering.started =>
-            {
-                (Instant::now() >= delivering.deadline).then(|| {
-                    script::kill(delivering.pid);
-                    let output = script::collect(&file(home, delivering.id, "log"));
-                    (format!("timed out after {}s", TIMEOUT.as_secs()), output)
-                })
-            }
+            None if delivering.started.is_some() => match memory::started(delivering.pid) {
+                // A pid the kernel reused has another start time.
+                Ok(now) if now == delivering.started => (Instant::now() >= delivering.deadline)
+                    .then(|| {
+                        script::kill(delivering.pid);
+                        let output = script::collect(&file(home, delivering.id, "log"));
+                        (format!("timed out after {}s", TIMEOUT.as_secs()), output)
+                    }),
+                // It may still run, and a kill needs proof that the pid is still its own.
+                Err(_) if Instant::now() < delivering.deadline => None,
+                _ => Some(adopted_status(home, delivering.id)),
+            },
             None => Some(adopted_status(home, delivering.id)),
         };
         match ended {
@@ -214,7 +216,7 @@ pub(crate) fn tick(
             ]);
         match script::spawn_command(command, &factory.dir, &file(home, id, "log"), TIMEOUT) {
             Ok(script) => {
-                let (pid, started) = (script.pid(), memory::started(script.pid()));
+                let (pid, started) = (script.pid(), memory::start_time(script.pid()));
                 db.execute(
                     "UPDATE deliveries SET pid = ?2, pid_started = ?3 WHERE id = ?1",
                     params![id, pid, started],

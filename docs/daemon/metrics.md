@@ -55,7 +55,8 @@ spans.
 
 The process group says how the process itself is doing: its loop's tick, its memory, its CPU time
 and its uptime. `PRIORY_PROC` names another folder for `/proc`, as it does for [the room check](room.md), and then
-the process reads `self` there. A process that cannot read its own use logs it once and sends the
+the process reads `self` there. On macOS without `PRIORY_PROC`, `ps` reads them (see
+[room.md](room.md#on-macos)). A process that cannot read its own use logs it once and sends the
 rest.
 
 The tick is a gauge of three statistics over the interval, not a histogram. `p95` is the nearest

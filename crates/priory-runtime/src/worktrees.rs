@@ -1,12 +1,13 @@
+use crate::room::{TOOL, tool};
 use crate::runtime::{
-    OWN_GIT, PATCHES, SCAN, as_one, at_risk, fetching, git, is_ancestor, move_aside, read_regular,
-    run, soon, timed_out, unseal,
+    OWN_GIT, PATCHES, SCAN, as_one, as_one_within, at_risk, fed_raw_within, fetching, git,
+    is_ancestor, loop_left, move_aside, read_regular, run, soon, timed_out, unseal, within,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::ErrorKind;
-use std::os::unix::ffi::OsStringExt;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
@@ -582,7 +583,45 @@ pub(crate) fn orphan_without_repository(path: &Path) -> Result<(), String> {
 type Mounts<'a> = &'a dyn Fn() -> std::io::Result<Vec<u8>>;
 
 pub(crate) fn mountinfo() -> std::io::Result<Vec<u8>> {
+    if cfg!(target_os = "macos") {
+        let listed = fed_raw_within(&mut tool("mount", &[]), None, TOOL.min(loop_left()));
+        return mountinfo_of_mount(&listed.map_err(std::io::Error::other)?);
+    }
     fs::read("/proc/self/mountinfo")
+}
+
+/// A `mountinfo` table from the text of macOS `mount`, such as `/dev/disk3s1 on /w/a b (apfs, local)`.
+/// Either name may hold ` on `, so each place it can split gives a mount point.
+fn mountinfo_of_mount(listed: &[u8]) -> std::io::Result<Vec<u8>> {
+    const ON: &[u8] = b" on ";
+    const DATA: &[u8] = b"/System/Volumes/Data";
+    let mut table = Vec::new();
+    for line in listed.split(|byte| *byte == b'\n') {
+        let end = line.windows(2).rposition(|pair| pair == b" (");
+        let line = &line[..end.unwrap_or(line.len())];
+        for at in (0..line.len()).filter(|at| line[*at..].starts_with(ON)) {
+            let point = &line[at + ON.len()..];
+            // The data volume's folders are also at the root, where worktrees see them.
+            for point in [Some(point), point.strip_prefix(DATA)]
+                .into_iter()
+                .flatten()
+            {
+                table.extend_from_slice(b"0 0 0:0 / ");
+                for byte in point {
+                    match byte {
+                        b' ' | b'\t' | b'\\' => table.extend(format!("\\{byte:03o}").bytes()),
+                        byte => table.push(*byte),
+                    }
+                }
+                table.push(b'\n');
+            }
+        }
+    }
+    // The root is always mounted.
+    if table.is_empty() {
+        return Err(std::io::Error::other("mount listed nothing"));
+    }
+    Ok(table)
 }
 
 /// Removes the checkout `path` of `clone`, whatever it holds but a mount.
@@ -853,7 +892,8 @@ pub(crate) fn removes_at(path: &Path) -> bool {
 /// Moves the worktree that `removable` allowed aside. It runs no git, so it fits a tick: `detach`
 /// does the rest.
 pub fn take(home: &Path, found: &Found) -> Result<Taken, String> {
-    take_under(home, found, &mountinfo)
+    // On macOS, the mount and the process check each run a command.
+    as_one_within(TOOL, || take_under(home, found, &mountinfo))
 }
 
 fn take_under(home: &Path, found: &Found, mounts: Mounts) -> Result<Taken, String> {
@@ -861,7 +901,7 @@ fn take_under(home: &Path, found: &Found, mounts: Mounts) -> Result<Taken, Strin
     let task = task_of(&found.name).ok_or_else(|| format!("no task {}", found.name))?;
     unmounted(path, mounts)?;
     // The move would break what a process does there by its path.
-    if occupied(path) {
+    if occupied(path)? {
         return Err("a process runs in it".to_owned());
     }
     let failed = |error| format!("cannot move {}: {error}", path.display());
@@ -1313,25 +1353,64 @@ fn unsettled(home: &Path, found: &Found, build: &[String]) -> Result<Option<Stri
     if !status.is_empty() {
         return Ok(Some("untracked files".to_owned()));
     }
-    if occupied(path) {
+    if occupied(path)? {
         return Ok(Some("a process runs in it".to_owned()));
     }
     Ok(None)
 }
 
 /// Whether a process other than Priory's own git commands has its working directory inside `path`.
-fn occupied(path: &Path) -> bool {
+fn occupied(path: &Path) -> Result<bool, String> {
     let Ok(path) = fs::canonicalize(path) else {
-        return false;
+        return Ok(false);
     };
-    fs::read_dir("/proc")
+    if cfg!(target_os = "macos") {
+        return occupied_of_lsof(&path, &|| {
+            within(
+                &mut tool("lsof", &["-w", "-a", "-d", "cwd", "-Fn"]),
+                TOOL.min(loop_left()),
+            )
+        });
+    }
+    Ok(fs::read_dir("/proc")
         .into_iter()
         .flatten()
         .flatten()
         .any(|process| {
             fs::read_link(process.path().join("cwd")).is_ok_and(|cwd| cwd.starts_with(&path))
                 && !own(&process.path())
-        })
+        }))
+}
+
+/// Whether any process has its working directory inside `path`, from the fields `lsof -Fn` prints.
+/// Priory's own git counts too: macOS shows no environment, so nothing proves a git is Priory's.
+fn occupied_of_lsof(
+    path: &Path,
+    lsof: &dyn Fn() -> Result<String, String>,
+) -> Result<bool, String> {
+    let unsure = |why: &str| format!("cannot check {} for processes: {why}", path.display());
+    // lsof escapes the other bytes and the backslash, so such a path would match no process.
+    let plain = |byte: u8| (b' '..=b'~').contains(&byte) && byte != b'\\';
+    if !path.as_os_str().as_bytes().iter().copied().all(plain) {
+        return Err(unsure("lsof escapes its path"));
+    }
+    let listed = lsof().map_err(|error| unsure(&error))?;
+    let cwds: Vec<&str> = listed
+        .lines()
+        .filter_map(|line| line.strip_prefix('n'))
+        .collect();
+    // Every process has one, this one included.
+    if cwds.is_empty() {
+        return Err(unsure("lsof listed nothing"));
+    }
+    if cwds.iter().any(|cwd| Path::new(cwd).starts_with(path)) {
+        return Ok(true);
+    }
+    // An error in place of a folder, such as `cwd|rtd info error: ...`, could be of any folder.
+    match cwds.iter().find(|cwd| !cwd.starts_with('/')) {
+        Some(row) => Err(unsure(&format!("lsof printed {row:?}"))),
+        None => Ok(false),
+    }
 }
 
 /// Whether the process is a git command Priory runs, or a child of one, which ends on its own: its
@@ -2180,6 +2259,76 @@ mod tests {
             let table = format!("23 22 0:5 / /w/{escaped} rw - tmpfs tmpfs rw\n");
             let point = Path::new("/w").join(&name);
             prop_assert_eq!(mount_under(table.as_bytes(), Path::new("/w")), Some(point));
+        }
+    }
+
+    #[test]
+    fn a_mount_macos_lists_at_or_under_a_folder_is_found() {
+        let table = mountinfo_of_mount(
+            b"/dev/disk3s1s1 on / (apfs, sealed, local, read-only, journaled)\n\
+              map auto_home on /System/Volumes/Data/home (autofs, automounted, nobrowse)\n\
+              /dev/disk4 on /System/Volumes/Data/w/data (apfs, local)\n\
+              //u@h/a on b on /w/a on b (1)/t (smbfs, nodev)\n",
+        )
+        .unwrap();
+        let under = |path: &str| mount_under(&table, Path::new(path));
+        assert_eq!(under("/w/a on b (1)"), Some("/w/a on b (1)/t".into()));
+        assert_eq!(under("/w/data"), Some("/w/data".into()));
+        assert_eq!(under("/w/a"), None);
+        assert_eq!(under("/w/a on b (1)/t/deep"), None);
+        assert!(mountinfo_of_mount(b"").is_err());
+    }
+
+    #[test]
+    fn a_process_lsof_lists_inside_a_worktree_occupies_it_whatever_it_runs() {
+        let in_w = |listed: &str| occupied_of_lsof(Path::new("/w/1"), &|| Ok(listed.to_owned()));
+        assert_eq!(in_w("p12\nfcwd\nn/\np13\nfcwd\nn/w/1/a b\n"), Ok(true));
+        assert_eq!(in_w("p12\nfcwd\nn/w/1\n"), Ok(true));
+        assert_eq!(in_w("p12\nfcwd\nn/w/10\np13\nfcwd\nn/w\n"), Ok(false));
+    }
+
+    #[test]
+    fn a_worktree_lsof_cannot_answer_for_is_not_called_free() {
+        let of = |path: &str, listed: Result<String, String>| {
+            occupied_of_lsof(Path::new(path), &|| listed.clone()).unwrap_err()
+        };
+        let refused = of("/w/1", Err("lsof: not found".to_owned()));
+        assert!(refused.ends_with("lsof: not found"), "{refused}");
+        let refused = of("/w/1", Ok(String::new()));
+        assert!(refused.ends_with("lsof listed nothing"), "{refused}");
+        let row = "cwd|rtd info error: Operation not permitted";
+        let refused = of("/w/1", Ok(format!("n/\nn{row}\n")));
+        assert!(
+            refused.ends_with(&format!("lsof printed {row:?}")),
+            "{refused}"
+        );
+        let refused = of("/w/1", Ok("n/\nn\n".to_owned()));
+        assert!(refused.ends_with("lsof printed \"\""), "{refused}");
+        for path in ["/w/\u{e9}/1", "/w/a\\b", "/w/a\tb"] {
+            let refused = of(path, Ok("n/\n".to_owned()));
+            assert!(refused.ends_with("lsof escapes its path"), "{refused}");
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn a_mount_macos_lists_reads_back_whatever_its_name(name in "[a-z() \\\\\t]{1,20}") {
+            let line = format!("/dev/disk4 on /w/{name} (apfs, local)\n");
+            let table = mountinfo_of_mount(line.as_bytes()).unwrap();
+            prop_assert_eq!(
+                mount_under(&table, Path::new("/w")),
+                Some(Path::new("/w").join(&name))
+            );
+        }
+
+        #[test]
+        fn mountinfo_of_mount_never_panics(listed in proptest::collection::vec(any::<u8>(), 0..200)) {
+            let _ = mountinfo_of_mount(&listed);
+        }
+
+        #[test]
+        fn occupied_of_lsof_reads_any_text_without_panicking(listed in "[pn0-9/a\\n]{0,200}") {
+            let _ = occupied_of_lsof(Path::new("/a"), &|| Ok(listed.clone()));
         }
     }
 }

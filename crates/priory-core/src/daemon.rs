@@ -312,7 +312,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     // No one bounds a script a stopped daemon started; one whose pid another process reused is gone.
     for (id, group) in stall::orphans(&db)? {
         if let Some((pid, _)) =
-            group.filter(|(pid, started)| memory::started(*pid) == Some(*started))
+            group.filter(|(pid, started)| memory::started(*pid) == Ok(Some(*started)))
         {
             script::kill(pid);
         }
@@ -322,7 +322,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     // A `run` command neither runs twice nor runs on unbounded: it ends `failed`, and its task moves on.
     for (id, group) in state::orphan_commands(&db)? {
         if let Some((pid, _)) =
-            group.filter(|(pid, started)| memory::started(*pid) == Some(*started))
+            group.filter(|(pid, started)| memory::started(*pid) == Ok(Some(*started)))
         {
             script::kill(pid);
         }
@@ -336,7 +336,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     // An answer's command never runs twice: one a stopped daemon left running ends `uncertain`.
     for (id, group) in state::orphan_answers(&db)? {
         if let Some((pid, _)) =
-            group.filter(|(pid, started)| memory::started(*pid) == Some(*started))
+            group.filter(|(pid, started)| memory::started(*pid) == Ok(Some(*started)))
         {
             script::kill(pid);
         }
@@ -350,7 +350,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let handlers = home.join("handlers");
     for (id, group) in handler::orphans(&db)? {
         if let Some((pid, _)) =
-            group.filter(|(pid, started)| memory::started(*pid) == Some(*started))
+            group.filter(|(pid, started)| memory::started(*pid) == Ok(Some(*started)))
         {
             script::kill(pid);
         }
@@ -362,7 +362,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let summaries = home.join("summaries");
     for (id, group) in summary::orphans(&db)? {
         if let Some((pid, _)) =
-            group.filter(|(pid, started)| memory::started(*pid) == Some(*started))
+            group.filter(|(pid, started)| memory::started(*pid) == Ok(Some(*started)))
         {
             script::kill(pid);
         }
@@ -783,7 +783,7 @@ fn summarize(
         let prompt = summary::prompt(&title, &request);
         match runtime::ask_claude(dir, id, model, &prompt, HANDLER_TIMEOUT) {
             Ok(script) => {
-                summary::spawned(db, id, script.pid(), memory::started(script.pid()))?;
+                summary::spawned(db, id, script.pid(), memory::start_time(script.pid()))?;
                 calls.push((id, script));
             }
             Err(error) => {
@@ -876,7 +876,7 @@ fn handle_stalls(
         let prompt = handler::prompt(db, factory, run.run, stalled_for, &screen)?;
         match runtime::ask_claude(&dir, id, model, &prompt, HANDLER_TIMEOUT) {
             Ok(script) => {
-                handler::spawned(db, id, script.pid(), memory::started(script.pid()))?;
+                handler::spawned(db, id, script.pid(), memory::start_time(script.pid()))?;
                 stalls.calls.push(Handling {
                     id,
                     run: run.run,
@@ -1023,7 +1023,7 @@ fn start_script(
     let timeout = script.timeout.unwrap_or(SCRIPT_TIMEOUT);
     match script::spawn(&script.run, home, &log_of(home, id), timeout) {
         Ok(child) => {
-            stall::spawned(db, id, child.pid(), memory::started(child.pid()))?;
+            stall::spawned(db, id, child.pid(), memory::start_time(child.pid()))?;
             running.push((id, child));
         }
         Err(error) => stall::ended(db, id, &format!("cannot start: {error}"), "")?,
@@ -2278,7 +2278,7 @@ fn start_command(
     let timeout = step.timeout.unwrap_or(factory.command_timeout());
     match script::spawn_held(&["sh", "-c", run, "sh"], &env, dir, &out, &err, timeout) {
         Ok(mut child) => {
-            state::command_spawned(db, id, child.pid(), memory::started(child.pid()))?;
+            state::command_spawned(db, id, child.pid(), memory::start_time(child.pid()))?;
             child.release();
             commands.push((id, child));
         }
@@ -2355,7 +2355,7 @@ fn start_answers(
             .map_or_else(|| trace.factory.command_timeout(), Duration::from_secs);
         match script::spawn_held(&argv, &env, &ran.dir, &out, &err, timeout) {
             Ok(mut child) => {
-                state::command_spawned(db, id, child.pid(), memory::started(child.pid()))?;
+                state::command_spawned(db, id, child.pid(), memory::start_time(child.pid()))?;
                 child.release();
                 commands.push((id, child));
             }

@@ -1,11 +1,13 @@
 use crate::room::{self, Share};
 use crate::state;
 use priory_factory::factory::Factory;
-use priory_runtime::room::Room;
+use priory_runtime::room::{Room, TOOL, tool};
+use priory_runtime::runtime::fed_within;
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use std::time::Duration;
+use std::process::{Command, Output};
+use std::time::{Duration, Instant};
 
 /// A message from `priory memory acquire`, which waits for a memory grant by polling.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -50,8 +52,10 @@ pub(crate) fn gate(
             Ok(Ok(format!("{grant} released")))
         }
         Gate::Run { grant, pid } => {
-            let Some(started) = started(*pid) else {
-                return Ok(Err(format!("process {pid} is not running")));
+            let started = match started(*pid) {
+                Ok(Some(started)) => started,
+                Ok(None) => return Ok(Err(format!("process {pid} is not running"))),
+                Err(error) => return Ok(Err(format!("cannot check process {pid}: {error}"))),
             };
             db.execute(
                 "UPDATE grants SET pid = ?2, started = ?3 WHERE id = ?1",
@@ -80,8 +84,10 @@ pub(crate) fn gate(
             session,
             command,
         } => {
-            let Some(started) = started(*pid) else {
-                return Ok(Err(format!("process {pid} is not running")));
+            let started = match started(*pid) {
+                Ok(Some(started)) => started,
+                Ok(None) => return Ok(Err(format!("process {pid} is not running"))),
+                Err(error) => return Ok(Err(format!("cannot check process {pid}: {error}"))),
             };
             let task: Option<i64> = db
                 .query_row(
@@ -257,6 +263,14 @@ fn end(db: &Connection, grant: i64) -> rusqlite::Result<()> {
 
 /// Removes the grants whose holder process is gone, so a killed holder frees its memory.
 pub(crate) fn reclaim(db: &Connection) -> rusqlite::Result<()> {
+    reclaim_by(db, &started_each)
+}
+
+/// When each process started, as `started` says it.
+type Starts = BTreeMap<u32, Result<Option<i64>, String>>;
+type Started<'a> = &'a dyn Fn(&BTreeSet<u32>) -> Starts;
+
+fn reclaim_by(db: &Connection, started: Started) -> rusqlite::Result<()> {
     let mut statement = db.prepare("SELECT id, pid, started FROM grants")?;
     let grants = statement
         .query_map([], |row| {
@@ -267,24 +281,139 @@ pub(crate) fn reclaim(db: &Connection) -> rusqlite::Result<()> {
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    // A pid the kernel reused has another start time.
-    for (id, ..) in grants
-        .into_iter()
-        .filter(|(_, pid, at)| started(*pid) != Some(*at))
-    {
-        end(db, id)?;
+    let starts = started(&grants.iter().map(|(_, pid, _)| *pid).collect());
+    for (id, pid, at) in grants {
+        match &starts[&pid] {
+            // A pid the kernel reused has another start time.
+            Ok(now) if *now != Some(at) => end(db, id)?,
+            Ok(_) => {}
+            // Nothing says that it is gone.
+            Err(error) => eprintln!("priory memory: grant {id} stays: {error}"),
+        }
     }
     Ok(())
 }
 
-/// When the live, unreaped process `pid` started, in clock ticks since boot, from `/proc/<pid>/stat`.
-pub(crate) fn started(pid: u32) -> Option<i64> {
+/// When the live, unreaped process `pid` started, in clock ticks since boot, from `/proc/<pid>/stat`,
+/// or `None` when it is gone. On macOS, which has no `/proc`, the time is the one `ps` prints, to the
+/// second, and an error means `ps` could not say.
+pub(crate) fn started(pid: u32) -> Result<Option<i64>, String> {
+    let mut starts = started_each(&BTreeSet::from([pid]));
+    starts.remove(&pid).expect("a start for each pid")
+}
+
+/// As `started` for each of `pids`, with one `ps` for all of them.
+fn started_each(pids: &BTreeSet<u32>) -> Starts {
+    if cfg!(target_os = "macos") {
+        return started_by_ps(pids, &mut |command, left| fed_within(command, None, left));
+    }
+    let start = |pid: &u32| (*pid, Ok(started_of_stat(*pid)));
+    pids.iter().map(start).collect()
+}
+
+/// As `started`, with nothing for a process whose start time is unknown.
+pub(crate) fn start_time(pid: u32) -> Option<i64> {
+    started(pid).ok().flatten()
+}
+
+fn started_of_stat(pid: u32) -> Option<i64> {
     let stat =
         std::fs::read_to_string(Path::new("/proc").join(pid.to_string()).join("stat")).ok()?;
     // The command name, in parentheses, may hold spaces; the fields after it are state, ppid, ...
     let fields: Vec<&str> = stat.rsplit_once(')')?.1.split_whitespace().collect();
     (fields.first() != Some(&"Z")).then_some(())?;
     fields.get(19)?.parse().ok()
+}
+
+/// How often `ps` runs before it counts as unable to say, as when fork fails for lack of memory.
+const PS_TRIES: u32 = 3;
+
+type RunPs<'a> = &'a mut dyn FnMut(&mut Command, Duration) -> std::io::Result<Option<Output>>;
+
+fn started_by_ps(pids: &BTreeSet<u32>, run: RunPs) -> Starts {
+    if pids.is_empty() {
+        return Starts::new();
+    }
+    let until = Instant::now() + TOOL;
+    let list: Vec<String> = pids.iter().map(u32::to_string).collect();
+    let mut ps = tool("ps", &["-o", "pid=,stat=,lstart=", "-p", &list.join(",")]);
+    // UTC keeps the text the same across a time zone change.
+    ps.env("TZ", "UTC");
+    let all = |error: String| -> Starts {
+        let start = |pid: &u32| (*pid, Err(error.clone()));
+        pids.iter().map(start).collect()
+    };
+    let mut tried = 1;
+    loop {
+        let starts = match run(&mut ps, until.saturating_duration_since(Instant::now())) {
+            Ok(Some(output)) => started_of_output(pids, &output),
+            // It used up the deadline.
+            Ok(None) => return all(format!("ps: timed out after {}s", TOOL.as_secs())),
+            Err(error) => all(format!("ps: {error}")),
+        };
+        if tried == PS_TRIES || starts.values().all(Result::is_ok) {
+            return starts;
+        }
+        tried += 1;
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// `ps` leaves a process that is gone out of its lines, and exits 1 when it has none. One left out
+/// beside an error, or beside a line that is not a process, may still run.
+fn started_of_output(pids: &BTreeSet<u32>, output: &Output) -> Starts {
+    let text = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    let of = |line: &str| {
+        let (pid, rest) = line.trim_start().split_once(' ')?;
+        Some((pid.parse::<u32>().ok()?, rest.trim_start().to_owned()))
+    };
+    let rows: Option<BTreeMap<u32, String>> = lines.iter().map(|line| of(line)).collect();
+    let code = if lines.is_empty() { 1 } else { 0 };
+    let sure = output.status.code() == Some(code) && output.stderr.is_empty() && rows.is_some();
+    let rows = rows.unwrap_or_default();
+    let start = |pid: &u32| {
+        let start = match rows.get(pid) {
+            Some(row) if row.starts_with('Z') => Ok(None),
+            Some(row) => started_of_ps(row)
+                .map(Some)
+                .ok_or_else(|| format!("ps printed {row:?}")),
+            None if sure => Ok(None),
+            None => Err(format!(
+                "ps: {}: {text:?} {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            )),
+        };
+        (*pid, start)
+    };
+    pids.iter().map(start).collect()
+}
+
+/// Reads a line of `ps -o stat=,lstart=`, such as `Ss Mon Nov 23 07:07:41 2026`, as the number
+/// `20261123070741`.
+fn started_of_ps(line: &str) -> Option<i64> {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    let [_, _, month, day, time, year] = fields[..] else {
+        return None;
+    };
+    let month = MONTHS.iter().position(|name| *name == month)? as i64 + 1;
+    let clock: Vec<&str> = time.split(':').collect();
+    let [hour, minute, second] = clock[..] else {
+        return None;
+    };
+    [day, hour, minute, second].iter().try_fold(
+        i64::from(year.parse::<u16>().ok()?) * 100 + month,
+        |sum, part| {
+            Some(sum * 100 + i64::from(part.parse::<u8>().ok().filter(|part| *part < 100)?))
+        },
+    )
 }
 
 /// How long a waiting grant that does not fit holds back the grants behind it. A build it waits for ends
@@ -451,6 +580,7 @@ fn released(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use std::cell::Cell;
 
     const GB: u64 = 1 << 30;
@@ -858,7 +988,7 @@ mod tests {
         db.execute(
             "INSERT INTO grants (bytes, pid, started, command, state, created)
              VALUES (?1, ?2, ?3, 'other', ?4, ?5)",
-            params![(gb * GB) as i64, pid, started(pid), state, created],
+            params![(gb * GB) as i64, pid, start_time(pid), state, created],
         )
         .unwrap();
         db.last_insert_rowid()
@@ -1084,7 +1214,7 @@ mod tests {
         let pid = std::os::unix::process::parent_id();
         db.execute(
             "UPDATE grants SET pid = ?1, started = ?2 WHERE id = ?3",
-            params![pid, started(pid), id(&first)],
+            params![pid, start_time(pid), id(&first)],
         )
         .unwrap();
         let second = send(&mut db, acquire(4, "make"));
@@ -1244,5 +1374,145 @@ mod tests {
         send(&mut db, Gate::Release { grant });
         refused(&mut db, "DELETE ON main.lapses", acquire(4, "make"));
         assert_eq!((states(&db).len(), lapses(&db)), (1, 1));
+    }
+
+    fn output(code: i32, stdout: &str, stderr: &str) -> Output {
+        use std::os::unix::process::ExitStatusExt;
+        Output {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: stdout.into(),
+            stderr: stderr.into(),
+        }
+    }
+
+    const LIVE: &str = "    7 Ss   Mon Nov 23 07:07:41 2026    \n";
+
+    #[test]
+    fn ps_gives_each_start_time_or_says_the_process_is_gone_or_cannot_say() {
+        let pids = BTreeSet::from([7, 8]);
+        let told = |code, stdout: &str, stderr| {
+            let mut starts = started_of_output(&pids, &output(code, stdout, stderr));
+            (starts.remove(&7).unwrap(), starts.remove(&8).unwrap())
+        };
+        let start = Ok(Some(20261123070741));
+        let eight = |rest: &str| format!("{LIVE}    8 {rest}\n");
+        assert_eq!(told(0, LIVE, ""), (start.clone(), Ok(None)));
+        let both = eight("S    Mon Nov 23 07:07:42 2026");
+        assert_eq!(
+            told(0, &both, ""),
+            (start.clone(), Ok(Some(20261123070742)))
+        );
+        let zombie = eight("Z    Mon Nov 23 07:07:42 2026");
+        assert_eq!(told(0, &zombie, ""), (start.clone(), Ok(None)));
+        assert_eq!(told(1, "", ""), (Ok(None), Ok(None)));
+
+        let french = told(0, &eight("Ss lun 23 nov 07:07:41 2026"), "");
+        assert!(french.0 == start && french.1.is_err());
+        let warned = told(0, LIVE, "ps: 8: cannot read");
+        assert!(warned.0 == start && warned.1.is_err());
+        for (code, stdout, stderr) in [
+            (1, "", "ps: fork failed"),
+            (0, "", ""),
+            (2, "", ""),
+            (0, "a line of no process\n", ""),
+        ] {
+            let (seven, eight) = told(code, stdout, stderr);
+            assert!(seven.is_err() && eight.is_err(), "{stdout:?}");
+        }
+    }
+
+    #[test]
+    fn one_ps_asks_for_every_pid_and_runs_again_when_it_cannot_run_and_not_past_its_deadline() {
+        let pids = BTreeSet::from([7, 8]);
+        let mut calls = 0;
+        let told = started_by_ps(&pids, &mut |command, _| {
+            calls += 1;
+            let env: Vec<_> = command.get_envs().collect();
+            assert!(env.contains(&("LC_ALL".as_ref(), Some("C".as_ref()))));
+            assert!(env.contains(&("TZ".as_ref(), Some("UTC".as_ref()))));
+            assert_eq!(command.get_args().last(), Some("7,8".as_ref()));
+            match calls {
+                1 => Err(std::io::ErrorKind::OutOfMemory.into()),
+                _ => Ok(Some(output(0, LIVE, ""))),
+            }
+        });
+        let expected = Starts::from([(7, Ok(Some(20261123070741))), (8, Ok(None))]);
+        assert_eq!((told, calls), (expected, 2));
+
+        let mut calls = 0;
+        let failed = started_by_ps(&pids, &mut |_, _| {
+            calls += 1;
+            Err(std::io::ErrorKind::OutOfMemory.into())
+        });
+        assert!(failed.values().all(Result::is_err) && failed.len() == 2 && calls == PS_TRIES);
+
+        let mut calls = 0;
+        let late = started_by_ps(&pids, &mut |_, left| {
+            calls += 1;
+            assert!(left <= TOOL);
+            Ok(None)
+        });
+        assert!(late[&7].clone().unwrap_err().contains("timed out") && calls == 1);
+
+        let none = started_by_ps(&BTreeSet::new(), &mut |_, _| panic!("no pid to ask for"));
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn started_reads_this_process_and_no_process_that_is_gone() {
+        assert!(matches!(started(std::process::id()), Ok(Some(_))));
+        let mut child = Command::new("true").spawn().unwrap();
+        child.wait().unwrap();
+        assert_eq!(started(child.id()), Ok(None));
+    }
+
+    fn reclaim_when(db: &Connection, told: Result<Option<i64>, String>) -> usize {
+        reclaim_by(db, &|pids| {
+            pids.iter().map(|pid| (*pid, told.clone())).collect()
+        })
+        .unwrap();
+        states(db).len()
+    }
+
+    #[test]
+    fn a_grant_stays_while_nothing_says_its_holder_is_gone() {
+        let db = one_run();
+        waiting(&db, 4, 0);
+        assert_eq!(reclaim_when(&db, Err("ps: fork failed".to_owned())), 1);
+        assert_eq!(reclaim_when(&db, Ok(Some(1))), 1);
+        assert_eq!(reclaim_when(&db, Ok(None)), 0);
+    }
+
+    #[test]
+    fn a_grant_ends_when_its_holders_pid_is_another_process() {
+        let db = one_run();
+        waiting(&db, 4, 0);
+        assert_eq!(reclaim_when(&db, Ok(Some(2))), 0);
+    }
+
+    #[test]
+    fn a_dead_holders_grant_ends_after_one_that_cannot_be_checked() {
+        let db = one_run();
+        waiting(&db, 4, 0);
+        waiting(&db, 5, 0);
+        db.execute(
+            "UPDATE grants SET pid = 2 WHERE bytes = ?1",
+            [(5 * GB) as i64],
+        )
+        .unwrap();
+        reclaim_by(&db, &|pids| {
+            assert_eq!(*pids, BTreeSet::from([1, 2]));
+            Starts::from([(1, Err("unsure".to_owned())), (2, Ok(None))])
+        })
+        .unwrap();
+        assert_eq!(states(&db), [(4, "waiting".to_owned())]);
+    }
+
+    proptest! {
+        #[test]
+        fn started_of_ps_reads_any_text_without_panicking(line in "[SZa-zJN0-9: ]{0,80}") {
+            let _ = started_of_ps(&line);
+            let _ = started_of_output(&BTreeSet::from([7]), &output(0, &line, ""));
+        }
     }
 }
