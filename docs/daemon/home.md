@@ -26,6 +26,7 @@ $PRIORY_HOME/
   models/                      the embedding model's files (see search.md)
   push/                        the Web Push key pair and the requests in flight (see serve.md)
   slice.json                   the agents slice's last restore or refusal (see agents-slice.md)
+  tick.json                    the last loop tick over 10 seconds (see Long ticks)
   fetches/owner/name.json      the failing fetch of owner/name's clone (see sweep.md)
 ```
 
@@ -142,3 +143,20 @@ repository:
 name = "example"
 command_timeout = "20m"
 ```
+
+Some commands on the daemon's one thread wait 30 seconds at most, or `command_timeout` when that is
+shorter: the fetch and `ls-remote` before a new worktree, the sweep's git, `systemctl`, and the check
+whether a commit is another's ancestor. `git clone`, `git worktree add`, `git worktree remove`,
+`git push` and `gh` keep `command_timeout`, since one cut short can leave its work half done.
+
+A task whose fetch times out stays `queued` or `ready` with `waits to fetch <owner>/<name>: timed out
+after 30s`. The daemon fetches again after 1 minute, then waits twice as long after each timeout, up
+to 10 minutes.
+
+## Long ticks
+
+When one tick of the daemon's loop takes over 10 seconds, the log says what it runs, such as `a tick
+runs for over 10s: sweep, git fetch`, and when it ends, what took longest: `a tick took 42s: sweep for
+40s, git fetch for 30s`. The line names the program and its subcommand, never an argument. The desk
+shows the last one for 24 hours, also while the tick holds the loop (see
+[desk.md](desk.md#intake-banner)).

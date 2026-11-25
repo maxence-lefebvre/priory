@@ -1,8 +1,9 @@
 use crate::recipe::{self, Teardown};
 use crate::trace::{self, Trace};
 use priory_factory::factory::Factory;
+use priory_runtime::runtime::timed_out;
 use priory_runtime::slice;
-use priory_runtime::worktrees::{self, Found, Verdict};
+use priory_runtime::worktrees::{self, Found, RECLAIM, Verdict, reclaim_folder};
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -34,9 +35,36 @@ fn task_of(found: &Found) -> Option<i64> {
     found.name.rsplit('-').next().and_then(|id| id.parse().ok())
 }
 
+/// The patch scans one sweep runs, each a few seconds.
+const SCANS: usize = 2;
+
+/// How long each part of a sweep (its fetches, its checks, its removals) starts new work. What is
+/// left waits for the next sweep.
+const BUDGET: Duration = Duration::from_secs(30);
+
+/// When each clone was last fetched and each worktree last checked, so a sweep takes the oldest
+/// first and none starves.
+static TRIED: Mutex<BTreeMap<PathBuf, Instant>> = Mutex::new(BTreeMap::new());
+
+fn tried() -> std::sync::MutexGuard<'static, BTreeMap<PathBuf, Instant>> {
+    TRIED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn assess(db: &Connection, home: &Path, judge: Judge) -> rusqlite::Result<Vec<Entry>> {
     let mut entries = Vec::new();
-    for found in worktrees::found(home) {
+    let mut all = worktrees::found(home);
+    let mut scans = SCANS;
+    // A check that timed out says the disk hangs, so the sweep asks git nothing more.
+    let mut hung = false;
+    let started = Instant::now();
+    if matches!(judge, Judge::Git) {
+        worktrees::forget_scans(home, &all);
+        let tried = tried();
+        all.sort_by_key(|found| tried.get(&found.path).copied());
+    }
+    for found in all {
         let mut retire = false;
         let mut judged = None;
         let task = task_of(&found);
@@ -66,7 +94,17 @@ fn assess(db: &Connection, home: &Path, judge: Judge) -> rusqlite::Result<Vec<En
             }
             Some(state) => {
                 let verdict = match judge {
-                    Judge::Git => verdict(db, home, &found, state == "done")?,
+                    Judge::Git if hung || started.elapsed() >= BUDGET => {
+                        Verdict::Keep("its checks wait for the next sweep".to_owned())
+                    }
+                    Judge::Git => {
+                        let verdict = verdict(db, home, &found, state == "done", &mut scans)?;
+                        hung = matches!(&verdict, Verdict::Keep(why) if timed_out(why));
+                        if verdict != Verdict::Keep(worktrees::SCAN_WAITS.to_owned()) {
+                            tried().insert(found.path.clone(), Instant::now());
+                        }
+                        verdict
+                    }
                     Judge::Recorded(record) => record
                         .get(&found.path.display().to_string())
                         .and_then(|kept| kept.reason.clone())
@@ -105,7 +143,13 @@ fn assess(db: &Connection, home: &Path, judge: Judge) -> rusqlite::Result<Vec<En
 
 /// What git says of the worktree of an ended task. A squash merge leaves the head of the task's
 /// merged pull request out of the default branch, so the inbox names it.
-fn verdict(db: &Connection, home: &Path, found: &Found, done: bool) -> rusqlite::Result<Verdict> {
+fn verdict(
+    db: &Connection,
+    home: &Path,
+    found: &Found,
+    done: bool,
+    scans: &mut usize,
+) -> rusqlite::Result<Verdict> {
     let head: Option<String> = db
         .query_row(
             "SELECT json_extract(data, '$.head_sha') FROM inbox
@@ -117,7 +161,13 @@ fn verdict(db: &Connection, home: &Path, found: &Found, done: bool) -> rusqlite:
         )
         .optional()?
         .flatten();
-    Ok(worktrees::verdict(home, found, head.as_deref(), done))
+    Ok(worktrees::verdict(
+        home,
+        found,
+        head.as_deref(),
+        done,
+        scans,
+    ))
 }
 
 /// Removes the worktree and branch of every ended task that nothing keeps, after fetching each
@@ -134,8 +184,14 @@ pub fn run(db: &Connection, factory: &Factory, home: &Path) -> rusqlite::Result<
     let mut entries = assess(db, home, Judge::Git)?;
     record(home, &entries);
     let mut refused = false;
+    let mut hung = false;
+    {
+        let tried = tried();
+        entries.sort_by_key(|entry| tried.get(&removing(&entry.found.path)).copied());
+    }
+    let started = Instant::now();
     for entry in &mut entries {
-        if unfetched.contains(&entry.found.repo) {
+        if hung || started.elapsed() >= BUDGET || unfetched.contains(&entry.found.repo) {
             continue;
         }
         // A teardown that failed stays failed until the factory's teardown changes.
@@ -167,6 +223,8 @@ pub fn run(db: &Connection, factory: &Factory, home: &Path) -> rusqlite::Result<
             worktrees::remove(home, &entry.found)
         };
         if let Err(error) = removed {
+            hung = timed_out(&error);
+            tried().insert(removing(&entry.found.path), Instant::now());
             eprintln!(
                 "priory daemon: removing {}: {error}",
                 entry.found.path.display()
@@ -424,13 +482,34 @@ fn failing(home: &Path, repo: &str) -> Option<Failing> {
     serde_json::from_slice(&std::fs::read(failing_file(home, repo)).ok()?).ok()
 }
 
+/// The key of `TRIED` for the last good fetch of `repo`.
+fn fetched(home: &Path, repo: &str) -> PathBuf {
+    home.join("fetches").join(repo)
+}
+
 /// Fetches the clone of each of `repos` and returns those it did not fetch. A clone whose fetch
 /// failed is logged once, kept as failing, and fetched again only an hour after its last try. A
 /// failure of a repository with no worktree left is forgotten.
 fn fetch(home: &Path, repos: &[String], now: jiff::Timestamp) -> Vec<String> {
     let now = jiff::Timestamp::from_second(now.as_second()).unwrap_or(now);
     let mut unfetched = Vec::new();
-    for repo in repos {
+    let mut hung = false;
+    let started = Instant::now();
+    let mut oldest: Vec<&String> = repos.iter().collect();
+    {
+        let tried = tried();
+        oldest.sort_by_key(|repo| tried.get(&home.join("repos").join(repo)).copied());
+    }
+    for repo in oldest {
+        // One timeout says the network hangs: the other clones wait for the next sweep.
+        if hung || started.elapsed() >= BUDGET {
+            // Its refs from an earlier sweep still say what merged.
+            let fresh = tried().contains_key(&fetched(home, repo));
+            if !fresh {
+                unfetched.push(repo.clone());
+            }
+            continue;
+        }
         let failed = failing(home, repo);
         if failed
             .as_ref()
@@ -440,13 +519,19 @@ fn fetch(home: &Path, repos: &[String], now: jiff::Timestamp) -> Vec<String> {
             continue;
         }
         let file = failing_file(home, repo);
-        match worktrees::fetch(home, repo) {
+        tried().insert(home.join("repos").join(repo), Instant::now());
+        let outcome = worktrees::fetch(home, repo);
+        if outcome.is_ok() {
+            tried().insert(fetched(home, repo), Instant::now());
+        }
+        match outcome {
             Ok(()) if failed.is_some() => {
                 let _ = std::fs::remove_file(&file);
                 eprintln!("priory daemon: fetching {repo} works again");
             }
             Ok(()) => {}
             Err(error) => {
+                hung = timed_out(&error);
                 if failed.is_none() {
                     eprintln!(
                         "priory daemon: fetching {repo}: {error}; the sweep tries it again every hour"
@@ -709,23 +794,6 @@ impl Reclaim {
     }
 }
 
-/// The folder of `home` a build folder moves to before its delete.
-const RECLAIM: &str = "reclaim";
-
-/// `home/reclaim`, made when absent. Anything but a real folder there is refused, since a symlink
-/// would lead the delete out of `home`.
-fn reclaim_folder(home: &Path) -> Result<PathBuf, String> {
-    let folder = home.join(RECLAIM);
-    match std::fs::symlink_metadata(&folder) {
-        Ok(meta) if meta.is_dir() => Ok(folder),
-        Ok(_) => Err(format!("{} is not a folder", folder.display())),
-        Err(_) => match std::fs::create_dir(&folder) {
-            Ok(()) => Ok(folder),
-            Err(error) => Err(format!("cannot make {}: {error}", folder.display())),
-        },
-    }
-}
-
 /// The folders a stopped daemon left under `home/reclaim`: real ones the daemon named, a task and
 /// nanoseconds, which have 18 digits or more.
 fn leftovers(home: &Path) -> Vec<PathBuf> {
@@ -894,6 +962,11 @@ pub fn reclaim_line(db: &Connection, now: jiff::Timestamp) -> rusqlite::Result<O
     )))
 }
 
+/// The key of `TRIED` for the removal of `worktree`.
+fn removing(worktree: &Path) -> PathBuf {
+    worktree.join("removal")
+}
+
 /// Retires asleep tasks, longest asleep first, while `short` says the disk is short: removes each
 /// clean worktree and keeps its branch and sessions. A task that cannot retire gets the reason once.
 pub(crate) fn retire(
@@ -915,15 +988,27 @@ pub(crate) fn retire(
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let found = worktrees::found(home);
+    let mut hung = false;
+    let started = Instant::now();
+    let mut asleep = asleep;
+    {
+        // Those that failed go last, or they would starve those behind them.
+        let tried = tried();
+        asleep.sort_by_key(|(_, worktree)| tried.get(&removing(Path::new(worktree))).copied());
+    }
     for (task, worktree) in asleep {
+        if hung || started.elapsed() >= BUDGET {
+            return Ok(());
+        }
         let Some(found) = found
             .iter()
             .find(|found| found.path.to_str() == Some(&worktree) && found.name == task.to_string())
         else {
             continue;
         };
-        // Marked first, so a crash before the removal leaves a mark on a worktree, not the reverse.
-        let mut stays = worktrees::retire_blocker(home, found);
+        // Checked before the mark too, which clears the reason. Reading the teardown's state runs
+        // nothing, so the checks still hold after it.
+        let mut stays = worktrees::removable(home, found).err();
         if stays.is_none() {
             // One teardown at a time: the next task's waits until this one retired and the disk
             // is measured again.
@@ -933,23 +1018,24 @@ pub(crate) fn retire(
                 Teardown::Failed(reason) => stays = Some(reason),
             }
         }
-        // Checked before the mark too, which clears the reason.
         if stays.is_none() {
-            stays = match busy(db, task, "'asleep'")? {
-                Some(reason) => Some(reason),
-                None => worktrees::removable(home, found).err(),
-            };
+            stays = busy(db, task, "'asleep'")?;
         }
         if stays.is_none() {
+            // Marked first, so a crash before the removal leaves a mark on a worktree, not the reverse.
             db.execute(
                 "UPDATE tasks SET retired = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), reason = NULL
                  WHERE id = ?1",
                 [task],
             )?;
-            stays = worktrees::retire(home, found).err();
+            stays = worktrees::remove_allowed(home, found).err();
             if stays.is_some() {
                 db.execute("UPDATE tasks SET retired = NULL WHERE id = ?1", [task])?;
             }
+        }
+        hung = stays.as_deref().is_some_and(timed_out);
+        if stays.is_some() {
+            tried().insert(removing(Path::new(&worktree)), Instant::now());
         }
         let Some(stays) = stays else {
             if short() {
@@ -1601,6 +1687,136 @@ mod tests {
         home.db.execute("DELETE FROM grants", []).unwrap();
         retire(&home.db, &home.factory, &home.dir, || true).unwrap();
         assert!(!tree.exists());
+    }
+
+    fn unpushed(home: &Home, task: i64) -> PathBuf {
+        let tree = home.task(task, "done");
+        std::fs::write(tree.join("a.txt"), format!("{task}\n")).unwrap();
+        git(&tree, &["commit", "-q", "-am", "b"]);
+        tree
+    }
+
+    fn reasons(home: &Home) -> Vec<String> {
+        assess(&home.db, &home.dir, Judge::Git)
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.stays.unwrap_or_default())
+            .collect()
+    }
+
+    fn ignoring_target(name: &str) -> Home {
+        let home = Home::new(name);
+        std::fs::write(home.dir.join("repos/o/r/.git/info/exclude"), "target\n").unwrap();
+        git(
+            &home.dir.join("repos/o/r"),
+            &["update-ref", "refs/remotes/origin/main", "HEAD"],
+        );
+        home
+    }
+
+    #[test]
+    fn a_sweep_scans_two_worktrees_and_the_next_one_the_rest() {
+        let home = ignoring_target("scans");
+        for task in 1..=3 {
+            unpushed(&home, task);
+        }
+        let waits = "its patch check waits for the next sweep";
+        assert_eq!(
+            reasons(&home),
+            ["unpushed commits", "unpushed commits", waits]
+        );
+        assert_eq!(
+            reasons(&home),
+            ["unpushed commits"; 3],
+            "all cached or scanned"
+        );
+
+        // A new remote ref asks for every scan again, and the one scanned longest ago goes first.
+        git(
+            &home.dir.join("repos/o/r"),
+            &["update-ref", "refs/remotes/origin/x", "HEAD"],
+        );
+        let order = assess(&home.db, &home.dir, Judge::Git).unwrap();
+        let last = order[2].found.name.clone();
+        assert_eq!(order[2].stays.as_deref(), Some(waits));
+        let order = assess(&home.db, &home.dir, Judge::Git).unwrap();
+        assert_eq!(order[0].found.name, last, "not starved");
+        assert_eq!(order[0].stays.as_deref(), Some("unpushed commits"));
+    }
+
+    #[test]
+    fn a_check_that_hangs_keeps_its_worktree_and_the_next_sweep_takes_it_last() {
+        let home = ignoring_target("hung-check");
+        let first = home.task(1, "done");
+        home.task(2, "done");
+        // Git blocks on a fifo in place of the index.
+        let index = home.dir.join("repos/o/r/.git/worktrees/1/index");
+        std::fs::remove_file(&index).unwrap();
+        runtime::run(Command::new("mkfifo").arg(&index)).unwrap();
+        let started = Instant::now();
+
+        let kept = reasons(&home);
+
+        assert!(kept[0].starts_with("cannot check: "), "{kept:?}");
+        assert!(timed_out(&kept[0]), "{kept:?}");
+        assert_eq!(kept[1], "its checks wait for the next sweep");
+        assert!(started.elapsed() < Duration::from_secs(45));
+        assert!(first.exists());
+        let next = assess(&home.db, &home.dir, Judge::Git).unwrap();
+        assert_eq!(next[0].found.name, "2");
+        assert_eq!(next[0].stays, None);
+    }
+
+    #[test]
+    fn a_fetch_that_hangs_leaves_the_other_clones_for_the_next_sweep() {
+        let home = Home::new("hung-fetch");
+        let config = home.dir.join("repos/o/r/.git/config");
+        std::fs::remove_file(&config).unwrap();
+        runtime::run(Command::new("mkfifo").arg(&config)).unwrap();
+        let repos = ["o/r".to_owned(), "o/other".to_owned()];
+        let started = Instant::now();
+
+        let unfetched = fetch(&home.dir, &repos, jiff::Timestamp::now());
+
+        assert_eq!(unfetched, repos);
+        assert!(started.elapsed() < Duration::from_secs(45));
+        assert!(
+            failing(&home.dir, "o/r")
+                .unwrap()
+                .error
+                .contains("timed out after 30s")
+        );
+        assert!(failing(&home.dir, "o/other").is_none(), "it was not tried");
+    }
+
+    #[test]
+    fn old_evidence_moves_aside_for_the_reclaims_thread() {
+        let mut home = Home::new("old-evidence");
+        home.task(1, "done");
+        let folder = home.dir.join("evidence/1");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("a.png"), "x").unwrap();
+        home.db
+            .execute_batch(
+                "PRAGMA foreign_keys = OFF;
+                 UPDATE tasks SET changed = '2020-01-01T00:00:00Z';
+                 INSERT INTO evidence (task, run, kind, media, caption, commit_sha, bytes, sha256)
+                 VALUES (1, 1, 'image', 'image/png', 'a', 'c', 1, 'd');",
+            )
+            .unwrap();
+
+        crate::evidence::sweep(&home.db, &home.dir).unwrap();
+
+        assert!(!folder.exists());
+        assert_eq!(leftovers(&home.dir).len(), 1);
+        let left: i64 = home
+            .db
+            .query_row("SELECT count(*) FROM evidence", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(left, 0);
+        home.tick(true, false);
+        home.deleted();
+        assert!(leftovers(&home.dir).is_empty());
     }
 
     #[test]

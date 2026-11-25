@@ -149,5 +149,6 @@ item.
 ## How long items stay
 
 The sweep removes a task's items, files first, once the task has been `done`, `failed` or `dropped`
-for 30 days. It never removes an active task's items, an asleep one's included. The sweep runs when
+for 30 days. It moves the files to
+`PRIORY_HOME/reclaim/` and deletes them on a thread. It never removes an active task's items, an asleep one's included. The sweep runs when
 the daemon starts and every [`[sweep] every`](sweep.md).

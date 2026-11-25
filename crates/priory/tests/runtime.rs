@@ -12078,22 +12078,60 @@ fn a_tmux_load_buffer_past_the_command_timeout_is_killed_and_logged() {
 }
 
 #[test]
-fn a_git_fetch_past_the_command_timeout_is_killed_and_its_task_blocks() {
+fn a_git_fetch_that_hangs_is_cut_off_at_30_seconds_and_its_task_waits() {
     let mut setup = Setup::new("fetch-hangs");
     fs::write(
         setup.dir.join("factory/factory.toml"),
-        "name = \"demo\"\ncommand_timeout = \"1s\"\n",
+        "name = \"demo\"\ncommand_timeout = \"20m\"\n",
     )
     .unwrap();
     setup.hold("git-hang");
     setup.publish(&requested(42));
+    let started = Instant::now();
 
     setup.start();
 
-    let tasks = setup.until("tasks", |rows| {
-        rows.first().is_some_and(|row| row[4] == "blocked")
-    });
-    assert!(tasks[0][7].ends_with("timed out after 1s"), "{tasks:?}");
+    let reason = "waits to fetch owner/repo: timed out after 30s";
+    let deadline = started + Duration::from_secs(60);
+    loop {
+        let tasks = setup.rows("tasks");
+        if tasks.first().is_some_and(|row| row[7] == reason) {
+            assert_eq!(tasks[0][4], "queued", "{tasks:?}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "{tasks:?}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let fetches = || {
+        let log = fs::read_to_string(setup.dir.join("fake/git-fetches")).unwrap_or_default();
+        log.lines().count()
+    };
+    let tried = fetches();
+    std::thread::sleep(Duration::from_secs(5));
+    assert_eq!(fetches(), tried, "no tick fetches again at once");
+}
+
+#[test]
+fn a_systemctl_that_hangs_is_cut_off_at_30_seconds() {
+    let mut setup = Setup::new("systemctl-hangs");
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\ncommand_timeout = \"20m\"\n",
+    )
+    .unwrap();
+    setup.hold("systemctl-hang");
+
+    setup.start();
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap_or_default();
+        if log.contains("systemctl") && log.contains("timed out after 30s") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "daemon log: {log}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 const APPROVE_THEN_POLISH: &str = r#"
@@ -17885,6 +17923,11 @@ fn a_clean_asleep_task_retires_when_disk_runs_short_and_resurrects_with_its_work
 
     setup.removed(1);
 
+    let statuses = fs::read_to_string(setup.dir.join("fake/git-statuses")).unwrap();
+    let checks = statuses
+        .lines()
+        .filter(|line| line.contains("/1 ") && line.contains("--ignore-submodules=none"));
+    assert_eq!(checks.count(), 1, "a retirement checks once: {statuses}");
     let tasks = setup.until("tasks", |rows| rows[0][10] != "-");
     assert_eq!(tasks[0][4], "asleep");
     assert!(setup.branches().contains("priory/1"));

@@ -22,7 +22,7 @@ use priory_intake::intake::{self, OUTPUT};
 use priory_intake::log::{self, Log};
 use priory_runtime::runtime::{self, Launch, Line};
 use priory_runtime::script::{self, Script};
-use priory_runtime::{room, slice, transcript, upgrade};
+use priory_runtime::{room, slice, ticks, transcript, upgrade};
 use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::cell::OnceCell;
@@ -404,8 +404,10 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut entering = Entering::default();
     let mut live = Live::new(factory, watch, trace.revision.clone(), server);
     let mut upgrader = Upgrader::new(factory);
+    crate::watchdog::watch(&home);
     loop {
         let tick = Instant::now();
+        ticks::begin();
         if live.poll(&mut db, &trace, true)? {
             let factory = live.factory();
             state::bands(&mut db, &factory.bands(), factory.age())?;
@@ -419,6 +421,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         }
         let trace = live.trace(&trace);
         let factory = trace.factory;
+        ticks::phase("messages");
         // A runner back from away reads the log, and so drops the tasks that moved, before any run
         // and before it publishes what it queued meanwhile.
         let drained = link.due().then(|| {
@@ -442,6 +445,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
                 redispatch = (!failed.is_empty()).then(|| Instant::now() + REDISPATCH);
             }
         }
+        ticks::phase("signals");
         while let Ok(line) = listening.lines.try_recv() {
             apply(
                 &mut db,
@@ -452,6 +456,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
                 &searching,
             )?;
         }
+        ticks::phase("commands");
         // After the socket's lines, so an answer a person sent before this tick comes first.
         let head = |worktree: &Path, branch: &str| runtime::kept_head(&home, worktree, branch);
         crate::autopilot::tick(&mut db, &trace, &head)?;
@@ -461,9 +466,12 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         if crate::recipe::tick(&mut db, &trace, &home, &mut recipes)? {
             swept = None;
         }
+        ticks::phase("evidence");
         crate::evidence::tick(&mut db, factory, &home, &mut records)?;
+        ticks::phase("kit");
         kit.tick(&db)?;
         let fetched = kit.current();
+        ticks::phase("runs");
         tend(
             &mut db,
             &trace,
@@ -483,6 +491,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         for tmux in tools::over_budget_in_turn(&mut db, &trace, &mut peeked, &watched)? {
             runtime::kill(&tmux);
         }
+        ticks::phase("background work");
         compact_idle(&db, &trace, &home, &scope, fetched)?;
         handle_stalls(&mut db, &trace, &home, &mut stalls)?;
         let counter = counting.get(&home);
@@ -516,6 +525,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             held = Some(Instant::now());
             crate::held::tick(&mut db, &trace, intake::now()?)?;
         }
+        ticks::phase("sweep");
         let due = swept.is_none_or(|at| at.elapsed() >= every);
         if due {
             swept = Some(Instant::now());
@@ -525,16 +535,19 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             }
             sweep::measure(&home);
         }
+        ticks::phase("reclaim");
         let under = || {
             room::measure(&home)
                 .is_ok_and(|room| crate::room::under_reclaim(&room, factory.sweep().reclaim))
         };
         reclaiming.tick(&mut db, factory, &home, &trace, due, under)?;
+        ticks::phase("retirement");
         // A retirement costs a worktree, so it waits for what the reclaim frees.
         if reclaiming.retires() {
             let short = || room::measure(&home).is_ok_and(|room| crate::room::short_of_disk(&room));
             sweep::retire(&db, factory, &home, short)?;
         }
+        ticks::phase("upgrade");
         let working = !(commands.is_empty()
             && recipes.is_empty()
             && scripts.is_empty()
@@ -542,18 +555,25 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             && stalls.calls.is_empty()
             && deliveries.is_empty());
         upgrader.tick(&mut db, &trace, &home, working);
-        priory_runtime::ticks::record(tick.elapsed());
+        ticks::record(tick.elapsed());
+        crate::watchdog::ended(&home);
         // A pasted prompt's Enter is due before the next whole tick.
         let wait = entering.due().map_or(EVERY, |due| due.min(EVERY));
         match listening.lines.recv_timeout(wait) {
-            Ok(line) => apply(
-                &mut db,
-                line,
-                &trace,
-                counting.get(&home),
-                kit.current(),
-                &searching,
-            )?,
+            Ok(line) => {
+                ticks::begin();
+                ticks::phase("signals");
+                let applied = apply(
+                    &mut db,
+                    line,
+                    &trace,
+                    counting.get(&home),
+                    kit.current(),
+                    &searching,
+                );
+                crate::watchdog::ended(&home);
+                applied?;
+            }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
         }
@@ -1621,6 +1641,7 @@ fn tend(
             let name = worktree_name(db, trace.runner.as_deref(), admission.task).ok()?;
             runtime::mounted_orphan(home, repo, &name)
                 .map(|reason| format!("waits to add its worktree back: {reason}"))
+                .or_else(|| runtime::fetch_waits(home, repo, &name))
         };
         let pass = state::admissible(
             db,
@@ -2106,6 +2127,14 @@ enum Restored {
     Failed(String),
 }
 
+fn set_reason(db: &Connection, task: i64, reason: &str) -> rusqlite::Result<()> {
+    db.execute(
+        "UPDATE tasks SET reason = ?2 WHERE id = ?1 AND reason IS NOT ?2",
+        rusqlite::params![task, reason],
+    )
+    .map(drop)
+}
+
 /// Adds back the worktree of `task`, which the sweep or a retirement removed, from its branch once
 /// there is disk room; a task waiting for room says so in its reason.
 fn restore_worktree(
@@ -2125,25 +2154,19 @@ fn restore_worktree(
         Ok(room) if crate::room::short_of_disk(&room) => Some(crate::room::RESTORES.to_owned()),
         Ok(_) => None,
     };
+    let name = worktree_name(db, runner, task)?;
+    let waits = waits.or_else(|| runtime::fetch_waits(home, repo, &name));
     if let Some(reason) = waits {
-        db.execute(
-            "UPDATE tasks SET reason = ?2 WHERE id = ?1 AND reason IS NOT ?2",
-            rusqlite::params![task, reason],
-        )?;
+        set_reason(db, task, &reason)?;
         return Ok(Restored::Waits);
     }
-    match runtime::worktree(
-        home,
-        repo,
-        &worktree_name(db, runner, task)?,
-        None,
-        factory.trust_worktrees(),
-    ) {
+    match runtime::worktree(home, repo, &name, None, factory.trust_worktrees()) {
         Ok((worktree, _, added)) => {
             state::set_base(db, task, added.base(), factory.trust_worktrees())?;
             db.execute(
-                "UPDATE tasks SET reason = NULL WHERE id = ?1 AND substr(reason, 1, length(?2)) = ?2",
-                rusqlite::params![task, crate::room::RESTORES],
+                "UPDATE tasks SET reason = NULL WHERE id = ?1
+                 AND (substr(reason, 1, length(?2)) = ?2 OR substr(reason, 1, length(?3)) = ?3)",
+                rusqlite::params![task, crate::room::RESTORES, runtime::FETCH_WAITS],
             )?;
             // The code step needs no resume; the task's next run starts it first.
             let resume = factory.recipe(repo, factory::Moment::Resume);
@@ -2157,6 +2180,10 @@ fn restore_worktree(
                     recipe,
                 )?;
             }
+        }
+        Err(reason) if reason.starts_with(runtime::FETCH_WAITS) => {
+            set_reason(db, task, &reason)?;
+            return Ok(Restored::Waits);
         }
         Err(reason) => return Ok(Restored::Failed(reason)),
     }
@@ -2487,11 +2514,14 @@ fn open_stack(
     for (at, branch) in branches.iter().enumerate() {
         let head = match at + 1 == branches.len() {
             true => commit.to_owned(),
-            false => runtime::head(worktree, branch)
-                .filter(|head| runtime::is_ancestor(worktree, head, commit))
-                .ok_or_else(|| {
-                    format!("branch {branch} is not below the approved commit {commit}")
-                })?,
+            false => {
+                let above = || format!("branch {branch} is not below the approved commit {commit}");
+                let head = runtime::head(worktree, branch).ok_or_else(above)?;
+                if !runtime::is_ancestor(worktree, &head, commit)? {
+                    return Err(above());
+                }
+                head
+            }
         };
         let title = match branches.len() {
             1 => title.to_owned(),
@@ -2683,6 +2713,10 @@ fn start(
                 )?;
             }
             (worktree, branch, added)
+        }
+        Err(reason) if reason.starts_with(runtime::FETCH_WAITS) => {
+            set_reason(db, admission.task, &reason)?;
+            return Ok(Ok(()));
         }
         Err(reason) => return Ok(Err(reason)),
     };

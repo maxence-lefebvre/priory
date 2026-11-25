@@ -83,3 +83,4 @@ pub mod trace;
 mod triage;
 pub mod upgrade;
 mod usage;
+mod watchdog;

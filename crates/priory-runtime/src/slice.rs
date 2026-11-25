@@ -1,4 +1,4 @@
-use crate::runtime::{self, run};
+use crate::runtime::{self, soon};
 use crate::{cgroup, room};
 use std::ffi::OsStr;
 use std::fs;
@@ -216,7 +216,7 @@ fn alive(home: &Path) -> bool {
 
 /// The slice's cgroup path, empty while nothing runs in it. It fails with no systemd user manager.
 pub fn control_group(slice: &str) -> Result<String, String> {
-    let path = run(Command::new("systemctl").args([
+    let path = soon(Command::new("systemctl").args([
         "--user",
         "show",
         slice,
@@ -228,7 +228,7 @@ pub fn control_group(slice: &str) -> Result<String, String> {
 
 /// The command that starts a run in its own scope inside the user slice `slice`.
 pub fn scope(slice: &str) -> Result<Vec<String>, String> {
-    let version = run(Command::new("systemd-run").arg("--version"))?;
+    let version = soon(Command::new("systemd-run").arg("--version"))?;
     let version = version
         .split_whitespace()
         .nth(1)
@@ -247,9 +247,11 @@ pub fn scope(slice: &str) -> Result<Vec<String>, String> {
 
 /// Sets `properties` on the user unit `unit` until reboot, with no daemon-reload.
 fn set(unit: &str, properties: &[String]) -> Result<(), String> {
-    run(Command::new("systemctl")
-        .args(["--user", "set-property", "--runtime", unit])
-        .args(properties))
+    soon(
+        Command::new("systemctl")
+            .args(["--user", "set-property", "--runtime", unit])
+            .args(properties),
+    )
     .map(drop)
 }
 

@@ -28,7 +28,9 @@ is on a remote branch, any remote branch. A task that works on a person's pull r
 that person's branch, so its own branch never merges. A commit also counts as pushed when a remote
 branch holds a commit with the same patch (`git patch-id --verbatim`), as a rebase of that branch
 leaves. When more than 2000 remote commits could match, the sweep compares none and keeps the
-worktree. A merge commit or an empty commit has no patch, so it counts only when it is on a remote
+worktree. It also keeps it when the patches to compare take more than 64 MB. Each answer is kept until
+`HEAD` or a remote ref changes, and a sweep runs at most 2 new comparisons, the oldest first. The
+others stay as `its patch check waits for the next sweep`. A merge commit or an empty commit has no patch, so it counts only when it is on a remote
 branch itself.
 
 The worktree goes at the next sweep, even while the task's pull request is open. The sweep keeps
@@ -53,16 +55,25 @@ it. The worktree goes, the branch stays, and no sweep looks again. A failed work
 logged and retried at the next sweep. A git command that cannot run keeps the worktree as
 `cannot check: <error>`.
 
+The sweep waits at most 30 seconds for one git command, or `command_timeout` when that is shorter
+(see [home.md](home.md#command-timeout)), except for `git worktree remove` itself. A command that
+runs past it keeps its worktree, and the sweep asks git nothing about the worktrees after it, which
+stay as `its checks wait for the next sweep`. After a fetch that times out, the other clones wait for
+the next sweep too. Each of the fetches, the checks and the removals stops starting new work after
+30 seconds, and the next sweep takes what waited longest first. A walk of a worktree's files stops after 10 seconds and keeps the worktree, with
+`<path>: its files take over 10s to check`.
+
 Before `git worktree remove`, the sweep makes every folder under the worktree writable by its
 owner. A read-only folder, such as one a test run sealed under an ignored `target/`, would
 otherwise stop git after it deleted the tracked files and the worktree's entry in the clone. When
 a task's folder is left that way, with a `.git` file naming a gone entry of Priory's clone, the
-task's next run removes the folder and adds the worktree back from its branch.
+task's next run moves the folder to `PRIORY_HOME/reclaim/`, deletes it on a thread, and adds the worktree back from its branch.
 
 `priory desk` lists each kept folder with its reason: `no task <id>`, `kept while task <id> is <state>`,
 `not a worktree of <clone>`, `not recorded as the worktree of task <id>`, `not on branch priory/<id>`,
 `uncommitted changes`, `untracked files`, `a process runs in it`, `unpushed commits`, `not merged`,
-`teardown runs`, `teardown failed: ...`, `<path> is a mount`, `<path> holds a git repository` or
+`its patch check waits for the next sweep`, `its checks wait for the next sweep`,
+`<path>: its files take over 10s to check`, `teardown runs`, `teardown failed: ...`, `<path> is a mount`, `<path> holds a git repository` or
 `task <id> has a live run or a memory grant, or left its state`.
 It runs no git: it reads the reasons from `sweep/sizes.json`, which each sweep writes. Before the
 first sweep, it lists only the reasons it reads from the database. Each reason ends with the size of
@@ -73,7 +84,8 @@ has not measured yet shows its reason alone.
 ## What a removal never takes
 
 `git worktree remove` deletes the files of a folder mounted under the worktree, then fails. So the
-sweep and a retirement check again, after any teardown and right before git runs:
+sweep and a retirement check, after any teardown and before git runs. Mounts are checked again
+before and after folders are made writable, right before the delete:
 
 - No mount is at or under the worktree, as `/proc/self/mountinfo` shows. A table that cannot be read
   keeps the worktree.
