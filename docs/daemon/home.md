@@ -114,6 +114,11 @@ started elsewhere does not change it. A command you run yourself must see the sa
 `no priory daemon listens on <path>`. The path is in that error. The daemon reads one connection at a time, and drops one that sends no
 full line within 2 seconds, so a silent client cannot stop the others.
 
+On `SIGTERM` the daemon takes no more connections, answers those it has within 20 seconds, and then
+ends by that signal. A second `SIGTERM` ends it at once. The socket's file stays, so a command that
+writes, an MCP server and `priory memory` wait up to 30 seconds for the next daemon. `priory attach`,
+a web server's write and the tool guard do not.
+
 `signals.spool` holds the signals sent while no daemon listened. The next daemon applies them first.
 
 `daemon.lock` allows one daemon per home. A second daemon waits up to 5 seconds for the lock, then

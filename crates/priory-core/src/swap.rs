@@ -485,7 +485,7 @@ fn ended(unit: &str, what: &str) -> Result<Fault, String> {
 /// Whether `unit` was stopped, as `systemctl stop` does, rather than ended by itself.
 fn was_stopped(unit: &str) -> Result<bool, String> {
     Ok(journal::property(unit, "ActiveState")? == "inactive"
-        // CLD_KILLED, by SIGTERM: the services handle no signal.
+        // CLD_KILLED, by SIGTERM: the intake handles no signal, and the daemon ends its stop by it.
         && journal::property(unit, "ExecMainCode")? == "2"
         && journal::property(unit, "ExecMainStatus")? == "15")
 }

@@ -17642,7 +17642,7 @@ fn a_holder_killed_before_the_daemon_takes_the_command_leaves_no_command_running
 }
 
 #[test]
-fn without_a_daemon_the_command_fails_fast_and_never_runs() {
+fn without_a_daemon_the_command_fails_after_its_wait_and_never_runs() {
     let setup = Setup::new("gate-no-daemon");
 
     let done = acquire(&setup, "1", "echo ran > ran")

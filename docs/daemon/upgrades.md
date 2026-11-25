@@ -54,7 +54,8 @@ An edit of a key that only a restart applies, such as `[serve]`, puts the upgrad
 daemon restarted with it: nothing shows yet that a daemon starts with it.
 
 The transcript can lag behind a call by a moment. A tool call the agent makes while the daemon is
-down waits up to 30 seconds, as in an upgrade by hand. A call in flight at the stop can still fail.
+down waits up to 30 seconds, as in an upgrade by hand. A call in flight at the stop is answered first,
+within 20 seconds of it.
 
 ## The rehearsal
 
