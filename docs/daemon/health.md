@@ -93,7 +93,7 @@ from the room, measured as for admission, after the run's promise is released:
 | Cause | Found when | Action | Restarts when |
 | ----- | ---------- | ------ | ------------- |
 | `out of memory (<room>)` | the room has no memory for the agent | `wait for room` | the room check admits the run again |
-| `disk full (<room>)` | the room has no disk | `sweep`: a sweep runs at once, and the room is measured again | the disk is no longer short |
+| `disk full (<room>)` | the room has no disk | `sweep`: a sweep starts, the run waits for it to end, and the room is measured again | the disk is no longer short |
 | `the harness crashed` | the room has space | `restart` | at once |
 
 A cause that is gone, or that the room check will confirm gone before the run starts, makes the task

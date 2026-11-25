@@ -395,6 +395,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut grading = crate::gates::Grading::default();
     let every = factory.sweep().every.unwrap_or(SWEEP);
     let mut swept: Option<Instant> = None;
+    let mut sweeping = sweep::Sweeping::default();
     let mut reclaiming = sweep::Reclaim::default();
     let mut held: Option<Instant> = None;
     let mut alive = None;
@@ -486,6 +487,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             &mut entering,
             &mut attaching,
             &mut starting,
+            &mut sweeping,
         )?;
         // Committed first, so a crash before the kill leaves an ended run, not a lost one.
         for tmux in tools::over_budget_in_turn(&mut db, &trace, &mut peeked, &watched)? {
@@ -526,13 +528,16 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             crate::held::tick(&mut db, &trace, intake::now()?)?;
         }
         ticks::phase("sweep");
-        let due = swept.is_none_or(|at| at.elapsed() >= every);
-        if due {
+        let due = swept.is_none_or(|at| at.elapsed() >= every) || sweeping.asked();
+        if due && sweeping.start(&db, factory, &home)? {
             swept = Some(Instant::now());
-            sweep::run(&db, factory, &home)?;
             if let Some(limits) = &mut limits {
                 limits.check(&slice, &share, &home);
             }
+        }
+        let short = || room::measure(&home).is_ok_and(|room| crate::room::short_of_disk(&room));
+        let ended = sweeping.tick(&db, factory, &home, short)?;
+        if ended {
             sweep::measure(&home);
         }
         ticks::phase("reclaim");
@@ -540,12 +545,10 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             room::measure(&home)
                 .is_ok_and(|room| crate::room::under_reclaim(&room, factory.sweep().reclaim))
         };
-        reclaiming.tick(&mut db, factory, &home, &trace, due, under)?;
-        ticks::phase("retirement");
+        reclaiming.tick(&mut db, factory, &home, &trace, ended, under)?;
         // A retirement costs a worktree, so it waits for what the reclaim frees.
         if reclaiming.retires() {
-            let short = || room::measure(&home).is_ok_and(|room| crate::room::short_of_disk(&room));
-            sweep::retire(&db, factory, &home, short)?;
+            sweeping.retire(&db)?;
         }
         ticks::phase("upgrade");
         let working = !(commands.is_empty()
@@ -1497,6 +1500,7 @@ fn tend(
     entering: &mut Entering,
     attaching: &mut Vec<crate::attach::Attaching>,
     starting: &mut HashMap<i64, Option<slice::Cpu>>,
+    sweeping: &mut sweep::Sweeping,
 ) -> Result<(), Error> {
     let factory = trace.factory;
     let live = state::live(db)?;
@@ -1524,6 +1528,13 @@ fn tend(
             if tools::gone(db, &run.session, trace)? {
                 continue;
             }
+            // A sweep can free the disk the run exited on. It takes several ticks.
+            if run.ready
+                && !tools::spent(db, run.id)?
+                && sweeping.repairs(run.id, || disk_short(db, factory, share, home, &run))?
+            {
+                continue;
+            }
             let reason = format!(
                 "run {} exited: {} no longer runs in tmux session {}",
                 run.id,
@@ -1538,7 +1549,14 @@ fn tend(
             let repair = if tools::spent(db, run.id)? {
                 None
             } else {
-                Some(diagnose(db, factory, share, home, &run.agent)?)
+                Some(diagnose(
+                    db,
+                    factory,
+                    share,
+                    home,
+                    &run.agent,
+                    sweeping.repaired(run.id),
+                )?)
             };
             tools::fail(db, trace, run.task, run.id, &reason, repair.as_ref())?;
         } else if let Some((ended_as, reason, missed)) = verdict(
@@ -1733,42 +1751,58 @@ fn watched(name: &str) -> bool {
     runtime::clients(name).is_none_or(|clients| clients > 0)
 }
 
-/// Classifies why a run's agent exited; the admission's room check holds a memory restart.
+/// What a `Short` says is missing, such as `10.0 GB of disk free, keeps 20.0 GB free`.
+fn missing(short: &crate::room::Short) -> String {
+    short
+        .reason
+        .trim_start_matches("waits for room: ")
+        .to_owned()
+}
+
+/// Why `run` exited, when the disk is too short to start its agent again.
+fn disk_short(
+    db: &Connection,
+    factory: &Factory,
+    share: &Share,
+    home: &Path,
+    run: &state::LiveRun,
+) -> rusqlite::Result<Option<String>> {
+    let need = crate::room::need(factory.agents.get(&run.agent).map(|agent| &agent.value));
+    let promised = state::promised_with(db, factory, Some(run.task), crate::usage::memory)?;
+    Ok(room::measure(home)
+        .ok()
+        .and_then(|room| crate::room::wait(&room, share, promised, need))
+        .filter(|short| short.resource == "disk")
+        .map(|short| format!("disk full ({})", missing(&short))))
+}
+
+/// Classifies why a run's agent exited; the admission's room check holds a memory restart. `swept`
+/// is the cause a sweep just ran for.
 fn diagnose(
     db: &Connection,
     factory: &Factory,
     share: &Share,
     home: &Path,
     agent: &str,
+    swept: Option<String>,
 ) -> Result<Repair, Error> {
     let need = crate::room::need(factory.agents.get(agent).map(|agent| &agent.value));
-    let short = |db: &Connection| -> Result<Result<Option<crate::room::Short>, String>, Error> {
-        let promised = state::promised(db, factory)?;
-        Ok(room::measure(home).map(|room| crate::room::wait(&room, share, promised, need)))
-    };
-    let missing = |short: &crate::room::Short| {
-        short
-            .reason
-            .trim_start_matches("waits for room: ")
-            .to_owned()
-    };
-    match short(db)? {
+    let promised = state::promised(db, factory)?;
+    // An unreadable room confirms nothing.
+    let short = room::measure(home).map(|room| crate::room::wait(&room, share, promised, need));
+    if let Some(cause) = swept {
+        return Ok(Repair {
+            cause,
+            action: "sweep",
+            gone: short.is_ok_and(|short| short.is_none_or(|short| short.resource != "disk")),
+        });
+    }
+    match short {
         Ok(Some(found)) if found.resource == "memory" => Ok(Repair {
             cause: format!("out of memory ({})", missing(&found)),
             action: "wait for room",
             gone: true,
         }),
-        Ok(Some(found)) if found.resource == "disk" => {
-            sweep::run(db, factory, home)?;
-            // An unreadable room confirms nothing.
-            let gone =
-                short(db)?.is_ok_and(|after| after.is_none_or(|after| after.resource != "disk"));
-            Ok(Repair {
-                cause: format!("disk full ({})", missing(&found)),
-                action: "sweep",
-                gone,
-            })
-        }
         _ => Ok(Repair {
             cause: "the harness crashed".to_owned(),
             action: "restart",

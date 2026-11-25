@@ -6,8 +6,8 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::OnceLock;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex, OnceLock, TryLockError};
 use std::time::{Duration, Instant};
 
 use serde_json::json;
@@ -72,7 +72,12 @@ thread_local! {
 
 /// Runs `work`, whose `soon` commands share one `loop_timeout`.
 pub(crate) fn as_one<T>(work: impl FnOnce() -> T) -> T {
-    let before = ENDS.replace(Some(Instant::now() + loop_timeout()));
+    as_one_within(loop_timeout(), work)
+}
+
+/// As `as_one`, with `limit` for all of them.
+pub(crate) fn as_one_within<T>(limit: Duration, work: impl FnOnce() -> T) -> T {
+    let before = ENDS.replace(Some(Instant::now() + limit));
     let done = work();
     ENDS.set(before);
     done
@@ -757,6 +762,12 @@ pub fn worktree(
         })?;
         return Ok((path, branch, Added::Restored));
     }
+    let fetching = fetching(&clone);
+    let _fetching = match fetching.try_lock() {
+        Ok(guard) => guard,
+        Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        Err(TryLockError::WouldBlock) => return Err(sweep_fetches(repo)),
+    };
     let trunk = phased("fetch", || {
         // Before the fetch, which then brings the commit.
         let trunk = (vouch && from.is_none())
@@ -813,6 +824,19 @@ fn slow() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<String, (
     SLOW.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+static FETCHING: Mutex<std::collections::BTreeMap<PathBuf, Arc<Mutex<()>>>> =
+    Mutex::new(std::collections::BTreeMap::new());
+
+/// What a fetch of `clone` holds, since the sweep fetches on a thread.
+pub(crate) fn fetching(clone: &Path) -> Arc<Mutex<()>> {
+    FETCHING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .entry(clone.to_owned())
+        .or_default()
+        .clone()
+}
+
 fn fetched(repo: &str) {
     slow().remove(repo);
 }
@@ -835,8 +859,12 @@ fn fetch_reason(repo: &str) -> String {
     )
 }
 
+fn sweep_fetches(repo: &str) -> String {
+    format!("{FETCH_WAITS}{repo}: the sweep fetches it")
+}
+
 /// Why worktree `name` of `repo`, which a fetch would make, waits: the last fetch timed out a short
-/// while ago.
+/// while ago, or the sweep runs one.
 pub fn fetch_waits(home: &Path, repo: &str, name: &str) -> Option<String> {
     let waits = slow()
         .get(repo)
@@ -851,7 +879,16 @@ pub fn fetch_waits(home: &Path, repo: &str, name: &str) -> Option<String> {
             ]))
             .is_ok()
     };
-    (waits && !made()).then(|| fetch_reason(repo))
+    let fetching = fetching(&home.join("repos").join(repo));
+    let swept = matches!(fetching.try_lock(), Err(TryLockError::WouldBlock));
+    let reason = if waits {
+        fetch_reason(repo)
+    } else if swept {
+        sweep_fetches(repo)
+    } else {
+        return None;
+    };
+    (!made()).then_some(reason)
 }
 
 /// The head of `repo`'s default branch as GitHub has it. It runs outside the clone, whose refs and
@@ -2101,7 +2138,7 @@ fn seal(dir: &Path) -> std::io::Result<()> {
 /// Moves `path`, a worktree folder the daemon could not remove (a container can leave root-owned
 /// files under an ignored folder), into `home/trash`, so the task's worktree can be added back. A
 /// rename needs write access on the parent folder only.
-fn move_aside(home: &Path, path: &Path) -> Result<(), String> {
+pub(crate) fn move_aside(home: &Path, path: &Path) -> Result<(), String> {
     let trash = home.join("trash");
     fs::create_dir_all(&trash).map_err(|error| format!("{}: {error}", trash.display()))?;
     let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -2121,31 +2158,22 @@ fn move_aside(home: &Path, path: &Path) -> Result<(), String> {
 /// can hold a `PRIORY_HOME`: a user other than root cannot remove a sealed kit, plugin or memory
 /// folder with `fs::remove_dir_all` alone.
 pub fn remove_sealed(dir: &Path) {
-    unseal(dir, None);
+    unseal(dir);
     let _ = fs::remove_dir_all(dir);
 }
 
 /// Makes `dir` and every folder under it writable by its owner, so their files can be removed.
-/// False when it stopped at `deadline`.
-pub(crate) fn unseal(dir: &Path, deadline: Option<Instant>) -> bool {
-    let late = || deadline.is_some_and(|deadline| Instant::now() >= deadline);
+pub(crate) fn unseal(dir: &Path) {
     let mut folders = vec![dir.to_path_buf()];
     while let Some(folder) = folders.pop() {
-        if late() {
-            return false;
-        }
         if !fs::symlink_metadata(&folder).is_ok_and(|meta| meta.is_dir()) {
             continue;
         }
         let _ = fs::set_permissions(&folder, fs::Permissions::from_mode(0o755));
         for entry in fs::read_dir(&folder).into_iter().flatten().flatten() {
-            if late() {
-                return false;
-            }
             folders.push(entry.path());
         }
     }
-    true
 }
 
 /// Renames `staging` to `target`, and moves aside and removes what `target` held before.

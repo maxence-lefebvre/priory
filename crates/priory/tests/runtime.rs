@@ -18129,7 +18129,11 @@ fn a_clean_asleep_task_retires_when_disk_runs_short_and_resurrects_with_its_work
     let checks = statuses
         .lines()
         .filter(|line| line.contains("/1 ") && line.contains("--ignore-submodules=none"));
-    assert_eq!(checks.count(), 1, "a retirement checks once: {statuses}");
+    assert_eq!(
+        checks.count(),
+        2,
+        "a retirement checks on its thread and on the tick: {statuses}"
+    );
     let tasks = setup.until("tasks", |rows| rows[0][10] != "-");
     assert_eq!(tasks[0][4], "asleep");
     assert!(setup.branches().contains("priory/1"));

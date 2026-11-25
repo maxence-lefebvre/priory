@@ -5,7 +5,7 @@ use priory_runtime::runtime::timed_out;
 use priory_runtime::slice;
 use priory_runtime::worktrees::{self, Found, RECLAIM, Verdict, reclaim_folder};
 use rusqlite::{Connection, OptionalExtension};
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -13,34 +13,59 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 /// A task folder under `PRIORY_HOME/worktrees` and why it stays, or `None` when it can go.
-/// `retire` keeps the branch when the folder goes. `judged` is the reason git gave, which the
+/// `retire` keeps the branch when the folder goes. `judged` is the reason the checks gave, which the
 /// sweep records for the desk.
 struct Entry {
     found: Found,
     stays: Option<String>,
     retire: bool,
     judged: Option<String>,
+    /// The task's state and the worktree's HEAD when the sweep judged it.
+    state: String,
+    tip: Option<String>,
+    /// The walk of its files allows the removal.
+    walked: bool,
 }
 
-/// How `assess` learns why git keeps the worktree of an ended task.
+/// How `assess` learns why an ended task's worktree stays.
 enum Judge<'a> {
-    /// It asks git, as the sweep does.
-    Git,
+    /// It reads what the sweep's thread found.
+    Answers(&'a Answers),
     /// It reads what the last sweep recorded, as the desk does.
     Recorded(&'a Record),
 }
 
-/// The task a worktree folder is named after: `<task>`, or `<runner>-<task>` with runners.
+/// The worktree of an ended task, for the sweep's thread.
+struct Job {
+    found: Found,
+    /// The head commit of the task's merged pull request.
+    merged: Option<String>,
+    done: bool,
+    /// No teardown is left to run, so the walk of its files is the last one before the removal.
+    torn: bool,
+}
+
+/// What the thread found of one worktree. `walked` is `None` when nothing called for the walk.
+struct Answer {
+    verdict: Verdict,
+    walked: Option<Result<(), String>>,
+}
+
+type Answers = BTreeMap<PathBuf, Answer>;
+
+/// What the sweep's thread found: the repositories it did not fetch, and each worktree it judged.
+struct Judged {
+    unfetched: Vec<String>,
+    answers: Answers,
+}
+
+/// The task a worktree folder is named after.
 fn task_of(found: &Found) -> Option<i64> {
-    found.name.rsplit('-').next().and_then(|id| id.parse().ok())
+    worktrees::task_of(&found.name)
 }
 
 /// The patch scans one sweep runs, each a few seconds.
 const SCANS: usize = 2;
-
-/// How long each part of a sweep (its fetches, its checks, its removals) starts new work. What is
-/// left waits for the next sweep.
-const BUDGET: Duration = Duration::from_secs(30);
 
 /// When each clone was last fetched and each worktree last checked, so a sweep takes the oldest
 /// first and none starves.
@@ -52,194 +77,577 @@ fn tried() -> std::sync::MutexGuard<'static, BTreeMap<PathBuf, Instant>> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Why the folder stays whatever git says of it, or the ended state of its task.
+fn ended(db: &Connection, found: &Found) -> rusqlite::Result<Result<String, String>> {
+    let task = match task_of(found) {
+        Some(id) => db
+            .query_row(
+                "SELECT state, worktree FROM tasks WHERE id = ?1",
+                [id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .optional()?,
+        None => None,
+    };
+    Ok(match task {
+        None => Err(format!("no task {}", found.name)),
+        Some((_, tree)) if tree.as_deref() != found.path.to_str() => Err(format!(
+            "not recorded as the worktree of task {}",
+            found.name
+        )),
+        Some((state, _))
+            if matches!(
+                state.as_str(),
+                "queued" | "held" | "ready" | "running" | "asleep" | "blocked"
+            ) =>
+        {
+            Err(format!("kept while task {} is {state}", found.name))
+        }
+        Some((state, _)) => Ok(state),
+    })
+}
+
 fn assess(db: &Connection, home: &Path, judge: Judge) -> rusqlite::Result<Vec<Entry>> {
     let mut entries = Vec::new();
-    let mut all = worktrees::found(home);
-    let mut scans = SCANS;
-    // A check that timed out says the disk hangs, so the sweep asks git nothing more.
-    let mut hung = false;
-    let started = Instant::now();
-    if matches!(judge, Judge::Git) {
-        worktrees::forget_scans(home, &all);
-        let tried = tried();
-        all.sort_by_key(|found| tried.get(&found.path).copied());
-    }
-    for found in all {
-        let mut retire = false;
-        let mut judged = None;
-        let task = task_of(&found);
-        let task = task
-            .map(|id| {
-                db.query_row(
-                    "SELECT state, worktree FROM tasks WHERE id = ?1",
-                    [id],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
-                )
-                .optional()
-            })
-            .transpose()?
-            .flatten();
-        let stays = match task.as_ref().map(|(state, _)| state.as_str()) {
-            None => Some(format!("no task {}", found.name)),
-            Some(_)
-                if task.as_ref().and_then(|(_, tree)| tree.as_deref()) != found.path.to_str() =>
-            {
-                Some(format!(
-                    "not recorded as the worktree of task {}",
-                    found.name
-                ))
-            }
-            Some(state @ ("queued" | "held" | "ready" | "running" | "asleep" | "blocked")) => {
-                Some(format!("kept while task {} is {state}", found.name))
-            }
-            Some(state) => {
-                let verdict = match judge {
-                    Judge::Git if hung || started.elapsed() >= BUDGET => {
-                        Verdict::Keep("its checks wait for the next sweep".to_owned())
-                    }
-                    Judge::Git => {
-                        let verdict = verdict(db, home, &found, state == "done", &mut scans)?;
-                        hung = matches!(&verdict, Verdict::Keep(why) if timed_out(why));
-                        if verdict != Verdict::Keep(worktrees::SCAN_WAITS.to_owned()) {
-                            tried().insert(found.path.clone(), Instant::now());
-                        }
-                        verdict
-                    }
+    for found in worktrees::found(home) {
+        let mut entry = Entry {
+            found,
+            stays: None,
+            retire: false,
+            judged: None,
+            state: String::new(),
+            tip: None,
+            walked: false,
+        };
+        match ended(db, &entry.found)? {
+            Err(stays) => entry.stays = Some(stays),
+            Ok(state) => {
+                entry.state = state;
+                entry.judged = match judge {
+                    Judge::Answers(answers) => match answers.get(&entry.found.path) {
+                        None => Some("its checks wait for the next sweep".to_owned()),
+                        Some(answer) => judged(answer, &mut entry),
+                    },
                     Judge::Recorded(record) => record
-                        .get(&found.path.display().to_string())
-                        .and_then(|kept| kept.reason.clone())
-                        .map_or(Verdict::Remove, Verdict::Keep),
+                        .get(&entry.found.path.display().to_string())
+                        .and_then(|kept| kept.reason.clone()),
                 };
-                let teardown = || match task_of(&found).map(|id| recipe::teardown_of(db, id)) {
-                    Some(found) => Ok(match found? {
+                entry.stays = match (&entry.judged, task_of(&entry.found)) {
+                    (Some(reason), _) => Some(reason.clone()),
+                    (None, Some(task)) => match recipe::teardown_of(db, task)? {
                         Some(Teardown::Runs) => Some("teardown runs".to_owned()),
                         Some(Teardown::Failed(reason)) => Some(reason),
                         Some(Teardown::Done) | None => None,
-                    }),
-                    None => Ok::<_, rusqlite::Error>(None),
+                    },
+                    (None, None) => None,
                 };
-                match verdict {
-                    Verdict::Keep(stays) => {
-                        judged = Some(stays.clone());
-                        Some(stays)
-                    }
-                    Verdict::Remove => teardown()?,
-                    Verdict::Retire => {
-                        retire = true;
-                        teardown()?
-                    }
-                }
             }
-        };
-        entries.push(Entry {
-            found,
-            stays,
-            retire,
-            judged,
-        });
+        }
+        entries.push(entry);
     }
     Ok(entries)
 }
 
-/// What git says of the worktree of an ended task. A squash merge leaves the head of the task's
-/// merged pull request out of the default branch, so the inbox names it.
-fn verdict(
-    db: &Connection,
-    home: &Path,
-    found: &Found,
-    done: bool,
-    scans: &mut usize,
-) -> rusqlite::Result<Verdict> {
-    let head: Option<String> = db
-        .query_row(
-            "SELECT json_extract(data, '$.head_sha') FROM inbox
-             WHERE type = 'github.pull_request.closed' AND json_extract(data, '$.merged') = 1
-             AND json_extract(data, '$.repo') = ?1 AND json_extract(data, '$.head_branch') = 'priory/' || ?2
-             ORDER BY seq DESC LIMIT 1",
-            [&found.repo, &found.name],
-            |row| row.get(0),
-        )
-        .optional()?
-        .flatten();
-    Ok(worktrees::verdict(
-        home,
-        found,
-        head.as_deref(),
-        done,
-        scans,
-    ))
+/// Why the thread's `answer` keeps the worktree of `entry`, which takes what else it says.
+fn judged(answer: &Answer, entry: &mut Entry) -> Option<String> {
+    let tip = match &answer.verdict {
+        Verdict::Keep(reason) => return Some(reason.clone()),
+        Verdict::Remove { tip } => tip,
+        // A task revived and dropped since the check keeps its worktree.
+        Verdict::Retire { .. } if entry.state != "done" => {
+            return Some("its checks wait for the next sweep".to_owned());
+        }
+        Verdict::Retire { tip } => {
+            entry.retire = true;
+            tip
+        }
+    };
+    entry.tip = Some(tip.clone());
+    match &answer.walked {
+        Some(Err(reason)) => return Some(reason.clone()),
+        Some(Ok(())) => entry.walked = true,
+        None => {}
+    }
+    None
 }
 
-/// Removes the worktree and branch of every ended task that nothing keeps, after fetching each
-/// clone (see `fetch`), and after the repository's teardown succeeded in it. A teardown owed here
-/// starts at the daemon's next tick.
-pub fn run(db: &Connection, factory: &Factory, home: &Path) -> rusqlite::Result<()> {
-    crate::evidence::sweep(db, home)?;
-    let mut repos: Vec<_> = worktrees::found(home)
-        .into_iter()
-        .map(|found| found.repo)
-        .collect();
-    repos.dedup();
-    let unfetched = fetch(home, &repos, jiff::Timestamp::now());
-    let mut entries = assess(db, home, Judge::Git)?;
-    record(home, &entries);
-    let mut refused = false;
-    let mut hung = false;
+/// The worktrees the sweep's thread judges. A squash merge leaves the head of the task's merged pull
+/// request out of the default branch, so the inbox names it.
+fn jobs(db: &Connection, factory: &Factory, all: Vec<Found>) -> rusqlite::Result<Vec<Job>> {
+    let mut jobs = Vec::new();
+    for found in all {
+        let (Ok(state), Some(task)) = (ended(db, &found)?, task_of(&found)) else {
+            continue;
+        };
+        let merged = db
+            .query_row(
+                "SELECT json_extract(data, '$.head_sha') FROM inbox
+                 WHERE type = 'github.pull_request.closed' AND json_extract(data, '$.merged') = 1
+                 AND json_extract(data, '$.repo') = ?1 AND json_extract(data, '$.head_branch') = 'priory/' || ?2
+                 ORDER BY seq DESC LIMIT 1",
+                [&found.repo, &found.name],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        jobs.push(Job {
+            merged,
+            done: state == "done",
+            torn: recipe::torn(db, factory, task, &found.repo)?,
+            found,
+        });
+    }
+    Ok(jobs)
+}
+
+/// Fetches the clone of each of `repos`, then judges the worktree of each job, the one checked
+/// longest ago first, and walks the files of one that may go. It takes as long as the disk and the
+/// network do, so call it off the tick.
+fn judge(home: &Path, repos: &[String], mut jobs: Vec<Job>) -> Judged {
+    let unfetched = fetch(home, repos, jiff::Timestamp::now());
     {
         let tried = tried();
-        entries.sort_by_key(|entry| tried.get(&removing(&entry.found.path)).copied());
+        jobs.sort_by_key(|job| tried.get(&job.found.path).copied());
     }
-    let started = Instant::now();
-    for entry in &mut entries {
-        if hung || started.elapsed() >= BUDGET || unfetched.contains(&entry.found.repo) {
-            continue;
+    let mut answers = Answers::new();
+    let mut scans = SCANS;
+    for job in jobs {
+        let verdict = worktrees::verdict(
+            home,
+            &job.found,
+            job.merged.as_deref(),
+            job.done,
+            &mut scans,
+        );
+        // A check that timed out says the disk hangs, so the sweep asks git nothing more.
+        let mut hung = matches!(&verdict, Verdict::Keep(why) if timed_out(why));
+        if verdict != Verdict::Keep(worktrees::SCAN_WAITS.to_owned()) {
+            tried().insert(job.found.path.clone(), Instant::now());
         }
-        // A teardown that failed stays failed until the factory's teardown changes.
-        let torn = match (&entry.stays, task_of(&entry.found)) {
-            (None, Some(task)) => {
-                recipe::teardown(db, factory, task, &entry.found.repo, &entry.found.path)?
+        let goes = job.torn
+            && !matches!(verdict, Verdict::Keep(_))
+            && !unfetched.contains(&job.found.repo);
+        // shortcut: one walk at a time, so a huge worktree delays the others; walk several at once when it shows.
+        let walked = goes.then(|| worktrees::removable(home, &job.found));
+        hung |= matches!(&walked, Some(Err(why)) if timed_out(why));
+        answers.insert(job.found.path, Answer { verdict, walked });
+        if hung {
+            break;
+        }
+    }
+    Judged { unfetched, answers }
+}
+
+/// How long the sweep's thread, or one walk or delete of it, runs before the loop stops waiting.
+const LATE: Duration = Duration::from_secs(10 * 60);
+
+/// A thread the loop waits for, tick by tick.
+struct Off<T> {
+    thread: JoinHandle<T>,
+    started: Instant,
+    late: bool,
+    what: String,
+}
+
+impl<T: Send + 'static> Off<T> {
+    fn new(what: String, work: impl FnOnce() -> T + Send + 'static) -> Off<T> {
+        Off {
+            thread: std::thread::spawn(work),
+            started: Instant::now(),
+            late: false,
+            what,
+        }
+    }
+
+    /// Whether it just ran past `LATE`, which is logged.
+    fn turns_late(&mut self) -> bool {
+        let turns = !self.late && self.started.elapsed() >= LATE;
+        if turns {
+            self.late = true;
+            eprintln!("priory daemon: {} takes over 10 minutes", self.what);
+        }
+        turns
+    }
+
+    /// Its answer, `None` when it panicked.
+    fn join(self) -> Option<T> {
+        let answer = self.thread.join().ok();
+        if answer.is_none() {
+            eprintln!("priory daemon: {} panicked", self.what);
+        }
+        answer
+    }
+}
+
+/// Retires one asleep task: the walk of its files.
+struct Retiring {
+    task: i64,
+    found: Found,
+    /// No teardown was left to run when the walk started.
+    torn: bool,
+    walk: Off<Result<(), String>>,
+}
+
+/// Removes the worktree and branch of every ended task that nothing keeps, after fetching each clone
+/// (see `fetch`), and after the repository's teardown succeeded in it. A teardown owed here starts
+/// at the daemon's next tick. A thread fetches, judges and walks, and another deletes. The tick
+/// checks one worktree again and moves it aside.
+#[derive(Default)]
+pub(crate) struct Sweeping {
+    /// The sweeps started, and the last one that ended or was late.
+    started: u64,
+    ended: u64,
+    judging: Option<Off<Judged>>,
+    entries: Vec<Entry>,
+    /// What may go, as indexes of `entries`.
+    next: VecDeque<usize>,
+    open: bool,
+    deleting: Option<Off<()>>,
+    /// The asleep tasks that may retire, longest asleep first.
+    asleep: VecDeque<(i64, String)>,
+    retiring: Option<Retiring>,
+    /// Each run that exited on a short disk, the sweep its repair waits for, and the cause.
+    repairs: HashMap<i64, (u64, String)>,
+}
+
+impl Sweeping {
+    /// Whether a sweep or a retirement is under way.
+    fn busy(&self) -> bool {
+        self.open || self.deleting.is_some() || self.retiring.is_some() || !self.asleep.is_empty()
+    }
+
+    /// Whether the repair of `run` waits for a sweep. `short` says why the disk keeps the run from
+    /// starting again, which asks for one.
+    pub(crate) fn repairs(
+        &mut self,
+        run: i64,
+        short: impl FnOnce() -> rusqlite::Result<Option<String>>,
+    ) -> rusqlite::Result<bool> {
+        if let Some((sweep, _)) = self.repairs.get(&run) {
+            return Ok(self.ended < *sweep);
+        }
+        let cause = short()?;
+        let waits = cause.is_some();
+        if let Some(cause) = cause {
+            self.repairs.insert(run, (self.started + 1, cause));
+        }
+        Ok(waits)
+    }
+
+    /// Why `run` exited, when a sweep ran to repair it.
+    pub(crate) fn repaired(&mut self, run: i64) -> Option<String> {
+        self.repairs.remove(&run).map(|(_, cause)| cause)
+    }
+
+    /// Whether a repair waits for a sweep that did not start.
+    pub(crate) fn asked(&self) -> bool {
+        self.repairs
+            .values()
+            .any(|(sweep, _)| *sweep > self.started)
+    }
+
+    /// Starts a sweep, unless one or a retirement is under way.
+    pub(crate) fn start(
+        &mut self,
+        db: &Connection,
+        factory: &Factory,
+        home: &Path,
+    ) -> rusqlite::Result<bool> {
+        if self.busy() {
+            return Ok(false);
+        }
+        crate::evidence::sweep(db, home)?;
+        let all = worktrees::found(home);
+        worktrees::forget_scans(home, &all);
+        let mut repos: Vec<_> = all.iter().map(|found| found.repo.clone()).collect();
+        repos.dedup();
+        let jobs = jobs(db, factory, all)?;
+        let home = home.to_path_buf();
+        self.judging = Some(Off::new("the sweep's check of the worktrees".to_owned(), {
+            move || judge(&home, &repos, jobs)
+        }));
+        self.started += 1;
+        self.open = true;
+        Ok(true)
+    }
+
+    /// Takes the sweep, or the retirement after it, one step on: at most one worktree goes. Returns
+    /// whether the sweep just ended, or is late. `short` says the disk is short, which a retirement
+    /// ends with.
+    pub(crate) fn tick(
+        &mut self,
+        db: &Connection,
+        factory: &Factory,
+        home: &Path,
+        short: impl FnOnce() -> bool,
+    ) -> rusqlite::Result<bool> {
+        if let Some(mut deleting) = self.deleting.take() {
+            if deleting.thread.is_finished() {
+                deleting.join();
+            } else if !deleting.turns_late() {
+                self.deleting = Some(deleting);
+                return Ok(false);
             }
-            (Some(_), Some(task))
-                if matches!(recipe::teardown_of(db, task)?, Some(Teardown::Failed(_))) =>
-            {
-                recipe::teardown(db, factory, task, &entry.found.repo, &entry.found.path)?;
+        }
+        if let Some(mut judging) = self.judging.take() {
+            if !judging.thread.is_finished() {
+                let late = judging.turns_late();
+                if late {
+                    self.ended = self.started;
+                }
+                self.judging = Some(judging);
+                return Ok(late);
+            }
+            if let Some(judged) = judging.join() {
+                self.judged(db, factory, home, judged)?;
+            }
+            return Ok(false);
+        }
+        if let Some(entry) = self.next.pop_front() {
+            self.remove(db, factory, home, entry)?;
+            return Ok(false);
+        }
+        if self.open {
+            self.open = false;
+            self.ended = self.started;
+            return Ok(true);
+        }
+        self.retire_next(db, factory, home, short)?;
+        Ok(false)
+    }
+
+    /// Records what the thread found, and lists what may go.
+    fn judged(
+        &mut self,
+        db: &Connection,
+        factory: &Factory,
+        home: &Path,
+        judged: Judged,
+    ) -> rusqlite::Result<()> {
+        self.entries = assess(db, home, Judge::Answers(&judged.answers))?;
+        record(home, &self.entries);
+        let mut next: Vec<usize> = Vec::new();
+        for (at, entry) in self.entries.iter().enumerate() {
+            let Some(task) = task_of(&entry.found) else {
+                continue;
+            };
+            let kept = entry.judged.is_some() || entry.state.is_empty();
+            if judged.unfetched.contains(&entry.found.repo) {
                 continue;
             }
-            _ => continue,
-        };
-        if !matches!(torn, Teardown::Done) {
-            continue;
-        }
-        // Read after the teardown, right before the removal.
-        let busy = match task_of(&entry.found) {
-            Some(task) => busy(db, task, "'done', 'failed', 'dropped'")?,
-            None => None,
-        };
-        let removed = if let Some(reason) = busy {
-            Err(reason)
-        } else if entry.retire {
-            worktrees::retire(home, &entry.found)
-        } else {
-            worktrees::remove(home, &entry.found)
-        };
-        if let Err(error) = removed {
-            hung = timed_out(&error);
-            tried().insert(removing(&entry.found.path), Instant::now());
-            eprintln!(
-                "priory daemon: removing {}: {error}",
-                entry.found.path.display()
-            );
-            if entry.found.path.exists() {
-                refused = true;
-                entry.stays = Some(error.clone());
-                entry.judged = Some(error);
+            // A teardown that failed stays failed until the factory's teardown changes.
+            if matches!(recipe::teardown_of(db, task)?, Some(Teardown::Failed(_)))
+                && !entry.state.is_empty()
+            {
+                recipe::teardown(db, factory, task, &entry.found.repo, &entry.found.path)?;
+            } else if !kept && entry.stays.is_none() {
+                next.push(at);
             }
         }
+        let tried = tried();
+        next.sort_by_key(|at| tried.get(&removing(&self.entries[*at].found.path)).copied());
+        self.next = next.into();
+        Ok(())
     }
-    if refused {
-        record(home, &entries);
+
+    /// Moves aside the worktree of `entries[at]`, or owes its teardown.
+    fn remove(
+        &mut self,
+        db: &Connection,
+        factory: &Factory,
+        home: &Path,
+        at: usize,
+    ) -> rusqlite::Result<()> {
+        let entry = &self.entries[at];
+        let Some(task) = task_of(&entry.found) else {
+            return Ok(());
+        };
+        let path = entry.found.path.clone();
+        let taken = match busy(db, task, &format!("'{}'", entry.state))? {
+            Some(reason) => Err(reason),
+            None => {
+                let torn = recipe::teardown(db, factory, task, &entry.found.repo, &path)?;
+                // The walk of one that was owed a teardown comes at the next sweep.
+                if !matches!(torn, Teardown::Done) || !entry.walked {
+                    return Ok(());
+                }
+                // Only this thread starts runs, so none starts between these checks and the move.
+                worktrees::take(home, &entry.found, entry.tip.as_deref())
+            }
+        };
+        match taken {
+            Ok(taken) => {
+                if !entry.retire
+                    && let Err(error) = worktrees::remove_branch(home, &entry.found)
+                {
+                    eprintln!("priory daemon: removing {}: {error}", path.display());
+                }
+                self.delete(home, taken);
+            }
+            Err(error) => {
+                tried().insert(removing(&path), Instant::now());
+                eprintln!("priory daemon: removing {}: {error}", path.display());
+                if timed_out(&error) {
+                    self.next.clear();
+                }
+                if path.exists() {
+                    let entry = &mut self.entries[at];
+                    entry.stays = Some(error.clone());
+                    entry.judged = Some(error);
+                    record(home, &self.entries);
+                }
+            }
+        }
+        Ok(())
     }
-    Ok(())
+
+    /// Deletes what a tick moved aside, on a thread.
+    fn delete(&mut self, home: &Path, taken: worktrees::Taken) {
+        let home = home.to_path_buf();
+        self.deleting = Some(Off::new(
+            "deleting a removed worktree".to_owned(),
+            move || {
+                if let Err(error) = worktrees::dispose(&home, &taken) {
+                    eprintln!("priory daemon: removing {error}");
+                }
+            },
+        ));
+    }
+
+    /// Retires asleep tasks, longest asleep first, while the disk is short: removes each clean
+    /// worktree and keeps its branch and sessions. A task that cannot retire gets the reason once.
+    pub(crate) fn retire(&mut self, db: &Connection) -> rusqlite::Result<()> {
+        if self.retiring.is_some() {
+            return Ok(());
+        }
+        let mut asleep = db
+            .prepare(
+                "SELECT id, worktree FROM tasks
+                 WHERE state = 'asleep' AND worktree IS NOT NULL ORDER BY changed, id",
+            )?
+            .query_map([], |row| Ok((row.get(0)?, row.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        // Those that failed go last, or they would starve those behind them.
+        let tried = tried();
+        asleep.sort_by_key(|(_, worktree)| tried.get(&removing(Path::new(worktree))).copied());
+        self.asleep = asleep.into();
+        Ok(())
+    }
+
+    fn retire_next(
+        &mut self,
+        db: &Connection,
+        factory: &Factory,
+        home: &Path,
+        short: impl FnOnce() -> bool,
+    ) -> rusqlite::Result<()> {
+        if let Some(mut retiring) = self.retiring.take() {
+            if retiring.walk.thread.is_finished() {
+                return self.retired(db, factory, home, retiring);
+            }
+            retiring.walk.turns_late();
+            self.retiring = Some(retiring);
+            return Ok(());
+        }
+        if self.asleep.is_empty() {
+            return Ok(());
+        }
+        if !short() {
+            self.asleep.clear();
+            return Ok(());
+        }
+        let mut found = worktrees::found(home);
+        while let Some((task, worktree)) = self.asleep.pop_front() {
+            let at = found.iter().position(|found| {
+                found.path.to_str() == Some(&worktree) && found.name == task.to_string()
+            });
+            let Some(at) = at else {
+                continue;
+            };
+            let found = found.swap_remove(at);
+            let (walked, home) = (found.clone(), home.to_path_buf());
+            self.retiring = Some(Retiring {
+                task,
+                torn: recipe::torn(db, factory, task, &found.repo)?,
+                walk: Off::new(format!("the walk of {worktree}"), move || {
+                    worktrees::removable(&home, &walked)
+                }),
+                found,
+            });
+            return Ok(());
+        }
+        Ok(())
+    }
+
+    /// Retires the task whose walk ended, when nothing keeps its worktree.
+    fn retired(
+        &mut self,
+        db: &Connection,
+        factory: &Factory,
+        home: &Path,
+        retiring: Retiring,
+    ) -> rusqlite::Result<()> {
+        let Retiring {
+            task,
+            found,
+            torn,
+            walk,
+        } = retiring;
+        let walked = walk
+            .join()
+            .unwrap_or_else(|| Err("its check panicked".to_owned()));
+        // Checked before the mark too, which clears the reason.
+        let mut stays = match walked {
+            Err(reason) => Some(reason),
+            Ok(()) => busy(db, task, "'asleep'")?,
+        };
+        if stays.is_none() {
+            // One teardown at a time: the next task's waits until this one retired and the disk
+            // is measured again.
+            match recipe::teardown(db, factory, task, &found.repo, &found.path)? {
+                // A teardown that ended after the walk started asks for another walk.
+                Teardown::Done if torn => {}
+                Teardown::Done | Teardown::Runs => {
+                    self.asleep.clear();
+                    return Ok(());
+                }
+                Teardown::Failed(reason) => stays = Some(reason),
+            }
+        }
+        if stays.is_none() {
+            // Marked first, so a crash before the removal leaves a mark on a worktree, not the reverse.
+            db.execute(
+                "UPDATE tasks SET retired = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), reason = NULL
+                 WHERE id = ?1",
+                [task],
+            )?;
+            match worktrees::take(home, &found, None) {
+                Ok(taken) => {
+                    self.delete(home, taken);
+                    return Ok(());
+                }
+                Err(reason) => {
+                    db.execute("UPDATE tasks SET retired = NULL WHERE id = ?1", [task])?;
+                    stays = Some(reason);
+                }
+            }
+        }
+        let stays = stays.expect("a task that did not retire has a reason");
+        tried().insert(removing(&found.path), Instant::now());
+        if timed_out(&stays) {
+            self.asleep.clear();
+        }
+        let reason = format!("cannot retire: {stays}");
+        // A task that woke during the walk keeps its own reason.
+        let reported = db.execute(
+            "UPDATE tasks SET reason = ?2 WHERE id = ?1 AND state = 'asleep' AND reason IS NOT ?2",
+            rusqlite::params![task, reason],
+        )?;
+        if reported > 0 {
+            eprintln!("priory daemon: task {task} {reason}");
+        }
+        Ok(())
+    }
 }
 
 /// What the sweep recorded of a folder that stays: why git keeps it, and its size in bytes.
@@ -494,7 +902,6 @@ fn fetch(home: &Path, repos: &[String], now: jiff::Timestamp) -> Vec<String> {
     let now = jiff::Timestamp::from_second(now.as_second()).unwrap_or(now);
     let mut unfetched = Vec::new();
     let mut hung = false;
-    let started = Instant::now();
     let mut oldest: Vec<&String> = repos.iter().collect();
     {
         let tried = tried();
@@ -502,7 +909,7 @@ fn fetch(home: &Path, repos: &[String], now: jiff::Timestamp) -> Vec<String> {
     }
     for repo in oldest {
         // One timeout says the network hangs: the other clones wait for the next sweep.
-        if hung || started.elapsed() >= BUDGET {
+        if hung {
             // Its refs from an earlier sweep still say what merged.
             let fresh = tried().contains_key(&fetched(home, repo));
             if !fresh {
@@ -967,94 +1374,6 @@ fn removing(worktree: &Path) -> PathBuf {
     worktree.join("removal")
 }
 
-/// Retires asleep tasks, longest asleep first, while `short` says the disk is short: removes each
-/// clean worktree and keeps its branch and sessions. A task that cannot retire gets the reason once.
-pub(crate) fn retire(
-    db: &Connection,
-    factory: &Factory,
-    home: &Path,
-    mut short: impl FnMut() -> bool,
-) -> rusqlite::Result<()> {
-    if !short() {
-        return Ok(());
-    }
-    let asleep = db
-        .prepare(
-            "SELECT id, worktree FROM tasks
-             WHERE state = 'asleep' AND worktree IS NOT NULL ORDER BY changed, id",
-        )?
-        .query_map([], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let found = worktrees::found(home);
-    let mut hung = false;
-    let started = Instant::now();
-    let mut asleep = asleep;
-    {
-        // Those that failed go last, or they would starve those behind them.
-        let tried = tried();
-        asleep.sort_by_key(|(_, worktree)| tried.get(&removing(Path::new(worktree))).copied());
-    }
-    for (task, worktree) in asleep {
-        if hung || started.elapsed() >= BUDGET {
-            return Ok(());
-        }
-        let Some(found) = found
-            .iter()
-            .find(|found| found.path.to_str() == Some(&worktree) && found.name == task.to_string())
-        else {
-            continue;
-        };
-        // Checked before the mark too, which clears the reason. Reading the teardown's state runs
-        // nothing, so the checks still hold after it.
-        let mut stays = worktrees::removable(home, found).err();
-        if stays.is_none() {
-            // One teardown at a time: the next task's waits until this one retired and the disk
-            // is measured again.
-            match recipe::teardown(db, factory, task, &found.repo, &found.path)? {
-                Teardown::Done => {}
-                Teardown::Runs => return Ok(()),
-                Teardown::Failed(reason) => stays = Some(reason),
-            }
-        }
-        if stays.is_none() {
-            stays = busy(db, task, "'asleep'")?;
-        }
-        if stays.is_none() {
-            // Marked first, so a crash before the removal leaves a mark on a worktree, not the reverse.
-            db.execute(
-                "UPDATE tasks SET retired = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), reason = NULL
-                 WHERE id = ?1",
-                [task],
-            )?;
-            stays = worktrees::remove_allowed(home, found).err();
-            if stays.is_some() {
-                db.execute("UPDATE tasks SET retired = NULL WHERE id = ?1", [task])?;
-            }
-        }
-        hung = stays.as_deref().is_some_and(timed_out);
-        if stays.is_some() {
-            tried().insert(removing(Path::new(&worktree)), Instant::now());
-        }
-        let Some(stays) = stays else {
-            if short() {
-                continue;
-            }
-            return Ok(());
-        };
-        let reason = format!("cannot retire: {stays}");
-        let reported = db.execute(
-            "UPDATE tasks SET reason = ?2 WHERE id = ?1 AND reason IS NOT ?2",
-            rusqlite::params![task, reason],
-        )?;
-        if reported > 0 {
-            eprintln!("priory daemon: task {task} {reason}");
-        }
-    }
-    Ok(())
-}
-
 /// Every worktree under `home` that stays: its path, its task when its name is one, and why, with
 /// the size the last walk measured. It reads why git keeps a folder from the last sweep's record,
 /// so it runs no git.
@@ -1088,6 +1407,7 @@ mod tests {
         db: Connection,
         factory: Factory,
         reclaim: Reclaim,
+        sweeping: Sweeping,
     }
 
     impl Home {
@@ -1111,6 +1431,7 @@ mod tests {
                 db: crate::state::memory(),
                 factory,
                 reclaim: Reclaim::default(),
+                sweeping: Sweeping::default(),
                 dir,
             }
         }
@@ -1187,6 +1508,40 @@ mod tests {
                     |row| row.get(0),
                 )
                 .unwrap()
+        }
+
+        /// One tick of the sweep, on a disk that is short. Returns whether the sweep ended.
+        fn sweep_tick(&mut self) -> bool {
+            self.sweeping
+                .tick(&self.db, &self.factory, &self.dir, || true)
+                .unwrap()
+        }
+
+        fn start_sweep(&mut self) -> bool {
+            self.sweeping
+                .start(&self.db, &self.factory, &self.dir)
+                .unwrap()
+        }
+
+        /// Runs a sweep to its end.
+        fn sweep(&mut self) {
+            assert!(self.start_sweep());
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while !self.sweep_tick() {
+                assert!(Instant::now() < deadline, "the sweep does not end");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        /// Runs a retirement to its end.
+        fn retire(&mut self) {
+            self.sweeping.retire(&self.db).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while self.sweeping.busy() {
+                assert!(Instant::now() < deadline, "the retirement does not end");
+                self.sweep_tick();
+                std::thread::sleep(Duration::from_millis(5));
+            }
         }
 
         /// Ticks once after a walk and asserts that nothing goes.
@@ -1665,7 +2020,7 @@ mod tests {
 
     #[test]
     fn a_retirement_keeps_the_worktree_of_a_task_in_use() {
-        let home = Home::new("in-use");
+        let mut home = Home::new("in-use");
         let exclude = home.dir.join("repos/o/r/.git/info/exclude");
         std::fs::write(exclude, "target\n").unwrap();
         let tree = home.task(1, "asleep");
@@ -1676,7 +2031,7 @@ mod tests {
                 [],
             )
             .unwrap();
-        retire(&home.db, &home.factory, &home.dir, || true).unwrap();
+        home.retire();
         assert!(tree.exists());
         let reason: String = home
             .db
@@ -1685,7 +2040,7 @@ mod tests {
         assert!(reason.contains("memory grant"), "{reason}");
 
         home.db.execute("DELETE FROM grants", []).unwrap();
-        retire(&home.db, &home.factory, &home.dir, || true).unwrap();
+        home.retire();
         assert!(!tree.exists());
     }
 
@@ -1697,11 +2052,24 @@ mod tests {
     }
 
     fn reasons(home: &Home) -> Vec<String> {
-        assess(&home.db, &home.dir, Judge::Git)
-            .unwrap()
+        swept(home)
             .into_iter()
             .map(|entry| entry.stays.unwrap_or_default())
             .collect()
+    }
+
+    /// What one sweep's thread says of each worktree, the one it would have checked first first.
+    fn swept(home: &Home) -> Vec<Entry> {
+        let mut jobs = jobs(&home.db, &home.factory, worktrees::found(&home.dir)).unwrap();
+        let order: Vec<PathBuf> = {
+            let tried = tried();
+            jobs.sort_by_key(|job| tried.get(&job.found.path).copied());
+            jobs.iter().map(|job| job.found.path.clone()).collect()
+        };
+        let judged = judge(&home.dir, &[], jobs);
+        let mut entries = assess(&home.db, &home.dir, Judge::Answers(&judged.answers)).unwrap();
+        entries.sort_by_key(|entry| order.iter().position(|path| *path == entry.found.path));
+        entries
     }
 
     fn ignoring_target(name: &str) -> Home {
@@ -1711,7 +2079,152 @@ mod tests {
             &home.dir.join("repos/o/r"),
             &["update-ref", "refs/remotes/origin/main", "HEAD"],
         );
+        // An origin that has the default branch alone.
+        git(
+            &home.dir,
+            &["clone", "-q", "--bare", "repos/o/r", "origin.git"],
+        );
+        let origin = home.dir.join("origin.git");
+        git(
+            &home.dir.join("repos/o/r"),
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
         home
+    }
+
+    #[test]
+    fn a_task_revived_and_dropped_during_the_check_keeps_its_pushed_worktree() {
+        let mut home = ignoring_target("revived");
+        let tree = unpushed(&home, 1);
+        git(&tree, &["update-ref", "refs/remotes/origin/x", "HEAD"]);
+        assert!(home.start_sweep());
+        home.db
+            .execute("UPDATE tasks SET state = 'dropped'", [])
+            .unwrap();
+        while !home.sweep_tick() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(tree.exists());
+        home.db
+            .execute("UPDATE tasks SET state = 'done'", [])
+            .unwrap();
+        home.sweep();
+        assert!(!tree.exists());
+    }
+
+    #[test]
+    fn no_tick_of_a_sweep_takes_2_seconds_and_each_removes_one_worktree_at_most() {
+        let mut home = ignoring_target("ticks");
+        let trees: Vec<PathBuf> = (1..=25).map(|task| home.task(task, "done")).collect();
+        for folder in 0..200 {
+            let folder = trees[0].join(format!("target/debug/{folder}"));
+            std::fs::create_dir_all(&folder).unwrap();
+            for file in 0..50 {
+                std::fs::write(folder.join(file.to_string()), "").unwrap();
+            }
+        }
+        let left = |trees: &[PathBuf]| trees.iter().filter(|tree| tree.exists()).count();
+        let mut hung: Option<(PathBuf, Vec<u8>)> = None;
+        let mut longest = Duration::ZERO;
+        // The second sweep's thread meets the hung git, and the third one none.
+        for sweep in 1..=3 {
+            if sweep == 3 {
+                let (index, read) = hung.as_ref().expect("a check hung");
+                std::fs::remove_file(index).unwrap();
+                std::fs::write(index, read).unwrap();
+            }
+            assert!(home.start_sweep());
+            let deadline = Instant::now() + Duration::from_secs(120);
+            loop {
+                let before = left(&trees);
+                let tick = Instant::now();
+                let ended = home.sweep_tick();
+                longest = longest.max(tick.elapsed());
+                assert!(before - left(&trees) <= 1, "one worktree per tick");
+                if ended {
+                    break;
+                }
+                if hung.is_none() && left(&trees) == 20 {
+                    let next = home.sweeping.next[0];
+                    let name = &home.sweeping.entries[next].found.name;
+                    // Git blocks on a fifo in place of the index, in the tick's own check.
+                    let index = home
+                        .dir
+                        .join(format!("repos/o/r/.git/worktrees/{name}/index"));
+                    let read = std::fs::read(&index).unwrap();
+                    std::fs::remove_file(&index).unwrap();
+                    runtime::run(Command::new("mkfifo").arg(&index)).unwrap();
+                    hung = Some((index, read));
+                }
+                assert!(Instant::now() < deadline, "the sweep does not end");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            if sweep < 3 {
+                assert!(left(&trees) > 0, "the hung check keeps its worktree");
+            }
+        }
+
+        assert!(longest < Duration::from_secs(2), "{longest:?}");
+        assert_eq!(left(&trees), 0);
+    }
+
+    #[test]
+    fn a_worktree_whose_task_woke_after_the_walk_stays() {
+        let mut home = ignoring_target("woke");
+        let tree = home.task(1, "asleep");
+        home.sweeping.retire(&home.db).unwrap();
+        home.sweep_tick();
+        let walk = &home.sweeping.retiring.as_ref().unwrap().walk;
+        until(|| walk.thread.is_finished());
+        home.db
+            .execute("UPDATE tasks SET state = 'ready', reason = 'woke'", [])
+            .unwrap();
+        home.sweep_tick();
+        assert!(tree.exists());
+        let (reason, retired): (String, Option<String>) = home
+            .db
+            .query_row("SELECT reason, retired FROM tasks", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!((reason.as_str(), retired), ("woke", None));
+
+        // As one that an ended task's sweep judged.
+        home.db
+            .execute("UPDATE tasks SET state = 'done'", [])
+            .unwrap();
+        assert!(home.start_sweep());
+        let judging = home.sweeping.judging.as_ref().unwrap();
+        until(|| judging.thread.is_finished());
+        home.sweep_tick();
+        home.db
+            .execute(
+                "INSERT INTO runs (task, step, tmux, session) VALUES (1, 'code', 't', 's')",
+                [],
+            )
+            .unwrap();
+        while !home.sweep_tick() {}
+        assert!(tree.exists());
+    }
+
+    #[test]
+    fn a_repair_waits_for_a_sweep_that_starts_after_it_was_asked() {
+        let mut home = ignoring_target("repair");
+        home.task(1, "done");
+        let short = || Ok(Some("disk full".to_owned()));
+        assert!(!home.sweeping.repairs(1, || Ok(None)).unwrap());
+        assert!(!home.sweeping.asked());
+        assert!(home.start_sweep());
+
+        assert!(home.sweeping.repairs(1, short).unwrap());
+        while !home.sweep_tick() {}
+        assert!(home.sweeping.asked(), "that sweep started before");
+        assert!(home.sweeping.repairs(1, short).unwrap());
+        home.sweep();
+
+        assert!(!home.sweeping.asked());
+        assert!(!home.sweeping.repairs(1, short).unwrap());
+        assert_eq!(home.sweeping.repaired(1).as_deref(), Some("disk full"));
     }
 
     #[test]
@@ -1736,10 +2249,10 @@ mod tests {
             &home.dir.join("repos/o/r"),
             &["update-ref", "refs/remotes/origin/x", "HEAD"],
         );
-        let order = assess(&home.db, &home.dir, Judge::Git).unwrap();
+        let order = swept(&home);
         let last = order[2].found.name.clone();
         assert_eq!(order[2].stays.as_deref(), Some(waits));
-        let order = assess(&home.db, &home.dir, Judge::Git).unwrap();
+        let order = swept(&home);
         assert_eq!(order[0].found.name, last, "not starved");
         assert_eq!(order[0].stays.as_deref(), Some("unpushed commits"));
     }
@@ -1762,7 +2275,7 @@ mod tests {
         assert_eq!(kept[1], "its checks wait for the next sweep");
         assert!(started.elapsed() < Duration::from_secs(45));
         assert!(first.exists());
-        let next = assess(&home.db, &home.dir, Judge::Git).unwrap();
+        let next = swept(&home);
         assert_eq!(next[0].found.name, "2");
         assert_eq!(next[0].stays, None);
     }
