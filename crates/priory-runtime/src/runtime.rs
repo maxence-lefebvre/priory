@@ -803,7 +803,7 @@ pub fn unpushed(home: &Path, worktree: &Path, branches: &[String]) -> Result<Vec
         ]))?;
         if !missing.trim().is_empty() {
             return Err(format!(
-                "{name} has commits origin lacks: push it first, since the other task takes over only what is pushed"
+                "{name} has commits origin lacks: push it first, or delete what you abandoned, since the other task takes over only what is pushed"
             ));
         }
     }

@@ -203,18 +203,12 @@ fn branches(tx: &Transaction, task: i64) -> rusqlite::Result<Result<Vec<String>,
     };
     let (home, worktree) = (runtime::home(), Path::new(&worktree));
     let pulls = crate::stack::of(tx, task)?;
-    // A merged or closed pull request's branch may be gone from origin for good.
-    let over = |branch: &String| {
-        pulls
-            .iter()
-            .any(|pull| pull.branch == *branch && pull.state != "open")
-    };
     let stacked = match runtime::stacked(&home, worktree, &own) {
         Ok(stacked) => stacked,
         Err(error) => return Ok(Err(error)),
     };
     let mut branches = vec![own];
-    branches.extend(stacked.into_iter().filter(|branch| !over(branch)));
+    branches.extend(stacked);
     for pull in pulls.iter().filter(|pull| pull.state == "open") {
         if !branches.contains(&pull.branch) {
             branches.push(pull.branch.clone());
