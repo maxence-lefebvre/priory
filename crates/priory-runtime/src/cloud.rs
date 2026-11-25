@@ -131,7 +131,15 @@ fn holds_unpushed_now(
 /// and a Priory worktree shares its clone with every other task.
 pub fn start(start: &Start) -> Result<Started, NotStarted> {
     let target = format!("{}:refs/heads/{}", start.head, start.branch);
-    let pushed = ["push", "--quiet", "origin", &target];
+    // A person's git settings may add tags or submodules, which nobody screened.
+    let pushed = [
+        "push",
+        "--quiet",
+        "--no-follow-tags",
+        "--no-recurse-submodules",
+        "origin",
+        &target,
+    ];
     remote(&start.worktree, &pushed, command_timeout())?;
     let found = remote_head(&start.worktree, &start.branch, command_timeout())?;
     if found.as_deref() != Some(&start.head) {
@@ -432,12 +440,14 @@ pub enum NotTaken {
 }
 
 /// Moves the worktree's own `branch` from `base`, where the session started, forward to the
-/// fetched `commit`. A push of `base` itself is no work yet.
+/// fetched `commit`, unless `live` says just before that the run ended. A push of `base` itself is
+/// no work yet.
 pub fn adopt(
     worktree: &Path,
     branch: &str,
     base: &str,
     commit: &str,
+    live: impl Fn() -> Result<bool, String>,
 ) -> Result<Option<Pushed>, NotTaken> {
     if commit == base {
         return Ok(None);
@@ -448,6 +458,9 @@ pub fn adopt(
         )));
     }
     let at = clean_head(worktree, branch).map_err(NotTaken::Later)?;
+    if !live().map_err(NotTaken::Later)? {
+        return Ok(None);
+    }
     // A daemon that stopped after the merge finds the branch at `commit` already.
     if at != commit {
         if at != base {
@@ -522,7 +535,7 @@ mod tests {
             sh(&[&name[..], &["commit-tree", &tree, "-m", message]].concat())
         };
         let (base, unrelated) = (commit("base"), commit("unrelated"));
-        let adopted = |commit: &str| adopt(&dir, "main", &base, commit);
+        let adopted = |commit: &str| adopt(&dir, "main", &base, commit, || Ok(true));
 
         assert!(matches!(adopted(&unrelated), Err(NotTaken::Never(_))));
         let missing = "1".repeat(40);

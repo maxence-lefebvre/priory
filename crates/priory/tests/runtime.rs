@@ -39469,14 +39469,15 @@ fn a_push_of_a_cancelled_cloud_run_moves_nothing() {
     setup.cloud_push(0);
     setup.start();
     faked_lines(&setup, "git-shas", 1);
-    setup.hold("git-hold-sha");
-    setup.written("fake/git-held");
+    // The second poll checks the worktree before it takes the push.
+    setup.hold("git-hang-status");
+    setup.written("fake/git-status-held");
 
     let cancelled = setup.priory(&["cancel", "1"]);
     assert!(cancelled.status.success(), "{cancelled:?}");
     setup.until("tasks", |rows| rows[0][4] == "dropped");
     std::thread::sleep(Duration::from_secs(2));
-    setup.release("git-hold-sha");
+    setup.release("git-hang-status");
 
     std::thread::sleep(Duration::from_secs(3));
     assert!(!worktree.join("cloud.txt").exists());
@@ -39502,6 +39503,50 @@ fn a_slow_worktree_check_delays_a_cloud_start_and_blocks_nothing() {
     setup.release("git-hang-status");
     setup.settings(CLOUD_ON);
     setup.cloud_started();
+}
+
+#[test]
+fn a_cloud_start_pushes_its_branch_and_no_tag() {
+    let mut setup = cloud("cloud-tags", CLOUD);
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.cloud_started();
+    setup.crash();
+    setup.cloud_push(0);
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+    let bare = setup.dir.join("origin/owner/repo.git");
+    for args in [
+        &["config", "push.followTags", "true"][..],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "tag",
+            "-am",
+            "Mine",
+            "mine",
+        ],
+    ] {
+        assert!(git(&worktree).args(args).status().unwrap().success());
+    }
+
+    let cancelled = setup.priory(&["cancel", "1"]);
+    assert!(cancelled.status.success(), "{cancelled:?}");
+    let revived = setup.priory(&["revive", "1", "--step", "implement"]);
+    assert!(revived.status.success(), "{revived:?}");
+    setup.until("runs", |rows| {
+        rows.iter().any(|row| row[4] == "session_01Fake2")
+    });
+
+    assert_eq!(
+        runtime_rev(&bare, "priory/1"),
+        runtime_rev(&worktree, "HEAD")
+    );
+    let tags = git(&bare).args(["tag", "--list"]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&tags.stdout), "");
 }
 
 #[test]
@@ -39541,8 +39586,15 @@ fn private_terms_stop_the_push_before_a_cloud_start() {
     .unwrap();
     drop(db);
     setup.start();
-    let revived = setup.priory(&["revive", "1", "--step", "implement"]);
-    assert!(revived.status.success(), "{revived:?}");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !setup
+        .priory(&["revive", "1", "--step", "implement"])
+        .status
+        .success()
+    {
+        assert!(Instant::now() < deadline, "the daemon never listened");
+        std::thread::sleep(Duration::from_millis(100));
+    }
 
     let tasks = setup.until("tasks", |rows| rows[0][4] == "blocked");
 

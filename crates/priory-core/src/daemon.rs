@@ -555,7 +555,8 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             && scripts.is_empty()
             && summarizing.is_empty()
             && stalls.calls.is_empty()
-            && deliveries.is_empty());
+            && deliveries.is_empty()
+            && !crate::cloud::polling());
         upgrader.tick(&mut db, &trace, &home, working);
         ticks::record(tick.elapsed());
         crate::watchdog::ended(&home);

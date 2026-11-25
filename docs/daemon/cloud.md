@@ -95,7 +95,7 @@ Neither prompts. The daemon takes the commit only when all of these hold:
 - it descends from the commit the session started at;
 - the worktree is on the task's branch, at that same commit, with nothing uncommitted.
 
-Then, off the tick and while the run is still live, it moves the branch forward with `git merge --ff-only --no-overwrite-ignore`, so a local file
+Then, off the tick and after it read once more that the run has not ended, it moves the branch forward with `git merge --ff-only --no-overwrite-ignore`, so a local file
 that git ignores is never replaced by one the push tracks, and stores the run's result as the run
 would with the `result` tool: outcome `pushed`, the commit's subject as the summary, its body as the
 evidence, and its SHA as the commit. It ends the turn as a `Stop` hook does, so the task moves by
@@ -123,7 +123,7 @@ A step with no `pushed` or `failed` outcome cannot store that result, so the tas
 summary and the refusal. `priory check` refuses such a step first.
 
 The daemon's self-upgrade waits for a cloud session that starts, and for any live run when the
-release migrates. It does not wait for a cloud run whose session started.
+release migrates. It does not wait for a cloud run whose session started, except while the daemon looks for its push.
 
 A daemon restart keeps a live cloud run: it has no tmux pane to lose, so it is never `lost`, and the
 next poll looks for its branch. A run stays what it started as when a person changes its agent's

@@ -9,8 +9,8 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 type Error = Box<dyn std::error::Error>;
@@ -45,8 +45,6 @@ static WATCHED: Mutex<BTreeMap<i64, Watch>> = Mutex::new(BTreeMap::new());
 struct Watch {
     polled: Option<Instant>,
     polling: Option<Receiver<Result<Found, NotTaken>>>,
-    /// Gone once the run ended, so a poll that still runs moves nothing.
-    live: Arc<()>,
     /// When its first poll past the deadline started.
     late: Option<Instant>,
     /// The last poll, past the deadline, found no push.
@@ -553,24 +551,15 @@ fn follow(
         };
         watch.polling = None;
         watch.absent = false;
-        let taken = match found {
+        watch.trouble = None;
+        match found {
             Ok(Found::Nothing) => {
                 watch.seen = None;
                 watch.absent = watch.late.is_some();
-                Ok(None)
             }
             // A push may be a first part of the work, or be replaced: the next poll confirms it.
-            Ok(Found::Seen(commit)) => {
-                watch.seen = Some(commit);
-                Ok(None)
-            }
-            Ok(Found::Taken(pushed)) => Ok(Some(pushed)),
-            Err(reason) => Err(reason),
-        };
-        watch.trouble = None;
-        match taken {
-            Ok(None) => {}
-            Ok(Some(pushed)) => {
+            Ok(Found::Seen(commit)) => watch.seen = Some(commit),
+            Ok(Found::Taken(pushed)) => {
                 end(
                     db,
                     trace,
@@ -651,15 +640,30 @@ fn follow(
         watch.polling = Some(receiver);
         let worktree = Path::new(&run.worktree).to_path_buf();
         let (branch, head) = (run.branch.clone(), run.head.clone());
-        let (seen, live) = (watch.seen.clone(), Arc::downgrade(&watch.live));
+        let (seen, id) = (watch.seen.clone(), run.id);
         std::thread::spawn(move || {
-            let found = look(&worktree, &pushes, &branch, &head, seen, || {
-                live.strong_count() > 0
-            });
+            let found = look(&worktree, &pushes, &branch, &head, seen, || still_live(id));
             let _ = sender.send(found);
         });
     }
     Ok(true)
+}
+
+/// Whether run `run` has not ended, as another thread reads it.
+fn still_live(run: i64) -> Result<bool, String> {
+    crate::state::read_only()?
+        .query_row(
+            "SELECT ended IS NULL FROM runs WHERE id = ?1",
+            [run],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())
+}
+
+/// Whether a poll works on a worktree, which an upgrade must not cut short.
+pub(crate) fn polling() -> bool {
+    let watched = WATCHED.lock().expect("no poll panics");
+    watched.values().any(|watch| watch.polling.is_some())
 }
 
 /// Polls `pushes`, and takes the commit a poll before found there as `seen`, while `live` says so.
@@ -669,7 +673,7 @@ fn look(
     branch: &str,
     head: &str,
     seen: Option<String>,
-    live: impl Fn() -> bool,
+    live: impl Fn() -> Result<bool, String>,
 ) -> Result<Found, NotTaken> {
     let Some(commit) = cloud::poll(worktree, pushes).map_err(NotTaken::Later)? else {
         return Ok(Found::Nothing);
@@ -680,10 +684,7 @@ fn look(
     if seen.as_ref() != Some(&commit) {
         return Ok(Found::Seen(commit));
     }
-    if !live() {
-        return Ok(Found::Nothing);
-    }
-    let taken = cloud::adopt(worktree, branch, head, &commit)?;
+    let taken = cloud::adopt(worktree, branch, head, &commit, live)?;
     Ok(taken.map_or(Found::Nothing, Found::Taken))
 }
 

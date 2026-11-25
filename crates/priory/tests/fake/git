@@ -7,13 +7,17 @@
 # FAKE_DIR/git-crash holds a subcommand, with hash-object's kind, such as `hash-object -t tree` or
 # `ls-files`, that git crashes on when it checks an `.envrc`, or `fetch` for every fetch.
 # git-hang-ls makes `ls-remote` hang, after it logs to git-ls.log what may prompt. git-no-commit
-# makes a fetch of a commit by its SHA fail, as a dropped connection does. git-hold-sha makes one wait
-# until it is gone, after it writes git-held. git-hang-status makes the status that lists every
-# untracked file hang, and git-hang-merge a merge.
+# makes a fetch of a commit by its SHA fail, as a dropped connection does. git-shas
+# gets a line per such fetch. git-hang-status makes the status that lists every untracked file wait
+# until it is gone, after it writes git-status-held, and git-hang-merge makes a
+# merge hang.
 case " $* " in
   *" status "*)
     echo "$*" >> "$FAKE_DIR/git-statuses"
-    if [ -e "$FAKE_DIR/git-hang-status" ] && [[ "$*" = *--untracked-files=all* ]]; then exec sleep 60; fi
+    if [ -e "$FAKE_DIR/git-hang-status" ] && [[ "$*" = *--untracked-files=all* ]]; then
+      echo held >> "$FAKE_DIR/git-status-held"
+      while [ -e "$FAKE_DIR/git-hang-status" ]; do sleep 0.1; done
+    fi
     ;;
   *" merge --quiet "*)
     if [ -e "$FAKE_DIR/git-hang-merge" ]; then echo merge >> "$FAKE_DIR/git-merging"; exec sleep 60; fi
@@ -25,10 +29,7 @@ case " $* " in
       echo 'fatal: the connection dropped' >&2
       exit 128
     fi
-    if [[ "$*" =~ [0-9a-f]{40} ]]; then
-      echo sha >> "$FAKE_DIR/git-shas"
-      while [ -e "$FAKE_DIR/git-hold-sha" ]; do echo held >> "$FAKE_DIR/git-held"; sleep 0.1; done
-    fi
+    if [[ "$*" =~ [0-9a-f]{40} ]]; then echo sha >> "$FAKE_DIR/git-shas"; fi
     ;;
   *" ls-remote "*)
     echo ls-remote >> "$FAKE_DIR/git-ls-remotes"
