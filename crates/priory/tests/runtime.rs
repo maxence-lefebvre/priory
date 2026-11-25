@@ -3960,7 +3960,7 @@ fn a_lane_window_that_opens_stops_no_running_task_and_shows_in_the_queue() {
     setup.publish(&requested_lane(42, "a/x"));
     setup.publish(&requested_lane(43, "a/x"));
     start_at(&mut setup, SATURDAY_10);
-    setup.until("tasks", |rows| with(rows, 4, "running") == 2);
+    setup.until("runs", |_| setup.replies().len() == 2);
     setup.crash();
 
     start_at(&mut setup, MONDAY_10);
@@ -32672,6 +32672,7 @@ fn a_failed_fetch_keeps_the_last_good_commit_and_says_so_on_the_desk() {
     setup.until("runs", |rows| {
         rows.first().is_some_and(|row| row[9] == good)
     });
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
     setup.crash();
     let bare = setup.dir.join("kit.git");
     let gone = setup.dir.join("kit-gone.git");
@@ -34936,6 +34937,7 @@ fn a_failed_memories_fetch_keeps_the_last_good_commit_and_says_so_on_the_desk() 
     setup.until("runs", |rows| {
         rows.first().is_some_and(|row| row[10] == good)
     });
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
     setup.crash();
     let bare = setup.dir.join("scriptorium.git");
     let gone = setup.dir.join("scriptorium-gone.git");
