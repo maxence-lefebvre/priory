@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, submitted, seenAgo, sentNote, shownGroups, snoozeShortcut, stillArmed, press, optionKey, takesText, openAsksOf, writeNote, shrunkHead, answeredAsks, confidenceNote, askHeading, askBody, cutAt, HEADING_MAX } from "./asks.js";
+import { ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, submitted, seenAgo, sentNote, shownGroups, snoozeShortcut, stillArmed, press, optionKey, dismissable, openAsksOf, planCut, planParts, planName, planUnread, planWait, plansFirst, writeNote, writeShown, shrunkHead, answeredAsks, confidenceNote, courseNote, askHeading, askBody, cutAt, HEADING_MAX } from "./asks.js";
 
 const now = Date.parse("2026-11-20T12:00:00Z");
 const ask = (id, fields) => ({ id, state: "open", snoozed_until: null, ...fields });
@@ -49,10 +49,10 @@ test("the detail says the lead is answering and that the first answer stands", (
   assert.equal(routedNote(ask(2)), null);
 });
 
-test("answeredBy names a person for the CLI and the server, the lead as agent:<lead>, auto, a session by its name, and nobody when unrecorded", () => {
+test("answeredBy names a person for the CLI and the server, the lead as agent:<lead>, auto, autopilot, a session by its name, and nobody when unrecorded", () => {
   assert.deepEqual(
-    ["cli", "serve", "agent:lead", "auto", "session:t9 8f3c2a10", null].map(answeredBy),
-    ["a person", "a person", "agent:lead", "auto", "session t9 8f3c2a10", null],
+    ["cli", "serve", "agent:lead", "auto", "autopilot", "session:t9 8f3c2a10", null].map(answeredBy),
+    ["a person", "a person", "agent:lead", "auto", "autopilot", "session t9 8f3c2a10", null],
   );
 });
 
@@ -123,10 +123,10 @@ test("a refused ask write says why, and a 504 or a dropped connection says to ch
   assert.equal(writeNote(500, {}, ago), "Could not send: the server answered 500.");
 });
 
-test("a step's ask takes only its options, so it offers no text and no dismissal; an agent's ask does", () => {
-  assert.equal(takesText(ask(1, { free_text: false })), false);
-  assert.equal(takesText(ask(2, { free_text: true })), true);
-  assert.equal(takesText(ask(3)), true);
+test("a step's ask offers no dismissal; an agent's ask does", () => {
+  assert.equal(dismissable(ask(1, { dismissable: false })), false);
+  assert.equal(dismissable(ask(2, { dismissable: true })), true);
+  assert.equal(dismissable(ask(3)), true);
 });
 
 test("another runner's ask names its runner, and this runner's ask names none", () => {
@@ -244,7 +244,7 @@ test("an answered ask carries its answer, confidence as bars, rationale, trade-o
   assert.deepEqual(auto, {
     id: 41, title: "Keep the full response for clients without a cursor", question: answered[0].question, answer: "every order, as today",
     at: "2026-11-20T11:22:00Z", answerer: "auto", by: "auto", confidence: "high", bars: 3,
-    rationale: "The brief asks for it in so many words.", tradeoff: "Large merchants keep timing out.", recommended: null,
+    rationale: "The brief asks for it in so many words.", why: null, tradeoff: "Large merchants keep timing out.", recommended: null,
   });
   assert.deepEqual([session.title, session.bars, session.rationale], ["Name the cursor parameter", 2, "The invoices endpoint already uses after."]);
   assert.deepEqual([person.title, person.confidence, person.bars, person.recommended], ["Pick the default page size", null, 0, "50"]);
@@ -254,6 +254,9 @@ test("an auto answer's confidence says it is the agent's own, and the level the 
   assert.equal(confidenceNote("high"), "confidence, the agent's own. The task answers at high and above.");
   assert.equal(confidenceNote("medium"), "confidence, the agent's own. The task answers at medium and above.");
   assert.equal(confidenceNote(null), "confidence, the agent's own.");
+  assert.equal(courseNote("auto", "high"), "The first answer stands. To change course, tell the agent.");
+  assert.equal(courseNote("autopilot", "high"), "Until the agent gets it, priory answer replaces it. After that, tell the agent.");
+  assert.equal(courseNote("autopilot", null), "To change course, cancel the task, then revive it at the plan's step.");
 });
 
 // An approval step's ask as Max's desk showed it on 2026-11-23: no title, and a 12-line question.
@@ -298,4 +301,59 @@ test("a title, or a question of one short line, is the heading itself, and the b
   const short = { ...untitled, question: "Merge #212 into main? Checks are green at a1f3c9e." };
   assert.equal(askHeading(short), short.question);
   assert.equal(askBody(short), null);
+});
+
+test("only an open ask that approves a plan leads with it", () => {
+  const ask = { id: 4, state: "open", kind: "step", approves_plan: true };
+  assert.equal(plansFirst(ask), true);
+  assert.equal(plansFirst({ ...ask, approves_plan: false }), false, "a merge, deploy or debate ask");
+  assert.equal(plansFirst({ ...ask, state: "answered" }), false);
+  assert.equal(plansFirst({ ...ask, runner: "desktop", submissions: [] }), false, "another runner's plan is not read here");
+});
+
+test("an approving ask is locked until its task was read with the plan of its own revision", () => {
+  const ask = { id: 4, revision: 2, state: "open", approves_plan: true };
+  const plan = (ask, revision) => ({ plan_file: { ask, revision, step: "groom", run: 9, files: [{ path: null, text: "D1", truncated: false }] } });
+  assert.equal(planUnread(ask, null), true);
+  assert.equal(planUnread(ask, { plan_file: null }), true);
+  assert.equal(planUnread(ask, plan(3, 2)), true, "an earlier ask's plan");
+  assert.equal(planUnread(ask, plan(4, 2)), false);
+  assert.equal(planUnread({ ...ask, revision: 3 }, plan(4, 2)), true, "the kept body of a re-raised ask");
+  assert.equal(planUnread({ ...ask, approves_plan: false }, null), false);
+});
+
+test("a plan lists each file it holds, else its result", () => {
+  const files = [{ path: "/w/7/.priory/plan.md", text: "P", truncated: false }, { path: "/w/7/.priory/brief.md", text: "B", truncated: false }];
+  assert.deepEqual(planParts({ files }).map(({ from, text }) => [from, text]), [[".priory/plan.md", "P"], [".priory/brief.md", "B"]]);
+  assert.equal(planParts({ step: "groom", run: 9, files: [{ path: null, text: "S" }] })[0].from, "groom, run 9");
+});
+
+test("a cut plan says so beside the options, with each cut file", () => {
+  const ask = { id: 4, revision: 2, state: "open", approves_plan: true };
+  const read = (...truncated) => ({ plan_file: { ask: 4, revision: 2, files: truncated.map((cut, i) => ({ path: `/w/${i}`, text: "", truncated: cut })) } });
+  assert.equal(planCut(ask, read(false, true)), "The plan is cut at 64 KB. Read the rest at /w/1 before you answer.");
+  assert.equal(planCut(ask, read(true, true)), "The plan is cut at 64 KB. Read the rest at /w/0 and /w/1 before you answer.");
+  assert.equal(planCut(ask, read(false)), null);
+  assert.equal(planCut(ask, null), null);
+});
+
+test("an ask's locked options say why", () => {
+  assert.equal(planWait({ revision: 2 }, null), "Reading the plan of revision 2 before you answer.");
+  assert.equal(planWait({ revision: 2 }, "timed out"), "Could not read the plan: timed out. It must load before you answer.");
+});
+
+test("a plan file is named from its worktree", () => {
+  assert.equal(planName("/home/me/worktrees/acme/shop/7/.priory/brief.md"), ".priory/brief.md");
+});
+
+test("Write waits for the plan as the options do, and a form opened before a new revision neither shows nor sends", () => {
+  const ask = { id: 4, revision: 2, state: "open", approves_plan: true };
+  const lock = (task) => (planUnread(ask, task) ? "plan" : null);
+  const read = (revision) => ({ plan_file: { ask: 4, revision, step: "groom", run: 9, files: [] } });
+  assert.equal(writeShown(false, lock(null), false), "disabled");
+  assert.equal(writeShown(true, lock(read(1)), false), "disabled", "the form opened on revision 1");
+  assert.equal(writeShown(true, "offline", false), "disabled");
+  assert.equal(writeShown(false, lock(read(2)), false), "button");
+  assert.equal(writeShown(true, lock(read(2)), false), "form");
+  assert.equal(writeShown(false, null, true), "disabled", "an answer is on its way");
 });

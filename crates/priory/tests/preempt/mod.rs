@@ -6,7 +6,7 @@ use super::*;
 const URGENT: &str = "name = \"demo\"\n\n[queue]\npreempt = [\"blocker\"]\n";
 
 /// `URGENT` with a `[serve]` that lets a person hold a run's keyboard.
-const URGENT_TYPE: &str = "name = \"demo\"\n\n[queue]\npreempt = [\"blocker\"]\n\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\nterminal = \"type\"\n";
+pub(super) const URGENT_TYPE: &str = "name = \"demo\"\n\n[queue]\npreempt = [\"blocker\"]\n\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\nterminal = \"type\"\n";
 
 /// Task 1's reason while its run waits for its turn end to stop for task 2.
 const MARKED: &str = "stops at its next turn end for task 2 (blocker)";
@@ -18,7 +18,7 @@ const STOPPED: &str = "Priory stopped your last run at the end of your turn to m
 const WAITS: &str = "waits for room: 8.0 GB of memory free, needs 4.0 GB and keeps 6.4 GB free";
 
 /// Two model steps of the implementer, so a result carries its process into the next one.
-const SAME_AGENT: &str = r#"
+pub(super) const SAME_AGENT: &str = r#"
 start = "implement"
 
 [[steps]]
@@ -39,7 +39,7 @@ next = { passed = "done", failed = "stop" }
 "#;
 
 /// One model step that pushes, which the factory lets run without a person.
-const SHIP: &str = r#"
+pub(super) const SHIP: &str = r#"
 start = "ship"
 
 [[steps]]
@@ -62,7 +62,7 @@ impl Setup {
     }
 
     /// Starts the daemon with the token a `[serve]` table names.
-    fn go(&mut self) {
+    pub(super) fn go(&mut self) {
         self.start_with(
             Path::new(env!("CARGO_BIN_EXE_priory")),
             &[("TEST_TOKEN", "token")],
@@ -70,7 +70,7 @@ impl Setup {
     }
 
     /// Writes `workflows/<name>.toml`.
-    fn workflow(&self, name: &str, workflow: &str) {
+    pub(super) fn workflow(&self, name: &str, workflow: &str) {
         fs::write(
             self.dir.join(format!("factory/workflows/{name}.toml")),
             workflow,
@@ -79,7 +79,7 @@ impl Setup {
     }
 
     /// Runs `sql` on the state file and returns the first column of its first row as text.
-    fn sql(&self, sql: &str) -> Option<String> {
+    pub(super) fn sql(&self, sql: &str) -> Option<String> {
         use rusqlite::types::Value;
         let value = rusqlite::Connection::open(self.dir.join("priory.db"))
             .unwrap()
@@ -94,7 +94,7 @@ impl Setup {
     }
 
     /// Holds task `task`'s keyboard, as `POST /api/runs/<run>/keyboard` does, until the year 9999.
-    fn hold_keyboard(&self, task: &str) {
+    pub(super) fn hold_keyboard(&self, task: &str) {
         rusqlite::Connection::open(self.dir.join("priory.db"))
             .unwrap()
             .execute(
@@ -108,9 +108,15 @@ impl Setup {
 
     /// Attaches a tmux client in control mode to task `task`'s session, as a person watching.
     fn watch(&self, task: &str) -> Child {
+        self.attach_client(task, &[])
+    }
+
+    fn attach_client(&self, task: &str, flags: &[&str]) -> Child {
         let client = self
             .command("tmux")
-            .args(["-C", "attach-session", "-t", &format!("=priory-{task}")])
+            .args(["-C", "attach-session"])
+            .args(flags)
+            .args(["-t", &format!("=priory-{task}")])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .spawn()
@@ -136,7 +142,7 @@ impl Setup {
     }
 
     /// The prompts queued or typed for task `id`, oldest first.
-    fn prompts(&self, id: &str) -> Vec<String> {
+    pub(super) fn prompts(&self, id: &str) -> Vec<String> {
         let db = rusqlite::Connection::open(self.dir.join("priory.db")).unwrap();
         let mut statement = db
             .prepare("SELECT text FROM outbox WHERE task = ?1 ORDER BY id")
@@ -158,7 +164,7 @@ fn blocker(issue: u64) -> Message {
 }
 
 /// `message`, routed to workflow `workflow`.
-fn on(workflow: &str, mut message: Message) -> Message {
+pub(super) fn on(workflow: &str, mut message: Message) -> Message {
     message.data["workflow"] = json!(workflow);
     message
 }
@@ -931,4 +937,27 @@ fn the_budget_inside_a_turn_ends_no_run_a_person_watches_in_tmux() {
     client.kill().unwrap();
     client.wait().unwrap();
     setup.overran();
+}
+
+#[test]
+fn the_budget_inside_a_turn_ends_a_run_with_only_a_read_only_client() {
+    let mut setup = Setup::with_workflow("budget-read-only-client", &budgeted("0.01"));
+    fs::write(setup.dir.join("factory/prices.toml"), DEAR).unwrap();
+    setup.calls(&[result("passed")]);
+    // The client attaches before the turn writes the tokens that pass the budget.
+    setup.hold("hold-submit");
+    setup.hold("hold-call");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/pending");
+    let mut client = setup.attach_client("1", &["-f", "read-only,ignore-size"]);
+
+    setup.release("hold-submit");
+
+    assert_eq!(
+        setup.until_task("failed"),
+        "step implement spent $0.011200, over its budget of $0.01"
+    );
+    assert_eq!(setup.rows("runs")[0][7], "budget");
+    client.wait().unwrap();
 }

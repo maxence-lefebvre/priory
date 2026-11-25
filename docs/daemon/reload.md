@@ -12,10 +12,12 @@ from:
   `instructions.md` and the guide `writing` names.
 - The `.toml`, `.yaml` and `.yml` files directly in `triggers/`, `workflows/`, `views/`,
   `scorers/`, `benchmarks/` and `runners/`.
-- Every file under `agents/`, `skills/` and `memories/`.
+- `agents/<name>/agent.md`.
+- Every file under each folder of `skills/`, hidden files included, as a skill's files are read.
+- Every file under `memories/`.
 
-It skips hidden entries such as `.git`, editor backups such as `foo.toml~` and `#foo.toml#`,
-`__pycache__/` and `node_modules/` folders, and does not follow a linked folder. Any other file in
+Outside `skills/`, it skips hidden entries such as `.git`, editor backups such as `foo.toml~` and
+`#foo.toml#`, and `__pycache__/` and `node_modules/` folders. It does not follow a linked folder. Any other file in
 the factory folder, such as one a `deliver` command writes, never reloads it.
 
 When the files changed, the daemon waits one more second. If nothing changed again, it compares
@@ -55,7 +57,10 @@ but they wait for a restart:
 | [`[kit]`](../reference/factory.md#kit), [`[memories]`](../reference/factory.md#memories) | The repositories each runner fetches |
 | `command_timeout` | The bound on every git, gh and tmux command |
 | [`[sweep]`](../reference/factory.md#sweep) `every` | How often the sweep runs |
-| `runners/` | This machine's runner and its share |
+| `runners/`, except `[memory]` | This machine's runner and its share |
+
+A runner file's [`[memory]`](../reference/runners.md) is live from the next poll of a waiting
+command, though the daemon prints `runners/ changed` for it too.
 
 When an edit changes one of them, the daemon prints `priory daemon: <key> changed: restart priory
 daemon to apply it`. The rest of the edit is live.
@@ -80,7 +85,8 @@ workflows/implement.toml: task 12 is at step approve, which this edit removes: e
 Each second, the daemon checks the held edit again. It applies the edit, with no new edit of the
 files, once no task is at a workflow or step it removes: when the task moves on, or after `priory
 cancel` ends it. A cancelled task can start again at a step the edit keeps, with `priory revive
-TASK --step STEP`. A new edit replaces the held one, and an edit back to the live files drops it.
+TASK --step STEP`. While a new edit waits its one second, the held edit waits too. A new edit
+replaces the held one, and an edit back to the live files drops it.
 
 ## Trace records
 

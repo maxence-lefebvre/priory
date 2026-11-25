@@ -514,7 +514,8 @@ linking to the task page, state and key. Then its 5 newest events as history row
 type in plain words in bold, such as "Linear issue updated" for `linear.issue.updated`, subject, the event's first line in `--text-2` under them, time), and "and 3 older"
 past that. Under them, the one action that routes the next event, by the task's state: the task
 page's **Revive** (armed, as there) for a failed or dropped task; **Request a task** for a done
-one, which opens the [Add](#add) sheet with the task's workflow and the group's `request_text`,
+one, which opens the [Add](#add) sheet with the task's workflow, or the default when the factory
+opts it out (one the factory lacks stays, and the daemon refuses it), and the group's `request_text`,
 whose GitHub or Linear URL makes the new task's key that resource (a Slack thread gets a
 `--text-2` line instead: "No new task can take this resource from here: start one from its
 thread."); **Subscribe task 12** for an active one (`POST /api/subscribe` with the revision the
@@ -555,8 +556,8 @@ with a pointer, and the `+` beside the Answer capsule opens it on a phone.
   `Enter` queues. A GitHub or Linear link in the text sets the repository and the key.
 - **The chips** read "Workflow implement", "Band today" and "Lane routed": the name in `--text-3`,
   the value in `--text` at 500, and `chevron-down`. Each opens the platform's own picker. Workflow
-  and Band start on the `[request]` defaults; Lane starts on "routed", which leaves the lane to the
-  factory's lane rules. Workflow lists the factory's workflows, Band its bands in order, and Lane
+  and Band start on the `[request]` defaults, and follow them until the person picks; Lane starts on "routed", which leaves the lane to the
+  factory's lane rules. Workflow lists the factory's requestable workflows, read each time the sheet opens, Band its bands in order, and Lane
   each lane a listed task carries. Chips are `--chip` tall with a `--control` target on a coarse
   pointer.
 - **Keys and targets.** `N` never fires inside a field or while the sheet is open. Every control is
@@ -565,6 +566,7 @@ with a pointer, and the `+` beside the Answer capsule opens it on a phone.
 | State   | What the person sees |
 | ------- | -------------------- |
 | empty   | The field and the chips; Add is disabled (`aria-disabled`, `--text-3` on `--raised`). |
+| swapped | Opened by **Request a task** for a workflow that is not requestable: a `--warn-text` line with `circle-alert`, "Workflow sweep is not requestable, so this starts the default, implement.", or "Workflow sweep is not requestable. Pick one." with no `[request]` default. It leaves once the person picks a workflow, discards the draft or adds the task. |
 | sending | The field turns read-only and Add reads "Adding…". |
 | refused | Under the field, in `--danger-text` with `circle-x`: "Could not add: " and the daemon's sentence. The text and chips stay. "Discard draft" appears. |
 | added   | The sheet shows the new task in place: its state tile, key in mono, workflow and state, the request, band and lane, with "Added. The task waits in the queue for its turn." Then "Add another" (secondary) and "Close" (primary). |
@@ -679,8 +681,8 @@ for a decision. Every ask has its own URL, such as `/asks/42`.
    "Recommended" under its label in `--text-3`, plus "Runs a command" when its answer runs one. In the drawer the options sit in one row, each with
    its key `1` to `9`.
 6. **Write an answer**: a ghost button that expands into a 16 px text field with a "Send"
-   button, on an ask that takes free text. A step's ask and a hold's ask take only their options,
-   so they show neither Write an answer nor Dismiss (`free_text` is false).
+   button, on every open ask. A step's ask and a hold's ask need an answer, so they show no
+   Dismiss (`dismissable` is false).
 7. **Dismiss** and the [snooze](#snooze) buttons: ghost buttons on the same line as "Write an
    answer". Dismiss closes the ask with no answer and sends at once, with no undo bar, as
    `priory dismiss` does. Snooze shows only on an ask that belongs to a task.
@@ -695,13 +697,20 @@ underline, with no fill.
    "What waits." as two facts with the `scale` and `hourglass` icons.
 2. **Brief**: the task's brief file as Markdown, with its file name and an open link.
 3. **Plan**: the task's plan as Markdown; a checklist shows done items with `check` in
-   `--ok-text`.
+   `--ok-text`. Each file of it has its own `.sh` line with its path.
 4. **PR**: the pull request summary (below).
 5. **Trace**: the runs that led to the ask, as a waterfall (below).
 6. **History**: the answer history (below).
 7. **Command**: for a command ask, the command and its target (below).
 
 A section the task lacks, such as a plan, is left out with its chip.
+
+An open ask that **approves a plan** puts Plan first, before Why, as the section the detail opens on.
+Its options are disabled until the plan of its revision on screen is read, under a `layers` note,
+"Reading the plan of revision 2 before you answer.", or "Could not read the plan: ..." when the read
+fails. The answer bar shows the same note. When a file is cut, a `.note.warn` under the options, in the
+answer bar and in the answer sheet says "The plan is cut at 64 KB. Read the rest at ... before you
+answer.".
 
 A **go ask**, the human step of a batch's planning task, reads the batch first. Its chips start with
 Plan, Closes and Splits, then Why and the task's other sections. Plan is the [lane graph](#batch-page-and-lane-graph) with
@@ -785,7 +794,8 @@ Ask text, briefs and plans render as sanitized Markdown, never as HTML (principl
 
 - The web view parses a subset itself: paragraphs, headings, bullet, numbered and check lists,
   bold, inline code, fenced code blocks, links and images. Anything else, raw HTML included, shows
-  as escaped text. A link or image whose target is not `https:` shows as its source text.
+  as escaped text. A fence line's other words show as a `.info` line in mono over the block, and only
+  a bare fence at least as long as the opening one closes it. A link or image whose target is not `https:` shows as its source text.
 - A check list's open item shows an empty box in `--text-3`.
 
 - Body in `--type-read`, at most `--measure` wide. Headings: h1 in `--type-read-h1`, h2 and h3 in
@@ -868,9 +878,8 @@ Settings, then Notifications, reached from More on a phone and from the Appearan
 screens. It turns Web Push on or off for this device. It holds:
 
 1. A screen title, "Notifications", in `--type-screen`.
-2. One sentence in `--text-2`: "Get a notification on this device when an agent asks you
-   something, or when a task is blocked or failed. It shows the ask's title and opens the ask. A
-   snoozed item sends nothing."
+2. One sentence in `--text-2`: "Get a notification on this device when something waits on you. It
+   shows a title and opens the item. A snoozed item sends nothing."
 3. A status note, a `role="status"` line, when there is something to say:
 
    | Status      | Note |
@@ -882,11 +891,21 @@ screens. It turns Web Push on or off for this device. It holds:
    | insecure    | "Notifications need HTTPS. Open Priory at its https address, such as the one tailscale serve gives, or at localhost on this machine." |
    | unsupported | "This browser cannot get notifications from a web page." |
 
-4. One button: "Turn on notifications", primary, while they are off; "Turn off notifications",
+4. While they are on, a `fieldset` named "Notify this device about", in `--type-read-h2`, with one
+   native checkbox per kind. A row is at least 60 px tall and wholly tappable, with a hairline above
+   it: a 20 px box in `--action`, the kind's name at 600, and a sentence in `--type-caption` and
+   `--text-2`. The kinds are Asks, Stopped tasks, Intake failures, Uncertain work, Spend caps, Landed
+   wrong and Queue stalls. A change applies at once. While it saves, the boxes are `aria-disabled`.
+   A refusal puts the box back and shows a `--warn-text` alert: "Could not save what this device
+   gets: why. Check that the daemon runs, then try again." A lost reply proves nothing, so the boxes
+   hide and the status note reads as unconfirmed. With no box checked, a note says "Nothing is
+   chosen, so this device gets no notification." Under it: "Each device keeps its own choice. A
+   change applies at once."
+5. One button: "Turn on notifications", primary, while they are off; "Turn off notifications",
    secondary, while they are on or unconfirmed. The permission prompt opens only from this tap,
    as iOS requires. A failure shows a `--warn-text` alert: "Could not turn on notifications: why.
    Check that the daemon runs, then try again."
-5. "Install Priory", secondary, only when the browser offers to install the view, with the note
+6. "Install Priory", secondary, only when the browser offers to install the view, with the note
    "Installing opens Priory in its own window, so notifications reach it with no tab open."
 
 The view never asks for the permission on its own: no banner and no prompt at load.
@@ -984,6 +1003,10 @@ What starts next and why. Saved views: Waiting, Held and Last day, each with a c
   it waits in `--text-3`, as a row's third line: the daemon's reason when it has one ("waits: priory is paused"), else
   "Ready: starts when a runner has room.", "Waits behind ENG-240 in band later.", "Waits behind
   band today." or "Waits for its turn: first in band today.".
+- **Lane caps**, a strip under Up next, has one line per lane with a `max_running`: the lane in
+  mono, then its live runs against the cap in force ("2 of 2 running", in `--warn-text` at the cap,
+  or "3 running, no cap now"). Under them, in `--text-3`, the cap and its window: "max_running 2
+  mon-fri 08:00-18:00, no cap outside". With no capped lane, the strip is left out.
 - Each waiting row ends with a **Move** menu, a `.btn secondary` at `--control-fine` height
   (`--control` on a coarse pointer). It opens a picker like the facet chips': To the top and Up one
   when a task is ahead in the band, Down one when one is behind, then To band X for each of the
@@ -1009,7 +1032,7 @@ What starts next and why. Saved views: Waiting, Held and Last day, each with a c
   level.
 - **Answered asks**, after Say: a `--type-body` heading with the count, "3, newest first", then
   one bordered card of rows split by hairlines, newest answer first. Each row has a 16 px icon for
-  who answered (`cog` for auto or a lead agent, `terminal` for a session, `user` for a person),
+  who answered (`cog` for auto, autopilot or a lead agent, `terminal` for a session, `user` for a person),
   the ask's title, "Answered **40** by a person. Recommended 50." with the recommendation only when
   another option won, and the age at the right. A session reads "by session `7f3c2a`" in mono.
   When the agent stated a confidence, a `--text-3` caption shows it as three bars, filled in
@@ -1017,7 +1040,10 @@ What starts next and why. Saved views: Waiting, Held and Last day, each with a c
   answer's row opens wider: its title in 600, "**high** confidence, the agent's own. The task
   answers at high and above.", then a `--raised` box of Why, Trade-off and The ask, then a caption
   "The first answer stands. To change course, tell the agent." with underlined links to Say and to
-  the ask. There is no overturn control: the daemon refuses a second answer.
+  the ask. There is no overturn control: the daemon refuses a second answer. An autopilot answer's
+  row opens the same way, without the task's level, and its box adds Autopilot: why it could answer.
+  Its caption reads "Until the agent gets it, priory answer replaces it. After that, tell the
+  agent.", or for a plan "To change course, cancel the task, then revive it at the plan's step."
 - **Actions**, in `.btn secondary`: Resume and Cancel for a blocked task, Revive for a failed or
   dropped one, Cancel for any other active task. Cancel and Revive arm on the first tap, as a
   command option does: the button turns `--emph`, reads "Tap again to cancel" over its verb, and a
@@ -1328,7 +1354,8 @@ with no change shows its line without an icon.
 
 - **Empty**: one sentence that says what appears here and what makes it appear, plus the action
   or CLI command. "No open asks. Agents ask here when they need you."
-- **Loading**: until the first listing arrives, the frame shows nothing. A page then shows one
+- **Loading**: until the first listing arrives, the frame says "Loading the desk…", or shows the
+  listing this device kept. A page then shows one
   sentence in the empty state's place, with the one verb "Loading" and what loads: "Loading task
   7…", "Loading the flows…". A list that loads its older rows ends with "Loading older runs…". The
   terminal says "Loading the screen…", and Herdr's panels say the same as the web. The ask's plan
@@ -1448,8 +1475,10 @@ the adapter lives and how it reads and acts, and [`docs/reference/herdr-panels.m
 - **Navigation.** Herdr owns tabs and panes, so a panel has no tab bar, rail or Answer capsule.
   `Enter` opens the selected row.
 - **Add.** The Desk and Queue panels open [Add](#add) as a card under their header, not as a
-  sheet: the field with Add and close buttons, then a row of chips per value, workflow, band and
-  lane, with a line that says what happened. `N` opens it.
+  sheet: the field with Add and close buttons, then a dropdown each for workflow, band
+  and lane, with a line that says what happened. Each dropdown is the facet chips' popover, at most
+  320 px tall and wide, and its first row clears the pick. The focus stays on the list and the arrow
+  keys move its highlight on `--raised`. Names truncate, at 160 px in the closed dropdown. `N` opens it.
 - **Overlays.** The answer sheet becomes a popover from the answer bar's "3 options". Secondary
   commands sit in a menu, opened by a `more-horizontal` button, and in a context menu. No command
   appears only on hover.
@@ -1531,7 +1560,7 @@ Every ask, with the web's ask detail fitted to the pane.
   question in its detail. An answered row and the history say who answered.
 - The detail keeps the web's order: context line, History line, heading, recommendation with what happens next,
   options with keys `1` to `9`, write an answer, then the section chips Why, Brief, Plan, PR,
-  Trace and History.
+  Trace and History. An ask that approves a plan leads with Plan, and waits for it as on the web.
 - Once the options scroll out of view, the sticky answer bar shows "3 options", the recommended
   option and the overflow menu.
 - On an ask that belongs to a task, the overflow menu offers Open task, which opens the
@@ -1638,7 +1667,9 @@ open it.
   its answerer's icon in `--text-2`, as on the web's Answered asks, with the age at the right and
   "Answered after by session 7f3c2a, medium" as its caption. An auto answer adds its three
   confidence bars and the word, its rationale in a bordered `--surface` box, and "The first answer
-  stands. Say to the agent to change course."
+  stands. Say to the agent to change course." An autopilot answer does too, with "Until the agent
+  gets it, priory answer replaces it. After that, say to the agent.", or for a plan "To change
+  course, cancel the task, then revive it at the plan's step."
 - Asks, Pull request, Inbox and History, each a caption heading with its count, then rows with an
   18 px tile and a `--type-small` line over a `--text-3` caption, split by hairlines. Inbox lists
   the latest 20 events routed to the task, newest first, with the web's tiles and wording and the

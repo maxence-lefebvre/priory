@@ -13,6 +13,7 @@ on. [metrics.md](../daemon/metrics.md) explains how each process samples and sen
 | `runs` | the daemon only, as for `log` |
 | `intake` | the intake, for its polls, and the daemon or `priory serve`, for the webhook deliveries its server takes. Only the intake sends `priory.intake.poll.age` |
 | `work` | the daemon only, as for `log` |
+| `room` | the daemon only, as for `log`. A daemon with `--view-only` starts no run and sends none |
 
 ## Resource
 
@@ -62,7 +63,7 @@ and as `<name>@<machine id>` when it reads on another.
 
 | Metric | Kind | Unit | Attributes | Value |
 | ------ | ---- | ---- | ---------- | ----- |
-| `priory.run.start.duration` | histogram | `s` | `priory.harness` = `claude-code`, `codex`; `priory.session` = `first`, `resume`; `outcome` = `ok`, `error` | from a run's `started`, to the second, to its `SessionStart`. `error` is a run that ended before one, up to its end: the trust dialog, 60 seconds with none, an exit. Counts the runs whose start ended since the daemon started |
+| `priory.run.start.duration` | histogram | `s` | `priory.harness` = `claude-code`, `codex`; `priory.session` = `first`, `resume`; `outcome` = `ok`, `error` | from a run's `started`, to the second, to its `SessionStart`. `error` is a run that ended before one, up to its end: the trust dialog, its window with none, an exit. Counts the runs whose start ended since the daemon started |
 | `priory.run.starts.active` | gauge | `{run}` | `priory.harness` | the live runs with no `SessionStart` yet. Each harness the factory's agents use has a point, 0 with none |
 | `priory.run.start.oldest.age` | gauge | `s` | `priory.harness` | the oldest of those, since its `started`; 0 with none |
 | `priory.worktree.phase.duration` | histogram | `s` | `priory.phase` = `clone`, `fetch`, `checkout`, `setup`, `resume`, `teardown`; `outcome` = `ok`, `error`, `timeout` | `clone`, `fetch` and `checkout` timed around their `git` commands as a task's worktree is added. `setup`, `resume` and `teardown` from the recipe's start to its end, `ok` for `exit 0`. `timeout` is a command past `command_timeout`, or a recipe past its `timeout` |
@@ -92,6 +93,25 @@ A counter has no point until it counts once, so a process that took no delivery 
 | `priory.cost` | counter | `USD` | `priory.workflow`; `gen_ai.agent.name`; `gen_ai.request.model` | the same records priced with `prices.toml`. A model with no price adds no cost |
 | `priory.spend.headroom` | gauge | `USD` | `priory.cap.scope` = `factory`, `trigger`, `lane`; `priory.cap.name`, the trigger or lane, absent for `factory`; `priory.cap.window` = `task`, `day`, `week` | each spend cap's limit less what it spent, as `priory costs` lists its caps. A `task` cap uses the most an active task under it spent. Below 0 past the cap |
 
+## room
+
+| Metric | Kind | Unit | Attributes | Value |
+| ------ | ---- | ---- | ---------- | ----- |
+| `priory.room.load` | gauge | `1` | | the 1-minute load |
+| `priory.room.load.limit` | gauge | `1` | | the cpu share × the CPUs the daemon may use. A load at or above it admits no run |
+| `priory.room.memory.available` | gauge | `By` | | `MemAvailable` |
+| `priory.room.memory.total` | gauge | `By` | | `MemTotal` |
+| `priory.room.memory.limit` | gauge | `By` | | the memory share × `MemTotal`: what agents may take together |
+| `priory.room.memory.promised` | gauge | `By` | | what live runs declared and do not use yet, without the memory grants hold |
+| `priory.room.disk.free` | gauge | `By` | | free disk on `PRIORY_HOME` |
+| `priory.room.disk.floor` | gauge | `By` | | the free disk the room keeps |
+| `priory.room.grants` | gauge | `{grant}` | `priory.grant.state` = `waiting`, `held` | the memory gate's grants. Each state has a point, 0 with none |
+| `priory.room.grants.memory` | gauge | `By` | `priory.grant.state` | the bytes those grants ask for or hold |
+| `priory.room.tasks.waiting` | gauge | `{task}` | `priory.room.cause` = `load`, `memory`, `disk`, `unmeasured` | the tasks waiting for room. A task behind the queue's head counts under the cause of the head. The head counts under the first it lacks of memory, disk and load. `unmeasured` is a room that cannot be measured. Each cause has a point, 0 with none. Absent while the head to start waits for its claim to reach the log |
+
+The daemon's thread fills the group, so a daemon's first request may hold none of it. While the room
+cannot be measured, the group sends only the grants, the promised memory and the tasks waiting.
+
 ## Dropped points
 
 | Metric | Kind | Unit | Attributes | Value |
@@ -102,11 +122,12 @@ A counter has no point until it counts once, so a process that took no delivery 
 
 | Message | Cause |
 | ------- | ----- |
-| `` priory <process>: PRIORY_METRICS names `<group>`, which is not a metrics group: the groups are process, log, runs, intake, work, or none `` | `PRIORY_METRICS` names an unknown group. The process does not start |
+| `` priory <process>: PRIORY_METRICS names `<group>`, which is not a metrics group: the groups are process, log, runs, intake, work, room, or none `` | `PRIORY_METRICS` names an unknown group. The process does not start |
 | `` priory <process>: metrics past metrics_cap = <n>: dropped <count> <kind> points `` | an interval had more points than the cap left room for |
 | `` priory <process>: sending metrics to <otlp> failed (<error>) `` | the endpoint refused a request or did not answer, logged once per error text |
 | `` priory <process>: metrics: cannot read the process's own use: <error> `` | the process could not read `/proc/self`, or `self` in `PRIORY_PROC`. The interval sends the rest |
 | `` priory daemon: metrics: cannot read the log's state: <error> `` | the daemon's metrics thread could not read the state file. The interval sends the rest |
 | `` priory daemon: metrics: cannot read the runs' state: <error> `` | the same, for the `runs` group. The interval sends the rest |
+| `` priory daemon: metrics: cannot measure the room: <error> `` | the daemon could not read the machine's memory, load or disk. The interval sends the grants, the promised memory, the tasks waiting and the rest |
 | `` priory daemon: metrics: cannot read the factory's work: <error> `` | the daemon's metrics thread could not read the state file, or `PRIORY_NOW` does not parse. The interval sends no `work` point and the rest |
 | `` priory intake: metrics: cannot read the intake's polls: <error> `` | the intake's metrics thread could not read the state file named by `PRIORY_DB`. The interval sends the rest |

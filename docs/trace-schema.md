@@ -53,7 +53,7 @@ such as a revert, arrives as a second record that points at the first. Each reco
 | `step`             | yes      | The step's id in the workflow                                         |
 | `decider`          | yes      | `code`, `model` or `human`                                            |
 | `effect`           | yes      | `none`, `read`, `reversible` or `irreversible`                        |
-| `outcome`          | yes      | The label that chose the next step, such as `approved` or `failed`    |
+| `outcome`          | yes      | The label that chose the next step, such as `approved` or `failed`. `written` for a person's written answer to a human step, which sends the task back to the model step it ran last that is neither irreversible nor a debate |
 | `grade`            | no       | For a `model` step whose outcome is `red`, `yellow` or `green`: that outcome |
 | `harness`, `model` | no       | For `model` steps                                                     |
 | `kit_hash`         | no       | For `model` steps: a hash of the factory's skills, instructions and memories the run got; absent when it got none of them. See [skills.md](daemon/skills.md) |
@@ -99,9 +99,9 @@ count these records, and not the debate step's own.
 
 ## `factory.run.trusted`
 
-What the daemon did about a harness's folder trust in one path of a run, when the factory sets
-`trust_worktrees`. A run gets one record for each path before it starts, and one more when its
-harness asks anyway. See [sessions.md](daemon/sessions.md#with-trust_worktrees).
+What the daemon did about a harness's or direnv's folder trust in one path of a run, when the
+factory sets `trust_worktrees`. A run gets one record for each path before it starts, one more
+when its harness asks anyway, and one when direnv fails before its harness starts. See [sessions.md](daemon/sessions.md#with-trust_worktrees).
 
 ```json
 {
@@ -128,12 +128,45 @@ harness asks anyway. See [sessions.md](daemon/sessions.md#with-trust_worktrees).
 
 | Field     | Required | Meaning |
 | --------- | -------- | ------- |
-| `harness` | yes      | `claude-code` or `codex` |
+| `harness` | yes      | `claude-code`, `codex`, or `direnv` for direnv's trust in a worktree's checked `.envrc` |
 | `path`    | yes      | The worktree or clone the trust covers |
-| `file`    | no       | The config the daemon wrote or read: Claude's `.claude.json`, or `$CODEX_HOME/priory-trust.config.toml` |
-| `outcome` | yes      | `granted` when the daemon wrote it, `present` when it was already there, `refused` when it wrote nothing, `missed` when the harness asked anyway |
-| `why`     | no       | For `refused`: why, such as a path outside Priory home or a repository the factory does not name. For `missed`: `the grant was gone from the config` when the harness overwrote it |
+| `file`    | no       | The config the daemon wrote or read: Claude's `.claude.json`, `$CODEX_HOME/priory-trust.config.toml`, or the run's `direnv/<session>/direnv.toml` in Priory home |
+| `outcome` | yes      | `granted` when the daemon wrote it, `present` when it was already there, `refused` when it wrote nothing, `missed` when the harness asked anyway, `failed` when direnv failed before the harness started, which then started without the `.envrc` |
+| `why`     | no       | For `refused`: why, such as a path outside Priory home, a repository the factory does not name, or an `.envrc` that a person denied, is untracked, or differs from the commit the task started from and from the default branch. For `missed`: `the grant was gone from the config` when the harness overwrote it. For `failed`: direnv's error, redacted, such as `direnv: error .envrc is blocked` |
 | `version` | no       | For `missed`: the first line of the harness's `--version` |
+
+## `factory.run.attach_failed`
+
+The factory's `[runs] attach` command did not open a run of a step with `attach = true`. The run
+goes on. See [sessions.md](daemon/sessions.md#opening-a-run-when-it-starts).
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d4-0000-7000-8000-000000000007",
+  "source": "factory://example/desktop",
+  "type": "factory.run.attach_failed",
+  "time": "2026-11-24T07:00:04Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "factory_revision": "999daf0",
+    "task": "0196f1b0-0000-7000-8000-000000000001",
+    "key": "schedule:nightly@2026-11-24T06:00:00Z",
+    "run": "0196f1b0-0000-7000-8000-000000000002",
+    "step": "implement",
+    "machine": "desktop",
+    "reason": "exit 1",
+    "output": "attach: hc is not on PATH; install herdr-core or fix the daemon's PATH"
+  }
+}
+```
+
+| Field    | Required | Meaning |
+| -------- | -------- | ------- |
+| `step`   | yes      | The step whose run did not open |
+| `reason` | yes      | `exit <code>`, `killed by a signal`, `timed out after 30s`, or why the command could not start |
+| `output` | no       | The tail of what the command printed, at most 2000 bytes, with the factory's secrets hidden |
 
 ## `factory.task.repaired`
 
@@ -214,6 +247,38 @@ it back on the task's branch. It shares `factory`, `factory_revision`, `workflow
 | `kept_branch`  | no       | The branch Priory made to keep the commits of a detached HEAD that no remote holds |
 | `kept_commits` | yes      | How many commits of the old HEAD no remote holds, as is or rebased. `kept_branch` keeps them, or `from_branch` when the HEAD was on a branch |
 
+## `factory.worktree.reclaimed`
+
+The sweep deleted one build output folder in an idle task's worktree, because free disk was under
+`[sweep] reclaim`. It shares `factory`, `factory_revision`, `workflow`, `task`, `key` and `machine`
+with `factory.step.ended`. See [sweep.md](daemon/sweep.md#reclaiming-build-output).
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d4-0000-7000-8000-00000000000a",
+  "source": "factory://example/desktop",
+  "type": "factory.worktree.reclaimed",
+  "time": "2026-11-23T19:30:02.412Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "factory_revision": "999daf0",
+    "workflow": "implement",
+    "task": "304",
+    "key": "github:example/app#20",
+    "machine": "desktop",
+    "path": "/home/me/.local/share/priory/worktrees/example/app/304/target",
+    "bytes": 6979321856
+  }
+}
+```
+
+| Field   | Required | Meaning                                                    |
+| ------- | -------- | ---------------------------------------------------------- |
+| `path`  | yes      | The folder the sweep deleted                               |
+| `bytes` | yes      | The disk its files took before the deletion, as `du` counts |
+
 ## `factory.run.preempted`
 
 A run ended at its turn end to make room for the head of the queue, in a band of `[queue]
@@ -256,8 +321,8 @@ names the stopped run and `task` its task.
 
 ## `factory.task.reopened`
 
-Feedback on a done task's open pull request, issue, Linear issue or Slack thread moved it back to a
-step, as its next generation.
+Feedback on a done task's open pull request, issue, Linear issue or Slack thread, or a `priory say`
+to it while its pull request is open, moved it back to a step, as its next generation.
 It shares `factory`, `factory_revision`, `workflow`, `task`, `key`, `generation`, `step` and
 `machine` with `factory.step.ended`. `generation` is the new one and `step` the step it went back to.
 
@@ -286,8 +351,8 @@ It shares `factory`, `factory_revision`, `workflow`, `task`, `key`, `generation`
 
 | Field          | Required | Meaning                                               |
 | -------------- | -------- | ----------------------------------------------------- |
-| `resource`     | yes      | The pull request, issue, Linear issue or Slack thread whose feedback reopened the task |
-| `pull_request` | no       | The pull request whose feedback reopened the task; absent for other feedback |
+| `resource`     | yes      | The pull request, issue, Linear issue or Slack thread whose feedback reopened the task, or the open pull request of one a `priory say` reopened |
+| `pull_request` | no       | The pull request whose feedback reopened the task, or the open pull request of one a `priory say` reopened; absent for other feedback |
 
 ## `factory.tool.denied`
 
@@ -814,6 +879,93 @@ met its task's `auto_answer` level (see [waits.md](daemon/waits.md#answered-by-a
 | `rationale`  | yes      | The agent's one-line reason                                      |
 | `level`      | yes      | The task's `auto_answer` level when the ask was stored           |
 
+## `factory.ask.autopilot_answered`
+
+The daemon answered an ask while a person had autopilot on (see
+[waits.md](daemon/waits.md#autopilot)). It shares `factory`, `factory_revision`, `workflow`, `task`,
+`key`, `generation`, `step` and `machine` with `factory.step.ended`.
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d6-0000-7000-8000-000000000010",
+  "source": "factory://example/desktop",
+  "type": "factory.ask.autopilot_answered",
+  "time": "2026-11-25T01:12:09Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "factory_revision": "999daf0",
+    "workflow": "implement",
+    "task": "14",
+    "key": "github:example/app#42",
+    "run": "31",
+    "generation": 1,
+    "step": "implement",
+    "machine": "desktop",
+    "ask": "14",
+    "revision": 1,
+    "option": "document --format",
+    "why": "its confidence, high, meets high, and a person decides again before any irreversible step",
+    "level": "high",
+    "window": 3,
+    "confidence": "high",
+    "rationale": "the flag duplicates --format"
+  }
+}
+```
+
+| Field                     | Required | Meaning                                                |
+| ------------------------- | -------- | ------------------------------------------------------ |
+| `ask`                     | yes      | The ask the daemon answered                            |
+| `revision`                | yes      | The revision it answered                               |
+| `option`                  | yes      | The option that became the answer                      |
+| `why`                     | yes      | Why the ask was eligible                               |
+| `level`                   | yes      | The level autopilot was on at                          |
+| `window`                  | yes      | The window, as `priory autopilot report` takes it      |
+| `run`                     | no       | The run that asked. A plan's ask has none              |
+| `confidence`, `rationale` | no       | What the agent stated. A plan's ask has neither        |
+| `grade`                   | no       | A plan's grade, `green`                                |
+
+## `factory.ask.autopilot_replaced`
+
+A person's answer took the place of autopilot's before the agent got it. It shares the same fields
+with `factory.step.ended` as `factory.ask.autopilot_answered`.
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d6-0000-7000-8000-000000000011",
+  "source": "factory://example/desktop",
+  "type": "factory.ask.autopilot_replaced",
+  "time": "2026-11-25T01:12:40Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "factory_revision": "999daf0",
+    "workflow": "implement",
+    "task": "14",
+    "key": "github:example/app#42",
+    "generation": 1,
+    "step": "implement",
+    "machine": "desktop",
+    "ask": "14",
+    "revision": 1,
+    "option": "drop --format",
+    "replaced": "document --format",
+    "by": "cli"
+  }
+}
+```
+
+| Field      | Required | Meaning                               |
+| ---------- | -------- | ------------------------------------- |
+| `ask`      | yes      | The ask the person answered           |
+| `revision` | yes      | The revision both answered            |
+| `option`   | yes      | The person's answer                   |
+| `replaced` | yes      | The answer autopilot gave             |
+| `by`       | yes      | Who answered, such as `cli` or `serve` |
+
 ## `factory.ask.session_answered` and `factory.ask.session_dismissed`
 
 A person's own session answered or dismissed an ask through the `answer` or `dismiss` tool of
@@ -1048,6 +1200,22 @@ after a reload, the new revision; after a refusal, the revision still live.
 | -------------- | -------- | ------------------------------------------------------------------ |
 | `restart_only` | reloaded | The keys the edit changed that wait for a restart, such as `[serve]`; empty for none |
 | `problems`     | refused  | Each problem, as `priory check` prints it, or each task the edit would strand |
+
+## `factory.upgrade.installed`, `factory.upgrade.rolled_back`, `factory.upgrade.put_off` and `factory.upgrade.refused`
+
+The daemon installed a newer release by itself, went back to the old one, put one off for a fault that is
+not its own, or refused one before it changed anything (see [upgrades.md](daemon/upgrades.md)). Its `data` also holds `factory`,
+`factory_revision` and `machine`.
+
+| Field | Required | Meaning |
+| ----- | -------- | ------- |
+| `op` | installed, rolled back, put off | The upgrade's id, one record each |
+| `from` | yes | The version that ran before |
+| `to` | installed, rolled back, put off | The version it installed or tries again later |
+| `schema_from`, `schema_to` | installed, rolled back | The state's schema before, and the one the new version uses |
+| `kept` | installed, rolled back | The old binary |
+| `backups` | installed, rolled back | The copies of the state and the log, without those a rollback used |
+| `reason` | rolled back, put off, refused | Why. A refusal that names one release holds its version in `to` |
 
 ## Spans
 

@@ -1,7 +1,10 @@
 use crate::intake::{self, OUTPUT, TASK_REQUESTED};
 use crate::log::{self, Log};
 use herdr_bus::{Message, Timestamp};
-use priory_factory::factory::{self, Confidence, Factory, Hold, Intervention};
+use priory_factory::factory::{
+    self, Confidence, Factory, FilterValue, Hold, Intervention, Trigger,
+};
+use priory_factory::filters;
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -69,6 +72,9 @@ pub struct Request {
     /// when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     auto_answer: Option<Confidence>,
+    /// The task's labels, each `key=value`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    labels: Vec<String>,
     /// What the task is about.
     text: String,
     /// A planning task's batch: its issues and its entries' workflow.
@@ -84,6 +90,7 @@ pub fn parse(args: Vec<String>) -> Option<(PathBuf, Request)> {
     let (mut tldr, mut intervention, mut auto_answer) = (None, None, None);
     let (mut reason, mut until, mut if_closed) = (None, None, None);
     let (mut after, mut merge, mut relates) = (vec![], vec![], vec![]);
+    let mut labels = vec![];
     let mut blockers = false;
     let mut positional = vec![];
     let mut args = args.into_iter();
@@ -115,6 +122,10 @@ pub fn parse(args: Vec<String>) -> Option<(PathBuf, Request)> {
                 relates.push(args.next()?.parse().ok()?);
                 continue;
             }
+            "--label" => {
+                labels.push(args.next().filter(|value| !value.starts_with("--"))?);
+                continue;
+            }
             "--if-closed" => &mut if_closed,
             "--blockers" => {
                 blockers = true;
@@ -137,6 +148,7 @@ pub fn parse(args: Vec<String>) -> Option<(PathBuf, Request)> {
             merge,
             if_closed,
             blockers,
+            parked: false,
         }),
         None if conditions || if_closed.is_some() => return None,
         None => None,
@@ -152,6 +164,7 @@ pub fn parse(args: Vec<String>) -> Option<(PathBuf, Request)> {
         relates,
         intervention: intervention_of(intervention)?,
         auto_answer: auto_answer_of(auto_answer)?,
+        labels,
         text,
         batch: None,
         session: None,
@@ -206,11 +219,14 @@ pub struct Add {
     pub session: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_answer: Option<Confidence>,
+    /// The task's labels, each `key=value`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<String>,
 }
 
 pub fn parse_add(args: Vec<String>) -> Option<(PathBuf, Add)> {
     let (mut workflow, mut band, mut lane, mut repo) = (None, None, None, None);
-    let (mut positional, mut relates) = (vec![], vec![]);
+    let (mut positional, mut relates, mut labels) = (vec![], vec![], vec![]);
     let (mut intervention, mut auto_answer) = (None, None);
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -227,6 +243,10 @@ pub fn parse_add(args: Vec<String>) -> Option<(PathBuf, Add)> {
             "--repo" => &mut repo,
             "--relates" => {
                 relates.push(args.next()?.parse().ok()?);
+                continue;
+            }
+            "--label" => {
+                labels.push(args.next().filter(|value| !value.starts_with("--"))?);
                 continue;
             }
             _ => {
@@ -247,6 +267,7 @@ pub fn parse_add(args: Vec<String>) -> Option<(PathBuf, Add)> {
         intervention: intervention_of(intervention)?,
         session: None,
         auto_answer: auto_answer_of(auto_answer)?,
+        labels,
     };
     Some((dir, add))
 }
@@ -421,6 +442,7 @@ pub fn add_batch(factory: &Factory, batch: &Batch) -> Result<String, Refused> {
         intervention: None,
         session: None,
         auto_answer: None,
+        labels: Vec::new(),
     };
     let mut request = quick(factory, &add, repo)?;
     request.batch = Some(crate::events::BatchRequest {
@@ -522,6 +544,7 @@ fn quick(factory: &Factory, add: &Add, repo: Option<String>) -> Result<Request, 
         relates: add.relates.clone(),
         intervention: add.intervention,
         auto_answer: add.auto_answer,
+        labels: add.labels.clone(),
         text: add.text.clone(),
         batch: None,
         session: add.session.clone(),
@@ -564,7 +587,7 @@ fn linked(factory: &Factory, text: &str) -> (Vec<String>, Vec<String>) {
                     let trigger = &trigger.value;
                     let filter = trigger.filter.as_ref()?;
                     let linear = trigger.source.starts_with("linear");
-                    (linear && filter.get("team").map(String::as_str) == Some(team))
+                    (linear && filter.get("team").and_then(FilterValue::one) == Some(team))
                         .then(|| trigger.repo.clone())?
                 });
                 keys.push(format!("linear:{issue}"));
@@ -680,6 +703,7 @@ pub fn check(factory: &Factory, request: &Request) -> Result<(), String> {
                 .to_owned(),
         );
     }
+    labels(&request.labels)?;
     let trigger_repo = trigger.and_then(|trigger| trigger.repo.as_ref());
     if request.repo.is_none() && trigger_repo.is_none() {
         return Err(
@@ -691,6 +715,50 @@ pub fn check(factory: &Factory, request: &Request) -> Result<(), String> {
         priory_runtime::runtime::check_repo(repo)?;
     }
     Ok(())
+}
+
+/// Publishes a parked task request for the open pull request `number` of `trigger`'s repository,
+/// titled `title` at `url`, on the trigger's workflow, band and lane, and returns its key. The task
+/// runs nothing until a request of a comment or review trigger releases it.
+pub fn adopt(
+    factory: &Factory,
+    name: &str,
+    trigger: &Trigger,
+    number: u64,
+    title: &str,
+    url: &str,
+) -> Result<String, String> {
+    let repo = trigger
+        .repo
+        .clone()
+        .ok_or_else(|| format!("trigger {name} names no repo"))?;
+    let request = Request {
+        workflow: trigger.workflow.clone(),
+        key: format!("github:{repo}#{number}"),
+        band: trigger.band.clone(),
+        lane: trigger.lane.clone(),
+        repo: Some(repo.clone()),
+        hold: Some(Hold {
+            reason: format!("adopted for trigger {name}"),
+            parked: true,
+            ..Hold::default()
+        }),
+        tldr: Some(title.to_owned()).filter(|title| !title.trim().is_empty()),
+        relates: Vec::new(),
+        intervention: None,
+        auto_answer: None,
+        labels: trigger
+            .labels
+            .iter()
+            .flatten()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect(),
+        text: format!("Adopted {repo}#{number}: {title} {url}"),
+        batch: None,
+        session: None,
+    };
+    run(factory, &request, None)?;
+    Ok(request.key)
 }
 
 /// Publishes `request`. A `nonce`, such as a report pick's id, makes its ids differ from those of
@@ -758,6 +826,12 @@ fn task(request: &Request, key: &str, source: &Message) -> Message {
     if let Some(level) = request.auto_answer {
         data["auto_answer"] = json!(level);
     }
+    if let Some(labels) = labels(&request.labels)
+        .ok()
+        .filter(|labels| !labels.is_empty())
+    {
+        data["labels"] = json!(labels);
+    }
     if let Some(batch) = &request.batch {
         data["batch"] = json!(batch);
     }
@@ -771,6 +845,18 @@ fn task(request: &Request, key: &str, source: &Message) -> Message {
         )))
         .subject(key)
         .time(source.time)
+}
+
+/// `--label key=value` flags as labels, or why one is not a label or a key is given twice.
+fn labels(flags: &[String]) -> Result<filters::Labels, String> {
+    let mut labels = filters::Labels::new();
+    for flag in flags {
+        let (key, value) = filters::parse_label(flag)?;
+        if labels.insert(key.clone(), value).is_some() {
+            return Err(format!("--label {key} is given twice"));
+        }
+    }
+    Ok(labels)
 }
 
 fn open(factory: &Factory) -> Result<Box<dyn Log>, String> {

@@ -68,9 +68,21 @@ fn a_jailed_run_starts_its_agent_in_bubblewrap_with_only_the_variables_it_names(
         "--die-with-parent --new-session --unshare-pid --ro-bind / / --dev-bind /dev /dev --proc /proc --tmpfs /home --tmpfs /root --tmpfs /tmp".to_owned(),
         format!("--bind {worktree} {worktree}"),
         format!("--chdir {worktree}"),
+        // Where an upgrade's next binary waits.
+        format!(
+            "--tmpfs {}",
+            fs::canonicalize(setup.dir.join("home")).unwrap().join("upgrade").display()
+        ),
     ] {
         assert!(run.contains(&part), "{part}\n{run}");
     }
+    let session = &setup.rows("runs")[0][4];
+    let news = fs::canonicalize(setup.dir.join("home"))
+        .unwrap()
+        .join("news")
+        .join(session);
+    let news = news.display();
+    assert!(run.contains(&format!("--ro-bind {news} {news}")), "{run}");
     let names = fake_log(&setup, "env.log");
     for kept in [
         "KEPT",

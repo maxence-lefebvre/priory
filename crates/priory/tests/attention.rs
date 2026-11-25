@@ -116,6 +116,16 @@ impl Setup {
         }
     }
 
+    /// Names who answered ask `id`.
+    fn answered_by(&self, id: i64, by: &str) {
+        self.db()
+            .execute(
+                "UPDATE asks SET answered_by = ?2 WHERE id = ?1",
+                rusqlite::params![id, by],
+            )
+            .unwrap();
+    }
+
     /// Appends a person's snooze of ask `ask` of `task` at `time`.
     fn snooze(&self, task: i64, ask: i64, time: &str) {
         let data = json!({
@@ -194,6 +204,66 @@ fn ask_waits_give_median_and_p90_with_and_without_the_persons_away_time() {
         text.contains("asks\tacted\topen\tmedian\tp90\tmedian present\tp90 present\nall\t4\t1\t22.5\t300.0\t15.0\t25.0\n"),
         "{text}"
     );
+}
+
+#[test]
+fn an_answer_no_person_gave_is_no_act_and_ends_no_wait_of_the_persons() {
+    let setup = Setup::new("answerers");
+    setup.task(1, "implement", "lane-a", "2026-11-16T08:00:00Z");
+    for (id, by) in [
+        "cli",
+        "auto",
+        "autopilot",
+        "agent:lead",
+        "session:t9 8f3c2a10",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let id = id as i64 + 1;
+        setup.ask(id, 1, "2026-11-16T09:00:00Z", Some("2026-11-16T09:10:00Z"));
+        setup.answered_by(id, by);
+    }
+    // A person gave the same answer as autopilot, 20 minutes later.
+    setup.ask(6, 1, "2026-11-16T09:00:00Z", Some("2026-11-16T09:10:00Z"));
+    setup.answered_by(6, "autopilot");
+    setup
+        .db()
+        .execute(
+            "UPDATE asks SET answer = 'yes', answered = '2026-11-16T09:30:00Z', answered_by = 'cli' WHERE id = 6",
+            [],
+        )
+        .unwrap();
+    // Autopilot's answer to the first revision still is not the person's once the ask is asked again.
+    setup
+        .db()
+        .execute(
+            "UPDATE asks SET revision = 2, answer = NULL, answered = NULL, answered_by = NULL WHERE id = 3",
+            [],
+        )
+        .unwrap();
+    for by in ["cli", "session:t9 8f3c2a10", "agent:lead"] {
+        setup
+            .db()
+            .execute(
+                "INSERT INTO ask_refusals (ask, revision, answer, by, why, created)
+                 VALUES (1, 1, 'no', ?1, 'answered', '2026-11-16T09:20:00Z')",
+                [by],
+            )
+            .unwrap();
+    }
+
+    let attention = setup.attention_json(&["--since", "2026-11-16T00:00:00Z"]);
+
+    assert_eq!(
+        [
+            &attention["waits"]["acted"],
+            &attention["waits"]["p90_minutes"]
+        ],
+        [&json!(2), &json!(30.0)],
+        "{attention}"
+    );
+    assert_eq!(attention["acts"], 3, "{attention}");
 }
 
 #[test]

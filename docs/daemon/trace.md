@@ -265,7 +265,7 @@ A review whose author ends in `[bot]` does not count as a human review.
 | `changes-requested` | A human review requested changes on one of its pull requests, before or after the merge; or one of them merged at another commit than its first human review was written on, so a commit came after the review. That is checked when its last one merges, and again when a human review of a merged one arrives |
 | `approval-rejected` | A person answered one of its human steps with an option that starts with `reject`, such as `rejected`, or that sends the task to `stop` |
 | `closed-unmerged` | One of its pull requests closed without merging |
-| `red-after-merge` | A check run on the merge commit of one of its merged pull requests completed with a conclusion other than `success`, `neutral` or `skipped` |
+| `red-after-merge` | A check run on the merge commit of one of its merged pull requests completed with a conclusion other than `success`, `neutral` or `skipped`, except a cancelled run that a later run on a descendant commit passed ([why](../intake/pull-requests.md#check-runs-at-a-merge)) |
 | `reverted` | A later pull request of the same repository merged, and its title or body says `This reverts commit <sha>` of the merge commit of one of the task's, as `git revert` writes, or says `Reverts owner/name#N`, as GitHub's revert button writes |
 | `marked-wrong` | A person ran `priory label TASK wrong --evidence URL`. Its `happened` is the mark's `--happened`, else when the person ran it. `--clear` withdraws it with a `factory.step.unlabeled` record. See [label.md](../reference/label.md) |
 
@@ -275,7 +275,8 @@ The first four are final: a task with one of them has an outcome its grade can b
 report from `priory`, which the desk ranks as an alarm (see [desk.md](desk.md#the-next-thing)):
 `landed wrong: <repo>#<n> of task <id> is red on <base>: <check> <conclusion> <url>`, once per merge
 commit however many of its checks fail, or `landed wrong: <repo>#<n> of task <id> was reverted by
-#<m>: <url>`. A notification's title for it is `a merge landed wrong`. Events count by when
+#<m>: <url>`. A red one is [marked read](../intake/pull-requests.md#when-the-base-branch-recovers)
+when the base branch recovers; its label stays. A notification's title for it is `a merge landed wrong`. Events count by when
 they happened, not when they arrived. A review's commit comes from its event's `commit`, or its
 `head_sha` for a review stored before `commit` existed. A task with both `approved-clean` and
 `changes-requested`, because a review requesting changes arrived after the merge, counts only as
@@ -448,7 +449,8 @@ task	key	workflow	lane	state	wall	working	waiting on person	waiting on world	que
 
 Times are in minutes. A cell with no value reads `-`.
 
-The report reads what the state already stores. It counts one person: every act is theirs.
+The report reads what the state already stores. It counts one person: every act is theirs. An
+answer or a refused answer by `auto`, `autopilot`, a lead or a session is no act.
 
 - An act is a person's answer, dismissal, refused answer, snooze or unsnooze.
 - The person was away during each gap of 2 hours or more between two consecutive acts.
@@ -460,7 +462,7 @@ The report reads what the state already stores. It counts one person: every act 
   its dismissal, or a snooze before the next revision. `median` is the acted waits' median, and
   `p90` their nearest-rank 90th percentile. The `present` figures subtract the part of each wait that fell in
   an away gap. `open` counts revisions still waiting. A revision the agent replaced or withdrew
-  before the person acted counts in neither.
+  before the person acted, or that something else answered, counts in neither.
 - The asks counted are the revisions asked in the window. Acts count when they fall in it.
 - `--by` splits acts and waits by the task's workflow (the default) or lane, or by the ask's kind:
   `step`, `agent` or `outside`. An act or ask with no value reads `-`, such as a task snooze under

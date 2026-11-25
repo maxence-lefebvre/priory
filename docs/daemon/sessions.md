@@ -158,8 +158,10 @@ socket. Detach with tmux's
 detach key, `C-b d` by default. tmux keeps owning the session, so the agent goes on after you
 detach.
 
-- `--read-only` adds tmux's `-r`: you watch without typing into the agent, and your terminal's size
-  leaves the agent's window alone.
+- `--read-only` adds tmux's `-f read-only,ignore-size`, which `-r` abbreviates: you watch without
+  typing into the agent. Your terminal sizes the agent's window only while no client on the tmux
+  server can type. Such a client does not protect the run from its
+  [budget](health.md#budget), a [spend cap](spend.md) or an [urgent wake](room.md#what-is-never-stopped).
 - `--print` prints the attach command instead of running it, so a view host can run it in a pane,
   such as `hc run -- <that command>` in a Herdr pane.
 
@@ -177,7 +179,7 @@ asks you to run attach with the daemon's `TMUX` and `TMUX_TMPDIR`, so you never 
 server's session of the same name.
 
 The daemon sets a run's idle flag and turn from hooks, tool calls and its own typing of a prompt.
-It never reads tmux clients, so attaching and detaching change no run's idle flag, turn or prompt. A client that can type can still type into the
+It reads no tmux client for them, so attaching and detaching change no run's idle flag, turn or prompt. A client that can type can still type into the
 agent, as a person at the pane would: the daemon then sees that turn's hooks like any other.
 
 `priory screen [DIR] TASK` prints the same pane's screen once, and exits. `DIR` names the factory
@@ -189,6 +191,39 @@ Known limits:
 
 - tmux refuses to attach from inside another tmux client unless you unset `TMUX` first.
 - An attach without `--read-only` resizes the agent's window to your terminal.
+
+## Opening a run when it starts
+
+A model step with `attach = true` opens each of its runs where a person can watch it, through the
+factory's `[runs] attach` command. Priory never calls a view host itself. The command is the view
+host's adapter, such as [`adapters/herdr/attach`](../adapters/herdr.md#opening-runs-in-herdr).
+Debate steps count as model steps, so each debate turn's run gets the command too.
+
+After the daemon starts a run's harness in tmux, it runs the command once, in the factory folder.
+The command gets the task id and the run id as its arguments, and as `PRIORY_TASK` and
+`PRIORY_RUN` in its environment, with the run's tmux session as `PRIORY_TMUX` and the daemon's
+executable as `PRIORY_EXE`. It also gets the daemon's own environment, so `PRIORY_DB`,
+`PRIORY_HOME` and `TMUX_TMPDIR` name the daemon's state and tmux server.
+
+The daemon starts the command, then goes on with its loop. It never holds or fails the run:
+
+- A command that exits with a status other than 0, or that runs past 30 seconds, gets a
+  `factory.run.attach_failed` record with the reason and the tail of its output. The daemon kills
+  it at 30 seconds.
+- A command that cannot start, such as a file that was removed, gets the same record with the
+  error.
+- A run whose harness did not start runs no command.
+
+Each new run of the step runs the command once. Each new run also starts a new tmux session, so a
+terminal attached to the old run has nothing left to show. A wait inside a run starts no new run,
+so it runs no command.
+
+Known limits:
+
+- A daemon that restarts while a command runs does not check that command's exit status, stop it
+  at 30 seconds or clean up its log, `attach/<run>.log` in Priory home.
+- The command opens a view, and nothing closes it. The view host's terminal for an ended run stays
+  until a person closes it.
 
 ## Trusting the worktrees and the clone
 
@@ -228,13 +263,98 @@ a worktree or clone that a symlink leads elsewhere.
   it. It also refuses a profile that is not a regular file, such as a FIFO. When the daemon cannot
   read a config back after a dialog, it blocks the task without the restart. Codex still runs only the hooks a person trusted with
   `/hooks`, so that step stays manual.
+- **direnv** refuses a folder's `.envrc` until a person runs `direnv allow`. When `direnv` is on the
+  daemon's PATH and the worktree has an `.envrc`, the daemon checks its content, as below, and writes
+  a direnv config folder of its own for the run, `direnv/<session>/` in Priory home. It holds:
+
+  - `direnv.toml`: the person's own (from `DIRENV_CONFIG`, else `$XDG_CONFIG_HOME/direnv`, else
+    `~/.config/direnv`) without its `[whitelist]`, which skips direnv's content check.
+  - `data/direnv/allow/`: direnv's allow file for the worktree's `.envrc` with the checked content.
+    direnv matches the path it is given, and Priory home may go through a symlink, so the path as
+    the daemon spells it and its real path each get one.
+  - `envrc`: the checked bytes.
+  - `direnvrc`: Priory's own. It runs the person's `direnvrc`, or else their `~/.direnvrc`, then makes
+    direnv run `envrc` where it would read the worktree's `.envrc` a second time. It does that in the
+    daemon's load alone, so an agent's own `direnv exec` runs the `.envrc` of the folder it names.
+    `BASH_SOURCE` in the `.envrc` names the copy, `envrc` in the run's folder, and `$PWD` the
+    worktree.
+  - `direnvrc.person` and `lib`: links to the real paths of the person's, so a home-manager link into
+    `/nix/store` still resolves in a jail and libraries such as nix-direnv still load.
+
+  The run's harness then starts as `direnv exec <worktree> <harness>`, with `DIRENV_CONFIG` naming
+  that folder, so every command the agent runs gets the `.envrc` environment, such as a nix flake's
+  toolchain. direnv alone gets that `data` folder as its `XDG_DATA_HOME`: the `.envrc`, the person's
+  `direnvrc` and the harness see the old one. The daemon never edits the person's `direnv.toml` or
+  direnv's allow folder. It refuses the grant, and starts the run without direnv, when the person's
+  `direnv.toml` cannot be read or parsed, when the person denied the `.envrc` with `direnv deny`, when
+  `direnv/` in Priory home is a symlink, or when the `.envrc` fails the check below. The task's reason
+  then says `started without its .envrc:` and why. The daemon deletes the folder once the run ended.
+  Without `direnv` or without an `.envrc`, nothing changes. An agent's own `direnv exec . <command>`
+  needs the person's own `direnv allow`, and sees `XDG_DATA_HOME` unset when the task's `.envrc`
+  exports one.
+
+  A worktree outlives its run. So without a check, an `.envrc` that one run's agent wrote would run
+  at the start of the next, outside the tool guard and the harness's permissions. The daemon grants
+  direnv only when the worktree's `.envrc` is a regular file with the same content as the one on the
+  commit the task started from. direnv refuses an `.envrc` that changed after the check, and the run
+  starts without it. direnv reads the file once to hash it and again to run it: a change between the
+  two has no effect, since direnv runs the checked copy.
+  That commit is the default branch's head, which the daemon reads from GitHub outside the clone:
+  every worktree shares the clone's refs and objects, and an agent can write both. The daemon hashes
+  the commit and its tree again before it compares, so a forged object does not pass.
+  A stacked task is checked against the commit its bottom task started from, since its own base
+  is another agent's branch. Failing that, the `.envrc` must match the one on the repository's default
+  branch. The daemon reads that branch's head from GitHub, fetches the commit when the clone lacks it,
+  and waits for each at most 10s. It hashes that commit and its tree again too.
+
+  A run starts without its `.envrc`, although no agent wrote it, in these cases:
+
+  - The `.envrc` is a symlink, or is over 1 MiB.
+  - The `.envrc` is untracked, such as one that a setup recipe writes. The daemon does not ask GitHub
+    for it. An untracked copy of the file on the commit the task started from passes.
+  - The task changed the `.envrc`, or merged a branch that did. Its later runs start without it until
+    the change is on the default branch.
+  - The `.envrc` is an older honest version, from neither the commit the task started from nor the
+    default branch, as after a reset to an earlier commit. A rebase on the default branch fixes it.
+  - Git writes the file with other content than it stores, as `core.autocrlf` or a filter does.
+
+  The check has limits:
+
+  - It covers `.envrc` alone. What the `.envrc` loads runs as the worktree has it, so an agent's edit
+    of it runs at the next start: `flake.nix` and `flake.lock`, the caches in `.direnv/`, `.env`, a
+    sourced script, a parent's `.envrc` through `source_up`, and programs in a `PATH_add` folder.
+  - A process outside a jail that runs as the same user can write the run's `direnv/<session>/` folder
+    itself, as it can write any file of the person's.
+  - The copy depends on direnv's `source_env` function. A direnv that loads an `.envrc` without it still
+    refuses a change before its hash, and runs one made after it.
+  - The daemon's git reads the clone's config, which an unjailed agent can write. Its
+    `core.sshCommand`, filters and credential helpers can run commands as the daemon, at any start.
+  - A task that started before the daemon stored a base for this check has none, and neither has one
+    that started while `trust_worktrees` was off, when the daemon does not ask GitHub. Their `.envrc`
+    must match the default branch.
+
+  The variables an `.envrc` exports
+  reach the harness's environment as they are, outside the daemon's secret redaction, so keep
+  secrets out of a repository's `.envrc`.
+
+  The harness starts only after the `.envrc` loads: a `use flake` took 12s on a fresh worktree
+  and under 1s after. direnv gets 600s to load it, and a run whose `.envrc` is still loading then
+  blocks with a reason that names direnv. Once direnv hands over, the harness gets its usual window,
+  60s or 180s with recorded trust, to reach `SessionStart`. When
+  direnv itself fails before the harness starts, for example because the `.envrc` exits non-zero
+  or `nix` is not on PATH in a jail, the harness starts without the `.envrc`. The daemon records
+  direnv's error as a `failed` `factory.run.trusted` record and in the task's reason, which a
+  later block reason keeps. A harness that exits on its own under direnv is not started again.
 
 Each path gets a `factory.run.trusted` record in the trace, whose `outcome` is `granted`, `present`
 or `refused` (see [trace-schema.md](../trace-schema.md#factoryruntrusted)).
 
 A trusted folder lets the repository's own settings run, as a person's trust does: Claude's
 `.claude/settings.json` hooks, `env` and `permissions.allow` rules, `CLAUDE.md` and skills, and
-Codex's `.codex/config.toml`. Those settings run beside Priory's guard, and a hostile one may
+Codex's `.codex/config.toml`. The daemon does not compare those files with the commit the task
+started from, as it does an `.envrc`: hooks that an agent wrote into `.claude/settings.json` run in
+the next run on the same worktree, or on a branch stacked on it, outside the tool guard.
+Those settings run beside Priory's guard, and a hostile one may
 weaken it, for example with Claude's `disableAllHooks`. So turning the key on vouches for every
 repository the factory names. A run without claude.ai connectors still gets `--strict-mcp-config`,
 which keeps `.mcp.json` servers out. A run with connectors goes without that flag, and its guard
@@ -280,14 +400,35 @@ answers it. Trust the worktrees folder and the clone once: cd <worktrees path> &
 exit, then cd <clone path> && claude, accept, exit`. The desk shows the blocked task with that
 reason. After both folders are trusted, `priory resume` starts the task again.
 
-A run that sends no `SessionStart` within 60 seconds of its start, for another reason, also ends
-as `exited`. The daemon kills its tmux session and blocks its task with the reason `claude showed
+A run that sends no `SessionStart` within its window, for another reason, also ends as `exited`.
+The window is 60 seconds from its start, or 180 when Priory recorded the run's trust. Under direnv,
+the `.envrc` gets 600 seconds to load, and the window counts from there. The daemon kills its tmux session and blocks its task with the reason `claude showed
 no SessionStart within 60s; trust the worktrees folder and the clone once: ...`, the same commands,
-then `. Its pane ended with: ` and the last 5 non-empty lines of its pane, joined by ` | `, so a
+`. Resume the task to try again`, then `. Its pane ended with: ` and the last 5 non-empty lines of its pane, joined by ` | `, so a
 person sees the dialog or warning that stopped it. The daemon log gets the last 30. A line the
 pane wrapped counts as one line, so a secret that wraps is hidden whole. Both hide secrets as the
 screen does (see [serve.md](serve.md#a-runs-screen)), and show `[redacted]` alone when one still
 shows.
+
+The reason names a cause the daemon can see, the first of these that applies:
+
+- Since the run started, the CPU quota of the [agents slice](agents-slice.md) kept back at least 10 %
+  of the CPU its agents wanted: `priory-agents.slice was throttled: its quota kept back <n>% of the CPU
+  its agents wanted since the run started, under CPUQuota=<quota>`. The share is the growth of
+  `throttled_usec` in the slice's `cpu.stat`, over its growth plus that of `usage_usec`.
+- Claude's pane shows its input box: `its prompt is ready and asks for no trust, so its SessionStart
+  hook is late or never reached the daemon`.
+- Priory recorded trust for each path of a Claude run, as `granted` or `present` (see
+  [With trust_worktrees](#with-trust_worktrees)): `it started too slowly`.
+
+At Claude's input box, or when Priory recorded a Claude run's trust, the cause replaces the commands,
+so a person does not accept a trust that is not missing. Recorded trust also adds `although Priory
+recorded its trust` after the window: `claude showed no SessionStart within 180s although Priory
+recorded its trust; it started too slowly`. Elsewhere, as at Codex's `Hooks need review`, the
+throttling follows the commands after `; `.
+
+The daemon never restarts the run by itself, since a restart changes nothing that made it slow.
+`priory resume` starts it again.
 
 The daemon's `runs` metrics group counts both as starts that ended in `error`, and shows a start
 still waiting for `SessionStart` by its age. See [metrics.md](metrics.md#the-runs-group).

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ARM_MS, UNDO_MS, choose, due, leftUnsent, observe, optionKey, reply, takesText, undo } from "../lib/ask.js";
+import { ARM_MS, UNDO_MS, choose, due, leftUnsent, observe, optionKey, reply, dismissable, undo } from "../lib/ask.js";
 
 const ASK = { id: 88, revision: 1, state: "open", options: ["Rename it", "Keep the name"], command: null };
 const COMMAND = { ...ASK, id: 90, options: ["Run it", "Skip"], command: { argv: ["make", "deploy"], target: "staging", runs: ["Run it"] } };
@@ -117,7 +117,7 @@ test("only a waiting answer is kept: one posting, armed, sent or undone is not",
   }
 });
 
-test("a step's ask offers no free text and no dismissal, and an agent's ask does", () => {
-  assert.equal(takesText({ ...ASK, free_text: false }), false);
-  assert.equal(takesText({ ...ASK, free_text: true }), true);
+test("a step's ask offers no dismissal, and an agent's ask does", () => {
+  assert.equal(dismissable({ ...ASK, dismissable: false }), false);
+  assert.equal(dismissable({ ...ASK, dismissable: true }), true);
 });

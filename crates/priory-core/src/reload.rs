@@ -48,8 +48,6 @@ const CONFIG_FOLDERS: &[&str] = &[
     "benchmarks",
     "runners",
 ];
-/// The folders `factory::load` reads whole: an agent's, a skill's and a memory's files.
-const TREES: &[&str] = &["agents", "skills", "memories"];
 
 /// Watches one factory's folder for edits.
 pub struct Watch {
@@ -136,14 +134,27 @@ impl Watch {
         }
     }
 
-    /// Records that `factory`, whose files hash to `files`, is now live.
+    /// Records that `factory`, whose files hash to `files`, is now live. A new `writing` guide
+    /// swaps only its own entry in what the watch saw, so an edit still settling elsewhere loads.
     pub fn applied(&mut self, factory: &Factory, files: Digest) {
         self.live = files;
         let writing = writing(factory);
         if writing != self.writing {
+            if let Some(old) = &self.writing {
+                self.seen.remove(old);
+            }
+            if let Some(new) = &writing
+                && let Some(stat) = stat(new)
+            {
+                self.seen.insert(new.clone(), stat);
+            }
             self.writing = writing;
-            self.seen = fingerprint(&self.dir, self.writing.as_deref());
         }
+    }
+
+    /// Whether an edit changed the files since the last poll and has not yet held for a poll.
+    pub fn settling(&self) -> bool {
+        self.pending.is_some()
     }
 
     /// Whether the factory's git `HEAD` moved since the last call, as a commit or a checkout does.
@@ -188,15 +199,8 @@ fn skipped(name: &str) -> bool {
 fn fingerprint(dir: &Path, writing: Option<&Path>) -> Fingerprint {
     let mut files = Fingerprint::new();
     let mut note = |path: PathBuf| {
-        if let Ok(metadata) = std::fs::metadata(&path)
-            && metadata.is_file()
-        {
-            let modified = metadata
-                .modified()
-                .ok()
-                .and_then(|at| at.duration_since(UNIX_EPOCH).ok())
-                .map_or(0, |at| at.as_nanos());
-            files.insert(path, (metadata.len(), modified));
+        if let Some(stat) = stat(&path) {
+            files.insert(path, stat);
         }
     };
     for name in FILES {
@@ -220,23 +224,49 @@ fn fingerprint(dir: &Path, writing: Option<&Path>) -> Fingerprint {
             }
         }
     }
-    let mut folders: Vec<PathBuf> = TREES.iter().map(|tree| dir.join(tree)).collect();
-    while let Some(folder) = folders.pop() {
+    for agent in std::fs::read_dir(dir.join("agents"))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        note(agent.path().join("agent.md"));
+    }
+    // A skill's folder is read whole, hidden files and all, as `read_tree` reads it.
+    let skills = std::fs::read_dir(dir.join("skills"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| (entry.path(), false))
+        .filter(|(path, _)| path.is_dir());
+    let mut folders: Vec<(PathBuf, bool)> = skills.collect();
+    folders.push((dir.join("memories"), true));
+    while let Some((folder, skips)) = folders.pop() {
         let Ok(entries) = std::fs::read_dir(&folder) else {
             continue;
         };
         for entry in entries.flatten() {
-            if skipped(&entry.file_name().to_string_lossy()) {
+            if skips && skipped(&entry.file_name().to_string_lossy()) {
                 continue;
             }
             match entry.file_type() {
-                Ok(kind) if kind.is_dir() => folders.push(entry.path()),
+                Ok(kind) if kind.is_dir() => folders.push((entry.path(), skips)),
                 Ok(_) => note(entry.path()),
                 Err(_) => {}
             }
         }
     }
     files
+}
+
+/// A file's size and modification time, or nothing when it is not a file.
+fn stat(path: &Path) -> Option<(u64, u128)> {
+    let metadata = std::fs::metadata(path).ok().filter(|meta| meta.is_file())?;
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|at| at.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |at| at.as_nanos());
+    Some((metadata.len(), modified))
 }
 
 /// A hash of each file's path and bytes, in path order. A file that cannot be read hashes as empty.
@@ -471,9 +501,13 @@ mod tests {
             "workflows/#a.toml#",
             "workflows/a.md",
             "agents/x/agent.md",
+            "agents/x/notes.txt",
             "agents/x/__pycache__/y.pyc",
             "skills/s/node_modules/m.js",
+            "skills/s/.env",
             "skills/s/SKILL.md",
+            "memories/.gitkeep",
+            "memories/m.md",
             "guide.md",
         ];
         for file in files {
@@ -491,13 +525,36 @@ mod tests {
             "agents/x/agent.md",
             "factory.toml",
             "guide.md",
+            "memories/m.md",
+            "skills/s/.env",
             "skills/s/SKILL.md",
+            "skills/s/node_modules/m.js",
             "workflows/a.toml",
         ]
         .iter()
         .map(PathBuf::from)
         .collect();
         assert_eq!(watched, expected);
+    }
+
+    #[test]
+    fn an_agent_file_the_loader_does_not_read_never_reloads() {
+        let dir = Scratch::new("agent-notes");
+        std::fs::create_dir_all(dir.path().join("agents/x")).unwrap();
+        let mut watch = Watch::new(&factory(dir.path()));
+        std::fs::write(dir.path().join("agents/x/notes.txt"), "x").unwrap();
+        assert!(matches!(poll(&mut watch), Polled::Same));
+        assert!(matches!(poll(&mut watch), Polled::Same));
+    }
+
+    #[test]
+    fn a_hidden_file_in_a_skill_reloads() {
+        let dir = Scratch::new("skill-dotfile");
+        std::fs::create_dir_all(dir.path().join("skills/s")).unwrap();
+        let mut watch = Watch::new(&factory(dir.path()));
+        std::fs::write(dir.path().join("skills/s/.env"), "x").unwrap();
+        assert!(matches!(poll(&mut watch), Polled::Same));
+        assert!(!matches!(poll(&mut watch), Polled::Same));
     }
 
     #[test]

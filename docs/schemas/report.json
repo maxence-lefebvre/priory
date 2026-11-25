@@ -15,6 +15,51 @@
       ],
       "description": "What a hold's `after` waits for: another task to end, or a Linear issue to close."
     },
+    "AskAct": {
+      "description": "What a pick's option does to an open ask, named by the id `priory asks` lists.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Closes the ask with no answer, as `priory dismiss` does.",
+          "properties": {
+            "act": {
+              "const": "dismiss",
+              "type": "string"
+            },
+            "ask": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "act",
+            "ask"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Hides the ask from the desk until `until`, an RFC 3339 UTC time, as `priory snooze` does.",
+          "properties": {
+            "act": {
+              "const": "snooze",
+              "type": "string"
+            },
+            "ask": {
+              "type": "string"
+            },
+            "until": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "act",
+            "ask",
+            "until"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "Confidence": {
       "description": "How sure an agent is that its recommendation is what the person would pick, and the lowest\nsuch confidence a task's `auto_answer` lets the daemon act on.",
       "enum": [
@@ -60,6 +105,10 @@
             }
           ],
           "description": "Pull requests, `owner/name#42` or `42` in the task's repository: until each merges. One\nvalue or a list."
+        },
+        "parked": {
+          "description": "Parks a task keyed by a pull request: a comment or review trigger's request for that pull\nrequest releases it, and the pull request's merge or close ends it.",
+          "type": "boolean"
         },
         "reason": {
           "description": "Why the task waits, shown to a person.",
@@ -132,6 +181,13 @@
             "string",
             "null"
           ]
+        },
+        "asks": {
+          "additionalProperties": {
+            "$ref": "#/definitions/AskAct"
+          },
+          "description": "Options that dismiss or snooze an ask instead of waking the report's task, by option.",
+          "type": "object"
         },
         "chosen": {
           "default": null,
@@ -237,6 +293,13 @@
         "key": {
           "description": "The task's key, which Priory prefixes with `cli:` unless it names a GitHub issue or pull\nrequest, `github:owner/name#42`.",
           "type": "string"
+        },
+        "labels": {
+          "description": "The task's labels, each `key=value`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "lane": {
           "type": [

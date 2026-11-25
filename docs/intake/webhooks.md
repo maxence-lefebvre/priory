@@ -74,6 +74,11 @@ Its `time` is the payload's: `updated_at` for a label, `closed_at` for a close, 
 opening or a comment, and `submitted_at` for a review. A bot's comment publishes nothing. An
 `issue_comment` names no branch, so its head and base fields are null.
 
+A review payload holds no thread comments. For a `COMMENTED` review with an empty body by `gh`'s
+login, the server reads them with one `gh api` call to tell
+[an agent's reply from the person's](pull-requests.md#events). If that call fails, or lists no
+comment for a review under a minute old, the reply is `500` and a later poll publishes the review.
+
 ### Duplicates
 
 Each message id is a UUIDv5, so herdr-bus drops a message whose id is already on the output (see
@@ -170,7 +175,7 @@ A delivery publishes only when some `linear` trigger names the issue's team: its
 equals the team key, or it has none. The type of that trigger does not matter, since the poll reads
 every event of the workspace for any Linear trigger and tasks subscribe to them. A `linear.view`
 trigger names a view, and a delivery cannot tell whether an issue is in it, so views come from
-polling only. A delivery for any other team publishes nothing, so a webhook never widens what the
+polling only. A `linear.project` trigger's events come from polling only too. A delivery for any other team publishes nothing, so a webhook never widens what the
 factory acts on.
 
 A webhook message differs from the poll's:

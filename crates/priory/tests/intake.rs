@@ -445,6 +445,11 @@ impl Setup {
         answers: &[(&str, serde_json::Value)],
     ) {
         self.answer(answers);
+        self.count(path, failures, stderr);
+    }
+
+    /// Does what `fail_first` does to the fake `gh` that already answers.
+    fn count(&self, path: &str, failures: u32, stderr: &str) {
         let gh = self.dir.join("bin/gh");
         let answering = fs::read_to_string(&gh).unwrap();
         let count = self.dir.join(format!("calls-{}", path.replace('/', "-")));
@@ -1633,6 +1638,398 @@ fn a_bot_review_starts_a_task_only_when_the_commenter_filter_names_the_bot() {
     assert_eq!(bot.message.data["triggers"], json!(["bot-reviews"]));
 }
 
+/// A COMMENTED review by `max`, the login `gh` runs as, written when `review_comment` is.
+fn own_review(id: u64, body: &str) -> serde_json::Value {
+    json!({
+        "databaseId": id,
+        "state": "COMMENTED",
+        "body": body,
+        "submittedAt": "2026-11-17T12:10:00Z",
+        "url": format!("https://github.com/owner/repo/pull/43#pullrequestreview-{id}"),
+        "commit": { "oid": "abc123" },
+        "author": { "login": "max", "__typename": "User" },
+        "authorAssociation": "OWNER"
+    })
+}
+
+/// A thread reply by `max`, with the agent comment marker when `marked`.
+fn own_reply(id: u64, marked: bool) -> serde_json::Value {
+    let mut reply = review_comment(id, Some(801), "max", "User");
+    if marked {
+        reply["body"] = json!("Fixed in abc123.\n\n<!-- agent-comment -->");
+    }
+    reply
+}
+
+/// Pull request 43 by `max` with `reviews`, the newest thread comments `delivered`, and what GitHub
+/// answers for the comments of each review in `threads`.
+fn answer_reviews(
+    setup: &Setup,
+    reviews: serde_json::Value,
+    delivered: serde_json::Value,
+    threads: &[(u64, serde_json::Value)],
+) {
+    let mut mine = pull(43, false, reviews, json!([]));
+    mine["author"] = json!({ "login": "max" });
+    let paths: Vec<String> = threads
+        .iter()
+        .map(|(id, _)| format!("repos/owner/repo/pulls/43/reviews/{id}/comments?per_page=100"))
+        .collect();
+    let mut answers = vec![
+        ("user", json!({ "login": "max" })),
+        (OPEN_PULLS, open_pulls(&[mine])),
+        (REVIEW_COMMENTS, delivered),
+    ];
+    let threads = threads.iter().map(|(_, thread)| thread.clone());
+    answers.extend(paths.iter().map(String::as_str).zip(threads));
+    setup.answer(&answers);
+}
+
+/// A trigger on the reviews `max` submits.
+fn own_review_setup(name: &str) -> Setup {
+    let setup = Setup::baseline(name);
+    pr_trigger(
+        &setup,
+        "my-reviews",
+        "on = \"pull_request_review.submitted\"\nfilter = { author = \"max\", commenter = \"max\" }\n",
+    );
+    setup
+}
+
+/// Each published review's id, and whether it is an agent's, oldest first.
+fn review_agents(setup: &Setup) -> Vec<(u64, serde_json::Value)> {
+    setup
+        .published()
+        .iter()
+        .map(|stored| &stored.message)
+        .filter(|message| message.kind == "github.pull_request_review.submitted")
+        .map(|message| {
+            let id = message.data["github_id"].as_u64().unwrap();
+            (id, message.data["agent"].clone())
+        })
+        .collect()
+}
+
+#[test]
+fn an_empty_review_counts_as_its_thread_comments_and_an_agents_starts_no_task() {
+    let setup = own_review_setup("pr-wrapper-review");
+    answer_reviews(
+        &setup,
+        json!([
+            own_review(501, ""),
+            own_review(502, ""),
+            own_review(503, ""),
+            own_review(504, "One thing."),
+            own_review(505, ""),
+        ]),
+        json!([]),
+        &[
+            (501, json!([own_reply(811, true), own_reply(812, true)])),
+            (502, json!([own_reply(821, false)])),
+            (503, json!([own_reply(831, true), own_reply(832, false)])),
+            // A body makes the review the person's, whatever its comments hold.
+            (504, json!([own_reply(841, true)])),
+        ],
+    );
+
+    succeeded(&setup.intake());
+    succeeded(&setup.intake());
+
+    assert_eq!(
+        review_agents(&setup),
+        [
+            (501, json!(true)),
+            (502, json!(false)),
+            (503, json!(false)),
+            (504, json!(false)),
+            (505, json!(false)),
+        ]
+    );
+    let request = || ("my-reviews".to_owned(), "github:owner/repo#43".to_owned());
+    assert_eq!(
+        requests(&setup),
+        [request(), request(), request(), request()]
+    );
+}
+
+#[test]
+fn an_agents_empty_review_is_dropped_once_its_comments_are_delivered_and_a_persons_is_kept() {
+    let setup = own_review_setup("pr-wrapper-delivered");
+    let marked = own_reply(811, true);
+    let unmarked = own_reply(821, false);
+    answer_reviews(
+        &setup,
+        json!([own_review(5001, ""), own_review(5002, "")]),
+        json!([unmarked, marked]),
+        &[(5001, json!([marked])), (5002, json!([unmarked]))],
+    );
+
+    succeeded(&setup.intake());
+    succeeded(&setup.intake());
+
+    assert_eq!(review_agents(&setup), [(5002, json!(false))]);
+    assert_eq!(requests(&setup).len(), 1);
+}
+
+#[test]
+fn an_empty_review_whose_comments_cannot_be_read_waits_for_the_next_poll() {
+    let setup = own_review_setup("pr-wrapper-unread");
+    let reviews = json!([own_review(501, "")]);
+    answer_reviews(&setup, reviews.clone(), json!([]), &[(501, json!({}))]);
+    assert!(!setup.intake().status.success());
+    assert_eq!(review_agents(&setup), []);
+    answer_reviews(
+        &setup,
+        reviews,
+        json!([]),
+        &[(501, json!([own_reply(811, true)]))],
+    );
+
+    succeeded(&setup.intake());
+
+    assert_eq!(review_agents(&setup), [(501, json!(true))]);
+    assert!(requests(&setup).is_empty());
+}
+
+/// The path of every lookup of pull request 43's review comments.
+const LOOKUPS: &str = "repos/owner/repo/pulls/43/reviews/";
+
+#[test]
+fn a_first_poll_that_cannot_read_a_review_stays_a_baseline() {
+    let setup = Setup::new("pr-wrapper-baseline", &[]);
+    pr_trigger(
+        &setup,
+        "my-reviews",
+        "on = \"pull_request_review.submitted\"\nfilter = { author = \"max\", commenter = \"max\" }\n",
+    );
+    let marked = || {
+        let markers = setup.output();
+        markers.iter().any(|stored| {
+            stored.message.kind == "factory.intake.baseline"
+                && stored.message.data["stream"] == "github.pull_request_review.submitted"
+        })
+    };
+    let reviews = json!([own_review(501, "")]);
+    answer_reviews(&setup, reviews.clone(), json!([]), &[(501, json!({}))]);
+    assert!(!setup.intake().status.success());
+    assert!(!marked());
+    answer_reviews(
+        &setup,
+        reviews,
+        json!([]),
+        &[(501, json!([own_reply(821, false)]))],
+    );
+
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    assert_eq!(review_agents(&setup), [(501, json!(false))]);
+    assert_eq!(published[0].message.data["baseline"], true);
+    assert_eq!(requests(&setup), []);
+    assert!(marked());
+}
+
+#[test]
+fn a_restart_looks_up_no_review_on_the_output_and_requests_the_task_a_crash_left_out() {
+    let setup = own_review_setup("pr-wrapper-restart");
+    answer_reviews(
+        &setup,
+        json!([own_review(501, ""), own_review(502, "")]),
+        json!([]),
+        &[
+            (501, json!([own_reply(811, true)])),
+            (502, json!([own_reply(821, false)])),
+        ],
+    );
+    succeeded(&setup.intake());
+    let request = [("my-reviews".to_owned(), "github:owner/repo#43".to_owned())];
+    assert_eq!(requests(&setup), request);
+    let bus = rusqlite::Connection::open(setup.dir.join("bus.db")).unwrap();
+    // Older than the 7 days one poll reads back, so only the start's own read finds them.
+    bus.execute("UPDATE messages SET published = '2026-01-01T00:00:00Z'", [])
+        .unwrap();
+    bus.execute(
+        "DELETE FROM messages WHERE type = 'factory.task.requested'",
+        [],
+    )
+    .unwrap();
+    drop(bus);
+    setup.count(LOOKUPS, 0, "");
+
+    succeeded(&setup.intake());
+
+    assert_eq!(setup.calls(LOOKUPS), 0);
+    assert_eq!(requests(&setup), request);
+}
+
+#[test]
+fn one_poll_looks_up_at_most_20_reviews() {
+    let setup = own_review_setup("pr-wrapper-bound");
+    let reviews: Vec<_> = (501..526).map(|id| own_review(id, "")).collect();
+    let threads: Vec<_> = (501..526)
+        .map(|id| (id, json!([own_reply(id + 1000, true)])))
+        .collect();
+    answer_reviews(&setup, json!(reviews), json!([]), &threads);
+    setup.count(LOOKUPS, 0, "");
+
+    succeeded(&setup.intake());
+    assert_eq!(setup.calls(LOOKUPS), 20);
+    assert_eq!(review_agents(&setup).len(), 20);
+    let banner = setup.desk()["intake"].to_string();
+    assert!(
+        banner.contains(": over 20 reviews wait for a lookup of their comments"),
+        "{banner}"
+    );
+
+    succeeded(&setup.intake());
+    assert_eq!(setup.calls(LOOKUPS), 25);
+    assert_eq!(review_agents(&setup).len(), 25);
+    assert_eq!(setup.desk()["intake"], serde_json::Value::Null);
+}
+
+/// Empty reviews 5001 to 5025 whose only comments are marked and delivered, with their threads.
+fn answer_repeats(setup: &Setup, newer: Option<(u64, serde_json::Value)>) {
+    let repeats = 5001..5026;
+    let comment = |id: u64| own_reply(id - 4000, true);
+    let delivered: Vec<_> = repeats.clone().map(comment).collect();
+    let mut threads: Vec<_> = repeats.map(|id| (id, json!([comment(id)]))).collect();
+    threads.extend(newer);
+    let reviews: Vec<_> = threads.iter().map(|(id, _)| own_review(*id, "")).collect();
+    answer_reviews(setup, json!(reviews), json!(delivered), &threads);
+    setup.count(LOOKUPS, 0, "");
+}
+
+#[test]
+fn a_newer_review_is_published_while_more_dropped_ones_than_one_poll_looks_up_are_read_again() {
+    let setup = own_review_setup("pr-wrapper-newest");
+    answer_repeats(&setup, Some((5026, json!([own_reply(2026, false)]))));
+
+    succeeded(&setup.intake());
+    assert_eq!(review_agents(&setup), [(5026, json!(false))]);
+    succeeded(&setup.intake());
+
+    assert_eq!(setup.calls(LOOKUPS), 40);
+    assert_eq!(review_agents(&setup), [(5026, json!(false))]);
+    assert_eq!(requests(&setup).len(), 1);
+}
+
+#[test]
+fn a_first_poll_of_more_repeats_than_it_looks_up_ends_its_baseline_on_the_next_one() {
+    let setup = Setup::new("pr-wrapper-baseline-repeats", &[]);
+    pr_trigger(
+        &setup,
+        "my-reviews",
+        "on = \"pull_request_review.submitted\"\nfilter = { author = \"max\", commenter = \"max\" }\n",
+    );
+    answer_repeats(&setup, None);
+
+    succeeded(&setup.intake());
+    assert_eq!(setup.calls(LOOKUPS), 20);
+    let published = review_agents(&setup);
+    assert_eq!(published.len(), 20);
+    assert!(published.iter().all(|(_, agent)| *agent == true));
+    succeeded(&setup.intake());
+
+    assert_eq!(setup.calls(LOOKUPS), 25);
+    // With nothing unread, the last 5 are dropped as repeats.
+    assert_eq!(review_agents(&setup), published);
+    let marked = setup.output().iter().any(|stored| {
+        stored.message.kind == "factory.intake.baseline"
+            && stored.message.data["stream"] == "github.pull_request_review.submitted"
+    });
+    assert!(marked);
+    assert_eq!(requests(&setup), []);
+}
+
+#[test]
+fn a_rate_limit_or_a_timeout_ends_the_lookups_of_a_poll() {
+    for (name, failing) in [
+        (
+            "limit",
+            "echo 'gh: API rate limit exceeded for user ID 1. (HTTP 403)' >&2; exit 1",
+        ),
+        ("timeout", "exec sleep 60"),
+    ] {
+        let setup = own_review_setup(&format!("pr-wrapper-{name}"));
+        write(
+            &setup.dir.join("factory/factory.toml"),
+            "name = \"demo\"\ncommand_timeout = \"5s\"\n",
+        );
+        answer_reviews(
+            &setup,
+            json!([
+                own_review(501, ""),
+                own_review(502, ""),
+                own_review(503, "One thing.")
+            ]),
+            json!([]),
+            &[],
+        );
+        let gh = setup.dir.join("bin/gh");
+        let script = fs::read_to_string(&gh).unwrap().replacen(
+            "#!/bin/sh\n",
+            &format!("#!/bin/sh\ncase \"$*\" in \"api {LOOKUPS}\"*) {failing} ;; esac\n"),
+            1,
+        );
+        Setup::fake_gh(&setup.dir, &script);
+        setup.count(LOOKUPS, 0, "");
+
+        assert!(!setup.intake().status.success());
+
+        assert_eq!(setup.calls(LOOKUPS), 1, "{name}");
+        assert_eq!(review_agents(&setup), [(503, json!(false))], "{name}");
+    }
+}
+
+#[test]
+fn an_empty_list_of_comments_is_unread_while_its_review_is_under_a_minute_old() {
+    let setup = own_review_setup("pr-wrapper-young");
+    answer_reviews(
+        &setup,
+        json!([own_review(501, "")]),
+        json!([]),
+        &[(501, json!([]))],
+    );
+
+    succeeded(&setup.intake_at("2026-11-17T12:10:59Z"));
+    assert_eq!(review_agents(&setup), []);
+
+    succeeded(&setup.intake_at("2026-11-17T12:11:00Z"));
+    assert_eq!(review_agents(&setup), [(501, json!(false))]);
+}
+
+#[test]
+fn an_empty_verdict_and_another_logins_review_are_not_judged_by_their_comments() {
+    let setup = own_review_setup("pr-wrapper-others");
+    let mut approved = own_review(501, "");
+    approved["state"] = json!("APPROVED");
+    let mut rejected = own_review(502, "");
+    rejected["state"] = json!("CHANGES_REQUESTED");
+    let mut other = own_review(503, "");
+    other["author"]["login"] = json!("ana");
+    let marked = |id| (id, json!([own_reply(id + 1000, true)]));
+    answer_reviews(
+        &setup,
+        json!([approved, rejected, other]),
+        json!([]),
+        &[marked(501), marked(502), marked(503)],
+    );
+    setup.count(LOOKUPS, 0, "");
+
+    succeeded(&setup.intake());
+
+    assert_eq!(setup.calls(LOOKUPS), 0);
+    assert_eq!(
+        review_agents(&setup),
+        [
+            (501, json!(false)),
+            (502, json!(false)),
+            (503, json!(false)),
+        ]
+    );
+    assert_eq!(requests(&setup).len(), 2);
+}
+
 /// An RFC 3339 time `seconds` ago.
 fn ago(seconds: i64) -> serde_json::Value {
     let now = herdr_bus::Timestamp::now().as_second();
@@ -2100,6 +2497,7 @@ fn an_issue_entering_a_view_publishes_the_event_and_one_task_request() {
             "project_id": null,
             "state": "Todo",
             "labels": ["agent"],
+            "order": null,
             "baseline": false,
             "triggers": ["agent-ready"]
         })
@@ -2113,6 +2511,7 @@ fn an_issue_entering_a_view_publishes_the_event_and_one_task_request() {
             "lane": null,
             "team": "ENG",
             "project": null,
+            "order": null,
             "trigger": "agent-ready",
             "source": source.id.to_string()
         })
@@ -2330,7 +2729,7 @@ fn moved(number: u64, id: &str, to: &str, time: &str) -> serde_json::Value {
         "id": id,
         "createdAt": time,
         "fromState": { "name": "Todo" },
-        "toState": { "name": to },
+        "toState": { "name": to, "type": "started" },
         "actor": { "displayName": "max" }
     }] });
     issue
@@ -2382,6 +2781,8 @@ fn a_state_change_that_matches_a_filter_requests_a_task_once() {
             "blockers": [],
             "from": "Todo",
             "to": "In Progress",
+            "to_type": "started",
+            "duplicate_of": null,
             "actor": "max",
             "time": "2026-11-17T11:00:00.000Z",
             "baseline": false,
@@ -2390,6 +2791,42 @@ fn a_state_change_that_matches_a_filter_requests_a_task_once() {
     );
     assert_eq!(task.data["key"], "linear:ENG-7");
     assert_eq!(published[3].message.data["triggers"], json!([]));
+}
+
+#[test]
+fn a_move_to_duplicate_carries_its_state_type_and_the_issue_it_duplicates() {
+    let setup = Setup::linear("linear-duplicate", &[("started", STATE_TRIGGER)]);
+    setup.answer_linear(&Linear {
+        issues: vec![linear_issue(1)],
+        ..Linear::default()
+    });
+    succeeded(&setup.intake());
+    let mut issue = moved(7, "history-7", "Duplicate", "2026-11-17T11:00:00.000Z");
+    issue["history"]["nodes"][0]["toState"]["type"] = json!("canceled");
+    issue["relations"] = json!({ "nodes": [
+        { "type": "blocks", "relatedIssue": { "id": "issue-3", "identifier": "ENG-3" } },
+        { "type": "duplicate", "relatedIssue": { "id": "issue-9", "identifier": "ENG-9" } }
+    ] });
+    setup.answer_linear(&Linear {
+        issues: vec![issue],
+        ..Linear::default()
+    });
+
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    let change = published
+        .iter()
+        .find(|published| published.message.kind == "linear.issue.state_changed")
+        .unwrap();
+    assert_eq!(
+        [
+            &change.message.data["to"],
+            &change.message.data["to_type"],
+            &change.message.data["duplicate_of"]
+        ],
+        [&json!("Duplicate"), &json!("canceled"), &json!("ENG-9")]
+    );
 }
 
 fn view_with(filter: serde_json::Value, issues: &[u64]) -> Linear {
@@ -3481,4 +3918,684 @@ fn a_review_request_a_crash_left_without_its_marker_still_leaves_and_asks_again(
     );
     assert_eq!(published[1].message.data["key"], REVIEW_KEY);
     assert_eq!(published[2].message.data["since"], "2026-11-20T09:00:00Z");
+}
+
+const PROJECT_TRIGGER: &str = r#"
+source = "linear.project"
+project = "a1b2c3d4e5f6"
+on = "issue.entered"
+workflow = "implement"
+key = "issue.identifier"
+band = "today"
+"#;
+
+/// `PROJECT_TRIGGER` with `filter`, inline TOML.
+fn project_trigger(filter: &str) -> String {
+    format!("{PROJECT_TRIGGER}filter = {filter}\n")
+}
+
+/// One page of a project's issues, with the cursor of the next one.
+fn project_page(issues: &[serde_json::Value], next: Option<&str>) -> serde_json::Value {
+    json!({ "data": { "project": { "issues": { "nodes": issues,
+        "pageInfo": { "hasNextPage": next.is_some(), "endCursor": next } } } } })
+}
+
+impl Setup {
+    /// Makes the fake `curl` answer the first of `answers` whose text the project query's variables
+    /// contain, and fail on a project query none matches or whose answer is none.
+    fn answer_project(&self, answers: &[(&str, Option<serde_json::Value>)]) {
+        self.answer_linear(&Linear::default());
+        let mut cases = String::new();
+        for (index, (variables, answer)) in answers.iter().enumerate() {
+            let file = self.dir.join(format!("linear-project-{index}.json"));
+            let then = match answer {
+                Some(answer) => {
+                    write(&file, &answer.to_string());
+                    format!("cat '{}'", file.display())
+                }
+                None => "echo 'curl: (22) 500' >&2; exit 22".to_owned(),
+            };
+            cases.push_str(&format!("  *'query Project'*'{variables}'*) {then} ;;\n"));
+        }
+        let curl = self.dir.join("bin/curl");
+        let script = fs::read_to_string(&curl).unwrap();
+        let (head, tail) = script.split_once(" in\n").unwrap();
+        write(&curl, &format!("{head} in\n{cases}{tail}"));
+        fs::set_permissions(&curl, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// A poll of a project that holds `issues`.
+    fn poll_project(&self, issues: &[serde_json::Value]) {
+        self.answer_project(&[("", Some(project_page(issues, None)))]);
+        succeeded(&self.intake());
+    }
+
+    /// The keys of the waiting tasks in start order, once the daemon read the intake's output.
+    fn queue(&self) -> Vec<String> {
+        self.inbox();
+        let queue: serde_json::Value =
+            serde_json::from_str(&self.priory(&["queue", "--json"])).unwrap();
+        queue["waiting"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|task| task["key"].as_str().unwrap().replace("linear:", ""))
+            .collect()
+    }
+
+    /// What `priory ARGS...` prints on this setup's state.
+    fn priory(&self, args: &[&str]) -> String {
+        let output = harness::priory()
+            .args(args)
+            .current_dir(self.dir.join("factory"))
+            .env("HERDR_BUS_DB", self.dir.join("bus.db"))
+            .env("PRIORY_DB", self.dir.join("priory.db"))
+            .output()
+            .unwrap();
+        succeeded(&output);
+        String::from_utf8(output.stdout).unwrap()
+    }
+}
+
+/// Issue `number` of `project`, at `sort_order`, in `milestone`: its sort order and target date.
+fn placed(
+    number: u64,
+    project: &str,
+    milestone: Option<(f64, Option<&str>)>,
+    sort_order: f64,
+) -> serde_json::Value {
+    let mut issue = linear_issue(number);
+    issue["project"] = json!({ "id": project, "name": project });
+    issue["sortOrder"] = json!(sort_order);
+    issue["projectMilestone"] = json!(milestone.map(|(sort, date)| json!({
+        "id": format!("milestone-{sort}-{}", date.unwrap_or("none")),
+        "sortOrder": sort, "targetDate": date,
+    })));
+    issue
+}
+
+#[test]
+fn an_issue_entering_and_leaving_a_project_publishes_each_event_once() {
+    let left = PROJECT_TRIGGER.replace("issue.entered", "issue.left");
+    let setup = Setup::linear(
+        "project-entered",
+        &[("joined", PROJECT_TRIGGER), ("gone", &left)],
+    );
+    setup.poll_project(&[]);
+    for issues in [vec![linear_issue(7)], vec![linear_issue(7)], vec![], vec![]] {
+        setup.poll_project(&issues);
+    }
+
+    let published = setup.published();
+    assert_eq!(
+        kinds(&published),
+        [
+            "linear.issue.entered",
+            "factory.task.requested",
+            "linear.issue.left",
+            "factory.task.requested"
+        ]
+    );
+    let entered = timeless(&published[0].message);
+    assert_eq!(entered["stream"], "linear.project:a1b2c3d4e5f6");
+    assert!(entered.get("view").is_none());
+    assert_eq!(entered["triggers"], json!(["joined"]));
+    assert_eq!(published[2].message.data["triggers"], json!(["gone"]));
+}
+
+#[test]
+fn a_projects_first_poll_is_a_baseline_that_only_backfill_turns_into_tasks() {
+    let backfill = format!("{PROJECT_TRIGGER}backfill = true\n");
+    for (name, trigger, expected) in [
+        (
+            "project-baseline",
+            PROJECT_TRIGGER,
+            &["linear.issue.entered"][..],
+        ),
+        (
+            "project-backfill",
+            &backfill,
+            &["linear.issue.entered", "factory.task.requested"],
+        ),
+    ] {
+        let setup = Setup::linear(name, &[("joined", trigger)]);
+        setup.poll_project(&[linear_issue(7)]);
+        setup.poll_project(&[linear_issue(7)]);
+
+        assert_eq!(kinds(&setup.published()), expected);
+        assert_eq!(setup.published()[0].message.data["baseline"], true);
+    }
+}
+
+#[test]
+fn a_restart_after_a_crash_in_a_project_poll_requests_the_task_and_repeats_no_event() {
+    let trigger = project_trigger(r#"{ state = ["backlog"] }"#);
+    let setup = Setup::linear("project-crash-source", &[("joined", &trigger)]);
+    setup.poll_project(&[]);
+    setup.poll_project(&[linear_issue(7)]);
+    let entered = setup.published()[0].message.clone();
+    let crashed = Setup::linear("project-crash", &[("joined", &trigger)]);
+    crashed.poll_project(&[]);
+    seed(&crashed, &entered);
+
+    crashed.poll_project(&[linear_issue(7)]);
+    crashed.poll_project(&[]);
+
+    assert_eq!(
+        kinds(&crashed.published()),
+        [
+            "linear.issue.entered",
+            "factory.task.requested",
+            "linear.issue.left"
+        ]
+    );
+}
+
+#[test]
+fn a_baseline_crash_of_a_project_requests_its_backfill_tasks_again() {
+    let trigger = format!("{PROJECT_TRIGGER}backfill = true\n");
+    let setup = Setup::linear("project-baseline-crash-source", &[("joined", &trigger)]);
+    setup.poll_project(&[linear_issue(7)]);
+    let entered = setup.published()[0].message.clone();
+    let crashed = Setup::linear("project-baseline-crash", &[("joined", &trigger)]);
+    seed(&crashed, &entered);
+
+    crashed.poll_project(&[linear_issue(7)]);
+
+    assert_eq!(
+        kinds(&crashed.published()),
+        ["linear.issue.entered", "factory.task.requested"]
+    );
+}
+
+#[test]
+fn an_issue_reassigned_to_and_away_from_the_filters_assignee_enters_and_leaves() {
+    let trigger =
+        project_trigger(r#"{ assignee = "Ada@Example.com", state = ["unstarted", "backlog"] }"#);
+    let sent = r#""variables":{"filter":{"assignee":{"email":{"eqIgnoreCase":"ada@example.com"}},"state":{"type":{"in":["backlog","unstarted"]}}},"project":"a1b2c3d4e5f6"}"#;
+    let setup = Setup::linear("project-assignee", &[("mine", &trigger)]);
+    for issues in [vec![], vec![linear_issue(7)], vec![]] {
+        setup.answer_project(&[(sent, Some(project_page(&issues, None)))]);
+        succeeded(&setup.intake());
+    }
+
+    assert_eq!(
+        kinds(&setup.published()),
+        [
+            "linear.issue.entered",
+            "factory.task.requested",
+            "linear.issue.left"
+        ]
+    );
+}
+
+#[test]
+fn an_assignee_id_reaches_linear_as_an_id() {
+    let user = "3f0c9a52-6d1b-4e8f-a7c4-b1d2e3f40516";
+    let setup = Setup::linear(
+        "project-assignee-id",
+        &[(
+            "mine",
+            &project_trigger(&format!("{{ assignee = \"{user}\" }}")),
+        )],
+    );
+    let sent = format!(r#""filter":{{"assignee":{{"id":{{"eq":"{user}"}}}}}}"#);
+    setup.answer_project(&[(&sent, Some(project_page(&[], None)))]);
+
+    succeeded(&setup.intake());
+}
+
+#[test]
+fn a_project_reads_every_page_and_a_failed_later_page_publishes_nothing() {
+    let setup = Setup::linear("project-pages", &[("joined", PROJECT_TRIGGER)]);
+    let issues: Vec<_> = (1..=101).map(linear_issue).collect();
+    let first = Some(project_page(&issues[..100], Some("page-2")));
+    let second = Some(project_page(&issues[100..], None));
+    let whole = [("page-2", second), ("", first.clone())];
+    setup.answer_project(&whole);
+    succeeded(&setup.intake());
+    let before = setup.output().len();
+    setup.answer_project(&[("page-2", None), ("", first)]);
+
+    let failed = setup.intake();
+
+    assert_eq!(failed.status.code(), Some(1));
+    assert_eq!(setup.output().len(), before);
+    setup.answer_project(&whole);
+    succeeded(&setup.intake());
+    assert_eq!(kinds(&setup.published()), ["linear.issue.entered"; 101]);
+}
+
+#[test]
+fn two_filters_on_one_project_publish_apart_across_restarts_and_a_filter_edit() {
+    let backlog = r#"{ state = "backlog" }"#;
+    let setup = Setup::linear(
+        "project-two-filters",
+        &[
+            ("backlog", &project_trigger(backlog)),
+            ("started", &project_trigger(r#"{ state = ["started"] }"#)),
+        ],
+    );
+    let poll = |backlog: &[u64], started: &[u64]| {
+        let page = |issues: &[u64]| {
+            let issues: Vec<_> = issues.iter().map(|number| linear_issue(*number)).collect();
+            Some(project_page(&issues, None))
+        };
+        setup.answer_project(&[
+            ("backlog", page(backlog)),
+            ("started", page(started)),
+            ("triage", page(&[7])),
+        ]);
+        succeeded(&setup.intake());
+    };
+    let seen = |from: usize| -> Vec<(String, String, serde_json::Value)> {
+        setup.published()[from..]
+            .iter()
+            .filter(|stored| stored.message.kind.starts_with("linear."))
+            .map(|stored| {
+                let data = &stored.message.data;
+                let stream = data["stream"].as_str().unwrap();
+                let (_, filter) = stream.split_once("a1b2c3d4e5f6:").unwrap();
+                (
+                    stored.message.kind.clone(),
+                    filter.to_owned(),
+                    data["triggers"].clone(),
+                )
+            })
+            .collect()
+    };
+    let event = |kind: &str, state: &str, triggers: serde_json::Value| {
+        (
+            format!("linear.issue.{kind}"),
+            format!(r#"{{"state":["{state}"]}}"#),
+            triggers,
+        )
+    };
+    poll(&[7], &[]);
+    let baseline = setup.published().len();
+
+    // Started: it leaves one filter's members and enters the other's.
+    poll(&[], &[7]);
+    assert_eq!(
+        seen(baseline),
+        [
+            event("left", "backlog", json!([])),
+            event("entered", "started", json!(["started"])),
+        ]
+    );
+
+    // An edit is a baseline of the new filter, which leaves the other one alone.
+    let moved = setup.published().len();
+    let file = setup.dir.join("factory/triggers/backlog.toml");
+    write(&file, &project_trigger(r#"{ state = ["triage"] }"#));
+    poll(&[], &[7]);
+    assert_eq!(seen(moved), [event("entered", "triage", json!([]))]);
+    assert_eq!(
+        setup.published().last().unwrap().message.data["baseline"],
+        true
+    );
+
+    // The old filter, written another way, resumes its own members.
+    let edited = setup.published().len();
+    write(
+        &file,
+        &project_trigger(r#"{ state = ["backlog", "backlog"] }"#),
+    );
+    poll(&[8], &[7]);
+    assert_eq!(
+        seen(edited),
+        [event("entered", "backlog", json!(["backlog"]))]
+    );
+}
+
+#[test]
+fn entering_one_filter_again_leaves_the_other_filters_ask_open() {
+    let backfill = |state: &str| {
+        format!(
+            "{}backfill = true\n",
+            project_trigger(&format!("{{ state = \"{state}\" }}"))
+        )
+    };
+    let setup = Setup::linear(
+        "project-two-asks",
+        &[
+            ("backlog", &backfill("backlog")),
+            ("triage", &backfill("triage")),
+        ],
+    );
+    let poll = |backlog: &[serde_json::Value], triage: &[serde_json::Value]| {
+        setup.answer_project(&[
+            ("backlog", Some(project_page(backlog, None))),
+            ("triage", Some(project_page(triage, None))),
+        ]);
+        succeeded(&setup.intake());
+        setup.inbox();
+    };
+    let here = [linear_issue(7)];
+    poll(&here, &here);
+    poll(&[], &[]);
+    poll(&here, &[]);
+
+    let questions = || -> Vec<String> {
+        let asks: serde_json::Value =
+            serde_json::from_str(&setup.priory(&["asks", "--json"])).unwrap();
+        let asks = asks["asks"].as_array().or(asks.as_array()).unwrap();
+        asks.iter()
+            .filter(|ask| ask["state"] == "open")
+            .map(|ask| ask["question"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let left = |state: &str| {
+        format!(
+            r#"ENG-7 left the project a1b2c3d4e5f6 filtered by {{"state":["{state}"]}}. Drop the task?"#
+        )
+    };
+    assert_eq!(questions(), [left("triage")]);
+
+    // Leaving the first filter again asks again, though its earlier ask's hold is not released yet.
+    poll(&[], &[]);
+    assert_eq!(questions(), [left("triage"), left("backlog")]);
+}
+
+#[test]
+fn a_projects_tasks_queue_by_milestone_then_issue_order_with_no_milestone_last() {
+    let setup = Setup::linear("project-milestones", &[("joined", PROJECT_TRIGGER)]);
+    let (first, second) = (Some((1.0, None)), Some((2.0, None)));
+    setup.poll_project(&[]);
+    setup.poll_project(&[
+        placed(1, "p", None, 0.0),
+        placed(2, "p", second, 1.0),
+        placed(3, "p", first, 9.0),
+        placed(4, "p", first, -2.5),
+        placed(5, "p", Some((1.0, Some("2026-12-01"))), 99.0),
+    ]);
+
+    // Equal milestone orders sort by target date, with none last.
+    assert_eq!(setup.queue(), ["ENG-5", "ENG-4", "ENG-3", "ENG-2", "ENG-1"]);
+
+    // Later polls move the queued tasks with their issues, and with their milestones.
+    setup.poll_project(&[
+        placed(1, "p", first, -9.0),
+        placed(2, "p", second, 1.0),
+        placed(3, "p", None, 9.0),
+        placed(4, "p", first, -2.5),
+        placed(5, "p", Some((3.0, Some("2026-12-01"))), 99.0),
+    ]);
+    assert_eq!(setup.queue(), ["ENG-1", "ENG-4", "ENG-2", "ENG-5", "ENG-3"]);
+    assert_eq!(
+        kinds(&setup.published())
+            .iter()
+            .filter(|kind| kind.starts_with("linear."))
+            .count(),
+        5,
+        "a move inside the project is no membership event"
+    );
+}
+
+#[test]
+fn a_task_revived_after_its_issue_changed_milestone_takes_the_new_place() {
+    let setup = Setup::linear("project-revived", &[("joined", PROJECT_TRIGGER)]);
+    let (first, second) = (Some((1.0, None)), Some((2.0, None)));
+    setup.poll_project(&[]);
+    setup.poll_project(&[placed(1, "p", first, 0.0), placed(2, "p", second, 0.0)]);
+    assert_eq!(setup.queue(), ["ENG-1", "ENG-2"]);
+    let state = |state: &str| {
+        let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+        db.execute("UPDATE tasks SET state = ?1 WHERE id = 1", [state])
+            .unwrap();
+    };
+    state("failed");
+    setup.poll_project(&[placed(1, "p", None, 0.0), placed(2, "p", second, 0.0)]);
+    setup.inbox();
+
+    state("queued");
+    // Another issue's change publishes a marker, which places the queue.
+    setup.poll_project(&[placed(1, "p", None, 0.0), placed(2, "p", second, 1.0)]);
+
+    assert_eq!(setup.queue(), ["ENG-2", "ENG-1"]);
+}
+
+#[test]
+fn a_persons_move_beats_a_milestone_change_until_they_clear_it() {
+    let setup = Setup::linear("project-moved", &[("joined", PROJECT_TRIGGER)]);
+    let (first, second) = (Some((1.0, None)), Some((2.0, None)));
+    setup.poll_project(&[]);
+    setup.poll_project(&[placed(1, "p", first, 0.0), placed(2, "p", second, 0.0)]);
+    assert_eq!(setup.queue(), ["ENG-1", "ENG-2"]);
+    setup.priory(&["move", "2", "--top"]);
+    setup.poll_project(&[placed(1, "p", first, -5.0), placed(2, "p", None, 0.0)]);
+
+    assert_eq!(setup.queue(), ["ENG-2", "ENG-1"]);
+
+    for task in ["1", "2"] {
+        setup.priory(&["move", task, "--band", "today"]);
+    }
+    assert_eq!(setup.queue(), ["ENG-1", "ENG-2"]);
+}
+
+#[test]
+fn a_view_orders_each_project_by_itself_and_leaves_other_work_its_place() {
+    let setup = Setup::linear("view-milestones", &[("agent-ready", VIEW_TRIGGER)]);
+    let (first, second) = (Some((1.0, None)), Some((2.0, None)));
+    succeeded(&setup.intake());
+    setup.answer_linear(&Linear {
+        view: vec![
+            placed(1, "a", second, 0.0),
+            placed(2, "b", second, 0.0),
+            linear_issue(3),
+            placed(4, "b", first, 0.0),
+            placed(5, "a", first, 0.0),
+        ],
+        ..Linear::default()
+    });
+    succeeded(&setup.intake());
+
+    assert_eq!(setup.queue(), ["ENG-5", "ENG-4", "ENG-3", "ENG-2", "ENG-1"]);
+
+    // A task moved to another band trades places only there.
+    setup.priory(&["move", "5", "--band", "later"]);
+    setup.answer_linear(&Linear {
+        view: vec![
+            placed(1, "a", second, 1.0),
+            placed(2, "b", second, 0.0),
+            linear_issue(3),
+            placed(4, "b", first, 0.0),
+            placed(5, "a", first, 0.0),
+        ],
+        ..Linear::default()
+    });
+    succeeded(&setup.intake());
+    assert_eq!(setup.queue(), ["ENG-1", "ENG-4", "ENG-3", "ENG-2", "ENG-5"]);
+}
+
+#[test]
+fn a_view_marker_without_orders_gives_queued_tasks_theirs_and_publishes_no_event() {
+    let setup = Setup::linear("view-legacy-order", &[("agent-ready", VIEW_TRIGGER)]);
+    let member = |number: u64| {
+        json!({
+            "issue": format!("ENG-{number}"), "linear_id": format!("issue-{number}"),
+            "title": "Fix the thing", "team": "ENG", "project": "p", "project_id": "p",
+            "url": format!("https://linear.app/acme/issue/ENG-{number}/fix-the-thing"),
+            "state": "Todo", "labels": ["agent"]
+        })
+    };
+    legacy_view_marker(&setup, json!([member(1), member(2)]));
+    for number in [1, 2] {
+        let request = json!({
+            "workflow": "implement", "key": format!("linear:ENG-{number}"), "band": "today",
+            "lane": null, "team": "ENG", "project": "p", "trigger": "agent-ready",
+            "source": "8beb4cb2-80ac-53e2-b95c-eeb5e39b5a11"
+        });
+        seed(
+            &setup,
+            &Message::new("factory.task.requested", request)
+                .subject(format!("linear:ENG-{number}")),
+        );
+    }
+    assert_eq!(setup.queue(), ["ENG-1", "ENG-2"]);
+    setup.answer_linear(&Linear {
+        view: vec![
+            placed(1, "p", None, 0.0),
+            placed(2, "p", Some((1.0, None)), 0.0),
+        ],
+        ..Linear::default()
+    });
+
+    succeeded(&setup.intake());
+
+    assert_eq!(setup.queue(), ["ENG-2", "ENG-1"]);
+    assert_eq!(kinds(&setup.published()), ["factory.task.requested"; 2]);
+}
+
+#[test]
+fn milestone_order_holds_within_a_lane_that_takes_turns() {
+    let trigger = format!("{PROJECT_TRIGGER}lane = \"core/intake\"\n");
+    let setup = Setup::linear("project-fair", &[("joined", &trigger)]);
+    write(
+        &setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\n\n[queue]\nfair = \"lane\"\n",
+    );
+    setup.poll_project(&[]);
+    setup.poll_project(&[
+        placed(1, "p", Some((2.0, None)), 0.0),
+        placed(2, "p", Some((1.0, None)), 0.0),
+    ]);
+
+    assert_eq!(setup.queue(), ["ENG-2", "ENG-1"]);
+}
+
+/// A project's page that holds issue `number` and nothing else.
+fn only(number: u64) -> Option<serde_json::Value> {
+    Some(project_page(&[linear_issue(number)], None))
+}
+
+#[test]
+fn a_project_linear_refuses_stops_only_its_own_stream() {
+    let refused = json!({ "data": null, "errors": [{ "message": "Entity not found: Project" }] });
+    let missing = json!({ "data": { "project": null } });
+    for (name, answer, why) in [
+        ("project-refused", refused, "Entity not found: Project"),
+        (
+            "project-missing",
+            missing,
+            "Linear answered no /project/issues",
+        ),
+    ] {
+        let bad = project_trigger(r#"{ state = "backlog" }"#).replace("a1b2c3d4e5f6", "gone");
+        let setup = Setup::linear(
+            name,
+            &[
+                ("bad", &bad),
+                ("joined", PROJECT_TRIGGER),
+                ("agent-ready", VIEW_TRIGGER),
+            ],
+        );
+        let empty = Some(project_page(&[], None));
+        setup.answer_project(&[("gone", only(7)), ("", empty)]);
+        succeeded(&setup.intake());
+        let before = setup.published().len();
+        setup.answer_project(&[("gone", Some(answer)), ("", only(8))]);
+        let page = json!({ "nodes": [linear_issue(9)],
+            "pageInfo": { "hasNextPage": false, "endCursor": null } });
+        let view = json!({ "data": { "customView": { "filterData": null, "issues": page } } });
+        write(&setup.dir.join("linear-customView.json"), &view.to_string());
+        let issues = json!({ "data": { "issues": page } });
+        write(&setup.dir.join("linear-issues.json"), &issues.to_string());
+
+        let failed = setup.intake();
+
+        assert_eq!(failed.status.code(), Some(1));
+        let stderr = String::from_utf8_lossy(&failed.stderr);
+        assert!(
+            stderr.contains(r#"linear.project:gone:{"state":["backlog"]}"#),
+            "{stderr}"
+        );
+        assert!(stderr.contains(why), "{stderr}");
+        let published: Vec<_> = setup.published()[before..]
+            .iter()
+            .map(|stored| {
+                let data = &stored.message.data;
+                let issue = data["issue"].as_str().or(data["key"].as_str()).unwrap();
+                (stored.message.kind.clone(), issue.to_owned())
+            })
+            .collect();
+        let expected = [
+            ("linear.issue.created", "ENG-9"),
+            ("linear.issue.entered", "ENG-8"),
+            ("factory.task.requested", "linear:ENG-8"),
+            ("linear.issue.entered", "ENG-9"),
+            ("factory.task.requested", "linear:ENG-9"),
+        ]
+        .map(|(kind, issue)| (kind.to_owned(), issue.to_owned()));
+        assert_eq!(published, expected);
+
+        // Read again, the project has lost no member.
+        setup.answer_project(&[("gone", only(7)), ("", only(8))]);
+        write(&setup.dir.join("linear-customView.json"), &view.to_string());
+        succeeded(&setup.intake());
+        assert_eq!(setup.published().len(), before + expected.len());
+    }
+}
+
+#[test]
+fn a_view_linear_refuses_stops_only_its_own_stream() {
+    let setup = Setup::linear(
+        "view-refused",
+        &[("joined", PROJECT_TRIGGER), ("agent-ready", VIEW_TRIGGER)],
+    );
+    setup.poll_project(&[]);
+    setup.answer_project(&[("", only(8))]);
+    let refused = json!({ "errors": [{ "message": "Entity not found: CustomView" }] });
+    write(
+        &setup.dir.join("linear-customView.json"),
+        &refused.to_string(),
+    );
+
+    let failed = setup.intake();
+
+    assert_eq!(failed.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&failed.stderr);
+    assert!(stderr.contains("linear.view:6b3c2f9a1d4e"), "{stderr}");
+    assert!(stderr.contains("Entity not found: CustomView"), "{stderr}");
+    assert_eq!(
+        kinds(&setup.published()),
+        ["linear.issue.entered", "factory.task.requested"]
+    );
+}
+
+#[test]
+fn a_page_of_a_view_or_project_reads_few_labels_per_issue() {
+    let setup = Setup::linear(
+        "membership-labels",
+        &[("joined", PROJECT_TRIGGER), ("agent-ready", VIEW_TRIGGER)],
+    );
+    setup.poll_project(&[]);
+
+    let sent = fs::read_to_string(setup.dir.join("curl-args")).unwrap();
+
+    for (query, labels) in [
+        ("query View", "labels(first: 20)"),
+        ("query Project", "labels(first: 20)"),
+        ("query Issues", "labels {"),
+        ("query Comments", "labels {"),
+    ] {
+        let line = sent.lines().find(|line| line.contains(query)).unwrap();
+        assert!(line.contains(labels), "{line}");
+        assert_eq!(line.matches("labels").count(), 1, "{line}");
+    }
+}
+
+#[test]
+fn a_task_whose_trigger_was_renamed_follows_its_milestone() {
+    let setup = Setup::linear("project-renamed", &[("joined", PROJECT_TRIGGER)]);
+    let (first, second) = (Some((1.0, None)), Some((2.0, None)));
+    setup.poll_project(&[]);
+    setup.poll_project(&[placed(1, "p", first, 0.0), placed(2, "p", second, 0.0)]);
+    assert_eq!(setup.queue(), ["ENG-1", "ENG-2"]);
+    let triggers = setup.dir.join("factory/triggers");
+    fs::rename(triggers.join("joined.toml"), triggers.join("renamed.toml")).unwrap();
+
+    setup.poll_project(&[placed(1, "p", None, 0.0), placed(2, "p", second, 0.0)]);
+
+    assert_eq!(setup.queue(), ["ENG-2", "ENG-1"]);
 }

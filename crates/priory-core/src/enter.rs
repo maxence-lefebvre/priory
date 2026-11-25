@@ -66,11 +66,16 @@ impl Entering {
     /// Presses Enter on each prompt pasted `GAP` ago, presses it once more on each that got no
     /// `UserPromptSubmit` within `AGAIN`, and marks `uncertain` each still without one
     /// `UNCONFIRMED` later. A `/compact` gets one Enter: its end is a `SessionStart`, which can take
-    /// minutes.
+    /// minutes. While a person holds the run's keyboard, each wait starts over.
     pub(crate) fn tick(&mut self, db: &Connection) -> rusqlite::Result<()> {
         let mut kept = Vec::with_capacity(self.0.len());
         for mut pasted in std::mem::take(&mut self.0) {
             if pasted.at.elapsed() < pasted.wait() {
+                kept.push(pasted);
+                continue;
+            }
+            if state::keyboard_held(db, pasted.outbox)? {
+                pasted.at = Instant::now();
                 kept.push(pasted);
                 continue;
             }

@@ -62,8 +62,8 @@ A cap is reached once the spend equals it or goes past it.
 
 The daemon never ends a run that an [urgent wake](room.md#what-is-never-stopped) would not stop
 either: a run at a step whose effect is `irreversible`, with an open keyboard grant, with a tmux
-client attached, or in a shared session. Such a run carries on past the cap, and the daemon holds
-its task at the first moment between two turns outside them, such as the next step.
+client attached that can type, or in a shared session. Such a run carries on past the cap, and the
+daemon holds its task at the first moment between two turns outside them, such as the next step.
 
 When the task has a run, the daemon reads its transcript once more, ends the run as `capped` and
 kills its tmux session. It then holds the task with the reason `held: spent $203.00 of trigger

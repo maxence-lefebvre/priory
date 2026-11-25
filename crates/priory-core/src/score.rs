@@ -602,10 +602,9 @@ pub fn on_commit(
         Err(why) => return error(format!("cannot run git: {why}")),
     }
     let answer = run_command(&program, &scratch, base, head, result, scorer.timeout());
-    let _ = git(&clone)
-        .args(["worktree", "remove", "--force"])
-        .arg(&scratch)
-        .output();
+    if let Err(why) = priory_runtime::worktrees::remove_checkout(&clone, &scratch) {
+        eprintln!("priory: the scorer's checkout: {why}");
+    }
     answer
 }
 

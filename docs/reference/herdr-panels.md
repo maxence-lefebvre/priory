@@ -114,7 +114,7 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
   of its last update, and the options stay disabled until it reconnects.
 - **Routed asks.** An open ask with `routed_to` shows "with <lead>" in its row, and its detail says
   the lead is answering and that the person can still answer first. An answered ask shows
-  `answered_by` as "by agent:<lead>", "by auto", "by session <session>" for a person's own session,
+  `answered_by` as "by agent:<lead>", "by auto", "by autopilot", "by session <session>" for a person's own session,
   or "by a person", in its row, its decided line and the
   History. The Desk panel shows the same mark under a routed ask's question. The helpers
   `routedMark`, `routedNote` and `answeredBy` live in `lib/priory.js`, as in the web view's
@@ -142,9 +142,9 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
   A press on another option moves the arm, and a new revision of the ask drops it. An option that
   runs the ask's command shows the command word by word under it while armed, and its answer adds
   `--run`. A press within 250 ms of the arm does nothing, so a double-click cannot send by
-  accident. "Write an answer…" sends free text at once. Dismiss runs `priory dismiss` at once. A
-  step's ask and a hold's ask take only their options, so they offer neither "Write an answer…",
-  its `w` key, nor Dismiss.
+  accident. "Write an answer…" sends free text at once. Dismiss runs `priory dismiss` at once. Every
+  open ask offers "Write an answer…" and its `w` key. A step's ask and a hold's ask need an
+  answer, so they offer no Dismiss.
 - **Refused answers.** When a verb fails, the panel reads the asks again and says why on the ask:
   the question changed to another revision, someone else answered, the ask was withdrawn, or the
   CLI's error. When the ask has left the view, the reason shows in a strip under the header
@@ -165,13 +165,17 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
   draw with their [links](#links).
 
 The detail shows the sections Why, Brief, Plan, PR, Trace, History and Command. Brief shows the
-request and the `groom` step's result, Plan the `plan` step's result, or else the latest result of a step
+request and the `groom` step's result, Plan the plan its latest approval ask shows (`plan_file`, see
+[the task endpoint](serve.md)) with the path of each file, or else the `plan` step's result, or else the latest result of a step
 whose name starts with `plan-`, or else the task's `progress`, PR the pull request's title, branches, state, review and checks, then the task's stack when it
 has two or more pull requests (see [Stacks](#stacks)), and Trace each run with its
 span, outcome and tokens. A check shows a check, a cross, a clock while it has no conclusion, or a
 dash when skipped or neutral; review and check states read in plain words, such as "changes
 requested" and "passed", as `checkState` and `stateWords` in `lib/priory.js` say them for the web too.
 A section the task lacks is left out with its chip, as DESIGN.md says.
+An open ask that approves a plan puts Plan first, and its detail opens on Plan rather than Why. Its
+options wait until the plan of its revision is read, and the panel and its answer bar say why while
+they wait or when the read fails. A cut plan says so beside the options.
 History lists every revision and refused answer of the ask, and its answer, newest first. A refused
 answer shows on a warn tile. Briefs, plans and results draw as plain text, like the agent's text.
 
@@ -258,16 +262,25 @@ built-in `#n` link.
 ## The Add action
 
 The Desk and Queue panels share one Add form, `lib/add-form.js`, over the view model `lib/add.js`.
-It holds one field, then chips for workflow, band and lane. The band chips are the factory's bands
-from `priory queue --json`, and the workflow chips its `workflows`. A queue read without the
-factory folder lists no workflows, so the chips then offer the workflows the listed tasks carry.
-The lane chips are the lanes the listed tasks carry. An unpicked chip leaves the
-value to the factory's [`[request]`](factory.md#request) table, as `priory add` does.
+It holds one field, then a dropdown each for workflow, band and lane. The bands are the factory's
+from `priory queue --json`, and the workflows its `workflows`, the
+[requestable](workflows.md#top-level-keys) ones. A queue read without the factory folder has
+`workflows` null, or `[]` from an older priory, so the dropdown then offers those the listed tasks
+carry. The lanes are those the listed tasks carry. A picked value that
+leaves the choices stays in its dropdown. A dropdown with nothing to offer and no pick is left out.
 
-`Enter` runs `priory add FACTORY -- TEXT` with a flag for each picked chip, and the form shows
+With no pick, the dropdowns show `default (WORKFLOW)`, `default` and `routed`. `WORKFLOW` is the
+queue's `default_workflow`. When the factory sets none, the dropdown shows `pick one`; when the queue
+lists no workflows, or comes from an older priory, it shows `default`. An unpicked dropdown leaves
+the value to the factory's [`[request]`](factory.md#request) table, and the lane to its lane rules,
+as `priory add` does. The first row of each menu clears the pick.
+
+`Enter` runs `priory add FACTORY -- TEXT` with a flag for each picked value, and the form shows
 "Added KEY." The Desk then selects the task in All tasks, and the Queue opens its row in Next, once
-the next read lists it. When priory refuses, the form says why and keeps the text. `Esc` closes the
-form. The panel's single-key shortcuts stay off while the field has focus.
+the next read lists it. When priory refuses, the form says why and keeps the text. `Tab` reaches
+each dropdown and `Enter` opens it on its pick. The up and down arrows move the highlight and scroll
+it into view, and `Enter` or `Space` picks it. A long name is truncated. `Esc` closes an open menu, else the form. The panel's
+single-key shortcuts stay off while the field or another control of the form has focus.
 
 ## The Bonjour panel
 
@@ -389,7 +402,10 @@ DESIGN.md's "Inbox" section holds its visual rules; this section says how it wor
   `priory subscribe N RESOURCE --expected REVISION`, with the revision the panel read, for an
   active owner. Revive task N runs `priory revive N` for a
   failed or dropped one. Request a task runs `priory add FACTORY --workflow W -- TEXT` with the
-  group's `request_text` for a done one, so the new task owns the resource. A note under the
+  group's `request_text` for a done one, so the new task owns the resource. `W` is the done
+  task's workflow. When `priory queue --json` lists it in `opted_out`, the panel leaves
+  `--workflow` out, the factory's `[request] workflow` applies, and the note says so, also on a
+  refusal. A workflow the factory lacks stays, so priory refuses it by name. A note under the
   group says what the verb did, or why priory refused it. One verb runs at a time, and after one
   succeeds the buttons stay disabled until a read shows its result.
 - **Unheard.** Before the owned groups, under Unheard, each task that kept events no agent read
@@ -479,10 +495,10 @@ Priory bar opens it as a tab in the center stack when another panel sets `priory
 - **What it shows.** The header holds the task's state tile, key and state, then Watch and Attach. Then the
   title with its [links](#links), the workflow, step, lane and band, and the task's reason. Asks
   lists the task's asks: open ones first, each with when it was asked, then answered ones, newest
-  answer first. An answered ask's tile says who answered: a cog for `auto` or a lead agent, a
+  answer first. An answered ask's tile says who answered: a cog for `auto`, `autopilot` or a lead agent, a
   terminal for a session, a person otherwise. Its caption reads "Answered after by session 7f3c2a,
   medium", with the confidence the agent stated. An auto answer opens to its confidence as three
-  bars, its rationale, and "The first answer stands. Say to the agent to change course." Pull request shows the latest pull request's title as a
+  bars, its rationale, and "The first answer stands. Say to the agent to change course." An autopilot answer says instead how to replace it. Pull request shows the latest pull request's title as a
   link, its branches and state, its checks, and the task's stack (see [Stacks](#stacks)). A check
   with no conclusion yet counts as running. History
   lists the last 10 runs, newest first, each with its step, outcome and how long ago it started, and under it
@@ -535,7 +551,7 @@ waiting: snoozing changes what a person sees, never what the daemon does. `prior
   `withdrawn_why`, the reason in words that the view shows, and `withdrawn_at`.
 - The detail adds the agent's text and the run that asked, `what_waits` and `next_action`, and
   the ask's `revisions` and `refused`, and another runner's ask's `submissions`, for its history. `priory task ID --json` adds the task's
-  `brief`, `plan`, `pull_request` and `runs`.
+  `brief`, `plan`, `plan_file`, `pull_request` and `runs`.
 
 ### Queue
 

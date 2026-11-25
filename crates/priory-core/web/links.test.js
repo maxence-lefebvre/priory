@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { linked } from "./links.js";
+import { autolink, linked } from "./links.js";
 
 const LINKS = [
   { pattern: String.raw`\b([A-Z]{2,5}-\d+)\b`, url: "https://linear.app/acme/issue/$1" },
@@ -76,4 +76,19 @@ test("a bare URL ends at a backtick or ]", () => {
     linked("see `https://ci.example.com/x`", [], null),
     'see `<a class="autolink" href="https://ci.example.com/x" rel="noopener noreferrer" target="_blank">https://ci.example.com/x</a>`',
   );
+});
+
+test("a long run of prose after a URL is left out in linear time", () => {
+  for (const tail of [")", ".)", "."]) {
+    const started = performance.now();
+    const [span, rest] = autolink(`https://a.dev/x${tail.repeat(65_536 / tail.length)}`, [], null);
+    assert.equal(span.url, "https://a.dev/x");
+    assert.equal(rest.text.length, 65_536);
+    assert.ok(performance.now() - started < 1000, tail);
+  }
+  const dotted = `https://a.dev/${".".repeat(65_536)}x`;
+  const started = performance.now();
+  assert.equal(autolink(dotted, [], null).at(-1)?.text, dotted);
+  assert.ok(performance.now() - started < 1000, "dots");
+  assert.deepEqual(autolink("(https://a.dev/b_(c)).", [], null).map((span) => span.text), ["(", "https://a.dev/b_(c)", ")."]);
 });

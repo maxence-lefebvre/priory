@@ -81,7 +81,9 @@ The Warp column comes from Warp's public page and is blank where that page says 
 | Inbox      | The durable list of events, each routed to the task it concerns          |              | inbox            |
 | Desk       | What waits on a person: asks, blocked tasks, reports and to-dos           |              | asks panel       |
 | Wait       | The conditions an agent names before it sleeps                            |              | `retire --on`    |
+| News       | An event that may end a task's work, such as its issue marked a duplicate, handed to its run during a turn |  |                  |
 | Ask        | A question to a person, with options, a recommendation and a trade-off    | review gate  | ask              |
+| Autopilot  | A window in which the daemon answers eligible asks in a person's place    |              |                  |
 | Result     | The immutable record of a run's outcome and its evidence                  |              | result           |
 | Trace      | One record per step: decider, effect, outcome, tokens and time; exported as OpenTelemetry spans | |                  |
 | View       | A layout of panels that shows the factory and acts on it                  |              | Herdr mods       |
@@ -90,6 +92,8 @@ The Warp column comes from Warp's public page and is blank where that page says 
 | Relation   | How one task relates to another: builds on, fixes, takes up or relates to |              |                  |
 | Batch      | A set of issues one planning task orders into tasks under one ask         |              |                  |
 | Pattern    | Tasks that stopped at one step for the same reason, kept as one desk item |              |                  |
+| Label      | A `key=value` pair a trigger or a request sets on a task                  |              |                  |
+| Runner filter | A runner's rule on labels, with optional days and hours, for the tasks it takes |       |                  |
 
 ## Configuration
 
@@ -345,7 +349,8 @@ Priory asks again.
 
 A trigger's `intervention` can hand a task's other asks to a lead agent (`hands-off`), or add a
 person's approval of every graded plan (`plan`). The lead never answers an ask whose answer lets an
-irreversible step run: that approval stays a person's.
+irreversible step run: that approval stays a person's. A person can also turn autopilot on for a
+while. It answers only asks a lead could, and it ends by itself.
 
 ## Requirements
 
@@ -436,8 +441,7 @@ until its run starts.
   run of a lower band at its turn end, when its task waits for that run's room. M1 With
   `[queue] fair = "lane"`, the tasks of a band that no person ordered take turns between lanes. A
   lane or a trigger can set `max_running`, past which its new runs wait. M1 A lane's cap can hold
-  only on some `days` and `hours` of the runner's local time, with `max_running_outside` at other
-  times. M1
+  only inside a time window, its `when`, with `max_running_outside` at other times. M1
   With `[queue] age`, a task that waits moves up one band in start order for each `age`, up to the
   highest band not in `[queue] preempt`, and never stops a run. M1
   With `[queue] review_limit`, a lane's or a batch's new tasks wait to start while that many of its
@@ -519,7 +523,8 @@ Priory serves these as MCP tools.
   `auto` lets Claude's auto mode decide its prompts. M0
 - R7.3 Remove the worktree of a task that ended only when Priory created it, its branch merged, it
   has no unpushed commits, no uncommitted changes and no untracked files, and no process runs in it.
-  Report every other worktree instead. Retiring an active task follows R3.3. M0 The `[sweep]` table
+  Remove only the worktree of a done task whose commits are all pushed, and keep its branch. Report
+  every other worktree, with its size, instead. Retiring an active task follows R3.3. M0 The `[sweep]` table
   of `factory.toml` sets the sweep's cadence and lists scripts that run, with a timeout, when the
   resource they name stalls the queue. When the queue stays stalled past a set time after them, a
   sweeper agent cleans by hand and asks, through an approved issue, for the sweep that would have

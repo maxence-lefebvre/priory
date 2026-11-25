@@ -1,3 +1,5 @@
+use crate::filters::Window;
+use jiff::Timestamp;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -23,108 +25,33 @@ pub struct Lanes {
 #[serde(deny_unknown_fields)]
 pub struct Lane {
     /// The most of the lane's tasks that may have a live run at once; new starts past it wait.
-    /// With `days` or `hours`, only inside that window.
+    /// With `when`, only inside that window.
     #[serde(default, deserialize_with = "crate::factory::max_running")]
     #[schemars(range(min = 1))]
     pub max_running: Option<u32>,
-    /// The weekdays `max_running` holds on; every day when unset.
-    #[serde(default, deserialize_with = "crate::factory::weekdays")]
-    #[schemars(
-        with = "Vec<String>",
-        length(min = 1),
-        extend("items" = { "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] })
-    )]
-    pub days: Option<Vec<jiff::civil::Weekday>>,
-    /// The local hours `max_running` holds in, `HH:MM-HH:MM`; all day when unset.
-    #[serde(default, deserialize_with = "hours")]
-    #[schemars(
-        with = "String",
-        regex(pattern = r"^([01]?[0-9]|2[0-3]):[0-5][0-9]-([01]?[0-9]|2[0-3]):[0-5][0-9]$")
-    )]
-    pub hours: Option<(jiff::civil::Time, jiff::civil::Time)>,
-    /// The most that may run at once outside `days` and `hours`; no cap when unset.
+    /// When `max_running` holds; always when unset.
+    pub when: Option<Window>,
+    /// The most that may run at once outside `when`; no cap when unset.
     #[serde(default, deserialize_with = "crate::factory::max_running")]
     #[schemars(range(min = 1))]
     pub max_running_outside: Option<u32>,
 }
 
 impl Lane {
-    /// Whether the table sets a window or an outside cap with no `max_running` to frame them.
-    pub fn is_unframed(&self) -> bool {
-        self.max_running.is_none()
-            && (self.days.is_some() || self.hours.is_some() || self.max_running_outside.is_some())
+    /// Whether the table sets `when` with no cap to hold in it, or `max_running_outside` with no
+    /// window to be outside of.
+    pub fn is_incomplete(&self) -> bool {
+        self.when.is_some() && self.max_running.is_none()
+            || self.max_running_outside.is_some() && self.when.is_none()
     }
 
-    /// The cap in force at `now`, a time in the runner's own zone.
-    pub fn cap(&self, now: &jiff::Zoned) -> Option<u32> {
-        let day = self
-            .days
-            .as_ref()
-            .is_none_or(|days| days.contains(&now.weekday()));
-        let hour = self
-            .hours
-            .is_none_or(|(start, end)| (start..end).contains(&now.time()));
-        if day && hour {
-            self.max_running
-        } else {
-            self.max_running_outside
+    /// The cap in force at `at`.
+    pub fn cap(&self, at: Timestamp) -> Option<u32> {
+        match &self.when {
+            Some(when) if !when.open(at) => self.max_running_outside,
+            _ => self.max_running,
         }
     }
-
-    /// The window as `mon-fri 08:00-18:00`, or none when the cap holds at every hour.
-    pub fn window(&self) -> Option<String> {
-        const NAMES: [&str; 7] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
-        let days = self.days.as_ref().map(|days| {
-            let mut indexes: Vec<_> = days
-                .iter()
-                .map(|day| day.to_monday_zero_offset() as usize)
-                .collect();
-            indexes.sort_unstable();
-            indexes.dedup();
-            let (first, last) = (indexes[0], indexes[indexes.len() - 1]);
-            if indexes.len() > 2 && last - first + 1 == indexes.len() {
-                format!("{}-{}", NAMES[first], NAMES[last])
-            } else {
-                let names: Vec<_> = indexes.iter().map(|index| NAMES[*index]).collect();
-                names.join(",")
-            }
-        });
-        let hours = self
-            .hours
-            .map(|(start, end)| format!("{}-{}", start.strftime("%H:%M"), end.strftime("%H:%M")));
-        match (days, hours) {
-            (None, None) => None,
-            (days, hours) => Some(
-                [days, hours]
-                    .into_iter()
-                    .flatten()
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            ),
-        }
-    }
-}
-
-fn hours<'de, D: serde::Deserializer<'de>>(
-    input: D,
-) -> Result<Option<(jiff::civil::Time, jiff::civil::Time)>, D::Error> {
-    use serde::de::Error;
-    let text = String::deserialize(input)?;
-    let parse = |part: &str| jiff::civil::Time::strptime("%H:%M", part).ok();
-    let Some((start, end)) = text
-        .split_once('-')
-        .and_then(|(start, end)| Some((parse(start)?, parse(end)?)))
-    else {
-        return Err(D::Error::custom(format!(
-            "{text:?} is not a window of hours such as \"08:00-18:00\""
-        )));
-    };
-    if end <= start {
-        return Err(D::Error::custom(format!(
-            "{text:?} ends before it starts: a window ends the day it starts"
-        )));
-    }
-    Ok(Some((start, end)))
 }
 
 /// A rule sets at least one of `key`, `team`, `project` and `branch`, and matches a task that fits
@@ -224,31 +151,7 @@ pub fn well_formed(lane: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Lane, glob};
-
-    #[test]
-    fn a_window_reads_as_a_day_range_or_list_and_hours() {
-        let lane = |toml: &str| -> Lane { toml::from_str(toml).unwrap() };
-        let weekdays = lane(
-            "max_running = 2\ndays = [\"fri\", \"mon\", \"tue\", \"wed\", \"thu\"]\nhours = \"08:00-18:00\"",
-        );
-        assert_eq!(weekdays.window().as_deref(), Some("mon-fri 08:00-18:00"));
-        assert_eq!(
-            lane("max_running = 2\ndays = [\"mon\", \"sat\"]")
-                .window()
-                .as_deref(),
-            Some("mon,sat")
-        );
-        assert_eq!(lane("max_running = 2").window(), None);
-
-        let at = |time: &str| -> jiff::Zoned { format!("{time}[UTC]").parse().unwrap() };
-        let mut lane = weekdays;
-        assert_eq!(lane.cap(&at("2026-11-23T08:00:00")), Some(2));
-        assert_eq!(lane.cap(&at("2026-11-23T18:00:00")), None);
-        assert_eq!(lane.cap(&at("2026-11-28T10:00:00")), None);
-        lane.max_running_outside = Some(6);
-        assert_eq!(lane.cap(&at("2026-11-23T07:59:00")), Some(6));
-    }
+    use super::glob;
 
     #[test]
     fn a_star_matches_any_run() {

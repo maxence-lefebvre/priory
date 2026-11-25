@@ -14,7 +14,7 @@ frontmatter. Changing the factory is a pull request. Every key is in
 [docs/reference/](reference/README.md).
 
 **Trigger.** One event source, a filter and the workflow its events start. The intake polls the
-sources `github`, `linear`, `linear.view`, `slack` and `schedule`. Webhooks, each checked by a signature or a shared secret, deliver `sentry`, `honeycomb`,
+sources `github`, `linear`, `linear.view`, `linear.project`, `slack` and `schedule`. Webhooks, each checked by a signature or a shared secret, deliver `sentry`, `honeycomb`,
 `intercom`, `cloudwatch` and `figma` events, and GitHub and Linear events sooner than a poll. A trigger's `key` says which events are the same
 work, and a factory holds at most one active task per key. See
 [docs/intake/README.md](intake/README.md). A trigger can run a [`pre` script](intake/pre.md) on
@@ -43,6 +43,11 @@ with its own recommendation when the agent states that confidence or more, with 
 rationale. It never answers an ask whose answer lets an irreversible step run, an approval, or an
 ask that runs a command. Each such answer is marked `by auto` and listed in the desk's Since you
 looked. See [docs/daemon/waits.md](daemon/waits.md#answered-by-auto).
+
+**Autopilot.** For a while you choose, `priory autopilot on` lets the daemon answer the asks that
+auto-answer could, whatever their trigger says. It ends by itself, marks what it leaves for you, and
+reports what it answered, why, and how to reverse it. See
+[docs/daemon/waits.md](daemon/waits.md#autopilot).
 
 **Task and run.** A task is one unit of work, from its event to `done`, `failed` or `dropped`. A run
 is one agent process working on a task's step. A task can have many runs, and its agent's session
@@ -76,6 +81,13 @@ declares. See [docs/daemon/room.md](daemon/room.md) and [docs/daemon/runs.md](da
 Two more settings change who starts. A [review limit](daemon/runs.md#review-limit) holds new starts
 while too many pull requests wait for a person. An [urgent wake](daemon/room.md#urgent-wakes) lets a
 task in a band you name stop a lower band's run at the end of its turn.
+
+**Labels and runner filters.** A label is a `key=value` pair on a task, such as `project=oss`,
+which its trigger's `labels` or `priory request --label` set. Labels differ from the marks
+`priory label` writes and from a GitHub issue's labels. A runner filter, in a runner file, matches
+labels: `project=oss` or `!project=oss`, optionally only on some days and hours. A runner claims and
+starts only the tasks its filters accept, so a desktop can leave a project's tasks to a server by
+day. See [docs/daemon/runners.md](daemon/runners.md#placing-tasks-with-filters).
 
 **Health.** Every second, the daemon checks each run for an unexpected exit, a timeout or a
 permission prompt. It never approves a permission prompt. A crashed run gets one repair attempt.

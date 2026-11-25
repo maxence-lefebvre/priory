@@ -13,13 +13,13 @@ A prompt moves through these states:
 | `queued`    | Waits for the task's run to be idle                                              |
 | `attempted` | Recorded, with the run marked busy, in the transaction before typing             |
 | `confirmed` | Its `UserPromptSubmit` arrived                                                   |
-| `uncertain` | Typed but never confirmed: the daemon stopped, or two Enters brought no submit   |
+| `uncertain` | Typed but never confirmed: the daemon stopped, two Enters brought no submit, or `hold --now` ended its run |
 | `held`      | A person's `say` during a debate. The step after the debate reads it             |
 | `withdrawn` | Queued or held when a person revived the task. Its new generation never gets it  |
 
 A prompt usually goes `queued`, then `attempted`, then `confirmed`. The `uncertain` state covers a
-daemon that stopped between typing and confirming, and a prompt whose second Enter brought no
-`UserPromptSubmit`. Priory cannot tell whether the agent received the text, so it shows the prompt
+daemon that stopped between typing and confirming, a prompt whose second Enter brought no
+`UserPromptSubmit`, and a prompt typed into a run that `hold --now` ended. Priory cannot tell whether the agent received the text, so it shows the prompt
 on the desk for a person to judge, instead of typing it again.
 `priory outbox` lists every prompt with its state.
 
@@ -79,7 +79,9 @@ sit in the agent's input. That rule holds while the run the prompt went to is li
   gets its prompts.
 
 A run whose keyboard a person holds gets no prompt while the grant is open: `say` queues, and the
-daemon types at the run's next idle point after the grant ends. See
+daemon types at the run's next idle point after the grant ends. A prompt pasted before the grant
+gets no Enter while it is open, so Priory never submits what the person typed, and is not marked
+`uncertain` meanwhile. Its wait starts over, so its Enter goes once the grant ends. See
 [A run's keyboard](serve.md#a-runs-keyboard).
 
 A `UserPromptSubmit` with the same words confirms an `uncertain` prompt of its run, even one the

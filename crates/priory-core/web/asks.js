@@ -38,6 +38,28 @@ export const routedMark = (ask) => (ask?.routed_to && (ask.state ?? "open") === 
 /** What an open ask's detail says of its lead, else null. @param {any} ask */
 export const routedNote = (ask) => (routedMark(ask) ? `${ask.routed_to} is answering. You can still answer first: the first answer stands.` : null);
 
+/** A plan file's path from its worktree, such as `.priory/brief.md`. @param {string} path */
+export const planName = (path) => path.slice(path.lastIndexOf("/.priory/") + 1);
+
+/** Whether an open ask of this runner approves its task's plan. Its Plan section then leads. @param {any} ask */
+export const plansFirst = (ask) => ask.state === "open" && Boolean(ask.approves_plan) && !runnerOf(ask);
+
+/** Whether `task`, as last read, lacks the plan this revision of the ask approves: no answer goes until it is read. @param {any} ask @param {any} task */
+export const planUnread = (ask, task) => plansFirst(ask) && !(task?.plan_file?.ask === ask.id && task.plan_file.revision === ask.revision);
+
+/** Each part of a plan: its file, else its result, with its text. @param {any} plan */
+export const planParts = (plan) => plan.files.map((/** @type {any} */ file) => ({ ...file, from: file.path ? planName(file.path) : `${plan.step}, run ${plan.run}` }));
+
+/** What stands beside the options of an ask whose plan, as read, is cut, else null. @param {any} ask @param {any} task */
+export const planCut = (ask, task) => {
+  if (!plansFirst(ask) || planUnread(ask, task)) return null;
+  const cut = planParts(task.plan_file).filter((/** @type {any} */ part) => part.truncated);
+  return cut.length ? `The plan is cut at 64 KB. Read the rest at ${cut.map((/** @type {any} */ part) => part.path || part.from).join(" and ")} before you answer.` : null;
+};
+
+/** Why an ask's options wait for its plan. @param {any} ask @param {string | null | undefined} error why the read failed */
+export const planWait = (ask, error) => (error ? `Could not read the plan: ${error}. It must load before you answer.` : `Reading the plan of revision ${ask.revision} before you answer.`);
+
 /** The runner of another runner's ask, which alone lists `submissions`, else null. @param {any} ask */
 export const runnerOf = (ask) => (Array.isArray(ask?.submissions) ? ask.runner : null);
 
@@ -82,7 +104,7 @@ export function submitted(ask) {
 }
 
 /** Who answered, as the views say it: a person, `agent:<lead>`, auto, or `session <name>` for a person's own session. Null when unrecorded. @param {string | null | undefined} by */
-export const answeredBy = (by) => (!by ? null : by.startsWith("agent:") ? by : by === "auto" ? "auto" : by.startsWith("session:") ? `session ${by.slice(8)}` : "a person");
+export const answeredBy = (by) => (!by ? null : by.startsWith("agent:") ? by : by === "auto" || by === "autopilot" ? by : by.startsWith("session:") ? `session ${by.slice(8)}` : "a person");
 
 /**
  * The option index a key press picks on an ask, or null: `1` to `9`, never a key held down, whose
@@ -90,8 +112,11 @@ export const answeredBy = (by) => (!by ? null : by.startsWith("agent:") ? by : b
  */
 export const optionKey = (event) => (!event.repeat && /^[1-9]$/.test(event.key) ? Number(event.key) - 1 : null);
 
-/** Whether an ask takes free text and a dismissal: a step's or a hold's ask takes only its options. */
-export const takesText = (ask) => ask?.free_text !== false;
+/** Whether a person may dismiss an ask: a step's or a hold's ask needs an answer. */
+export const dismissable = (ask) => ask?.dismissable !== false;
+
+/** How "Write an answer" shows on an ask: a lock hides an open form, and only a shown form sends. @param {boolean} writing @param {string | null} locked @param {boolean} pending */
+export const writeShown = (writing, locked, pending) => (writing && !locked ? "form" : locked || pending ? "disabled" : "button");
 
 // How long a first tap on an option stays armed for the second.
 export const ARM_MS = 4000;
@@ -138,8 +163,8 @@ export const shrunkHead = (ask) => ({
   place: [taskLabel(ask.key), ask.step, `revision ${ask.revision}`].filter(Boolean).join(", "),
 });
 
-/** Who answered, as the answered row's icon: auto, session, agent or person; null when unrecorded. @param {string | null | undefined} by */
-export const answererOf = (by) => (!by ? null : by === "auto" ? "auto" : by.startsWith("session:") ? "session" : by.startsWith("agent:") ? "agent" : "person");
+/** Who answered, as the answered row's icon: auto, autopilot, session, agent or person; null when unrecorded. @param {string | null | undefined} by */
+export const answererOf = (by) => (!by ? null : by === "auto" || by === "autopilot" ? by : by.startsWith("session:") ? "session" : by.startsWith("agent:") ? "agent" : "person");
 
 /** A confidence's bars, of three. */
 export const CONFIDENCE_BARS = { high: 3, medium: 2, low: 1 };
@@ -163,12 +188,18 @@ export const answeredAsks = (asks, task) => asks
     confidence: ask.confidence ?? null,
     bars: CONFIDENCE_BARS[ask.confidence] ?? 0,
     rationale: ask.rationale ?? null,
+    why: ask.autopilot_why ?? null,
     tradeoff: ask.tradeoff ?? null,
     recommended: ask.recommendation != null && ask.recommendation !== ask.answer ? ask.recommendation : null,
   }));
 
 /** What follows an auto answer's confidence word: whose it is, and the level its task answers at. @param {string | null} level */
 export const confidenceNote = (level) => `confidence, the agent's own.${level ? ` The task answers at ${level} and above.` : ""}`;
+
+/** How a person changes course after an answer nobody chose. Autopilot's plan answer has no confidence. @param {string} answerer @param {string | null} confidence */
+export const courseNote = (answerer, confidence) => answerer !== "autopilot" ? "The first answer stands. To change course, tell the agent."
+  : confidence ? "Until the agent gets it, priory answer replaces it. After that, tell the agent."
+  : "To change course, cancel the task, then revive it at the plan's step.";
 
 /** The longest heading of an untitled ask, in characters, before its ellipsis. */
 export const HEADING_MAX = 80;
