@@ -5370,6 +5370,42 @@ fn an_object_forged_under_the_bases_id_vouches_for_no_envrc() {
         setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
         assert_eq!(outcomes_of(&setup, "2"), ["refused"], "{object}");
         assert_eq!(under_direnv(&setup), 1, "{object}");
+        if object != "{base}:.envrc" {
+            let why = &direnv_records(&setup)[1]["data"]["why"];
+            assert!(why.as_str().unwrap().contains(" is forged)"), "{why}");
+        }
+    }
+}
+
+#[test]
+fn a_git_that_crashes_in_the_envrcs_check_is_the_reason_and_not_a_difference() {
+    for (command, why) in [
+        (
+            "hash-object -t blob",
+            ".envrc could not be checked: git hash-object: exit 139",
+        ),
+        (
+            "hash-object -t tree",
+            ".envrc could not be checked against the commit the task started from (git \
+             hash-object: exit 139), and the default branch could not be checked (git \
+             hash-object: exit 139)",
+        ),
+        (
+            "ls-files",
+            ".envrc could not be checked: git ls-files: exit 139",
+        ),
+    ] {
+        let setup = blocked_under_direnv("envrc-git-crash");
+        let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+        fs::write(worktree.join(".envrc"), "touch /tmp/agent\n").unwrap();
+        fs::write(setup.dir.join("fake/git-crash"), command).unwrap();
+
+        let resumed = setup.priory(&["resume", "1"]);
+
+        assert!(resumed.status.success(), "{command}: {resumed:?}");
+        setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+        assert_eq!(outcomes_of(&setup, "2"), ["refused"], "{command}");
+        assert_eq!(direnv_records(&setup)[1]["data"]["why"], why, "{command}");
     }
 }
 
