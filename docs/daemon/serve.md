@@ -139,14 +139,6 @@ The server holds at most 128 such requests at once, each on its connection's own
 hold no worker. One more that would wait gets `503` with `Retry-After: 1`; one whose answer is ready
 gets it at once.
 
-Clients share the listing reads. Requests for one path wait for the same computation, and a request
-takes a body that was computed after it arrived, or one at the current revision that is at most 2
-seconds old. So a disk or clock change that moves no revision shows within 2 seconds.
-
-A listing carries an `ETag` of its content without the revision, and the revision in
-`Priory-Revision`. A client that sends the tag back in `If-None-Match` gets `304` with no body when
-only other rows changed, and takes the new revision from the header.
-
 The revision changes with what is stored, and the daemon raises it for two changes the clock makes:
 a snoozed item coming back at its `snoozed_until`, and an ended task leaving the queue's `ended`
 list after a day. Each shows at the daemon's next tick while it runs. Two things still change a

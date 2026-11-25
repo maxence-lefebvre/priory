@@ -66,7 +66,6 @@ pub mod screen;
 pub mod search;
 pub mod sections;
 pub mod serve;
-mod shared;
 pub mod snooze;
 pub mod spend;
 mod stack;

@@ -3768,51 +3768,6 @@ fn a_resent_answer_gets_the_first_reply_and_applies_once_also_after_a_restart() 
 }
 
 #[test]
-fn a_listing_the_client_holds_gets_304_with_the_new_revision() {
-    let mut setup = Setup::new("unchanged", SERVE);
-    setup.seed();
-    let address = setup.start(&["serve", &setup.factory()]);
-    let read = |tag: &str| {
-        let mut stream = TcpStream::connect(&address).unwrap();
-        let head = format!(
-            "GET /api/asks HTTP/1.1\r\nAuthorization: Bearer {TOKEN}\r\nIf-None-Match: {tag}\r\n\r\n"
-        );
-        stream.write_all(head.as_bytes()).unwrap();
-        let mut response = String::new();
-        stream.read_to_string(&mut response).unwrap();
-        response
-    };
-    let header = |response: &str, name: &str| {
-        let line = response.lines().find(|line| line.starts_with(name));
-        line.unwrap_or_default()[name.len()..].trim().to_owned()
-    };
-    let first = read("\"other\"");
-    assert!(first.starts_with("HTTP/1.1 200"), "{first}");
-    let tag = header(&first, "ETag:");
-    let revision = api(&address, "/api/asks")["revision"].as_i64().unwrap();
-
-    // Another row moves the revision, and no ask.
-    succeeded(&setup.priory(&["daemon", &setup.factory(), "--once"]));
-    setup
-        .db()
-        .execute("UPDATE inbox SET read = 'x'", [])
-        .unwrap();
-    let same = read(&tag);
-    setup
-        .db()
-        .execute("UPDATE asks SET question = 'Which?' WHERE id = 1", [])
-        .unwrap();
-    let changed = read(&tag);
-
-    assert!(same.starts_with("HTTP/1.1 304 Not Modified"), "{same}");
-    assert!(same.ends_with("\r\n\r\n"), "{same}");
-    let moved: i64 = header(&same, "Priory-Revision:").parse().unwrap();
-    assert!(moved > revision, "{moved} after {revision}");
-    assert!(changed.starts_with("HTTP/1.1 200"), "{changed}");
-    assert!(changed.contains("Which?"), "{changed}");
-}
-
-#[test]
 fn an_answer_is_stored_while_long_polls_and_listing_reads_wait() {
     let mut setup = Setup::new("web-busy", SERVE);
     setup.asleep_on_ask();
