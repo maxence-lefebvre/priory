@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { TYPED_FIELDS, backTo, pageTitle, taskRead } from "./pages.js";
+import { backTo, pageTitle, taskRead } from "./pages.js";
 
 test("a detail page's back link names the list the person came from", () => {
   assert.deepEqual(backTo("/"), ["/", "Desk"]);
@@ -40,10 +40,6 @@ test("a title names the page the address renders", () => {
   assert.equal(pageTitle("/batches/nope", data), "Page not found · Priory");
   assert.equal(pageTitle("/settings", data), "Appearance · Priory");
   assert.equal(pageTitle("/settings/other", data), "Appearance · Priory");
-});
-
-test("a repaint gives the caret back to every text field the main view draws, the Say box too", () => {
-  for (const id of ["draft", "say", "report-draft", "report-query", "term-line", "term-keys"]) assert.ok(TYPED_FIELDS.includes(id), id);
 });
 
 test("a refresh keeps the open ask's task drawn while it is read again, and the new body replaces it", () => {

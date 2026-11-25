@@ -5,9 +5,13 @@ import { QUEUE_VIEWS, laneCap, moveOptions, queueBands, waitReason } from "../qu
 import { taskLabel } from "../tasks.js";
 import { refresh, signOut } from "./data.js";
 import { deskModel, upNext } from "./desk.js";
-import { html, icon, listOrEmpty, listView, post, raw, savedViews, state, stateWord, tile, timeTag } from "./shared.js";
+import { html, icon, listOrEmpty, listView, post, raw, savedViews, stateWord, tile, timeTag } from "./shared.js";
+import { state } from "./state.js";
 import { taskListRow } from "./tasks.js";
 
+// The task whose Move is in flight, each task's last Move refusal, and the task whose Move menu is
+// open, so a redraw keeps it open.
+Object.assign(state, { moveBusy: null, moveNotices: new Map(), moveOpen: null });
 
 // Queue (DESIGN.md, Queue panel): the waiting tasks by band in admission order, why each waits, and
 // a Move menu that sends `priory move` at the revision the page drew.

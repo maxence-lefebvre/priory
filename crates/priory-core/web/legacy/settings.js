@@ -4,8 +4,16 @@ import { PANELS } from "../pages.js";
 import { confirmPush, kindBoxes, saveKinds } from "../push.js";
 import { KEPT_KINDS, api } from "./data.js";
 import { deskPhone } from "./desk.js";
-import { html, icon, panelsOf, post, raw, route, state } from "./shared.js";
+import { html, icon, panelsOf, post, raw, route } from "./shared.js";
+import { state } from "./state.js";
 
+Object.assign(state, {
+  // Notifications on this device: its status, a request in flight, and why the last one failed.
+  // check counts status reads, so a read that a tap or a newer read overtook is dropped.
+  push: { status: null, kinds: null, busy: false, error: null, check: 0, checking: false },
+  // The browser's install prompt, kept until the person taps Install.
+  install: null,
+});
 
 export function morePage() {
   const rest = panelsOf().slice(4);
@@ -199,6 +207,14 @@ export function settingsClick(action, target) {
     localStorage.setItem("priory.theme", root.dataset.theme);
     render();
   } else return false;
+  return true;
+}
+
+// Space or Enter picks a theme, which is no button.
+export function settingsKey(event) {
+  if ((event.key !== " " && event.key !== "Enter") || !event.target.matches?.("[role=radio]")) return false;
+  event.preventDefault();
+  event.target.click();
   return true;
 }
 

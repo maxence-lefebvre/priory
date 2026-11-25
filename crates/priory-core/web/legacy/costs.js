@@ -5,8 +5,12 @@ import { taskLabel } from "../tasks.js";
 import { searchOf } from "../frame.js";
 import { api, cache, refresh, signOut } from "./data.js";
 import { connection } from "./frame.js";
-import { date, html, icon, layout, place, raw, savedViews, state, timeTag } from "./shared.js";
+import { date, html, icon, layout, place, raw, savedViews, timeTag } from "./shared.js";
+import { state } from "./state.js";
 
+// The split the panel shows, whether a read is in flight and past 300 ms, and why the last failed.
+const COSTS = () => ({ by: "workflow", loading: false, slow: false, error: null });
+Object.assign(state, { costs: COSTS() });
 
 // Costs (DESIGN.md, Costs panel): what the factory spent this week against last week, and what it
 // cost the person, from /api/costs and /api/attention.
@@ -141,6 +145,15 @@ function taskBar(task) {
   });
   return html`<svg class="tbar" width="100%" height="12" role="img" aria-label="${task.text}">${parts}${gaps}</svg>`;
 }
+
+// A draw may call this; the read draws again once it ends.
+export function costsDrawn(host) {
+  const spend = state.data?.spend;
+  const old = !spend || Date.now() - spend.updated > 60000;
+  if (host.querySelector("[data-costs]") && old && !state.failed && !state.costs.loading && !state.costs.error && !document.hidden) setTimeout(loadCosts);
+}
+
+export const costsForget = () => { state.costs = COSTS(); };
 
 export function costsClick(action) {
   if (action !== "costs-retry") return false;

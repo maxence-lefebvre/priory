@@ -30,9 +30,6 @@ export function backTo(from) {
   return panel ? [from, PANELS[panel][0]] : ["/tasks", "Tasks"];
 }
 
-/** The text fields a repaint gives back their focus, caret and selection, by id. */
-export const TYPED_FIELDS = ["draft", "say", "report-draft", "report-query", "term-line", "term-keys"];
-
 /** A part of an address as text, or as it is written when it does not decode. */
 export function decoded(part) {
   try {
