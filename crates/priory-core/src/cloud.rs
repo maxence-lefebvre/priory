@@ -7,6 +7,7 @@ use priory_runtime::cloud::{NotStarted, NotTaken, Pushed, Start, Started};
 use priory_runtime::{cloud, runtime};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::json;
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Mutex;
@@ -310,10 +311,11 @@ pub(crate) fn dispatch(
     .join("\n\n");
     let (sender, receiver) = channel();
     *STARTING.lock().expect("no start panics") = Some((run, receiver));
+    let patience = Cell::new(runtime::command_timeout());
     std::thread::spawn(move || {
         let started = screen()
             .map_err(NotStarted::Denied)
-            .and_then(|()| cloud::start(&start, || patient(|| still_live(run))));
+            .and_then(|()| cloud::start(&start, || patient(&patience, || still_live(run))));
         let none = matches!(started, Err(NotStarted::Refused(_) | NotStarted::Denied(_)));
         let left = (none && !still_live(run).unwrap_or(true)).then(|| left_on_origin(&start));
         let _ = sender.send((started, left));
@@ -321,15 +323,21 @@ pub(crate) fn dispatch(
     Ok(())
 }
 
-/// What `live` says. An error is asked again each second for the command timeout: a state file that
-/// is busy or being migrated must not fail the step.
-fn patient(live: impl Fn() -> Result<bool, String>) -> Result<bool, String> {
-    let ends = Instant::now() + runtime::command_timeout();
+/// What `live` says. An error is asked again each second while `patience` lasts, which the checks of
+/// one start share: a state file that is busy or being migrated must not fail the step.
+fn patient(
+    patience: &Cell<Duration>,
+    live: impl Fn() -> Result<bool, String>,
+) -> Result<bool, String> {
     loop {
-        match live() {
-            Err(_) if Instant::now() < ends => std::thread::sleep(Duration::from_secs(1)),
-            said => return said,
+        let began = Instant::now();
+        let said = live();
+        let left = patience.get();
+        if said.is_ok() || left.is_zero() {
+            return said;
         }
+        std::thread::sleep(left.min(Duration::from_secs(1)));
+        patience.set(left.saturating_sub(began.elapsed()));
     }
 }
 
@@ -983,8 +991,8 @@ mod tests {
 
     #[test]
     fn a_start_reads_again_whether_its_run_is_live_after_an_error() {
-        let reads = std::cell::Cell::new(0);
-        let said = patient(|| {
+        let reads = Cell::new(0);
+        let said = patient(&Cell::new(Duration::from_secs(30)), || {
             reads.set(reads.get() + 1);
             match reads.get() {
                 1 => Err("database is locked".to_owned()),
@@ -993,6 +1001,31 @@ mod tests {
         });
 
         assert_eq!((said, reads.get()), (Ok(false), 2));
+    }
+
+    #[test]
+    fn the_checks_of_a_start_share_one_wait_for_a_lasting_error() {
+        let patience = Cell::new(Duration::from_millis(1500));
+        let reads = Cell::new(0);
+        let check = || {
+            patient(&patience, || {
+                reads.set(reads.get() + 1);
+                if reads.get() > 9 {
+                    return Ok(true);
+                }
+                Err("database is locked".to_owned())
+            })
+        };
+
+        let began = Instant::now();
+        assert_eq!(check(), Err("database is locked".to_owned()));
+        assert!(began.elapsed() >= Duration::from_millis(1500));
+        let first = reads.replace(0);
+        assert_eq!(check(), Err("database is locked".to_owned()));
+
+        // What was left of the wait is spent, so the second check reads once.
+        assert!((2..=3).contains(&first), "{first}");
+        assert_eq!(reads.get(), 1);
     }
 
     #[test]

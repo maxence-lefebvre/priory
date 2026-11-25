@@ -734,9 +734,7 @@ pub fn worktree(
         fs::rename(&partial, &clone).map_err(|error| error.to_string())?;
     }
     if keep_branches {
-        never_prune(&clone);
-    } else {
-        may_prune(&clone);
+        as_one(|| never_prune(&clone));
     }
     if let Some(reason) = mounted_orphan(home, repo, name) {
         return Err(reason);
@@ -836,53 +834,22 @@ pub fn worktree(
 }
 
 /// Turns off a person's `fetch.prune` in `clone`, which would drop a merged branch, whose commits
-/// then look never pushed. Its git commands share one `loop_timeout`. Best effort.
+/// then look never pushed. Best effort.
 fn never_prune(clone: &Path) {
-    as_one(|| {
-        let had = match soon(config(clone).args(["--get", PRUNE])) {
-            Ok(set) if set.trim() == "false" => return,
-            // A write killed midway leaves a lock file, so a slow disk gets none.
-            Err(error) if timed_out(&error) => return,
-            had => had.unwrap_or_default(),
-        };
-        // Without what to put back, the setting could never be undone.
-        if fs::write(clone.join(PRUNED), had.trim()).is_ok() {
-            let _ = soon(config(clone).args(["--replace-all", PRUNE, "false"]));
-        }
-    });
-}
-
-/// Puts back the setting that `never_prune` changed in `clone`, unless a person changed it since.
-/// Runs no git when there is none. Best effort, within one `loop_timeout`: the next worktree of the
-/// repository tries again.
-fn may_prune(clone: &Path) {
-    let file = clone.join(PRUNED);
-    let Ok(had) = fs::read_to_string(&file) else {
-        return;
+    const PRUNE: &str = "remote.origin.prune";
+    let config = || {
+        let mut command = git(clone);
+        command.args(["config", "--local"]);
+        command
     };
-    as_one(|| {
-        let done = match soon(config(clone).args(["--get", PRUNE])) {
-            Ok(set) if set.trim() != "false" => Ok(set),
-            Err(error) if timed_out(&error) => Err(error),
-            // Unset since: a person's change too.
-            Err(_) => Ok(String::new()),
-            Ok(_) if had.is_empty() => soon(config(clone).args(["--unset-all", PRUNE])),
-            Ok(_) => soon(config(clone).args(["--replace-all", PRUNE, &had])),
-        };
-        if done.is_ok() {
-            let _ = fs::remove_file(&file);
+    match soon(config().args(["--get", PRUNE])) {
+        Ok(set) if set.trim() == "false" => {}
+        // A write killed midway leaves a lock file, so a slow disk gets none.
+        Err(error) if timed_out(&error) => {}
+        _ => {
+            let _ = soon(config().args(["--replace-all", PRUNE, "false"]));
         }
-    });
-}
-
-const PRUNE: &str = "remote.origin.prune";
-/// The file in a clone with the `PRUNE` it had before `never_prune`, empty when it had none.
-const PRUNED: &str = ".git/priory-pruned";
-
-fn config(clone: &Path) -> Command {
-    let mut command = git(clone);
-    command.args(["config", "--local"]);
-    command
+    }
 }
 
 /// How a task's reason starts while its worktree waits for a fetch that timed out.
@@ -2180,18 +2147,7 @@ pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), NotStarted> 
 /// The bytes of `path` on the default branch of Priory's clone of `repo`.
 pub fn repo_file(home: &Path, repo: &str, path: &str) -> Result<Vec<u8>, String> {
     let clone = home.join("repos").join(repo);
-    let output = git(&clone)
-        .args(["show", &format!("origin/HEAD:{path}")])
-        .output()
-        .map_err(|error| format!("git show in {}: {error}", clone.display()))?;
-    if !output.status.success() {
-        return Err(format!(
-            "git show origin/HEAD:{path} in {}: {}",
-            clone.display(),
-            one_line(&String::from_utf8_lossy(&output.stderr))
-        ));
-    }
-    Ok(output.stdout)
+    soon_raw(git(&clone).args(["show", &format!("origin/HEAD:{path}")]))
 }
 
 /// Writes `files`, by their paths inside the plugin, into `<dir>/plugin` unless that folder holds
@@ -3986,80 +3942,83 @@ mod tests {
         assert_eq!(echo, Ok(Some(b"ab".to_vec())));
     }
 
-    /// Puts a fifo in place of git's config `file`, on which git blocks until this drops.
-    struct Hung {
-        file: PathBuf,
-        plain: PathBuf,
-        /// Its close ends the read of each git that waits.
-        _fifo: fs::File,
-    }
-
-    impl Hung {
-        fn at(file: PathBuf) -> Self {
-            let plain = file.with_file_name("config-plain");
-            fs::rename(&file, &plain).unwrap();
-            run(Command::new("mkfifo").arg(&file)).unwrap();
-            let fifo = fs::File::options()
-                .read(true)
-                .write(true)
-                .open(&file)
-                .unwrap();
-            Hung {
-                file,
-                plain,
-                _fifo: fifo,
-            }
-        }
-    }
-
-    impl Drop for Hung {
-        fn drop(&mut self) {
-            let _ = fs::rename(&self.plain, &self.file);
-        }
+    /// What `work` gives within 20 s: a red test must not hang, since the runner stops none.
+    fn in_time<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+        let (sender, ended) = mpsc::channel();
+        std::thread::spawn(move || sender.send(work()));
+        ended
+            .recv_timeout(Duration::from_secs(20))
+            .expect("the work ends in time")
     }
 
     #[test]
-    fn a_hung_prune_setting_ends_within_the_loops_timeout() {
+    fn a_hung_prune_setting_ends_within_its_limit() {
         let home = Home::new("prune");
         home.tree();
         let clone = home.home().join("repos/o/n");
-        let hung = Hung::at(clone.join(".git/config"));
-        let (sender, ended) = mpsc::channel();
+        let config = clone.join(".git/config");
+        fs::remove_file(&config).unwrap();
+        run(Command::new("mkfifo").arg(&config)).unwrap();
 
-        let setting = std::thread::spawn(move || {
-            never_prune(&clone);
-            let _ = sender.send(());
-        });
-
-        let ended = ended.recv_timeout(Duration::from_secs(45));
-        drop(hung);
-        setting.join().unwrap();
-        assert_eq!(ended, Ok(()));
+        in_time(move || as_one_within(Duration::from_secs(1), || never_prune(&clone)));
     }
 
     #[test]
-    fn a_clone_without_cloud_gets_back_the_prune_setting_it_had() {
-        for had in [None, Some("true"), Some("false")] {
-            let home = Home::new("prune-back");
+    fn a_hung_repository_file_is_an_error() {
+        let home = Home::new("repo-file");
+        home.tree();
+        let head = home.home().join("repos/o/n/.git/refs/remotes/origin/HEAD");
+        let dir = home.home();
+        assert_eq!(repo_file(&dir, "o/n", "README.md").unwrap(), b"one\n");
+        fs::remove_file(&head).unwrap();
+        run(Command::new("mkfifo").arg(&head)).unwrap();
+
+        let hung = in_time(move || {
+            as_one_within(Duration::from_secs(1), || {
+                repo_file(&dir, "o/n", "README.md")
+            })
+        });
+
+        assert!(timed_out(&hung.unwrap_err()));
+    }
+
+    /// Starts a worktree over what `plant` puts at a path in the clone, with a file outside that it
+    /// may lead to, then checks that the setting is off and nothing else of it changed.
+    fn planted(name: &str, plant: impl Fn(&Path, &Path)) {
+        for cloud in [false, true] {
+            let home = Home::new(&format!("{name}-{cloud}"));
             home.tree();
-            let clone = home.home().join("repos/o/n");
-            if let Some(had) = had {
-                sh(&clone, &["config", "remote.origin.prune", had]);
-            }
-            let set = |cloud| {
-                worktree(&home.home(), "o/n", "1", None, false, cloud).unwrap();
-                run(git(&clone).args(["config", "--local", "--get", "remote.origin.prune"])).ok()
-            };
+            let dir = home.home();
+            let clone = dir.join("repos/o/n");
+            let outside = home.dir.join("secret");
+            fs::write(&outside, "hunter2").unwrap();
+            let path = clone.join(".git/priory-pruned");
+            plant(&path, &outside);
+            let kind = fs::symlink_metadata(&path).unwrap().file_type();
+            let was = if cloud { "true" } else { "false" };
+            sh(&clone, &["config", "remote.origin.prune", was]);
 
-            assert_eq!(set(true).as_deref(), Some("false\n"));
-            assert_eq!(set(true).as_deref(), Some("false\n"));
-            assert_eq!(set(false), had.map(|had| format!("{had}\n")));
+            in_time(move || worktree(&dir, "o/n", "1", None, false, cloud).map(|_| ())).unwrap();
 
-            // What a person set since is theirs.
-            set(true);
-            sh(&clone, &["config", "remote.origin.prune", "true"]);
-            assert_eq!(set(false).as_deref(), Some("true\n"));
+            assert_eq!(fs::read_to_string(&outside).unwrap(), "hunter2");
+            assert_eq!(fs::symlink_metadata(&path).unwrap().file_type(), kind);
+            let set = sh(&clone, &["config", "--get-all", "remote.origin.prune"]);
+            assert_eq!(set, "false");
         }
+    }
+
+    #[test]
+    fn a_symlink_an_agent_planted_in_the_clone_changes_nothing() {
+        planted("planted-link", |path, outside| {
+            std::os::unix::fs::symlink(outside, path).unwrap();
+        });
+    }
+
+    #[test]
+    fn a_fifo_an_agent_planted_in_the_clone_changes_nothing() {
+        planted("planted-fifo", |path, _| {
+            run(Command::new("mkfifo").arg(path)).unwrap();
+        });
     }
 
     #[test]

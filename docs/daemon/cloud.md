@@ -47,10 +47,12 @@ Some tasks start no cloud run:
   since the push would carry them. Priory checks the parent's branch and the commits the task
   started from, so a commit the parent amended away counts too. The state of the parent's pull
   request does not matter. Push those commits, or rebase the task's branch onto a branch that is on
-  `origin`, then resume the task. Priory turns off `fetch.prune` in the clone of a repository
-  with `cloud = true`, so a merged parent's branch still counts as pushed once GitHub deletes it. All
-  tasks of that repository share the clone. Every other clone keeps a person's setting. Once the
-  repository drops `cloud = true`, its next task's worktree puts back the setting the clone had.
+  `origin`, then resume the task. Priory sets `remote.origin.prune = false` in the clone of a
+  repository with `cloud = true`, over any value there, so a merged parent's branch still counts as
+  pushed once GitHub deletes it. All tasks of that repository share the clone. Every other clone keeps a person's setting.
+  The setting stays after the repository drops `cloud = true`, since Priory saves no earlier value.
+  To undo it, run `git -C <Priory home>/repos/<owner>/<name> config --local --unset remote.origin.prune`,
+  or set the value the clone had.
 - A task whose commits past the default branch hold a private term of the factory, in a repository
   [`[private]`](../reference/factory.md#private) lists. It blocks before the push, and the reason
   names the rule and the place, never the term. It does not count as a session.
@@ -71,8 +73,8 @@ time. The daemon:
 5. removes the clone, and stores the `session_<id>` the command printed as the run's cloud session,
    which `priory runs` shows in its `session` column.
 
-When the state file cannot be read for one of those two checks, the daemon reads it again each second, for
-`command_timeout` at most, and only then fails the start.
+When the state file cannot be read for those two checks, the daemon reads it again each second. One
+start waits `command_timeout` at most for both together, and only then fails.
 
 The rules tell the session to push its work to the branch `claude/priory-<task>-<token>`, where
 the token is the first 8 characters of the run's harness session id. They tell it to open no pull

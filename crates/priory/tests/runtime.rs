@@ -39178,24 +39178,6 @@ fn a_cloud_repository_keeps_its_merged_branches() {
     assert_eq!(setup.prune(), "false\n");
 }
 
-#[test]
-fn a_repository_that_drops_cloud_gets_its_prune_setting_back() {
-    let mut setup = cloud("cloud-prune-back", CLOUD);
-    setup.publish(&requested(42));
-    setup.start();
-    setup.cloud_started();
-    assert_eq!(setup.prune(), "false\n");
-    setup.crash();
-    setup.settings("");
-    setup.calls(&[result("passed")]);
-    setup.local_task(43);
-
-    setup.start();
-
-    setup.until("tasks", |rows| with(rows, 4, "done") == 1);
-    assert_eq!(setup.prune(), "");
-}
-
 impl Setup {
     /// What Priory's clone sets `remote.origin.prune` to.
     fn prune(&self) -> String {
