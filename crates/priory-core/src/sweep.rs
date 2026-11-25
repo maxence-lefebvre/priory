@@ -568,6 +568,10 @@ impl Sweeping {
         let path = found.path.clone();
         let remove = move || {
             if let Err(stays) = worktrees::detach(&home, &mut taken, tip.as_deref(), branch) {
+                if taken.displaced {
+                    let what = format!("removing {}: {stays}", path.display());
+                    note(&home, MOVED, what, false);
+                }
                 return Removed {
                     stays: Some(stays),
                     cut: false,
@@ -862,8 +866,14 @@ fn human(bytes: u64) -> String {
     format!("{size:.1} TiB")
 }
 
-/// What `<home>/slice.json` keeps for the desk: why the daemon leaves the agents slice's limits
-/// alone, or the last time the sweep restored them.
+/// In `<home>`: why the daemon leaves the agents slice's limits alone, or the last time the sweep
+/// restored them.
+const SLICE: &str = "slice.json";
+
+/// In `<home>`: the last removal that left files elsewhere than it found them.
+const MOVED: &str = "moved.json";
+
+/// What `SLICE` or `MOVED` keeps for the desk.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Noted {
     at: jiff::Timestamp,
@@ -872,9 +882,9 @@ struct Noted {
     refused: bool,
 }
 
-fn note(home: &Path, what: String, refused: bool) {
+fn note(home: &Path, name: &str, what: String, refused: bool) {
     eprintln!("priory daemon: {what}");
-    let file = home.join("slice.json");
+    let file = home.join(name);
     let at = jiff::Timestamp::now();
     let json = serde_json::to_vec(&Noted { at, what, refused }).expect("serializes");
     if let Err(error) = std::fs::write(&file, json) {
@@ -882,14 +892,14 @@ fn note(home: &Path, what: String, refused: bool) {
     }
 }
 
-fn noted(home: &Path) -> Option<Noted> {
-    serde_json::from_slice(&std::fs::read(home.join("slice.json")).ok()?).ok()
+fn noted(home: &Path, name: &str) -> Option<Noted> {
+    serde_json::from_slice(&std::fs::read(home.join(name)).ok()?).ok()
 }
 
 /// Takes a refusal that no longer holds off the desk.
 pub(crate) fn clear_refusal(home: &Path) {
-    let file = home.join("slice.json");
-    if noted(home).is_some_and(|noted| noted.refused)
+    let file = home.join(SLICE);
+    if noted(home, SLICE).is_some_and(|noted| noted.refused)
         && let Err(error) = std::fs::remove_file(&file)
     {
         eprintln!("priory daemon: removing {}: {error}", file.display());
@@ -923,6 +933,7 @@ impl Limits {
         if self.refused.as_ref() != Some(&why) {
             note(
                 home,
+                SLICE,
                 format!("left the limits of {slice} alone: {why}"),
                 true,
             );
@@ -961,14 +972,23 @@ impl Limits {
         if let Some(found) = found {
             let what =
                 format!("another process set {slice} to {found}; the sweep restored its limits");
-            note(home, what, false);
+            note(home, SLICE, what, false);
         }
     }
 }
 
 /// Why the daemon leaves the agents slice's limits alone, or their last restore, for a day.
 pub fn slice_banner(home: &Path) -> Option<String> {
-    let noted = noted(home)?;
+    banner(home, SLICE)
+}
+
+/// The last removal that left files elsewhere than it found them, for a day.
+pub fn moved_banner(home: &Path) -> Option<String> {
+    banner(home, MOVED)
+}
+
+fn banner(home: &Path, name: &str) -> Option<String> {
+    let noted = noted(home, name)?;
     if noted.refused {
         return Some(noted.what);
     }
@@ -2365,6 +2385,33 @@ mod tests {
             (reason.as_str(), retired),
             ("cannot retire: untracked files", None)
         );
+    }
+
+    #[test]
+    fn a_folder_that_took_a_worktrees_place_is_named_on_the_desk() {
+        let mut home = ignoring_target("taken-place");
+        let tree = home.task(1, "asleep");
+        let found = worktrees::found(&home.dir).remove(0);
+        let taken = worktrees::take(&home.dir, &found).unwrap();
+        std::fs::create_dir_all(&tree).unwrap();
+        std::fs::write(tree.join("theirs"), "x").unwrap();
+        let dir = home.dir.clone();
+        home.sweeping
+            .delete(&dir, taken, found, None, false, Some(1));
+        while home.sweeping.busy() {
+            home.sweep_tick();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        assert!(tree.join("a.txt").exists());
+        let moved = "what took its place moved to the trash folder";
+        let banner = moved_banner(&home.dir).unwrap();
+        assert!(banner.contains(moved), "{banner}");
+        let reason: String = home
+            .db
+            .query_row("SELECT reason FROM tasks", [], |row| row.get(0))
+            .unwrap();
+        assert!(reason.contains(moved), "{reason}");
     }
 
     #[test]

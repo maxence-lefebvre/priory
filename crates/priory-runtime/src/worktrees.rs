@@ -7,7 +7,7 @@ use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::ErrorKind;
 use std::os::unix::ffi::OsStringExt;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, MutexGuard};
@@ -787,13 +787,21 @@ pub struct Taken {
     held: Held,
     /// Why its branch, which was to go too, stays.
     pub branch_stays: Option<String>,
+    /// `detach` left files elsewhere than it found them.
+    pub displaced: bool,
 }
 
-/// What this process still checks or deletes: each folder moved aside, or branch, with its clone
-/// while a `git worktree prune` there or a new worktree for it would break the removal.
-static HELD: Mutex<Vec<(PathBuf, Option<PathBuf>)>> = Mutex::new(Vec::new());
+/// What this process still checks or deletes: each folder moved aside, or branch.
+static HELD: Mutex<Vec<Hold>> = Mutex::new(Vec::new());
 
-fn all_held() -> MutexGuard<'static, Vec<(PathBuf, Option<PathBuf>)>> {
+struct Hold {
+    path: PathBuf,
+    /// The clone and the worktree's place in it, while a `git worktree prune` there or a new
+    /// worktree for it would break the removal.
+    needs: Option<(PathBuf, PathBuf)>,
+}
+
+fn all_held() -> MutexGuard<'static, Vec<Hold>> {
     HELD.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
@@ -801,37 +809,45 @@ fn all_held() -> MutexGuard<'static, Vec<(PathBuf, Option<PathBuf>)>> {
 struct Held(PathBuf);
 
 impl Held {
-    fn new(path: PathBuf, clone: PathBuf) -> Held {
-        all_held().push((path.clone(), Some(clone)));
+    fn new(path: PathBuf, clone: PathBuf, worktree: PathBuf) -> Held {
+        all_held().push(Hold {
+            path: path.clone(),
+            needs: Some((clone, worktree)),
+        });
         Held(path)
     }
 
     /// Lets the starts of its clone go on.
     fn release(&self) {
-        for (path, clone) in all_held().iter_mut() {
-            if *path == self.0 {
-                *clone = None;
-            }
+        for hold in all_held().iter_mut().filter(|hold| hold.path == self.0) {
+            hold.needs = None;
         }
     }
 }
 
 impl Drop for Held {
     fn drop(&mut self) {
-        all_held().retain(|(path, _)| *path != self.0);
+        all_held().retain(|hold| hold.path != self.0);
     }
 }
 
 /// Whether this process still checks or deletes the folder `aside`.
 pub fn in_hand(aside: &Path) -> bool {
-    all_held().iter().any(|(path, _)| path == aside)
+    all_held().iter().any(|hold| hold.path == aside)
 }
 
 /// Whether a removal in `clone` still needs its worktree's entry or its branch.
 pub(crate) fn removes_in(clone: &Path) -> bool {
-    all_held()
-        .iter()
-        .any(|(_, held)| held.as_deref() == Some(clone))
+    let held = all_held();
+    let mut needs = held.iter().filter_map(|hold| hold.needs.as_ref());
+    needs.any(|(held, _)| held == clone)
+}
+
+/// Whether the worktree whose place is `path` is away for a removal that may move it back.
+pub(crate) fn removes_at(path: &Path) -> bool {
+    let held = all_held();
+    let mut needs = held.iter().filter_map(|hold| hold.needs.as_ref());
+    needs.any(|(_, held)| held == path)
 }
 
 /// Moves the worktree that `removable` allowed aside. It runs no git, so it fits a tick: `detach`
@@ -860,12 +876,13 @@ fn take_under(home: &Path, found: &Found, mounts: Mounts) -> Result<Taken, Strin
         }
     };
     Ok(Taken {
-        held: Held::new(aside.clone(), found.clone_in(home)),
+        held: Held::new(aside.clone(), found.clone_in(home), found.path.clone()),
         aside,
         found: found.clone(),
         before,
         files: Files::default(),
         branch_stays: None,
+        displaced: false,
     })
 }
 
@@ -878,24 +895,68 @@ pub fn detach(
     tip: Option<&str>,
     branch: bool,
 ) -> Result<(), String> {
-    let path = taken.found.path.clone();
     if let Err(reason) = drop_entry(home, taken, tip) {
-        return Err(match fs::rename(&taken.aside, &path) {
-            Ok(()) => {
-                let _ = fs::set_permissions(&path, taken.before.clone());
-                match lost_entry(&path) {
-                    true => trashed(home, &path, &taken.aside, reason),
-                    false => reason,
-                }
-            }
-            Err(error) => format!("{reason}; it stays in {}: {error}", taken.aside.display()),
-        });
+        return Err(put_back(home, taken, reason));
     }
     if branch {
         taken.branch_stays = as_one(|| remove_branch(home, &taken.found)).err();
     }
     taken.held.release();
     Ok(())
+}
+
+/// Moves the worktree back that stays for `reason`. Returns `reason` and what else moved.
+fn put_back(home: &Path, taken: &mut Taken, reason: String) -> String {
+    let (path, aside) = (taken.found.path.clone(), taken.aside.clone());
+    let stays = |error| format!("it stays in {}: {error}", aside.display());
+    // The entry is now that worktree's, so the moved one has none.
+    if entry_of(home, &taken.found, &path.join(".git")).is_some() {
+        taken.displaced = true;
+        let end = match move_aside(home, &aside) {
+            Ok(()) => "the removed one moved to the trash folder".to_owned(),
+            Err(error) => stays(error),
+        };
+        return format!("{reason}; another worktree took its place, so {end}");
+    }
+    let mut reason = reason;
+    let mut moved = fs::rename(&aside, &path);
+    if moved.is_err() && fs::symlink_metadata(&path).is_ok() {
+        match clear(home, &path) {
+            Ok(to) => {
+                taken.displaced = true;
+                reason = format!("{reason}; what took its place moved to {to}");
+                moved = fs::rename(&aside, &path);
+            }
+            Err(error) => reason = format!("{reason}; {error}"),
+        }
+    }
+    if let Err(error) = moved {
+        taken.displaced = true;
+        return format!("{reason}; {}", stays(error.to_string()));
+    }
+    let _ = fs::set_permissions(&path, taken.before.clone());
+    if !lost_entry(&path) {
+        return reason;
+    }
+    taken.displaced = true;
+    trashed(home, &path, &aside, reason)
+}
+
+/// Moves what took a worktree's place `path` to the trash, or beside it on another filesystem.
+/// Returns where.
+fn clear(home: &Path, path: &Path) -> Result<String, String> {
+    let Err(error) = move_aside(home, path) else {
+        return Ok("the trash folder".to_owned());
+    };
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let beside = path.with_file_name(format!("{name}-{stamp}"));
+    match fs::rename(path, &beside) {
+        Ok(()) => Ok(beside.display().to_string()),
+        Err(_) => Err(error),
+    }
 }
 
 /// Whether the entry that the worktree `path` names is gone, as a `git worktree prune` leaves one
@@ -927,6 +988,10 @@ fn drop_entry(home: &Path, taken: &mut Taken, tip: Option<&str>) -> Result<(), S
     let link = taken.aside.join(".git");
     let entry = entry_of(home, &taken.found, &link)
         .ok_or_else(|| format!("{} has no entry in its clone", taken.found.path.display()))?;
+    // Held open, so no entry that git makes in its place gets its inode.
+    let handle = fs::File::open(&entry)
+        .and_then(|file| Ok((file.metadata()?, file)))
+        .map_err(|error| format!("cannot open {}: {error}", entry.display()))?;
     let moved = Found {
         path: fs::canonicalize(&taken.aside).map_err(failed)?,
         entry: Some(entry.clone()),
@@ -936,33 +1001,60 @@ fn drop_entry(home: &Path, taken: &mut Taken, tip: Option<&str>) -> Result<(), S
     if !whole(&entry) {
         return Err(format!("{} is not whole", entry.display()));
     }
+    free(&taken.found.path)?;
     // Before the entry goes, so a daemon that stops in between leaves a folder the sweep can delete.
     let kept = kept_link(&taken.aside);
     fs::rename(&link, &kept).map_err(failed)?;
-    let dropped = run(git(&taken.found.clone_in(home))
-        .args(["worktree", "remove"])
-        .arg(&taken.found.path));
-    settle(dropped.map(drop), &entry, &kept, &link)
+    match take_entry(taken, &entry, &handle.0) {
+        Ok(gone) => {
+            // A start's `git worktree prune` takes what stays of it.
+            let _ = fs::remove_dir_all(gone);
+            let _ = fs::remove_file(kept);
+            Ok(())
+        }
+        Err(reason) => {
+            fs::rename(&kept, &link)
+                .map_err(|error| format!("cannot move {}: {error}", kept.display()))?;
+            Err(reason)
+        }
+    }
 }
 
-/// Goes on after `git worktree remove` said `dropped`, or puts the kept `.git` back.
-fn settle(
-    dropped: Result<(), String>,
-    entry: &Path,
-    kept: &Path,
-    link: &Path,
-) -> Result<(), String> {
-    if let Err(reason) = dropped {
-        // A git killed midway already deleted some of the entry, which nothing puts back.
-        if whole(entry) {
-            fs::rename(kept, link)
-                .map_err(|error| format!("cannot move {}: {error}", kept.display()))?;
-            return Err(reason);
-        }
-        let _ = fs::remove_dir_all(entry);
+/// Refuses a worktree's place that something took.
+fn free(path: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("cannot check {}: {error}", path.display())),
+        Ok(_) => Err(format!("something took its place {}", path.display())),
     }
-    let _ = fs::remove_file(kept);
-    Ok(())
+}
+
+/// Renames the checked `entry`, whose folder is `checked`, out of git's way, and returns where. What
+/// a git changed since its check puts it back.
+fn take_entry(taken: &Taken, entry: &Path, checked: &fs::Metadata) -> Result<PathBuf, String> {
+    let failed = |error| format!("cannot move {}: {error}", entry.display());
+    let name = taken
+        .aside
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
+    let gone = entry.with_file_name(format!("removed-{name}"));
+    fs::rename(entry, &gone).map_err(failed)?;
+    let same = fs::symlink_metadata(&gone)
+        .is_ok_and(|meta| (meta.dev(), meta.ino()) == (checked.dev(), checked.ino()));
+    let unlocked = fs::symlink_metadata(gone.join("locked")).is_err();
+    let place = real(&taken.found.path);
+    let names = named(&gone).and_then(|path| real(&path));
+    let reason = match free(&taken.found.path) {
+        Err(reason) => reason,
+        Ok(()) if same && unlocked && place.is_some() && names == place => return Ok(gone),
+        Ok(()) => format!("{} changed during the sweep", entry.display()),
+    };
+    // Not over the entry of a worktree git just added.
+    if fs::symlink_metadata(entry).is_err() {
+        fs::rename(&gone, entry).map_err(failed)?;
+    }
+    Err(reason)
 }
 
 /// Where the `.git` of the folder `aside` waits until the folder is gone.
@@ -1053,8 +1145,13 @@ fn back(home: &Path, aside: &Path) -> Option<()> {
     let at = fs::canonicalize(home).ok()?.join("worktrees/o/n/t");
     let entry = linked(if waits { &kept } else { &link }, &at)?;
     let from = named(&entry)?;
-    // An agent can write both files, so they choose no place but a free worktree's.
-    if !found_at(home, &from) || fs::symlink_metadata(&from).is_ok() {
+    let found = found_at(home, &from)?;
+    // An agent can write both files, so they choose no place but the free one of this task.
+    let task = task_of_aside(aside)?;
+    let ours = task_of(&found.name) == Some(task)
+        && entry_of(home, &found, if waits { &kept } else { &link }).as_ref()
+            == Some(&real(&entry)?);
+    if !ours || fs::symlink_metadata(&from).is_ok() {
         return None;
     }
     if waits {
@@ -1065,6 +1162,12 @@ fn back(home: &Path, aside: &Path) -> Option<()> {
         fs::rename(&kept, &link).ok()?;
     }
     fs::rename(aside, from).ok()
+}
+
+/// The task that `aside` in `home/reclaim` is named after.
+fn task_of_aside(aside: &Path) -> Option<i64> {
+    let name = aside.file_name()?.to_str()?;
+    name.split_once('-')?.0.parse().ok()
 }
 
 /// Deletes the links in `home/reclaim` whose folder is gone.
@@ -1107,7 +1210,7 @@ impl Branch {
     /// The branch of `found`, unless its worktree is back.
     pub fn of(home: &Path, found: &Found) -> Option<Branch> {
         fs::symlink_metadata(&found.path).is_err().then(|| Branch {
-            held: Held::new(found.path.clone(), found.clone_in(home)),
+            held: Held::new(found.path.clone(), found.clone_in(home), found.path.clone()),
             found: found.clone(),
         })
     }
@@ -1121,19 +1224,20 @@ impl Branch {
     }
 }
 
-/// Whether `path` is where a worktree folder of `home` goes.
-fn found_at(home: &Path, path: &Path) -> bool {
-    let (Ok(home), Some(repo)) = (
-        fs::canonicalize(home.join("worktrees")),
-        path.parent().and_then(|repo| fs::canonicalize(repo).ok()),
-    ) else {
-        return false;
-    };
-    repo.strip_prefix(home)
-        .is_ok_and(|rest| rest.components().count() == 2)
-        && path
-            .file_name()
-            .is_some_and(|name| task_of(&name.to_string_lossy()).is_some())
+/// The worktree folder of `home` that goes at `path`.
+fn found_at(home: &Path, path: &Path) -> Option<Found> {
+    let worktrees = fs::canonicalize(home.join("worktrees")).ok()?;
+    let folder = fs::canonicalize(path.parent()?).ok()?;
+    let repo = folder.strip_prefix(worktrees).ok()?;
+    let name = path.file_name()?.to_str()?;
+    task_of(name)?;
+    (repo.components().count() == 2).then_some(())?;
+    Some(Found {
+        path: home.join("worktrees").join(repo).join(name),
+        repo: repo.to_str()?.to_owned(),
+        name: name.to_owned(),
+        entry: None,
+    })
 }
 
 /// Deletes a worktree moved aside once no mount and no repository is in it. One that has either
@@ -1637,18 +1741,115 @@ mod tests {
     }
 
     #[test]
-    fn a_worktree_whose_entry_git_keeps_goes_back_whole() {
-        let (home, found) = Home::new("entry-stays");
-        removable(&home.0, &found).unwrap();
+    fn a_folder_that_took_its_place_moves_to_the_trash_and_the_worktree_goes_back() {
+        let (home, found) = Home::new("taken-place");
         let mut taken = take(&home.0, &found).unwrap();
-        let aside = taken.aside.clone();
-        // Something took its place, so git finds no worktree there to drop.
-        fs::create_dir_all(&found.path).unwrap();
-        drop_entry(&home.0, &mut taken, None).unwrap_err();
+        fs::create_dir_all(found.path.join("theirs")).unwrap();
+        fs::write(found.path.join("theirs/file"), "x").unwrap();
+        fs::write(taken.aside.join("ours"), "x").unwrap();
+        // The task's start waits, although the folder is there.
+        let waits = "waits to fetch o/n: the sweep removes a worktree of it";
+        let start = || crate::runtime::worktree(&home.0, "o/n", "1", None, false);
+        assert_eq!(start().unwrap_err(), waits);
+        let fetch_waits = || crate::runtime::fetch_waits(&home.0, "o/n", "1");
+        assert_eq!(fetch_waits().as_deref(), Some(waits));
 
-        fs::remove_dir(&found.path).unwrap();
-        fs::rename(&aside, &found.path).unwrap();
-        removable(&home.0, &found).unwrap();
+        let refused = detach(&home.0, &mut taken, None, true).unwrap_err();
+
+        assert_eq!(
+            refused,
+            "untracked files; what took its place moved to the trash folder"
+        );
+        assert!(taken.displaced);
+        assert!(found.path.join("ours").exists() && !found.path.join("theirs").exists());
+        assert!(in_trash(&home.0, "theirs/file"));
+        drop(taken);
+        start().unwrap();
+    }
+
+    #[test]
+    fn a_folder_the_trash_cannot_take_moves_beside_the_worktree() {
+        let (home, found) = Home::new("taken-beside");
+        fs::write(home.0.join("trash"), "").unwrap();
+        let mut taken = take(&home.0, &found).unwrap();
+        fs::create_dir_all(&found.path).unwrap();
+        fs::write(found.path.join("theirs"), "x").unwrap();
+
+        let refused = detach(&home.0, &mut taken, None, true).unwrap_err();
+
+        assert!(refused.starts_with("something took its place"), "{refused}");
+        assert!(found.path.join("fixture/HEAD").exists());
+        let beside = fs::read_dir(found.path.parent().unwrap()).unwrap();
+        assert!(beside.flatten().any(|at| at.path().join("theirs").exists()));
+    }
+
+    /// Whether a folder in the trash of `home` holds `file`.
+    fn in_trash(home: &Path, file: &str) -> bool {
+        let trash = fs::read_dir(home.join("trash"));
+        let mut kept = trash.into_iter().flatten().flatten();
+        kept.any(|entry| entry.path().join(file).exists())
+    }
+
+    #[test]
+    fn a_worktree_put_back_while_the_folder_is_away_survives_with_its_nested_repository() {
+        for prune in [false, true] {
+            let (home, found) = Home::new("put-back");
+            let clone = home.0.join("repos/o/n");
+            let mut taken = take(&home.0, &found).unwrap();
+            let path = found.path.to_str().unwrap();
+            if prune {
+                sh(&clone, &["worktree", "prune"]);
+                sh(&clone, &["worktree", "add", "-q", path, "priory/1"]);
+            } else {
+                sh(&clone, &["worktree", "add", "-q", "-f", path, "priory/1"]);
+            }
+            let nested = found.path.join("target/n");
+            fs::create_dir_all(&nested).unwrap();
+            sh(&nested, &["init", "-q"]);
+            sh(&nested, &["commit", "-q", "--allow-empty", "-m", "nested"]);
+
+            let refused = detach(&home.0, &mut taken, None, true).unwrap_err();
+
+            assert!(refused.contains("another worktree took its"), "{refused}");
+            assert!(taken.displaced);
+            run(git(&nested).args(["rev-parse", "HEAD"])).unwrap();
+            run(git(&found.path).args(["status", "--porcelain"])).unwrap();
+            assert!(in_trash(&home.0, "fixture/HEAD") && !taken.aside.exists());
+        }
+    }
+
+    #[test]
+    fn an_entry_that_changed_after_its_check_goes_back() {
+        let (home, found) = Home::new("changed-entry");
+        let clone = home.0.join("repos/o/n");
+        let entry = clone.join(".git/worktrees/1");
+        let taken = take(&home.0, &found).unwrap();
+        let handle = fs::File::open(&entry).unwrap();
+        let checked = handle.metadata().unwrap();
+
+        // A worktree that git put back and a person deleted, so the place is free again.
+        let path = found.path.to_str().unwrap();
+        sh(&clone, &["worktree", "add", "-q", "-f", path, "priory/1"]);
+        let refused = take_entry(&taken, &entry, &checked).unwrap_err();
+        assert!(refused.starts_with("something took its place"), "{refused}");
+        fs::remove_dir_all(&found.path).unwrap();
+        let refused = take_entry(&taken, &entry, &checked).unwrap_err();
+        assert!(refused.ends_with("changed during the sweep"), "{refused}");
+
+        let checked = fs::metadata(&entry).unwrap();
+        fs::write(entry.join("locked"), "").unwrap();
+        take_entry(&taken, &entry, &checked).unwrap_err();
+        fs::remove_file(entry.join("locked")).unwrap();
+        let gitdir = fs::read(entry.join("gitdir")).unwrap();
+        fs::write(entry.join("gitdir"), "/elsewhere/.git\n").unwrap();
+        take_entry(&taken, &entry, &checked).unwrap_err();
+        fs::write(entry.join("gitdir"), gitdir).unwrap();
+
+        let gone = take_entry(&taken, &entry, &checked).unwrap();
+        assert!(gone.join("HEAD").exists() && !entry.exists());
+        // As a daemon that stops here leaves it.
+        sh(&clone, &["worktree", "prune"]);
+        assert!(!gone.exists());
     }
 
     #[test]
@@ -1661,6 +1862,25 @@ mod tests {
         assert!(moved_back(&home.0, &moved));
         removable(&home.0, &found).unwrap();
 
+        // Nor does one of another task, or one outside the clone's entries.
+        let moved = aside(&home.0, &found.path, 2).unwrap();
+        assert!(!moved_back(&home.0, &moved), "the folder is task 2's");
+        fs::rename(&moved, &found.path).unwrap();
+        let moved = aside(&home.0, &found.path, 1).unwrap();
+        let registry = home.0.join("repos/o/n/.git/worktrees/1");
+        let link = fs::read(moved.join(".git")).unwrap();
+        let forged = home.0.join("forged");
+        fs::create_dir_all(&forged).unwrap();
+        fs::copy(registry.join("gitdir"), forged.join("gitdir")).unwrap();
+        fs::write(
+            moved.join(".git"),
+            format!("gitdir: {}\n", forged.display()),
+        )
+        .unwrap();
+        assert!(!moved_back(&home.0, &moved), "the entry is not the clone's");
+        fs::write(moved.join(".git"), link).unwrap();
+        assert!(moved_back(&home.0, &moved));
+
         // An entry that names another place moves nothing there.
         let moved = aside(&home.0, &found.path, 1).unwrap();
         let outside = home.0.join("outside");
@@ -1668,36 +1888,6 @@ mod tests {
         fs::write(entry, format!("{}/.git\n", outside.display())).unwrap();
         assert!(!moved_back(&home.0, &moved));
         assert!(!outside.exists() && moved.exists());
-    }
-
-    #[test]
-    fn a_removal_goes_on_once_git_began_to_delete_the_entry() {
-        let (home, found) = Home::new("began");
-        let entry = home.0.join("repos/o/n/.git/worktrees/1");
-        let (link, kept) = (found.path.join(".git"), home.0.join("kept"));
-        let killed = || Err("git worktree remove: timed out after 300s".to_owned());
-        fs::rename(&link, &kept).unwrap();
-
-        assert!(settle(killed(), &entry, &kept, &link).is_err());
-        removable(&home.0, &found).unwrap();
-
-        // Killed midway, then at the end.
-        fs::remove_file(entry.join("HEAD")).unwrap();
-        for _ in 0..2 {
-            fs::write(&kept, "gitdir: x\n").unwrap();
-            settle(killed(), &entry, &kept, &link).unwrap();
-            assert!(!entry.exists() && !kept.exists());
-        }
-    }
-
-    #[test]
-    fn a_removal_git_refused_leaves_the_worktree_in_its_place() {
-        let (home, found) = Home::new("refused");
-        let mut taken = take(&home.0, &found).unwrap();
-        // It stays in its place's way until git refused.
-        fs::create_dir_all(&found.path).unwrap();
-        detach(&home.0, &mut taken, None, true).unwrap_err();
-        removable(&home.0, &found).unwrap();
     }
 
     #[test]

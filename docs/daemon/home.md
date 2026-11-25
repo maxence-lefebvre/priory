@@ -25,6 +25,7 @@ $PRIORY_HOME/
   summaries/                   where summarizer calls run (see search.md)
   models/                      the embedding model's files (see search.md)
   push/                        the Web Push key pair and the requests in flight (see serve.md)
+  moved.json                   the last removal that left files elsewhere (see sweep.md)
   slice.json                   the agents slice's last restore or refusal (see agents-slice.md)
   tick.json                    the last loop tick over 10 seconds (see Long ticks)
   fetches/owner/name.json      the failing fetch of owner/name's clone (see sweep.md)
@@ -145,10 +146,10 @@ command_timeout = "20m"
 ```
 
 Some commands on the daemon's one thread wait 30 seconds at most, or `command_timeout` when that is
-shorter: the fetch and `ls-remote` before a new worktree, the sweep's git, `systemctl`, and the check
-whether a commit is another's ancestor. `git clone`, `git worktree add`, `git worktree remove`,
-`git push` and `gh` keep `command_timeout`, since one cut short can leave its work half done.
-The sweep runs its `git worktree remove` on a thread (see [sweep.md](sweep.md#off-the-tick)).
+shorter: the fetch and `ls-remote` before a new worktree, `systemctl`, and the check whether a commit
+is another's ancestor. `git clone`, `git worktree add`, `git push` and `gh` keep `command_timeout`,
+since one cut short can leave its work half done. The sweep's git runs on threads, with the limits in
+[sweep.md](sweep.md#off-the-tick).
 
 A task whose fetch times out stays `queued` or `ready` with `waits to fetch <owner>/<name>: timed out
 after 30s`. The daemon fetches again after 1 minute, then waits twice as long after each timeout, up

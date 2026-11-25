@@ -52,8 +52,8 @@ daemon sweeps again as soon as a teardown ends. A failed teardown keeps the work
 factory's teardown changes. While it runs, the desk says `teardown runs` or
 `a process runs in it`.
 
-The sweep moves the folder aside (see Off the tick), then runs `git worktree remove`, which drops
-the entry in the clone, and `git branch -d`, both without force. A squash-merged branch is not in the
+The sweep moves the folder aside and deletes its entry in the clone (see Off the tick), then runs
+`git branch -d`, without force. A squash-merged branch is not in the
 default branch, so `git branch -d` refuses it. The worktree goes, the branch stays, and no sweep looks
 again. A failed worktree removal is logged and retried at the next sweep. A git command that cannot
 run keeps the worktree as `cannot check: <error>`.
@@ -94,22 +94,40 @@ The daemon's loop starts runs and delivers answers, so a sweep must not hold it:
    and the branch are those the first thread judged, nothing is uncommitted or untracked, no process
    runs in it, no mount is in it, and git holds no lock on it and no submodule in it. Its git reads the
    entry in the clone, not the folder's `.git`, which a move breaks when its path is relative. Then it
-   drops the entry, and the branch when that goes too. When a check fails or git refuses, the folder
-   moves back, and a later tick records why.
+   deletes the entry, and the branch when that goes too. When a check fails, the folder moves back, and
+   a later tick records why.
 4. The thread looks for mounts and repositories in the moved folder once more. One that holds either
    moves to `PRIORY_HOME/trash/`, and the daemon logs it. Otherwise the thread makes every folder
    writable by its owner, since a test run can seal one under an ignored `target/`, and deletes it.
    The next worktree waits for that.
 
 The checks share 30 seconds, as the first thread's do. A check that times out keeps its own worktree and
-no other. The `git worktree remove` has `command_timeout`. When it fails, the thread looks at the entry.
-A whole entry means the folder moves back. One that is gone, or that git began to delete, means the
-removal goes on.
+no other.
+
+The thread runs no `git worktree remove`, since git would delete what is at the old path by then. It
+keeps the entry's folder open during the checks, and renames it in `.git/worktrees/`. It deletes the
+renamed folder only when that is the folder it checked, unlocked, still names the worktree, and the old
+path is free. Otherwise it puts the entry back. A daemon that stops in between leaves the renamed entry,
+which the next start's `git worktree prune` drops.
+
+Something can take the old path while the folder is away:
+
+- A worktree of the clone put back there, such as by `git worktree add -f`, stays as it is. The entry is
+  its own now, so the moved folder goes to `PRIORY_HOME/trash/`.
+- Anything else moves to `PRIORY_HOME/trash/`, or beside the worktrees on another filesystem, and the
+  folder moves back. What cannot move, such as a mount, keeps the folder in `PRIORY_HOME/reclaim/`. The
+  sweep never deletes it there and tries to move it back each time. Once the mount is gone it goes back,
+  unless a prune dropped its entry first. Then it stays in `reclaim/` with its files.
+
+The log and the desk's banner say for 24 hours what moved where, from `PRIORY_HOME/moved.json`. An
+asleep task also says it as its reason.
 
 Until the entry and the branch are gone, or the folder is back, a start that adds a worktree of that
 clone back waits with `waits to fetch <owner>/<name>: the sweep removes a worktree of it`. Its
-`git worktree prune` would drop the entry of the moved folder. So a `git worktree remove` that hangs
-holds those starts for `command_timeout`. A prune that a person runs in the clone in that time drops the
+`git worktree prune` would drop the entry of the moved folder. The task's own start waits even when
+something is at its path. A thread that hangs in a file system call, such as on a hung network disk,
+holds these starts until a restart. A limit would let a start's prune drop the entry of a folder that
+is still away. A prune that a person runs in the clone in that time drops the
 entry too. Then the folder moves to `PRIORY_HOME/trash/` with its files, or stays
 beside the worktrees on another filesystem.
 
@@ -130,8 +148,9 @@ While the thread fetches a clone, a start that needs a fetch of it waits with
 `waits to fetch <owner>/<name>: the sweep fetches it`. Two fetches of one ref would make one fail.
 
 A daemon that stops during a delete leaves the folder in `PRIORY_HOME/reclaim/`, and the next sweep
-deletes it. One that stops before git began to drop the entry in the clone leaves a worktree there. The
-next daemon moves it back before it starts a run, and each sweep tries too. While git drops the entry,
+deletes it. One that stops before the entry in the clone goes leaves a worktree there. The
+next daemon moves it back before it starts a run, and each sweep tries too. It goes back only to the
+place of the task it is named after, by an entry of that clone. While the entry goes,
 the folder's `.git` waits beside it as `<name>.link`, which goes once its folder is gone. A folder that holds what looks like a repository, tracked or not, stays there and
 is logged. On another filesystem, what a stopped daemon leaves stays beside the worktrees, listed on
 the desk as `no task`.

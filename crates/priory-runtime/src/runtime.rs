@@ -716,6 +716,10 @@ pub fn worktree(
     if let Some(reason) = mounted_orphan(home, repo, name) {
         return Err(reason);
     }
+    // What is there now is not the worktree, which may come back.
+    if crate::worktrees::removes_at(&path) {
+        return Err(sweep_removes(repo));
+    }
     if orphaned(&path, &clone) {
         if crate::worktrees::orphan_without_repository(&path).is_ok() {
             crate::worktrees::discard_aside(home, &path);
@@ -873,7 +877,11 @@ pub fn fetch_waits(home: &Path, repo: &str, name: &str) -> Option<String> {
         .get(repo)
         .is_some_and(|(again, _)| *again > Instant::now());
     let clone = home.join("repos").join(repo);
-    let exists = home.join("worktrees").join(repo).join(name).exists();
+    let path = home.join("worktrees").join(repo).join(name);
+    if crate::worktrees::removes_at(&path) {
+        return Some(sweep_removes(repo));
+    }
+    let exists = path.exists();
     let branch = || {
         soon(git(&clone).args([
             "rev-parse",
