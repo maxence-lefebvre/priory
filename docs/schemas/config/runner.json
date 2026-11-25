@@ -91,7 +91,7 @@
     },
     "Window": {
       "additionalProperties": false,
-      "description": "The days and hours a filter applies, in `timezone`.",
+      "description": "The days and hours a filter or a lane's cap applies, in `timezone`.",
       "properties": {
         "days": {
           "description": "The weekdays it applies on; every day when unset. With `hours` that pass midnight, the day\nthe hours start on.",

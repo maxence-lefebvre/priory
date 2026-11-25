@@ -83,5 +83,7 @@ max_running_outside = 6        # six at other times; no cap when unset
 | `` `[lane]` `<name>` is not a lane such as `team/theme` `` | A `[lane]` table whose name is not `<team>/<theme>` |
 | `` `max_running` is 0: give at least 1, or hold the tasks instead `` | `max_running = 0` or `max_running_outside = 0` |
 | `` `[lane]` `<lane>` needs `max_running` beside `when`, and `when` beside `max_running_outside` `` | A window with no cap to hold, or an outside cap with no window |
+| `` unknown field `<key>`, expected one of ... `` | A key the tables above do not list |
+| `` `lanes` is also defined in lanes.toml `` | Two of `lanes.toml`, `lanes.yaml` and `lanes.yml` exist |
 
 A bad `days`, `hours` or `timezone` gives the [runner filter's message](runners.md).

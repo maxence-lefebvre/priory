@@ -3874,23 +3874,24 @@ fn start_at(setup: &mut Setup, now: &str) {
     setup.start_with(exe, &[("PRIORY_NOW", now), ("TZ", "UTC")]);
 }
 
-/// The states of tasks 1 and 2 once one of them carries `reason`, or once both run.
-fn two_in_lane(setup: &mut Setup, now: &str, reason: Option<&str>) -> Vec<String> {
+/// The states of `count` tasks of the lane once one of them carries `reason`, or once all run.
+fn in_lane(setup: &mut Setup, count: usize, now: &str, reason: Option<&str>) -> Vec<String> {
     setup.hold("hold-stop");
-    setup.calls(&vec![result("passed"); 2]);
-    setup.publish(&requested_lane(42, "a/x"));
-    setup.publish(&requested_lane(43, "a/x"));
+    setup.calls(&vec![result("passed"); count]);
+    for issue in 42..42 + count as u64 {
+        setup.publish(&requested_lane(issue, "a/x"));
+    }
     start_at(setup, now);
     let tasks = setup.until("tasks", |rows| match reason {
         Some(reason) => rows.iter().any(|row| row[7] == reason),
-        None => with(rows, 4, "running") == 2,
+        None => with(rows, 4, "running") == count,
     });
     let states = tasks
         .iter()
         .map(|row| format!("{} {}", row[0], row[4]))
         .collect();
     setup.release("hold-stop");
-    setup.until("tasks", |rows| with(rows, 4, "done") == 2);
+    setup.until("tasks", |rows| with(rows, 4, "done") == count);
     states
 }
 
@@ -3898,8 +3899,9 @@ fn two_in_lane(setup: &mut Setup, now: &str, reason: Option<&str>) -> Vec<String
 fn a_lane_window_holds_new_starts_inside_its_hours() {
     let mut setup = windowed("window-inside", "");
 
-    let states = two_in_lane(
+    let states = in_lane(
         &mut setup,
+        2,
         MONDAY_10,
         Some("waits for its lane: 1 of 1 running"),
     );
@@ -3915,7 +3917,7 @@ fn a_lane_window_lifts_the_cap_outside_its_days_and_hours() {
     ] {
         let mut setup = windowed(name, "");
 
-        let states = two_in_lane(&mut setup, now, None);
+        let states = in_lane(&mut setup, 2, now, None);
 
         assert_eq!(states, ["1 running", "2 running"], "{name}");
     }
@@ -3923,15 +3925,16 @@ fn a_lane_window_lifts_the_cap_outside_its_days_and_hours() {
 
 #[test]
 fn a_lane_window_applies_max_running_outside_outside_its_hours() {
-    let mut setup = windowed("window-outside", "max_running_outside = 1\n");
+    let mut setup = windowed("window-outside", "max_running_outside = 2\n");
 
-    let states = two_in_lane(
+    let states = in_lane(
         &mut setup,
+        3,
         MONDAY_19,
-        Some("waits for its lane: 1 of 1 running"),
+        Some("waits for its lane: 2 of 2 running"),
     );
 
-    assert_eq!(states, ["1 running", "2 queued"]);
+    assert_eq!(states, ["1 running", "2 running", "3 queued"]);
 }
 
 #[test]
