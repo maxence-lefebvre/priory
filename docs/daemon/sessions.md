@@ -355,6 +355,8 @@ a worktree or clone that a symlink leads elsewhere.
   - The `.envrc` is an older honest version, from neither the commit the task started from nor the
     default branch, as after a reset to an earlier commit. A rebase on the default branch fixes it.
   - Git writes the file with other content than it stores, as `core.autocrlf` or a filter does.
+  - A git command of the check fails. The reason then says `could not be checked` with the command and
+    its exit code, such as `git hash-object: exit 139` for a crash, and the daemon's log has its error.
 
   The check has limits:
 
