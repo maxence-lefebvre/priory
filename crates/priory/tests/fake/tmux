@@ -5,5 +5,4 @@
 if [ "$1" = load-buffer ] && [ -e "$FAKE_DIR/tmux-hang" ]; then (trap '' TERM; sleep 60) & sleep 60; fi
 if [ "$1" = list-panes ] && [ -e "$FAKE_DIR/tmux-hang-panes" ]; then (trap '' TERM; sleep 60) & sleep 60; fi
 if [ "$1" = list-clients ] && [ -e "$FAKE_DIR/tmux-fail-clients" ]; then echo "tmux: failed" >&2; exit 1; fi
-if [ "$1" = new-session ] && [ -e "$FAKE_DIR/slow-session" ]; then for a in "$@"; do [ "$a" = "$(cat "$FAKE_DIR/slow-session")" ] && sleep 3 && break; done; fi
 exec "$(PATH=${PATH#*:} command -v tmux)" "$@"
