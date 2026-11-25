@@ -13,7 +13,7 @@ Object.assign(globalThis, {
   location: { origin: "http://localhost" },
   matchMedia: () => ({ matches: false, addEventListener() {} }),
 });
-const { PageGrid, needsOf } = await import("./PageGrid.jsx");
+const { LegacyPreview, PageGrid, needsOf } = await import("./PageGrid.jsx");
 const { cache } = await import("../data.js");
 const { PANELS } = await import("../pages.js");
 const { entries, entryOf, register } = await import("../registry.js");
@@ -108,6 +108,19 @@ test("while the listings load, a tree of legacy panels draws one element, and on
   assert.equal(draw("/", { layout: TREE }), SLOT);
   register(all.map((entry) => (entry.name === "queue" ? { name: "queue", List: () => <p>Queue in React</p> } : entry)));
   assert.match(draw("/", { layout: TREE }), /Queue in React/);
+});
+
+test("a React Settings draws legacy previews, which need what the Desk does", (t) => {
+  t.after(() => register(all));
+  register(all.map((entry) => (entry.name === "settings" ? { name: "settings", Page: () => <div className="preview"><LegacyPreview name="desk" /></div> } : entry)));
+  assert.equal(draw("/settings/appearance"), '<div class="preview"><div></div></div>');
+  assert.deepEqual(reads("/settings/appearance"), [], "the page itself needs none");
+  assert.deepEqual(needsOf([{ kind: "preview", name: "desk" }]), ["asks", "queue", "tasks"]);
+});
+
+test("an entry that draws nothing holds events alone", () => {
+  const drawing = ["list", "page", "detail", "drawer", "List", "Page", "Detail", "Drawer"];
+  assert.deepEqual(all.filter((entry) => !drawing.some((part) => entry[part])).map((entry) => entry.name), ["add", "taskacts"]);
 });
 
 test("an address without a page says so", () => assert.match(draw("/batches/x"), /Page not found/));

@@ -6,6 +6,7 @@ export const desk = {
   needs: ["asks", "queue", "tasks"],
   list: deskList,
   page: () => deskPhone(),
+  preview: () => deskPhone(false),
   older: { tasks: () => current() === "desk" && deskView() === "all" },
   click: deskClick,
   after: (host) => { if (host.querySelector("[data-since]")) seen(); },

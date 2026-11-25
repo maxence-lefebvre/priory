@@ -13,7 +13,7 @@ import { signOut } from "./session.js";
 // What each legacy element draws, { slot, kind, name, id, panels }, and the page it drew last.
 const slots = new Map();
 // The elements on screen, in document order.
-const hosts = () => (slots.size ? [...document.querySelectorAll("#app .legacy")].filter((element) => slots.has(element)) : []);
+const hosts = () => [...slots.keys()].sort((a, b) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
 
 // The focus in an element React takes away before the next draw, such as a panel a resize moves.
 let lost = null;
@@ -108,10 +108,11 @@ export function render() {
 
 // The HTML of a legacy part. Until its listings are read, the first one says so and the others stay empty.
 function text({ kind, name, id, panels }, at) {
-  if (kind === "loading" || !ready()) return at ? "" : loading().text;
+  if (kind === "loading" || !ready()) return at || kind === "preview" ? "" : loading().text;
   const size = shape.size;
   const entry = entryOf(name);
   if (kind === "drawer") return entry.drawer(id, size === "wide", panels).text;
+  if (kind === "preview") return entry.preview().text;
   if (kind === "detail") return entry.detail(id, size).text;
   return (kind === "list" ? entry.list(size === "wide") : entry.page(size)).text;
 }

@@ -3,7 +3,7 @@ import { addBody, addOutcome, swapLine, withDefaults } from "../add.js";
 import { taskLabel, workStep } from "../tasks.js";
 import { cache } from "../data.js";
 import { keyOf, newest } from "../queries.js";
-import { requestKey } from "../reads/request.js";
+import { request } from "../reads/request.js";
 import { api, refresh, signOut } from "./data.js";
 import { focusKey, html, icon, post, raw, tile } from "./shared.js";
 import { state } from "./state.js";
@@ -24,7 +24,7 @@ const knownLanes = () => [...new Set([...(newest(cache, "tasks")?.tasks ?? []), 
 
 // The factory may reload while the page is open; a read that fails keeps the last one.
 export async function readAddDefaults() {
-  state.add.defaults = await cache.fetchQuery({ queryKey: requestKey(), staleTime: 0 }).catch(() => state.add.defaults);
+  state.add.defaults = await cache.fetchQuery({ ...request(), staleTime: 0 }).catch(() => state.add.defaults);
 }
 
 export async function openAdd() {

@@ -2,13 +2,14 @@
 // imports none of them, so any module may read the list while it runs.
 
 /**
- * A page's entry. `name` is the first segment of its address.
+ * A page's entry. `name` is the first segment of its address. `add` and `taskacts` are no address's:
+ * they draw nothing, and hold the events of the Add sheet and of the task actions several pages draw.
  * - In React: `List` beside a drawer or other panels, `Page` alone, `Detail` of one ask, task or batch,
  *   `Drawer`. Each takes no prop but `Detail` and `Drawer`, which take the `id` an address names, and
  *   `Drawer` the `panels` beside it.
  * - Legacy, the same four in lower case, each a function that answers the HTML: `list(wide)`,
  *   `page(size)`, `detail(id)`, `drawer(id, wide, panels)`. `needs` are the listings `list` and `page`
- *   draw from, `detailNeeds` those of `detail` and `drawer`, read by nobody once a part is in React.
+ *   draw from, also in a `preview()`, the page as a theme preview shows it; `detailNeeds` those of `detail` and `drawer`, read by nobody once a part is in React.
  * - Document events: `click(action, target, event)`, `submit(action, form)`, `input(target)`,
  *   `change(target)`, `key(event)`, and `keyFirst(event)`, which also runs inside a field. True: acted.
  * - Legacy draws: `fields` are the ids of text fields that keep their caret, `kept` the cached reads

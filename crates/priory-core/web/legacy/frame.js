@@ -1,6 +1,7 @@
 // What several legacy pages draw around their own part.
 import { sectionInView } from "../desk.js";
 import { PANELS } from "../pages.js";
+import { pageFailed } from "./data.js";
 import { html, loadOlder, state, track } from "./shared.js";
 
 export function connection() {
@@ -28,8 +29,9 @@ export function rowsPage(label, { views, rows }) {
 export const keyHints = () => html`<div class="keys"><span><kbd>J</kbd><kbd>K</kbd>move</span><span><kbd>Enter</kbd>open</span><span><kbd>Esc</kbd>close</span><span><kbd>N</kbd>add</span></div>`;
 
 export function loading() {
-  return state.failed
-    ? html`<p class="empty">Could not load this page: ${state.failed}. Check that <code>priory serve</code> or the daemon runs, then retry.</p>`
+  const failed = state.failed ?? pageFailed();
+  return failed
+    ? html`<p class="empty">Could not load this page: ${failed}. Check that <code>priory serve</code> or the daemon runs, then retry.</p>`
     : html`<p class="empty" role="status">Loading…</p>`;
 }
 

@@ -2,7 +2,7 @@
 import { draw } from "../app.js";
 import { cache, refresh as refreshQueries } from "../data.js";
 import { keyOf, params } from "../queries.js";
-import { onSignOut, session } from "../session.js";
+import { failureWords, onSignOut, session } from "../session.js";
 import { store } from "../store.js";
 import { each, entries } from "../registry.js";
 import { state } from "./state.js";
@@ -27,6 +27,15 @@ export function openPage(names) {
 export const ready = () => Boolean(state.data) && page.names.every((name) => name in page.landed);
 export const landing = store(true);
 
+/** Why a listing the page has nothing of could not be read, else null. */
+export function pageFailed() {
+  for (const name of page.names) {
+    const query = cache.getQueryCache().find({ queryKey: keyOf(name, asked.get()), exact: true });
+    if (query?.state.status === "error" && query.state.data === undefined) return failureWords(query.state.error);
+  }
+  return null;
+}
+
 const kept = () => entries.flatMap((entry) => entry.kept ?? []);
 const drawn = (data) => [data.desk, data.queue, data.asks, data.tasks, data.runs, data.older.asks, data.older.tasks, data.older.runs, ...kept().map((name) => data[name])];
 
@@ -34,8 +43,8 @@ const drawn = (data) => [data.desk, data.queue, data.asks, data.tasks, data.runs
 export function land() {
   const queries = cache.getQueryCache();
   const held = [...new Set(["views", "links", "desk", ...page.names])].map((name) => [name, queries.find({ queryKey: keyOf(name, asked.get()), exact: true })]);
-  // A read in flight, and one that failed, change nothing that has landed before.
-  const settled = !held.some(([, query]) => query?.state.fetchStatus === "fetching" || query?.state.status === "error");
+  // A read in flight changes nothing that has landed before. One that failed keeps its last data.
+  const settled = !held.some(([, query]) => query?.state.fetchStatus === "fetching");
   for (const query of queries.getAll()) {
     const [name] = query.queryKey;
     // A listing not landed yet draws from what the cache keeps, while it is read again.
@@ -73,7 +82,7 @@ function accept({ of, fresh }) {
     each("landed");
   }
   const same = before && drawn(before).every((part, i) => part === drawn(state.data)[i]);
-  if (!same || Date.now() - state.rendered >= 60000) draw();
+  if (!same || !ready() || Date.now() - state.rendered >= 60000) draw();
 }
 
 const NONE = [];

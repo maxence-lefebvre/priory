@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { renderToStaticMarkup } from "react-dom/server";
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider, QueryObserver } from "@tanstack/react-query";
 import { shellOf, where } from "../frame.js";
-import { client } from "../queries.js";
+import { client, moved } from "../queries.js";
 import { setFailed } from "../session.js";
 import { Frame } from "./Frame.jsx";
 import { Icon } from "./Icon.jsx";
@@ -42,6 +42,16 @@ test("a failed read shows the strip, with a Retry", (t) => {
   setFailed("the connection dropped");
   const html = frame(t, "/", "compact");
   assert.match(html, /^<div class="stale" role="status"><svg class="ico s15".*<span>Reconnecting: the connection dropped. <\/span><button type="button" class="ghost" data-retry="true">Retry<\/button><\/div>/);
+});
+
+test("a page's own listing that fails says so, and the app stays live", async (t) => {
+  const cache = client({ api: async () => { throw new Error("/api/queue answered 500"); } });
+  t.after(() => cache.clear());
+  cache.setQueryData(["queue"], { waiting: [] });
+  t.after(new QueryObserver(cache, { queryKey: ["queue"], retry: false }).subscribe(() => {}));
+  await moved(cache);
+  const html = renderToStaticMarkup(<QueryClientProvider client={cache}><Frame shell={shellOf(where("/queue"), { size: "wide", list: "desk", layout })} size="wide" views={views} open={0} onRetry={() => {}} /></QueryClientProvider>);
+  assert.match(html, /^<div class="stale" role="status"><svg.*<span>Could not read the queue again: \/api\/queue answered 500. This is its last read.<\/span><button type="button" class="ghost" data-retry="true">Retry<\/button><\/div>.*<span class="conn ">live<\/span>/);
 });
 
 test("an icon draws its strokes", () => {
