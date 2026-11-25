@@ -255,7 +255,9 @@ export function askDetail(id, wide) {
         : html`<span>${recommended}</span><small>${[recommended === ask.recommendation ? "Recommended" : "First option", runsCommand(ask, recommended) && "Runs a command"].filter(Boolean).join(". ")}</small>`}</button>
       ${locked === "offline" ? html`<p class="note">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>` : locked ? html`<p class="note">${icon("layers", "s15")}<span>${planWait(ask, planError)}</span></p>` : cutNote(ask)}</div>`
     : "";
-  const reading = read.map(([, , section]) => section);
+  // A task read again that failed keeps its last read, and says so (DESIGN.md, Error).
+  const unread = task && state.task?.id === ask.task && state.task.error ? html`<p class="note" role="status">Could not read task ${ask.task} again: ${state.task.error}. This is its last read.</p>` : "";
+  const reading = [unread, ...read.map(([, , section]) => section)];
   const plan = [...planned, ...lead].map(([, , section]) => section);
   if (wide) return html`<div class="pinned">${header}${top}${sending}</div><div class="scroll" data-sections>${jump}${plan}${why}${reading}${history}${command}</div>`;
   return html`${header}<div class="scroll" data-sections>${top}${jump}${plan}${why}${reading}${history}${command}</div>${bar}${sending}`;

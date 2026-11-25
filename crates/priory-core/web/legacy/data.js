@@ -23,8 +23,8 @@ export function openPage(names) {
   land();
 }
 
-// Whether every listing of the page has data: the page draws a loading line until then.
-export const ready = () => Boolean(state.data) && page.names.every((name) => name in page.landed);
+// Whether every listing of the page, or those `names`, has data: a part draws a loading line until then.
+export const ready = (names = page.names) => Boolean(state.data) && names.every((name) => name in page.landed);
 export const landing = store(true);
 
 /** Why a listing the page has nothing of could not be read, else null. */
@@ -39,7 +39,7 @@ export function pageFailed() {
 const kept = () => entries.flatMap((entry) => entry.kept ?? []);
 const drawn = (data) => [data.desk, data.queue, data.asks, data.tasks, data.runs, data.older.asks, data.older.tasks, data.older.runs, ...kept().map((name) => data[name])];
 
-// Lands the page's listings in one step, once none of them is being read: a draw never mixes two reads.
+// Lands the page's listings in one step, once none of them is being read. A listing whose read failed keeps its last data.
 export function land() {
   const queries = cache.getQueryCache();
   const held = [...new Set(["views", "links", "desk", ...page.names])].map((name) => [name, queries.find({ queryKey: keyOf(name, asked.get()), exact: true })]);

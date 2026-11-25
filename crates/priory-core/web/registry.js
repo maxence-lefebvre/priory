@@ -23,6 +23,19 @@ export const entries = [];
 export const register = (list) => void entries.splice(0, entries.length, ...list);
 export const entryOf = (name) => entries.find((entry) => entry.name === name);
 
+const REACT = { list: "List", page: "Page", detail: "Detail", drawer: "Drawer" };
+export const reactPart = ({ kind, name }) => entryOf(name)?.[REACT[kind]];
+
+/** The listings legacy parts draw from, beside the frame's own. `section` is the second part of the address. */
+export function needsOf(parts, section) {
+  const wanted = parts.filter((part) => !reactPart(part)).flatMap(({ kind, name, id }) => {
+    const { needs, detailNeeds } = entryOf(name) ?? {};
+    if (kind === "detail" || kind === "drawer") return (id && detailNeeds) || [];
+    return (typeof needs === "function" ? needs(section) : needs) ?? [];
+  });
+  return [...new Set(wanted)].sort();
+}
+
 /** The first truthy answer of the entries to `hook`. Every entry before it ran. */
 export const first = (hook, ...args) => entries.some((entry) => entry[hook]?.(...args));
 /** Runs `hook` of every entry. */

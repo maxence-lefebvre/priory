@@ -398,6 +398,23 @@ await hooked("an ask answers while the tasks and its task cannot be read", "/ask
   const sent = await evaluate("posts");
   return sent.length === 1 || sent;
 });
+await hooked("a cold ask answers beside a list whose first read failed", "/asks/1", OPTION, { cold: true, reply: refused, fails: ["/api/queue"] }, async () => {
+  const said = await evaluate('document.getElementById("app").innerText.includes("Could not load this page: /api/queue answered 500.")');
+  for (let i = 0; i < 2; i++) {
+    await evaluate(`${OPTION}.click()`);
+    await sleep(800);
+  }
+  const sent = await evaluate("posts");
+  return said && sent.length === 1 ? true : { said, sent };
+});
+await hooked("an ask's task that cannot be read again says so in the drawer", "/asks/1", 'document.querySelector(".drawer #trace")', {}, async () => {
+  await sleep(1500);
+  await evaluate('hook.fails = ["/api/tasks/1"]');
+  change();
+  await until('document.querySelector(".drawer .scroll > .note")', "the note");
+  const found = await evaluate('({ note: document.querySelector(".drawer .scroll > .note").innerText, trace: Boolean(document.querySelector(".drawer #trace")) })');
+  return found.note.startsWith("Could not read task 1 again: /api/tasks/1 answered 500.") && found.trace ? true : found;
+});
 const OPEN_ASK = `document.querySelector(".list [href^='/asks/']")`;
 await hooked("keys on a cold task page: S and Enter do nothing, J opens its open ask, N opens Add", "/tasks/1", SAYS, { cold: true }, async () => {
   await until(OPEN_ASK, "the task's open ask");

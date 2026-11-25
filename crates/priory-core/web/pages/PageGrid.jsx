@@ -8,26 +8,13 @@ import { useListings, useStore } from "../hooks/useData.js";
 import { useMinute } from "../hooks/useScreen.js";
 import { asked, land, landing } from "../legacy/data.js";
 import { PANELS } from "../pages.js";
-import { entryOf } from "../registry.js";
+import { entryOf, needsOf, reactPart } from "../registry.js";
 import { shown } from "../shown.js";
 import { NotFound } from "./NotFound.jsx";
 import { usePlace } from "./place.js";
 
 const FRAME = ["views", "links", "desk"];
-const REACT = { list: "List", page: "Page", detail: "Detail", drawer: "Drawer" };
-
-export const reactPart = ({ kind, name }) => entryOf(name)?.[REACT[kind]];
 const known = ({ kind, name }) => Boolean(reactPart({ kind, name }) ?? entryOf(name)?.[kind]);
-
-/** The listings a page's legacy parts draw from, beside the frame's own. */
-export function needsOf(parts, section) {
-  const wanted = parts.filter((part) => !reactPart(part)).flatMap(({ kind, name, id }) => {
-    const { needs, detailNeeds } = entryOf(name) ?? {};
-    if (kind === "detail" || kind === "drawer") return (id && detailNeeds) || [];
-    return (typeof needs === "function" ? needs(section) : needs) ?? [];
-  });
-  return [...new Set(wanted)].sort();
-}
 
 // React renders the element once and never its children. CSS gives it no box of its own.
 const LegacySlot = memo(function LegacySlot({ slot, kind, name, id, panels }) {

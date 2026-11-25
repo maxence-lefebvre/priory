@@ -13,7 +13,8 @@ Object.assign(globalThis, {
   location: { origin: "http://localhost" },
   matchMedia: () => ({ matches: false, addEventListener() {} }),
 });
-const { LegacyPreview, PageGrid, needsOf } = await import("./PageGrid.jsx");
+const { LegacyPreview, PageGrid } = await import("./PageGrid.jsx");
+const { needsOf } = await import("../registry.js");
 const { cache } = await import("../data.js");
 const { PANELS } = await import("../pages.js");
 const { entries, entryOf, register } = await import("../registry.js");

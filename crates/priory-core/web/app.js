@@ -4,9 +4,9 @@
 import { acts, disarmTask } from "./acts.js";
 import { landing, openPage, ready, refresh } from "./legacy/data.js";
 import { loading, watchSections } from "./legacy/frame.js";
-import { focusKey, place, routeKey, shape, state, trail } from "./legacy/shared.js";
+import { focusKey, place, route, routeKey, shape, state, trail } from "./legacy/shared.js";
 import { remoteGeneration } from "./legacy/taskacts.js";
-import { each, entries, entryOf, first } from "./registry.js";
+import { each, entries, entryOf, first, needsOf } from "./registry.js";
 import { go } from "./router.js";
 import { signOut } from "./session.js";
 
@@ -106,9 +106,11 @@ export function render() {
   if (caret) again(`#${caret[0]}`)[0]?.setSelectionRange(caret[1], caret[2], caret[3]);
 }
 
-// The HTML of a legacy part. Until its listings are read, the first one says so and the others stay empty.
+// The HTML of a legacy part. Until the page's listings are read, the first part says so and the others
+// stay empty; a part whose own listings are read draws, so an ask answers beside a list that failed.
 function text({ kind, name, id, panels }, at) {
-  if (kind === "loading" || !ready()) return at || kind === "preview" ? "" : loading().text;
+  const mine = kind !== "loading" && ready(needsOf([{ kind, name, id }], route()[1]));
+  if (!mine) return (at && !ready()) || kind === "preview" ? "" : loading().text;
   const size = shape.size;
   const entry = entryOf(name);
   if (kind === "drawer") return entry.drawer(id, size === "wide", panels).text;
