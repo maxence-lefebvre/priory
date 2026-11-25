@@ -190,7 +190,9 @@ fn merged(
 fn pushed_after_review(tx: &Transaction, pull: &str) -> rusqlite::Result<Option<String>> {
     tx.query_row(
         "WITH events AS (SELECT time, type, data FROM inbox
-           WHERE 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1),
+           WHERE 'github:' || json_extract(data, '$.repo') || '#'
+             || coalesce(json_extract(data, '$.pull_request'), json_extract(data, '$.issue')) = ?1
+           AND json_extract(data, '$.pull_request') IS NOT NULL),
          reviewed AS (SELECT coalesce(json_extract(data, '$.commit'), json_extract(data, '$.head_sha')) AS head
            FROM events WHERE type = ?2 AND coalesce(json_extract(data, '$.actor'), '') NOT LIKE '%[bot]'
            AND coalesce(json_extract(data, '$.commit'), json_extract(data, '$.head_sha')) IS NOT NULL

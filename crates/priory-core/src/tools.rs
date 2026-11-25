@@ -1776,7 +1776,9 @@ fn judge(tx: &Transaction, wait: i64, factory: &Factory) -> rusqlite::Result<Fir
         let mut statement = tx.prepare(
             "SELECT seq, type, data FROM inbox
              WHERE outcome IN ('kept', 'ignored', 'woke')
-             AND 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1
+             AND 'github:' || json_extract(data, '$.repo') || '#'
+               || coalesce(json_extract(data, '$.pull_request'), json_extract(data, '$.issue')) = ?1
+             AND json_extract(data, '$.pull_request') IS NOT NULL
              AND (json_extract(data, '$.head_sha') IS NOT NULL OR type = ?2) ORDER BY seq DESC",
         )?;
         let mut rows = statement.query(params![resource, CLOSED])?;
@@ -2314,10 +2316,10 @@ pub(crate) fn all_merged(tx: &Connection, task: i64) -> rusqlite::Result<bool> {
     };
     let merged = tx
         .query_row(
-            "SELECT json_extract(data, '$.merged') FROM inbox WHERE type = ?2
+            "SELECT json_extract(data, '$.merged') FROM inbox WHERE type = 'github.pull_request.closed'
              AND 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1
              ORDER BY seq DESC LIMIT 1",
-            params![resource, CLOSED],
+            params![resource],
             |row| row.get::<_, Option<bool>>(0),
         )
         .optional()?
@@ -2336,10 +2338,10 @@ pub(crate) fn closed_unmerged(db: &Connection, task: i64) -> rusqlite::Result<bo
     };
     let merged = db
         .query_row(
-            "SELECT json_extract(data, '$.merged') FROM inbox WHERE type = ?2
+            "SELECT json_extract(data, '$.merged') FROM inbox WHERE type = 'github.pull_request.closed'
              AND 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1
              ORDER BY seq DESC LIMIT 1",
-            params![resource, CLOSED],
+            params![resource],
             |row| row.get::<_, Option<bool>>(0),
         )
         .optional()?
@@ -5125,7 +5127,9 @@ fn last_read(tx: &Transaction, resource: &str) -> rusqlite::Result<String> {
            SELECT seq, CASE WHEN type = ?2 AND json_extract(data, '$.merged') = 1 THEN 'merged'
              WHEN type != ?2 AND json_extract(data, '$.open') = 1 THEN 'open' ELSE 'closed' END AS state
            FROM inbox
-           WHERE 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1
+           WHERE 'github:' || json_extract(data, '$.repo') || '#'
+             || coalesce(json_extract(data, '$.pull_request'), json_extract(data, '$.issue')) = ?1
+           AND json_extract(data, '$.pull_request') IS NOT NULL
            AND (type = ?2 OR json_extract(data, '$.open') IS NOT NULL))
          ORDER BY state = 'merged' DESC, seq DESC LIMIT 1",
         params![resource, CLOSED],

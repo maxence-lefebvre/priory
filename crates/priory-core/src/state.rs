@@ -2189,13 +2189,10 @@ CREATE INDEX IF NOT EXISTS inbox_closed_pulls ON inbox ('github:' || json_extrac
 PRAGMA user_version = 122;
 ";
 
-// Routing a message looks up the inbox by pull request, by pull request or issue, by task and by merge commit.
+// Routing a message looks up the inbox by pull request or issue, by task and by merge commit.
 // Without these each lookup scans every entry. The queries repeat their expressions.
 const SCHEMA_123: &str = "
-CREATE INDEX IF NOT EXISTS inbox_by_pull ON inbox ('github:' || json_extract(data, '$.repo')
-  || '#' || json_extract(data, '$.pull_request'))
-  WHERE 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') IS NOT NULL;
-CREATE INDEX IF NOT EXISTS inbox_by_number ON inbox ('github:' || json_extract(data, '$.repo') || '#'
+CREATE INDEX IF NOT EXISTS inbox_by_pull ON inbox ('github:' || json_extract(data, '$.repo') || '#'
   || coalesce(json_extract(data, '$.pull_request'), json_extract(data, '$.issue')))
   WHERE 'github:' || json_extract(data, '$.repo') || '#'
   || coalesce(json_extract(data, '$.pull_request'), json_extract(data, '$.issue')) IS NOT NULL;
@@ -3005,8 +3002,9 @@ fn claim_pull_request(tx: &Transaction, message: &Message) -> rusqlite::Result<(
              AND NOT EXISTS (SELECT 1 FROM owned JOIN tasks AS other ON other.id = owned.task
                WHERE owned.resource = ?1 AND owned.task != owns.task
                AND other.state NOT IN ('done', 'failed', 'dropped'))
-             AND NOT EXISTS (SELECT 1 FROM inbox WHERE 'github:' || json_extract(data, '$.repo')
-                 || '#' || json_extract(data, '$.pull_request') = ?1 AND outcome != 'outsider')
+             AND NOT EXISTS (SELECT 1 FROM inbox WHERE 'github:' || json_extract(data, '$.repo') || '#'
+                 || coalesce(json_extract(data, '$.pull_request'), json_extract(data, '$.issue')) = ?1
+               AND json_extract(data, '$.pull_request') IS NOT NULL AND outcome != 'outsider')
              ORDER BY owns.task DESC LIMIT 1",
             params![resource, route::branch(repo, head), repo, base],
             |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
@@ -5564,7 +5562,7 @@ mod inbox_lookups {
         let indexed = routed(&mut db);
 
         db.execute_batch(
-            "DROP INDEX inbox_by_pull; DROP INDEX inbox_by_number; DROP INDEX inbox_by_issue; DROP INDEX inbox_by_task;
+            "DROP INDEX inbox_by_pull; DROP INDEX inbox_by_issue; DROP INDEX inbox_by_task;
              DROP INDEX inbox_merges;",
         )
         .unwrap();
@@ -5600,7 +5598,8 @@ mod inbox_lookups {
                 "SELECT count(*),
                    (SELECT count(*) FROM inbox INDEXED BY inbox_by_pull
                     WHERE 'github:' || json_extract(data, '$.repo') || '#'
-                      || json_extract(data, '$.pull_request') = 'github:owner/repo#1'),
+                      || coalesce(json_extract(data, '$.pull_request'), json_extract(data, '$.issue'))
+                      = 'github:owner/repo#1'),
                    (SELECT count(*) FROM inbox INDEXED BY inbox_by_issue
                     WHERE 'linear:' || json_extract(data, '$.issue') = 'linear:ENG-1')
                  FROM inbox",
