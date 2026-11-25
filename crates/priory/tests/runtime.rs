@@ -3960,7 +3960,7 @@ fn a_lane_window_that_opens_stops_no_running_task_and_shows_in_the_queue() {
     setup.publish(&requested_lane(42, "a/x"));
     setup.publish(&requested_lane(43, "a/x"));
     start_at(&mut setup, SATURDAY_10);
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    setup.until("runs", |_| setup.replies().len() == 2);
     setup.crash();
 
     start_at(&mut setup, MONDAY_10);
@@ -39172,7 +39172,7 @@ fn fixedslow_window() {
     setup.publish(&requested_lane(42, "a/x"));
     setup.publish(&requested_lane(43, "a/x"));
     start_at(&mut setup, SATURDAY_10);
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    setup.until("runs", |_| setup.replies().len() == 2);
     setup.crash();
 
     start_at(&mut setup, MONDAY_10);
@@ -39234,7 +39234,7 @@ fn fixedplain_window() {
     setup.publish(&requested_lane(42, "a/x"));
     setup.publish(&requested_lane(43, "a/x"));
     start_at(&mut setup, SATURDAY_10);
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    setup.until("runs", |_| setup.replies().len() == 2);
     setup.crash();
 
     start_at(&mut setup, MONDAY_10);
