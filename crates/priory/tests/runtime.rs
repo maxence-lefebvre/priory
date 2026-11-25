@@ -22669,13 +22669,7 @@ fn a_duplicate_tells_a_sleeping_task_how_to_agree_with_its_next_prompt() {
     let (setup, _) = two_tasks("talk-duplicate-asleep", false);
 
     setup.publish(&moved_to("Duplicate", "canceled"));
-    setup.until("inbox", |rows| {
-        rows.iter()
-            .any(|row| row[1] == "linear.issue.state_changed")
-    });
-    setup.priory(&["say", "1", "Go on."]);
-
-    let woken = setup.typed_with("Go on.");
+    let woken = setup.typed_with("linear.issue.state_changed ENG-7");
     assert!(
         woken.contains(
             "Task 2 (linear:ENG-9) works on ENG-9. Agree with task 2 which of you continues"
@@ -22714,6 +22708,8 @@ fn a_duplicate_that_wakes_a_gate_says_how_to_agree_in_the_prompt_that_wakes_it()
 #[test]
 fn a_second_duplicate_event_holds_one_line_and_a_day_old_pair_drops_it() {
     let (setup, _) = two_tasks("talk-duplicate-expired", false);
+    // The event would wake the task at once, and its run would read the line.
+    setup.edit("UPDATE tasks SET state = 'blocked' WHERE id = 1");
     setup.publish(&moved_to("Duplicate", "canceled"));
     setup.publish(&moved_to("Duplicate", "canceled"));
     setup.until("inbox", |rows| {
@@ -22722,6 +22718,7 @@ fn a_second_duplicate_event_holds_one_line_and_a_day_old_pair_drops_it() {
     assert_eq!(carrying(&setup, "Agree with task 2"), ["held"]);
     setup.edit("UPDATE pairs SET created = datetime('now', '-25 hours')");
 
+    setup.edit("UPDATE tasks SET state = 'asleep' WHERE id = 1");
     setup.priory(&["say", "1", "Go on."]);
 
     let woken = setup.typed_with("Go on.");
