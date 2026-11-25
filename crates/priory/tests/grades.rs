@@ -739,7 +739,11 @@ fn a_second_run_of_a_workflow_no_push_started_supersedes_no_red_on_a_merge_commi
 
         assert_eq!(setup.red_after_merge(), 1, "{event}");
         let checks = setup.completed_checks();
-        let origins: Vec<_> = checks.iter().map(|check| &check["origin"]).collect();
+        let mut origins: Vec<_> = checks
+            .iter()
+            .map(|check| check["origin"].as_str().unwrap())
+            .collect();
+        origins.sort_unstable();
         assert_eq!(origins, ["suite:10", "suite:20"], "{event}");
     }
 }
