@@ -1,5 +1,6 @@
 use crate::runtime::{
-    OWN_GIT, PATCHES, SCAN, at_risk, clone_of, git, is_ancestor, remove_sealed, run, soon, unseal,
+    OWN_GIT, PATCHES, SCAN, as_one, at_risk, clone_of, git, is_ancestor, remove_sealed, run, soon,
+    unseal,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -63,8 +64,10 @@ pub fn found(home: &Path) -> Vec<Found> {
 /// Fetches `origin` into Priory's clone of `repo` and refreshes `origin/HEAD`.
 pub fn fetch(home: &Path, repo: &str) -> Result<(), String> {
     let clone = home.join("repos").join(repo);
-    soon(git(&clone).args(["fetch", "--quiet", "origin"]))?;
-    soon(git(&clone).args(["remote", "set-head", "origin", "--auto"])).map(drop)
+    as_one(|| {
+        soon(git(&clone).args(["fetch", "--quiet", "origin"]))?;
+        soon(git(&clone).args(["remote", "set-head", "origin", "--auto"])).map(drop)
+    })
 }
 
 /// Why a worktree stays when the sweep ran all its patch scans.
@@ -93,7 +96,7 @@ pub fn verdict(
     done: bool,
     scans: &mut usize,
 ) -> Verdict {
-    judged(home, found, merged_head, done, scans)
+    as_one(|| judged(home, found, merged_head, done, scans))
         .unwrap_or_else(|error| Verdict::Keep(format!("cannot check: {error}")))
 }
 
@@ -354,12 +357,14 @@ fn no_unsaved_repository(worktree: &Path, deadline: Instant) -> Result<(), Strin
         .flat_map(|file| Path::new(file).ancestors().skip(1))
         .filter(|folder| !folder.as_os_str().is_empty())
         .collect();
-    if let Some(folder) = folders
-        .into_iter()
-        .find(|folder| fs::symlink_metadata(worktree.join(folder).join(".git")).is_ok())
-    {
+    for folder in folders {
+        if Instant::now() >= deadline {
+            return Err(slow_walk(worktree));
+        }
         let folder = worktree.join(folder);
-        return Err(format!("{} holds a git repository", folder.display()));
+        if fs::symlink_metadata(folder.join(".git")).is_ok() {
+            return Err(format!("{} holds a git repository", folder.display()));
+        }
     }
     let ignored = soon(git(worktree).args([
         "--no-optional-locks",
@@ -371,6 +376,9 @@ fn no_unsaved_repository(worktree: &Path, deadline: Instant) -> Result<(), Strin
         "-z",
     ]))?;
     for entry in ignored.split('\0').filter(|entry| !entry.is_empty()) {
+        if Instant::now() >= deadline {
+            return Err(slow_walk(worktree));
+        }
         let path = worktree.join(entry);
         let meta = fs::symlink_metadata(&path)
             .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
@@ -475,8 +483,12 @@ pub(crate) fn discard_aside(home: &Path, path: &Path) {
     // Its own link would keep the sweep from deleting what a stopped daemon leaves.
     let _ = fs::remove_file(aside.join(".git"));
     std::thread::spawn(move || {
-        if unmounted(&aside, &mountinfo).is_ok() {
-            remove_sealed(&aside);
+        // Checked again after the walk, which takes a while.
+        if unmounted(&aside, &mountinfo).is_ok()
+            && unseal(&aside, None)
+            && unmounted(&aside, &mountinfo).is_ok()
+        {
+            let _ = fs::remove_dir_all(&aside);
         }
     });
 }
@@ -571,7 +583,7 @@ pub fn retire(home: &Path, found: &Found) -> Result<(), String> {
 /// Why the worktree must stay although its task is done with it: what `unsettled` says, a mount
 /// under it, or a repository its branch does not hold.
 pub fn removable(home: &Path, found: &Found) -> Result<(), String> {
-    removable_under(home, found, &mountinfo)
+    as_one(|| removable_under(home, found, &mountinfo))
 }
 
 fn removable_under(home: &Path, found: &Found, mounts: Mounts) -> Result<(), String> {
@@ -587,7 +599,7 @@ pub fn remove_allowed(home: &Path, found: &Found) -> Result<(), String> {
 }
 
 fn retire_under(home: &Path, found: &Found, mounts: Mounts) -> Result<(), String> {
-    removable_under(home, found, mounts)?;
+    as_one(|| removable_under(home, found, mounts))?;
     remove_allowed_under(home, found, mounts)
 }
 

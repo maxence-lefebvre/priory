@@ -50,23 +50,25 @@ pub(crate) fn pushed(db: &mut Connection, trace: &Trace, home: &Path) -> rusqlit
         {
             continue;
         }
-        let Some(head) =
-            runtime::pushed_head(home, Path::new(&worktree), &branch).filter(|head| *head != told)
-        else {
-            continue;
-        };
+        let tree = Path::new(&worktree);
         // The entry may have started from commits its parent had not pushed yet: an older push is
         // no news to it.
-        match runtime::is_ancestor(Path::new(&worktree), &head, &told) {
-            Ok(false) => {}
-            Ok(true) => continue,
+        let news = runtime::pushed_head(home, tree, &branch).and_then(|head| match head {
+            Some(head) if head != told => {
+                Ok((!runtime::is_ancestor(tree, &head, &told)?).then_some(head))
+            }
+            _ => Ok(None),
+        });
+        let head = match news {
+            Ok(Some(head)) => head,
+            Ok(None) => continue,
             // A hung disk would hold this tick for each entry, and each tick for this one.
             Err(why) => {
                 eprintln!("priory daemon: task {task}: {why}; asked again in 10 minutes");
                 stalled().insert(task, Instant::now() + AGAIN);
                 return Ok(());
             }
-        }
+        };
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let moved = tx.execute(
             "UPDATE tasks SET parent_head = ?3 WHERE id = ?1 AND parent_head = ?2",

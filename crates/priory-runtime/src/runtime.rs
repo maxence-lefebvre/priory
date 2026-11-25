@@ -65,9 +65,29 @@ pub fn loop_timeout() -> Duration {
     LOOP_TIMEOUT.min(command_timeout())
 }
 
-/// As `run`, giving up after `loop_timeout`.
+thread_local! {
+    /// When the work in `as_one` must end, on the thread that runs it.
+    static ENDS: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+}
+
+/// Runs `work`, whose `soon` commands share one `loop_timeout`.
+pub(crate) fn as_one<T>(work: impl FnOnce() -> T) -> T {
+    let before = ENDS.replace(Some(Instant::now() + loop_timeout()));
+    let done = work();
+    ENDS.set(before);
+    done
+}
+
+/// What is left of `loop_timeout`, or of the `as_one` around.
+fn loop_left() -> Duration {
+    ENDS.get()
+        .map_or_else(loop_timeout, left)
+        .min(loop_timeout())
+}
+
+/// As `run`, giving up after `loop_timeout`, or at the end of the `as_one` around.
 pub(crate) fn soon(command: &mut Command) -> Result<String, String> {
-    within(command, loop_timeout())
+    within(command, loop_left())
 }
 
 fn within(command: &mut Command, timeout: Duration) -> Result<String, String> {
@@ -215,7 +235,13 @@ pub(crate) fn fed_raw_within(
 ) -> Result<Vec<u8>, String> {
     let output = fed_within(command, input, timeout)
         .map_err(|error| format!("{command:?}: {error}"))?
-        .ok_or_else(|| format!("{command:?}: timed out after {}s", timeout.as_secs()))?;
+        .ok_or_else(|| {
+            // Rounded up, since what is left of a deadline is just under it.
+            format!(
+                "{command:?}: timed out after {}s",
+                timeout.as_secs_f64().ceil()
+            )
+        })?;
     if !output.status.success() {
         return Err(format!(
             "{command:?}: {}",
@@ -467,7 +493,7 @@ pub(crate) fn at_risk(
     scan: usize,
     cap: usize,
 ) -> Result<usize, String> {
-    let deadline = Instant::now() + loop_timeout();
+    let deadline = Instant::now() + loop_left();
     let local: Vec<String> = branch
         .map(|branch| format!("refs/heads/{branch}"))
         .into_iter()
@@ -887,16 +913,26 @@ pub fn kept_head(home: &Path, worktree: &Path, branch: &str) -> Option<String> {
 }
 
 /// The commit Priory's clone under `home` last pushed `branch` to, or fetched it at, on origin:
-/// its remote-tracking branch, as the worktree `worktree` of that clone shares it.
-pub fn pushed_head(home: &Path, worktree: &Path, branch: &str) -> Option<String> {
-    let repo = worktree
-        .parent()?
-        .strip_prefix(home.join("worktrees"))
-        .ok()?;
+/// its remote-tracking branch, as the worktree `worktree` of that clone shares it. A git that runs
+/// past `loop_timeout` is an error.
+pub fn pushed_head(home: &Path, worktree: &Path, branch: &str) -> Result<Option<String>, String> {
+    let Some(repo) = worktree
+        .parent()
+        .and_then(|parent| parent.strip_prefix(home.join("worktrees")).ok())
+    else {
+        return Ok(None);
+    };
     let commit = format!("refs/remotes/origin/{branch}^{{commit}}");
-    soon(git(&home.join("repos").join(repo)).args(["rev-parse", "--verify", "--quiet", &commit]))
-        .ok()
-        .map(|head| head.trim().to_owned())
+    match soon(git(&home.join("repos").join(repo)).args([
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        &commit,
+    ])) {
+        Ok(head) => Ok(Some(head.trim().to_owned())),
+        Err(error) if timed_out(&error) => Err(error),
+        Err(_) => Ok(None),
+    }
 }
 
 /// The files `branch` changes against the default branch, read as `kept_head` reads, or `None`

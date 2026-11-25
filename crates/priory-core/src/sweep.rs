@@ -185,6 +185,10 @@ pub fn run(db: &Connection, factory: &Factory, home: &Path) -> rusqlite::Result<
     record(home, &entries);
     let mut refused = false;
     let mut hung = false;
+    {
+        let tried = tried();
+        entries.sort_by_key(|entry| tried.get(&removing(&entry.found.path)).copied());
+    }
     let started = Instant::now();
     for entry in &mut entries {
         if hung || started.elapsed() >= BUDGET || unfetched.contains(&entry.found.repo) {
@@ -220,6 +224,7 @@ pub fn run(db: &Connection, factory: &Factory, home: &Path) -> rusqlite::Result<
         };
         if let Err(error) = removed {
             hung = timed_out(&error);
+            tried().insert(removing(&entry.found.path), Instant::now());
             eprintln!(
                 "priory daemon: removing {}: {error}",
                 entry.found.path.display()
@@ -477,6 +482,14 @@ fn failing(home: &Path, repo: &str) -> Option<Failing> {
     serde_json::from_slice(&std::fs::read(failing_file(home, repo)).ok()?).ok()
 }
 
+/// How long a fetch lets its worktrees go when a later sweep has no time to fetch again.
+const FRESH: Duration = Duration::from_secs(60 * 60);
+
+/// The key of `TRIED` for the last good fetch of `repo`.
+fn fetched(home: &Path, repo: &str) -> PathBuf {
+    home.join("fetches").join(repo)
+}
+
 /// Fetches the clone of each of `repos` and returns those it did not fetch. A clone whose fetch
 /// failed is logged once, kept as failing, and fetched again only an hour after its last try. A
 /// failure of a repository with no worktree left is forgotten.
@@ -493,7 +506,13 @@ fn fetch(home: &Path, repos: &[String], now: jiff::Timestamp) -> Vec<String> {
     for repo in oldest {
         // One timeout says the network hangs: the other clones wait for the next sweep.
         if hung || started.elapsed() >= BUDGET {
-            unfetched.push(repo.clone());
+            // Its refs from an earlier sweep still say what merged.
+            let fresh = tried()
+                .get(&fetched(home, repo))
+                .is_some_and(|at| at.elapsed() < FRESH);
+            if !fresh {
+                unfetched.push(repo.clone());
+            }
             continue;
         }
         let failed = failing(home, repo);
@@ -506,7 +525,11 @@ fn fetch(home: &Path, repos: &[String], now: jiff::Timestamp) -> Vec<String> {
         }
         let file = failing_file(home, repo);
         tried().insert(home.join("repos").join(repo), Instant::now());
-        match worktrees::fetch(home, repo) {
+        let outcome = worktrees::fetch(home, repo);
+        if outcome.is_ok() {
+            tried().insert(fetched(home, repo), Instant::now());
+        }
+        match outcome {
             Ok(()) if failed.is_some() => {
                 let _ = std::fs::remove_file(&file);
                 eprintln!("priory daemon: fetching {repo} works again");
@@ -944,12 +967,9 @@ pub fn reclaim_line(db: &Connection, now: jiff::Timestamp) -> rusqlite::Result<O
     )))
 }
 
-/// A retirement that takes this long and fails is tried last at the next ones.
-const SLOW: Duration = Duration::from_secs(5);
-
-/// The key of `TRIED` for the retirement of `worktree`.
-fn retiring(worktree: &str) -> PathBuf {
-    Path::new(worktree).join("retire")
+/// The key of `TRIED` for the removal of `worktree`.
+fn removing(worktree: &Path) -> PathBuf {
+    worktree.join("removal")
 }
 
 /// Retires asleep tasks, longest asleep first, while `short` says the disk is short: removes each
@@ -977,15 +997,14 @@ pub(crate) fn retire(
     let started = Instant::now();
     let mut asleep = asleep;
     {
-        // Slow ones go last, or they would starve those behind them.
+        // Those that failed go last, or they would starve those behind them.
         let tried = tried();
-        asleep.sort_by_key(|(_, worktree)| tried.get(&retiring(worktree)).copied());
+        asleep.sort_by_key(|(_, worktree)| tried.get(&removing(Path::new(worktree))).copied());
     }
     for (task, worktree) in asleep {
         if hung || started.elapsed() >= BUDGET {
             return Ok(());
         }
-        let began = Instant::now();
         let Some(found) = found
             .iter()
             .find(|found| found.path.to_str() == Some(&worktree) && found.name == task.to_string())
@@ -1020,8 +1039,8 @@ pub(crate) fn retire(
             }
         }
         hung = stays.as_deref().is_some_and(timed_out);
-        if stays.is_some() && began.elapsed() >= SLOW {
-            tried().insert(retiring(&worktree), Instant::now());
+        if stays.is_some() {
+            tried().insert(removing(Path::new(&worktree)), Instant::now());
         }
         let Some(stays) = stays else {
             if short() {
