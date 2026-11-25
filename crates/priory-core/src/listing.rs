@@ -5,10 +5,12 @@ use crate::{post, snooze, stall, state, sweep};
 use jiff::Timestamp;
 use priory_factory::explain;
 use priory_factory::factory::{Factory, Trigger};
+use priory_factory::lanes::Lane;
 use priory_intake::intake::{CHECKED, schedule};
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OptionalExtension, Params, params};
 use serde_json::{Map, Value, json};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 /// An ask's id in every listing, on the desk, in `/api/asks` and on its web view page: its name
@@ -1034,11 +1036,13 @@ fn asks_of(
 
 /// The factory's bands highest first, its requestable and opted-out workflows (`null` without the factory), its `[request]` workflow, the waiting tasks in start order, then the held ones with
 /// their hold, the live runs, and the tasks that ended in the last day, each with its title, and up next: the next three runs, with `schedules`' firings.
+/// `lanes` gives each capped lane's running count, cap in force and window.
 pub fn queue(
     db: &Connection,
     schedules: &[(String, Trigger)],
     offered: Option<(&[String], &[String])>,
     default_workflow: Option<&str>,
+    lanes: &BTreeMap<String, Lane>,
     now: Timestamp,
 ) -> rusqlite::Result<Value> {
     let waiting = format!(
@@ -1074,6 +1078,7 @@ pub fn queue(
         "opted_out": offered.map(|(_, opted_out)| opted_out),
         "default_workflow": default_workflow,
         "up_next": up_next(db, &waiting, schedules, now)?,
+        "lanes": capped_lanes(db, lanes, now)?,
         "waiting": waiting,
         "asleep": asleep(db)?,
         "running": rows(
@@ -1097,6 +1102,29 @@ pub fn queue(
             [],
         )?,
     }))
+}
+
+/// Each lane with a `max_running`: its live runs, the cap in force at `now`, and the cap's
+/// window.
+fn capped_lanes(
+    db: &Connection,
+    lanes: &BTreeMap<String, Lane>,
+    now: Timestamp,
+) -> rusqlite::Result<Value> {
+    lanes
+        .iter()
+        .filter(|(_, lane)| lane.max_running.is_some())
+        .map(|(name, lane)| {
+            Ok(json!({
+                "lane": name,
+                "running": state::running_in(db, "lane", name)?,
+                "cap": lane.cap(now),
+                "max_running": lane.max_running,
+                "window": lane.when.as_ref().map(ToString::to_string),
+                "max_running_outside": lane.max_running_outside,
+            }))
+        })
+        .collect()
 }
 
 /// The asleep tasks, longest asleep first, each with its open waits: what each waits on, as

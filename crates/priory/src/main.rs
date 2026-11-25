@@ -1955,6 +1955,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
     // Without the factory folder, the queue knows no schedules or workflows, so up next lists none.
     let (mut schedules, mut offered, mut now) = (Vec::new(), None, jiff::Timestamp::now());
     let mut default_workflow = None;
+    let mut lanes = std::collections::BTreeMap::new();
     if ["queue", "desk"].contains(&verb) || unrouted {
         now = match intake::now() {
             Ok(now) => now,
@@ -1974,6 +1975,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
             schedules = listing::schedule_triggers(&factory);
             default_workflow = factory.request().map(|defaults| defaults.workflow.clone());
             offered = Some((factory.requestable(), factory.not_requestable()));
+            lanes = factory.lanes().lane.clone();
         }
         args.clear();
     }
@@ -2023,7 +2025,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                 "desk" => listing::desk(db, &home, all, person.unwrap_or(listing::ME), now),
                 _ => {
                     let offered = offered.as_ref().map(|(yes, no)| (&yes[..], &no[..]));
-                    listing::queue(db, &schedules, offered, default_workflow.as_deref(), now)
+                    listing::queue(db, &schedules, offered, default_workflow.as_deref(), &lanes, now)
                 }
             }
             .map(Some)
@@ -2204,6 +2206,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                     &value["waiting"],
                 );
                 print_asleep(&value["asleep"]);
+                print_lanes(&value["lanes"]);
             }
         }
         Ok(())
@@ -2225,6 +2228,31 @@ fn print_since_you_looked(events: &Value) {
             cell("time"),
             cell("key"),
             cell("what")
+        ));
+    }
+}
+
+/// After a blank line, each capped lane's live runs against its cap, then the cap and its window.
+fn print_lanes(lanes: &Value) {
+    let Some(lanes) = lanes.as_array().filter(|lanes| !lanes.is_empty()) else {
+        return;
+    };
+    state::emit("");
+    for lane in lanes {
+        let now = match lane["cap"].as_u64() {
+            Some(cap) => format!("{} of {cap} running", lane["running"]),
+            None => format!("{} running, no cap now", lane["running"]),
+        };
+        let mut cap = format!("max_running {}", lane["max_running"]);
+        if let Some(window) = lane["window"].as_str() {
+            let outside = lane["max_running_outside"]
+                .as_u64()
+                .map_or("no cap outside".to_owned(), |max| format!("{max} outside"));
+            cap = format!("{cap} {window}, {outside}");
+        }
+        state::emit(&format!(
+            "lane {}: {now}; {cap}",
+            lane["lane"].as_str().unwrap_or("-")
         ));
     }
 }

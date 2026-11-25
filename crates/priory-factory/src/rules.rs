@@ -1314,6 +1314,20 @@ fn check_lanes(lanes: &Loaded<Lanes>, problems: &mut Vec<Problem>) {
             format!("`[lane]` `{name}` is not a lane such as `team/theme`"),
         ));
     }
+    for (name, _) in lanes
+        .value
+        .lane
+        .iter()
+        .filter(|(_, lane)| lane.is_incomplete())
+    {
+        problems.push(problem(
+            lanes,
+            lanes.lines.field("lane"),
+            format!(
+                "`[lane]` `{name}` needs `max_running` beside `when`, and `when` beside `max_running_outside`"
+            ),
+        ));
+    }
 }
 
 fn check_band<T>(

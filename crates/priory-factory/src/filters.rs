@@ -102,8 +102,8 @@ fn matching<'de, D: Deserializer<'de>>(input: D) -> Result<Match, D::Error> {
     })
 }
 
-/// The days and hours a filter applies, in `timezone`.
-#[derive(Debug, Deserialize, JsonSchema)]
+/// The days and hours a filter or a lane's cap applies, in `timezone`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Window {
     /// The weekdays it applies on; every day when unset. With `hours` that pass midnight, the day
@@ -123,7 +123,7 @@ pub struct Window {
     )]
     pub hours: Option<(Time, Time)>,
     /// The IANA zone the days and hours are read in, such as `Europe/Paris`; the machine's own
-    /// when unset, which only a factory of one runner allows.
+    /// when unset, which a filter allows only in a factory of one runner.
     #[serde(default, deserialize_with = "time_zone")]
     #[schemars(with = "String")]
     pub timezone: Option<TimeZone>,
@@ -141,6 +141,36 @@ fn hours<'de, D: Deserializer<'de>>(input: D) -> Result<Option<(Time, Time)>, D:
         )));
     }
     Ok(Some((from, to)))
+}
+
+/// `mon-fri 08:00-18:00 Europe/Paris`, with only the parts the window sets.
+impl fmt::Display for Window {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        const NAMES: [&str; 7] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+        let days = self.days.as_ref().map(|days| {
+            let on: Vec<_> = (0..7)
+                .filter(|at| {
+                    days.iter()
+                        .any(|day| day.to_monday_zero_offset() as usize == *at)
+                })
+                .collect();
+            match on[..] {
+                [first, .., last] if on.len() > 2 && last - first + 1 == on.len() => {
+                    format!("{}-{}", NAMES[first], NAMES[last])
+                }
+                _ => on.iter().map(|at| NAMES[*at]).collect::<Vec<_>>().join(","),
+            }
+        });
+        let hours = self
+            .hours
+            .map(|(from, to)| format!("{}-{}", from.strftime("%H:%M"), to.strftime("%H:%M")));
+        let zone = self
+            .timezone
+            .as_ref()
+            .and_then(|zone| zone.iana_name().map(str::to_owned));
+        let parts: Vec<_> = [days, hours, zone].into_iter().flatten().collect();
+        f.write_str(&parts.join(" "))
+    }
 }
 
 impl Window {
@@ -311,6 +341,25 @@ mod tests {
         match = "!project=oss"
         when = { days = ["mon", "tue", "wed", "thu", "fri"], hours = "08:00-18:00", timezone = "Europe/Paris" }
     "#;
+
+    #[test]
+    fn a_window_reads_as_its_days_hours_and_zone() {
+        for (toml, text) in [
+            (
+                "days = [\"fri\", \"mon\", \"tue\", \"wed\", \"thu\"]\nhours = \"8:00-18:00\"",
+                "mon-fri 08:00-18:00",
+            ),
+            ("days = [\"mon\", \"sat\", \"tue\"]", "mon,tue,sat"),
+            ("days = [\"sun\"]", "sun"),
+            (
+                "hours = \"22:00-06:00\"\ntimezone = \"Europe/Paris\"",
+                "22:00-06:00 Europe/Paris",
+            ),
+        ] {
+            let window: Window = toml::from_str(toml).unwrap();
+            assert_eq!(window.to_string(), text);
+        }
+    }
 
     #[test]
     fn a_negative_filter_refuses_the_label_in_its_window_and_lifts_at_its_end() {

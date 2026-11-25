@@ -145,6 +145,9 @@ a.facet[aria-current="true"] { background: var(--action-soft); color: var(--acti
 .strip li { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 8px; padding: 6px 0; color: var(--text-2); }
 .strip li + li { border-top: 1px solid var(--line); }
 .strip .open { display: inline-flex; align-items: center; min-height: 44px; margin-bottom: -12px; color: var(--action-text); font-weight: 500; }
+.strip.caps { list-style: none; }
+.strip.caps li { grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; overflow-wrap: anywhere; }
+.strip.caps .cap { grid-column: 1 / -1; color: var(--text-3); font: 400 var(--type-caption) var(--font-ui); }
 
 /* The next thing and Since you looked */
 .next { margin: 4px var(--gutter) 8px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--surface); display: grid; gap: 6px; }

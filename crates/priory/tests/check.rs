@@ -1707,6 +1707,46 @@ fn fair_lanes_and_max_running_pass_and_a_bad_one_names_its_line() {
 }
 
 #[test]
+fn a_lane_window_passes_and_each_bad_one_is_refused() {
+    let good = "[lane.\"OSS/priory\"]\nmax_running = 2\nmax_running_outside = 6\nwhen = { days = [\"mon\", \"fri\"], hours = \"08:00-18:00\" }\n";
+    let ok = check(&factory("window-ok", &with("lanes.toml", good)));
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+
+    let incomplete = "`[lane]` `OSS/priory` needs `max_running` beside `when`, and `when` beside `max_running_outside`";
+    for (name, from, to, message) in [
+        ("window-no-cap", "max_running = 2\n", "", incomplete),
+        ("window-no-when", "when = {", "#", incomplete),
+        (
+            "window-hours",
+            "08:00-18:00",
+            "8 to 6",
+            "\"8 to 6\" is not hours such as \"08:00-18:00\"",
+        ),
+        (
+            "window-zero",
+            "outside = 6",
+            "outside = 0",
+            "`max_running` is 0: give at least 1",
+        ),
+        (
+            "window-day",
+            "\"fri\"",
+            "\"friday\"",
+            "\"friday\" is not a day: use mon, tue, wed, thu, fri, sat or sun",
+        ),
+    ] {
+        let lanes = good.replace(from, to);
+        let outcome = check(&factory(name, &with("lanes.toml", &lanes)));
+        assert_eq!(outcome.code, 1, "{name}: {}", outcome.stderr);
+        assert!(
+            outcome.stderr.starts_with("lanes.toml:") && outcome.stderr.contains(message),
+            "{name}: {}",
+            outcome.stderr
+        );
+    }
+}
+
+#[test]
 fn a_sweep_table_passes_and_a_bad_one_names_its_line() {
     let good = "name = \"demo\"\n\n[sweep]\nevery = \"5m\"\nafter = \"30m\"\nagent = \"implementer\"\nrepo = \"owner/priory\"\nscripts = [{ run = \"docker system prune -f\", when = \"disk\", timeout = \"2m\" }]\n";
     let ok = check(&factory("sweep-ok", &with("factory.toml", good)));

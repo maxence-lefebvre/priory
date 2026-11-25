@@ -9,13 +9,34 @@
       "properties": {
         "max_running": {
           "default": null,
-          "description": "The most of the lane's tasks that may have a live run at once; new starts past it wait.",
+          "description": "The most of the lane's tasks that may have a live run at once; new starts past it wait.\nWith `when`, only inside that window.",
           "format": "uint32",
           "minimum": 1,
           "type": [
             "integer",
             "null"
           ]
+        },
+        "max_running_outside": {
+          "default": null,
+          "description": "The most that may run at once outside `when`; no cap when unset.",
+          "format": "uint32",
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "when": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Window"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "When `max_running` holds; always when unset."
         }
       },
       "type": "object"
@@ -60,6 +81,39 @@
       "required": [
         "lane"
       ],
+      "type": "object"
+    },
+    "Window": {
+      "additionalProperties": false,
+      "description": "The days and hours a filter or a lane's cap applies, in `timezone`.",
+      "properties": {
+        "days": {
+          "description": "The weekdays it applies on; every day when unset. With `hours` that pass midnight, the day\nthe hours start on.",
+          "items": {
+            "enum": [
+              "mon",
+              "tue",
+              "wed",
+              "thu",
+              "fri",
+              "sat",
+              "sun"
+            ]
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "hours": {
+          "default": null,
+          "description": "The hours it applies, `HH:MM-HH:MM`, which may pass midnight; the whole day when unset.",
+          "pattern": "^([01]?[0-9]|2[0-3]):[0-5][0-9]-([01]?[0-9]|2[0-3]):[0-5][0-9]$",
+          "type": "string"
+        },
+        "timezone": {
+          "description": "The IANA zone the days and hours are read in, such as `Europe/Paris`; the machine's own\nwhen unset, which a filter allows only in a factory of one runner.",
+          "type": "string"
+        }
+      },
       "type": "object"
     }
   },

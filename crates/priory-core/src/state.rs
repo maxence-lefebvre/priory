@@ -3900,39 +3900,49 @@ pub(crate) fn filtered(
     Ok(crate::runners::refusal(factory, runner, &labels, now))
 }
 
-/// Why a task waits for its lane's or trigger's `max_running`: `waits: lane core/intake has 2
-/// running tasks, its max_running`. A run counts from its start to its end.
+/// Why a task waits for its lane's or trigger's `max_running`, as `waits for its lane: 2 of 2
+/// running`. A lane's cap is the one in force now. A run counts from its start to its end.
 fn crowded(
     db: &Connection,
     factory: &Factory,
     admission: &Admission,
 ) -> rusqlite::Result<Option<String>> {
+    let now = priory_intake::intake::now().unwrap_or_else(|_| jiff::Timestamp::now());
     let lane = admission.lane.as_deref().and_then(|lane| {
-        let max = factory.lanes().lane.get(lane)?.max_running?;
-        Some(("lane", lane, "tasks.lane", max))
+        let max = factory.lanes().lane.get(lane)?.cap(now)?;
+        Some(("lane", lane, max))
     });
     let trigger = factory
         .triggers
         .get(&admission.trigger)
         .and_then(|trigger| trigger.value.max_running)
-        .map(|max| ("trigger", admission.trigger.as_str(), "tasks.trigger", max));
-    for (kind, name, column, max) in lane.into_iter().chain(trigger) {
-        let running: i64 = db.query_row(
-            &format!(
-                "SELECT count(*) FROM runs JOIN tasks ON tasks.id = runs.task
-                 WHERE runs.ended IS NULL AND {column} = ?1"
-            ),
-            [name],
-            |row| row.get(0),
-        )?;
+        .map(|max| ("trigger", admission.trigger.as_str(), max));
+    for (kind, name, max) in lane.into_iter().chain(trigger) {
+        let running = running_in(db, kind, name)?;
         if running >= i64::from(max) {
-            let tasks = if running == 1 { "task" } else { "tasks" };
             return Ok(Some(format!(
-                "waits: {kind} {name} has {running} running {tasks}, its max_running"
+                "waits for its {kind}: {running} of {max} running"
             )));
         }
     }
     Ok(None)
+}
+
+/// How many tasks of a `lane` or `trigger` named `name` have a live run.
+pub(crate) fn running_in(db: &Connection, kind: &str, name: &str) -> rusqlite::Result<i64> {
+    let column = if kind == "lane" {
+        "tasks.lane"
+    } else {
+        "tasks.trigger"
+    };
+    db.query_row(
+        &format!(
+            "SELECT count(*) FROM runs JOIN tasks ON tasks.id = runs.task
+             WHERE runs.ended IS NULL AND {column} = ?1"
+        ),
+        [name],
+        |row| row.get(0),
+    )
 }
 
 /// Pauses admissions with `reason`: no queued task starts until `unpause`. A second pause keeps

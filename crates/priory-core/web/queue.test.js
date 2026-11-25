@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { QUEUE_VIEWS, moveOptions, queueBands, waitReason } from "./queue.js";
+import { QUEUE_VIEWS, laneCap, moveOptions, queueBands, waitReason } from "./queue.js";
 
 // `/api/queue` as the server sends it: waiting tasks in start order, then the held ones.
 const queue = {
@@ -46,4 +46,12 @@ test("the move menu offers top, up and down within the band, then every other ba
   ]);
   assert.deepEqual(moveOptions(later(8), bands, queue.bands, 40).map((option) => option.label), ["Down one", "To band blocker", "To band now", "To band today"]);
   assert.deepEqual(moveOptions(bands[0].tasks[0], bands, ["now", "later"], 7), [{ label: "To band later", body: { revision: 7, band: "later" } }]);
+});
+
+test("a capped lane reads its live runs against the cap in force, then the cap and its window", () => {
+  const lane = { lane: "OSS/priory", running: 2, cap: 2, max_running: 2, window: "mon-fri 08:00-18:00", max_running_outside: null };
+  assert.deepEqual(laneCap(lane), { lane: "OSS/priory", now: "2 of 2 running", cap: "max_running 2 mon-fri 08:00-18:00, no cap outside", full: true });
+  assert.deepEqual(laneCap({ ...lane, running: 3, cap: null }), { lane: "OSS/priory", now: "3 running, no cap now", cap: "max_running 2 mon-fri 08:00-18:00, no cap outside", full: false });
+  assert.deepEqual(laneCap({ ...lane, running: 1, cap: 6, max_running_outside: 6 }), { lane: "OSS/priory", now: "1 of 6 running", cap: "max_running 2 mon-fri 08:00-18:00, 6 outside", full: false });
+  assert.equal(laneCap({ ...lane, window: null }).cap, "max_running 2");
 });

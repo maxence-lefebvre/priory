@@ -16,7 +16,7 @@ import { TASK_VIEWS, elsewhere, filtered, olderPart, remoteActs, remoteId, remot
 import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "./runs.js";
 import { PANELS, TYPED_FIELDS, backTo, pageTitle, taskRead } from "./pages.js";
 import { confirmPush, kindBoxes, saveKinds } from "./push.js";
-import { QUEUE_VIEWS, moveOptions, queueBands, waitReason } from "./queue.js";
+import { QUEUE_VIEWS, laneCap, moveOptions, queueBands, waitReason } from "./queue.js";
 import { client, land, params, readAll, sameListings } from "./queries.js";
 import { go } from "./router.js";
 
@@ -2915,6 +2915,13 @@ function queueTableRow(task, bands) {
     <td class="q full"><span>${task.title || ""}</span><span class="why t3">${waitReason(task, bands)}</span>${moveNote(task)}</td><td class="act">${moveMenu(task, bands)}</td></tr>`;
 }
 
+// A daemon from before lane caps sends no `lanes`.
+function laneCaps(lanes = []) {
+  if (!lanes.length) return "";
+  const line = ({ lane, now, cap, full }) => html`<li><span class="mono">${lane}</span><span class="${full ? "t-warn" : ""}">${now}</span><span class="cap">${cap}</span></li>`;
+  return html`<div class="sec">Lane caps<span>runs per lane on this runner</span></div><ul class="strip caps">${lanes.map((lane) => line(laneCap(lane)))}</ul>`;
+}
+
 function queueBody(wide) {
   const { queue } = state.data;
   const current = listView(QUEUE_VIEWS);
@@ -2924,7 +2931,7 @@ function queueBody(wide) {
   const views = savedViews([["waiting", "Waiting", waiting, current === "waiting"], ["held", "Held", held.length, current === "held"], ["ended", "Last day", queue.ended.length, current === "ended"]], "/queue");
   if (current === "held") return { views, rows: listOrEmpty(held.map((task) => taskListRow({ ...task, reason: task.reason || "held" })), "No task is held. A task waits here while a person or a condition holds it.") };
   if (current === "ended") return { views, rows: listOrEmpty(queue.ended.map((task) => taskListRow({ ...task, since: task.ended })), "No task ended in the last day.") };
-  const strip = upNext(deskModel(), false);
+  const strip = html`${upNext(deskModel(), false)}${laneCaps(queue.lanes)}`;
   if (!bands.length) return { views, rows: html`${strip}<p class="empty">The queue is empty. A task waits here for its turn once it is added.</p>` };
   if (wide) {
     const groups = bands.map((group) => html`<tr class="grp"><td colspan="5">Band ${group.band}<span>${group.tasks.length}</span></td></tr>${group.tasks.map((task) => queueTableRow(task, bands))}`);

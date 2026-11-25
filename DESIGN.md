@@ -1003,6 +1003,10 @@ What starts next and why. Saved views: Waiting, Held and Last day, each with a c
   it waits in `--text-3`, as a row's third line: the daemon's reason when it has one ("waits: priory is paused"), else
   "Ready: starts when a runner has room.", "Waits behind ENG-240 in band later.", "Waits behind
   band today." or "Waits for its turn: first in band today.".
+- **Lane caps**, a strip under Up next, has one line per lane with a `max_running`: the lane in
+  mono, then its live runs against the cap in force ("2 of 2 running", in `--warn-text` at the cap,
+  or "3 running, no cap now"). Under them, in `--text-3`, the cap and its window: "max_running 2
+  mon-fri 08:00-18:00, no cap outside". With no capped lane, the strip is left out.
 - Each waiting row ends with a **Move** menu, a `.btn secondary` at `--control-fine` height
   (`--control` on a coarse pointer). It opens a picker like the facet chips': To the top and Up one
   when a task is ahead in the band, Down one when one is behind, then To band X for each of the

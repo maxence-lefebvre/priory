@@ -1,3 +1,5 @@
+use crate::filters::Window;
+use jiff::Timestamp;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -19,13 +21,37 @@ pub struct Lanes {
 }
 
 /// `[lane."<team>/<theme>"]`: how the queue treats one lane.
-#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Lane {
     /// The most of the lane's tasks that may have a live run at once; new starts past it wait.
+    /// With `when`, only inside that window.
     #[serde(default, deserialize_with = "crate::factory::max_running")]
     #[schemars(range(min = 1))]
     pub max_running: Option<u32>,
+    /// When `max_running` holds; always when unset.
+    pub when: Option<Window>,
+    /// The most that may run at once outside `when`; no cap when unset.
+    #[serde(default, deserialize_with = "crate::factory::max_running")]
+    #[schemars(range(min = 1))]
+    pub max_running_outside: Option<u32>,
+}
+
+impl Lane {
+    /// Whether the table sets `when` with no cap to hold in it, or `max_running_outside` with no
+    /// window to be outside of.
+    pub fn is_incomplete(&self) -> bool {
+        self.when.is_some() && self.max_running.is_none()
+            || self.max_running_outside.is_some() && self.when.is_none()
+    }
+
+    /// The cap in force at `at`.
+    pub fn cap(&self, at: Timestamp) -> Option<u32> {
+        match &self.when {
+            Some(when) if !when.open(at) => self.max_running_outside,
+            _ => self.max_running,
+        }
+    }
 }
 
 /// A rule sets at least one of `key`, `team`, `project` and `branch`, and matches a task that fits

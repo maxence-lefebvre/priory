@@ -3822,7 +3822,7 @@ fn a_lane_max_running_holds_its_new_starts_while_other_lanes_start() {
 
     setup.start();
 
-    let reason = "waits: lane a/x has 1 running task, its max_running";
+    let reason = "waits for its lane: 1 of 1 running";
     let tasks = setup.until("tasks", |rows| {
         with(rows, 4, "running") == 2 && rows.iter().any(|row| row[7] == reason)
     });
@@ -3847,11 +3847,165 @@ fn a_trigger_max_running_holds_its_new_starts() {
 
     setup.start();
 
-    let reason = "waits: trigger agent-label has 1 running task, its max_running";
+    let reason = "waits for its trigger: 1 of 1 running";
     let tasks = setup.until("tasks", |rows| rows.iter().any(|row| row[7] == reason));
     assert_eq!(with(&tasks, 4, "running"), 1, "{tasks:?}");
     setup.release("hold-stop");
     setup.until("tasks", |rows| with(rows, 4, "done") == 2);
+}
+
+const MONDAY_10: &str = "2026-11-23T10:00:00Z";
+const MONDAY_19: &str = "2026-11-23T19:00:00Z";
+const SATURDAY_10: &str = "2026-11-28T10:00:00Z";
+
+/// A setup whose lane `a/x` runs at most one task on weekdays from 08:00 to 18:00, with `outside`
+/// added to its table, and whose daemon starts at `now` in UTC.
+fn windowed(name: &str, outside: &str) -> Setup {
+    let setup = Setup::new(name);
+    let lanes = format!(
+        "[lane.\"a/x\"]\nmax_running = 1\n{outside}when = {{ days = [\"mon\", \"tue\", \"wed\", \"thu\", \"fri\"], hours = \"08:00-18:00\" }}\n"
+    );
+    fs::write(setup.dir.join("factory/lanes.toml"), lanes).unwrap();
+    setup
+}
+
+fn start_at(setup: &mut Setup, now: &str) {
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    setup.start_with(exe, &[("PRIORY_NOW", now), ("TZ", "UTC")]);
+}
+
+/// The states of `count` tasks of the lane once one of them carries `reason`, or once all run.
+fn in_lane(setup: &mut Setup, count: usize, now: &str, reason: Option<&str>) -> Vec<String> {
+    setup.hold("hold-stop");
+    setup.calls(&vec![result("passed"); count]);
+    for issue in 42..42 + count as u64 {
+        setup.publish(&requested_lane(issue, "a/x"));
+    }
+    start_at(setup, now);
+    let tasks = setup.until("tasks", |rows| match reason {
+        Some(reason) => rows.iter().any(|row| row[7] == reason),
+        None => with(rows, 4, "running") == count,
+    });
+    let states = tasks
+        .iter()
+        .map(|row| format!("{} {}", row[0], row[4]))
+        .collect();
+    setup.release("hold-stop");
+    setup.until("tasks", |rows| with(rows, 4, "done") == count);
+    states
+}
+
+#[test]
+fn a_lane_window_holds_new_starts_inside_its_hours() {
+    let mut setup = windowed("window-inside", "");
+
+    let states = in_lane(
+        &mut setup,
+        2,
+        MONDAY_10,
+        Some("waits for its lane: 1 of 1 running"),
+    );
+
+    assert_eq!(states, ["1 running", "2 queued"]);
+}
+
+#[test]
+fn a_lane_window_lifts_the_cap_outside_its_days_and_hours() {
+    for (name, now) in [
+        ("window-weekend", SATURDAY_10),
+        ("window-evening", MONDAY_19),
+    ] {
+        let mut setup = windowed(name, "");
+
+        let states = in_lane(&mut setup, 2, now, None);
+
+        assert_eq!(states, ["1 running", "2 running"], "{name}");
+    }
+}
+
+#[test]
+fn a_lane_window_applies_max_running_outside_outside_its_hours() {
+    let mut setup = windowed("window-outside", "max_running_outside = 2\n");
+
+    let states = in_lane(
+        &mut setup,
+        3,
+        MONDAY_19,
+        Some("waits for its lane: 2 of 2 running"),
+    );
+
+    assert_eq!(states, ["1 running", "2 running", "3 queued"]);
+}
+
+#[test]
+fn a_lane_cap_counts_no_asleep_task() {
+    let mut setup = windowed("window-asleep", "");
+    setup.calls(&[ask(), result("passed")]);
+    setup.publish(&requested_lane(42, "a/x"));
+    start_at(&mut setup, MONDAY_10);
+    setup.until("tasks", |rows| with(rows, 4, "asleep") == 1);
+
+    setup.publish(&requested_lane(43, "a/x"));
+
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "2" && row[4] == "done")
+    });
+}
+
+#[test]
+fn a_lane_window_that_opens_stops_no_running_task_and_shows_in_the_queue() {
+    let mut setup = windowed("window-opens", "");
+    setup.hold("hold-stop");
+    setup.calls(&vec![result("passed"); 3]);
+    setup.publish(&requested_lane(42, "a/x"));
+    setup.publish(&requested_lane(43, "a/x"));
+    start_at(&mut setup, SATURDAY_10);
+    setup.until("tasks", |rows| with(rows, 4, "running") == 2);
+    setup.crash();
+
+    start_at(&mut setup, MONDAY_10);
+    setup.publish(&requested_lane(44, "a/x"));
+
+    let reason = "waits for its lane: 2 of 1 running";
+    let tasks = setup.until("tasks", |rows| rows.iter().any(|row| row[7] == reason));
+    let states: Vec<_> = tasks
+        .iter()
+        .map(|row| format!("{} {}", row[0], row[4]))
+        .collect();
+    assert_eq!(states, ["1 running", "2 running", "3 queued"]);
+    let queue = |args: &[&str]| {
+        let factory = setup.dir.join("factory");
+        let mut command = setup.command(env!("CARGO_BIN_EXE_priory"));
+        command
+            .args(["queue", factory.to_str().unwrap()])
+            .args(args)
+            .env("PRIORY_NOW", MONDAY_10)
+            .env("TZ", "UTC");
+        let output = command.output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let json: serde_json::Value = serde_json::from_str(&queue(&["--json"])).unwrap();
+    assert_eq!(
+        json["lanes"],
+        json!([{
+            "lane": "a/x",
+            "running": 2,
+            "cap": 1,
+            "max_running": 1,
+            "window": "mon-fri 08:00-18:00",
+            "max_running_outside": null,
+        }])
+    );
+    assert!(
+        queue(&[]).contains(
+            "lane a/x: 2 of 1 running; max_running 1 mon-fri 08:00-18:00, no cap outside\n"
+        ),
+        "{}",
+        queue(&[])
+    );
+    setup.release("hold-stop");
+    setup.until("tasks", |rows| with(rows, 4, "done") == 3);
 }
 
 /// The state revision once the daemon has left it unchanged for over a tick.
@@ -22990,6 +23144,8 @@ fn a_daemon_that_does_not_answer_gets_a_guarded_call_denied() {
     fs::create_dir_all(&home).unwrap();
     let socket = priory_runtime::runtime::socket_in(Some(&home), &home);
     fs::create_dir_all(socket.parent().unwrap()).unwrap();
+    // A long home puts the socket under /tmp, where an earlier run leaves it.
+    let _ = fs::remove_file(&socket);
     let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
     let silent = std::thread::spawn(move || listener.accept().map(|(stream, _)| stream));
 
