@@ -1,13 +1,16 @@
 //! The state the listing commands and the HTTP server show, one JSON payload per listing.
 
+use crate::memory::{grant_age, grant_long};
 use crate::{post, snooze, stall, state, sweep};
 use jiff::Timestamp;
 use priory_factory::explain;
 use priory_factory::factory::{Factory, Trigger};
+use priory_factory::lanes::Lane;
 use priory_intake::intake::{CHECKED, schedule};
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OptionalExtension, Params, params};
 use serde_json::{Map, Value, json};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 /// An ask's id in every listing, on the desk, in `/api/asks` and on its web view page: its name
@@ -154,12 +157,23 @@ fn desk_items() -> String {
 const UNPARKED: &str = "NOT EXISTS (SELECT 1 FROM holds AS parked WHERE parked.task = tasks.id
   AND parked.kind = 'parked' AND parked.released IS NULL)";
 
+/// Why autopilot left the open ask at its current revision, or null.
+macro_rules! autopilot_left {
+    () => {
+        "(SELECT noted.why FROM autopilot_asks AS noted WHERE noted.ask = asks.id
+           AND noted.revision = asks.revision AND noted.verdict = 'left'
+           AND asks.answer IS NULL AND asks.withdrawn IS NULL ORDER BY noted.window DESC LIMIT 1)"
+    };
+}
+
 const DESK: &str = concat!(
     "SELECT 0 AS part, asks.created AS since, 'ask' AS kind,
                  ",
     ask_id!(),
     " AS id, asks.task AS task, tasks.lane AS lane,
-                 coalesce('routed to ' || asks.routed || ': ', '') || asks.question || ' '
+                 coalesce('autopilot left this (' || ",
+    autopilot_left!(),
+    " || '): ', '') || coalesce('routed to ' || asks.routed || ': ', '') || asks.question || ' '
                    || asks.options AS what
                FROM asks LEFT JOIN tasks ON tasks.id = asks.task
                WHERE asks.answer IS NULL AND asks.withdrawn IS NULL
@@ -228,8 +242,23 @@ const DESK: &str = concat!(
                UNION ALL
                SELECT 0, grants.created, 'memory', grants.id, grants.task, tasks.lane,
                  'waits for ' || printf('%.1f', grants.bytes / 1073741824.0) || ' GB: '
-                 || grants.command
+                 || grants.command || coalesce((SELECT '; grant ' || id
+                     || coalesce(' of task ' || task, '') || ' holds '
+                     || printf('%.1f', bytes / 1073741824.0) || ' GB for ' || ",
+    grant_age!(),
+    "              FROM grants WHERE state = 'held'
+                   ORDER BY coalesce(granted, created), id LIMIT 1), '')
                FROM grants LEFT JOIN tasks ON tasks.id = grants.task WHERE grants.state = 'waiting'
+               UNION ALL
+               SELECT 0, grants.granted, 'memory', grants.id, grants.task, tasks.lane,
+                 'holds ' || printf('%.1f', grants.bytes / 1073741824.0) || ' GB for ' || ",
+    grant_age!(),
+    "            || ' while ' || (SELECT count(*) || CASE count(*) WHEN 1 THEN ' grant waits'
+                     ELSE ' grants wait' END FROM grants AS other WHERE other.state = 'waiting')
+                 || ': ' || grants.command
+               FROM grants LEFT JOIN tasks ON tasks.id = grants.task WHERE ",
+    grant_long!(),
+    "
                UNION ALL
                SELECT 0, retired, 'retired', id, id, lane,
                  'its worktree was removed to free disk; it resurrects from ' || branch
@@ -297,7 +326,10 @@ fn asks_query() -> String {
        ELSE asks.withdrawn_reason END AS withdrawn_why,
      asks.revision, asks.question, asks.options, asks.recommendation, asks.tradeoff, asks.answer,
      asks.answered AS answered_at, asks.answered_by, asks.routed AS routed_to, asks.created AS since, asks.title, asks.text,
-     asks.confidence, asks.rationale,
+     asks.confidence, asks.rationale, {} AS autopilot_left,
+     (SELECT noted.why FROM autopilot_asks AS noted WHERE noted.ask = asks.id
+        AND noted.revision = asks.revision AND noted.verdict = 'answered'
+        AND asks.answered_by = 'autopilot' ORDER BY noted.window DESC LIMIT 1) AS autopilot_why,
      asks.what_waits, asks.next_action, asks.command, asks.coordinator, asks.run_id, asks.session,
      (SELECT json_object('state', state, 'revision', revision, 'tries', tries, 'error', error,
         'since', coalesce(ended, created), 'cleared', cleared)
@@ -314,7 +346,8 @@ fn asks_query() -> String {
       FROM (SELECT * FROM ask_refusals WHERE ask = asks.id ORDER BY id)) AS refused,
      {IRREVERSIBLE} AS irreversible, {LETS} AS lets, tasks.merge_risk, tasks.grade,
      asks.kind != 'step' AND NOT EXISTS (SELECT 1 FROM holds
-       WHERE holds.ask = asks.id AND holds.released IS NULL) AS free_text, {}
+       WHERE holds.ask = asks.id AND holds.released IS NULL) AS dismissable,
+     EXISTS (SELECT 1 FROM ask_plans WHERE ask_plans.ask = asks.id) AS approves_plan, {}
    FROM asks LEFT JOIN tasks ON tasks.id = asks.task
    LEFT JOIN snoozes ON snoozes.kind = 'ask' AND snoozes.item = asks.id
    WHERE (?1 IS NULL OR asks.task = ?1
@@ -324,6 +357,7 @@ fn asks_query() -> String {
      AND (?3 IS NULL OR (asks.answer IS NULL AND asks.withdrawn IS NULL)
        OR coalesce(asks.answered, asks.withdrawn_at, asks.created) >= ?3)
    ORDER BY asks.id",
+        autopilot_left!(),
         snooze::FIELDS
     )
 }
@@ -769,7 +803,7 @@ fn tasks_since(
     let query = format!(
         "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place AS position,
            generation, retired, tldr, changed AS since, grade, grade_reason, progress, {CONDITIONS},
-           {TITLE}, batch, added_by
+           {TITLE}, batch, added_by, coalesce(labels, '{{}}') AS labels
          FROM tasks LEFT JOIN queue USING (id)
          WHERE (?1 IS NULL OR lane = ?1) AND (?2 IS NULL OR grade = ?2)
            AND (?3 IS NULL OR state NOT IN ('done', 'failed', 'dropped') OR changed >= ?3)
@@ -830,7 +864,14 @@ pub fn holding(db: &Connection, repo: &str, number: u64) -> rusqlite::Result<Val
 }
 
 fn parse_json(task: &mut Value) {
-    for field in ["progress", "conditions", "waits", "stops", "protected"] {
+    for field in [
+        "progress",
+        "conditions",
+        "waits",
+        "stops",
+        "protected",
+        "labels",
+    ] {
         if let Some(text) = task[field].as_str() {
             task[field] = serde_json::from_str(text).unwrap_or(Value::Null);
         }
@@ -982,8 +1023,10 @@ fn asks_of(
             .chain(object.remove("grade").filter(Value::is_string))
             .collect();
         object.insert("risk".to_owned(), risk.into());
-        let free_text = object["free_text"].as_i64() == Some(1);
-        object.insert("free_text".to_owned(), free_text.into());
+        let dismissable = object["dismissable"].as_i64() == Some(1);
+        object.insert("dismissable".to_owned(), dismissable.into());
+        let approves_plan = object["approves_plan"].as_i64() == Some(1);
+        object.insert("approves_plan".to_owned(), approves_plan.into());
     }
     if let Some(asks) = asks.as_array_mut() {
         risk_estimates(db, asks);
@@ -991,12 +1034,15 @@ fn asks_of(
     Ok(asks)
 }
 
-/// The factory's bands highest first, its requestable and opted-out workflows (`null` without the factory), the waiting tasks in start order, then the held ones with
+/// The factory's bands highest first, its requestable and opted-out workflows (`null` without the factory), its `[request]` workflow, the waiting tasks in start order, then the held ones with
 /// their hold, the live runs, and the tasks that ended in the last day, each with its title, and up next: the next three runs, with `schedules`' firings.
+/// `lanes` gives each capped lane's running count, cap in force and window.
 pub fn queue(
     db: &Connection,
     schedules: &[(String, Trigger)],
     offered: Option<(&[String], &[String])>,
+    default_workflow: Option<&str>,
+    lanes: &BTreeMap<String, Lane>,
     now: Timestamp,
 ) -> rusqlite::Result<Value> {
     let waiting = format!(
@@ -1030,7 +1076,9 @@ pub fn queue(
         "bands": state::band_names(db)?,
         "workflows": offered.map(|(requestable, _)| requestable),
         "opted_out": offered.map(|(_, opted_out)| opted_out),
+        "default_workflow": default_workflow,
         "up_next": up_next(db, &waiting, schedules, now)?,
+        "lanes": capped_lanes(db, lanes, now)?,
         "waiting": waiting,
         "asleep": asleep(db)?,
         "running": rows(
@@ -1054,6 +1102,29 @@ pub fn queue(
             [],
         )?,
     }))
+}
+
+/// Each lane with a `max_running`: its live runs, the cap in force at `now`, and the cap's
+/// window.
+fn capped_lanes(
+    db: &Connection,
+    lanes: &BTreeMap<String, Lane>,
+    now: Timestamp,
+) -> rusqlite::Result<Value> {
+    lanes
+        .iter()
+        .filter(|(_, lane)| lane.max_running.is_some())
+        .map(|(name, lane)| {
+            Ok(json!({
+                "lane": name,
+                "running": state::running_in(db, "lane", name)?,
+                "cap": lane.cap(now),
+                "max_running": lane.max_running,
+                "window": lane.when.as_ref().map(ToString::to_string),
+                "max_running_outside": lane.max_running_outside,
+            }))
+        })
+        .collect()
 }
 
 /// The asleep tasks, longest asleep first, each with its open waits: what each waits on, as
@@ -1366,11 +1437,18 @@ fn since_you_looked(db: &Connection, person: &str) -> rusqlite::Result<Value> {
                    || ' answered ' || json_quote(json_extract(event, '$.data.option')) || ' by auto ('
                    || json_extract(event, '$.data.confidence') || '): '
                    || json_extract(event, '$.data.rationale')
+                 WHEN 'factory.ask.autopilot_answered' THEN 'ask ' || json_extract(event, '$.data.ask')
+                   || ' answered ' || json_quote(json_extract(event, '$.data.option'))
+                   || ' by autopilot: ' || json_extract(event, '$.data.why')
                  WHEN 'factory.ask.session_answered' THEN 'ask ' || json_extract(event, '$.data.ask')
                    || ' answered ' || json_quote(json_extract(event, '$.data.option'))
                    || ' by session ' || json_extract(event, '$.data.session')
                  WHEN 'factory.ask.session_dismissed' THEN 'ask ' || json_extract(event, '$.data.ask')
                    || ' dismissed by session ' || json_extract(event, '$.data.session')
+                 WHEN 'factory.task.repaired' THEN type || ' ' || json_extract(event, '$.data.step')
+                   || ': ' || json_extract(event, '$.data.outcome') || ', '
+                   || json_extract(event, '$.data.action') || ' after '
+                   || json_extract(event, '$.data.cause')
                  ELSE type || coalesce(' ' || json_extract(event, '$.data.step'), '')
                    || coalesce(': ' || json_extract(event, '$.data.outcome'), '') END AS what,
                0 AS source, seq
@@ -1506,19 +1584,29 @@ fn acts(db: &Connection, items: &mut [Value]) -> rusqlite::Result<()> {
 }
 
 /// Gives each `ask` item the lead it is routed to, and the confidence and rationale its agent
-/// stated, each or null.
+/// stated, and why autopilot left it, each or null.
 fn routed_to(db: &Connection, items: &mut [Value]) -> rusqlite::Result<()> {
-    let mut routed = db.prepare("SELECT routed, confidence, rationale FROM asks WHERE id = ?1")?;
+    let mut routed = db.prepare(concat!(
+        "SELECT routed, confidence, rationale, ",
+        autopilot_left!(),
+        " FROM asks WHERE id = ?1"
+    ))?;
     for item in items.iter_mut().filter(|item| item["kind"] == "ask") {
-        let [to, confidence, rationale] = match item["id"].as_i64() {
+        let [to, confidence, rationale, left] = match item["id"].as_i64() {
             Some(ask) => routed.query_row([ask], |row| {
-                Ok([row.get::<_, Option<String>>(0)?, row.get(1)?, row.get(2)?])
+                Ok([
+                    row.get::<_, Option<String>>(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                ])
             })?,
-            None => [None, None, None],
+            None => [None, None, None, None],
         };
         item["routed_to"] = json!(to);
         item["confidence"] = json!(confidence);
         item["rationale"] = json!(rationale);
+        item["autopilot_left"] = json!(left);
     }
     Ok(())
 }
@@ -1573,6 +1661,7 @@ pub fn desk(
         item.remove("title");
     }
     list.retain(|item| all || item["snoozed_until"].is_null());
+    list.extend(crate::runners::unaccepted_desk_items(db)?);
     for (path, task, reason) in sweep::stays(db, home)? {
         list.push(json!({
             "since": null, "kind": "worktree", "id": path, "task": task, "key": null,
@@ -1602,6 +1691,7 @@ pub fn desk(
         crate::kit::banner(db)?,
         sweep::fetch_banner(home),
         sweep::slice_banner(home),
+        crate::watchdog::banner(home),
     ]
     .into_iter()
     .flatten()
@@ -1611,6 +1701,7 @@ pub fn desk(
         .map_or(0, Vec::len);
     Ok(json!({
         "paused": state::pause_banner(db)?,
+        "autopilot": crate::autopilot::status(db)?,
         "caps": crate::spend::desk_lines(db)?,
         "reviews": crate::review::desk_lines(db)?,
         "banner": stall::banner(db)?,
@@ -1631,6 +1722,7 @@ pub fn desk(
 }
 
 /// One task with its runs, code steps, asks, waits and results; none when it does not exist.
+/// `plan_file` is the plan its latest approval ask shows.
 pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
     let found = rows(
         db,
@@ -1638,7 +1730,7 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
             "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place AS position,
                generation, retired, tldr, changed AS since, repo, branch, base_sha, grade, grade_reason,
                merge_risk, progress, plan_goal, plan_testing, plan_brief, verification, intervention, lead, auto_answer, batch, added_by,
-               intent, noop, {CONDITIONS}
+               intent, noop, coalesce(labels, '{{}}') AS labels, {CONDITIONS}
              FROM tasks LEFT JOIN queue USING (id) WHERE id = ?1",
             places()
         ),
@@ -1766,15 +1858,15 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
             .cloned()
             .unwrap_or(Value::Null)
     };
-    let brief = latest(BRIEF_STEP);
-    let plan = match latest(PLAN_STEP) {
+    let brief = latest(crate::plan::BRIEF_STEP);
+    let plan = match latest(crate::plan::PLAN_STEP) {
         Value::Null => task["results"]
             .as_array()
             .and_then(|results| {
                 results.iter().rev().find(|result| {
                     result["step"]
                         .as_str()
-                        .is_some_and(|step| step.starts_with(PLAN_PREFIX))
+                        .is_some_and(|step| step.starts_with(crate::plan::PLAN_PREFIX))
                 })
             })
             .cloned()
@@ -1798,18 +1890,39 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
         "noop": noop,
     });
     task["plan"] = plan;
+    task["plan_file"] = plan_file(db, id)?;
     task["pull_request"] = pull_request(db, id)?.unwrap_or(Value::Null);
     parse_json(&mut task);
     Ok(Some(task))
 }
 
-/// The step whose result is a task's brief, and the one whose result is its plan. A factory may
-/// name its plan step `plan-<something>`, such as `plan-implementation`: with no `plan` result,
-/// the latest result of a step starting with `PLAN_PREFIX` is the plan. The workflow marks no
-/// step as the plan, and this reads only the database, so the rule goes by the step's name.
-const BRIEF_STEP: &str = "groom";
-const PLAN_STEP: &str = "plan";
-const PLAN_PREFIX: &str = "plan-";
+/// The plan the task's latest approval ask shows, as that ask's revision snapshotted it. An
+/// answered ask's plan gives way to a later plan result, and a task another runner holds has none
+/// here.
+fn plan_file(db: &Connection, task: i64) -> rusqlite::Result<Value> {
+    let mut found = rows(
+        db,
+        "SELECT asks.id AS ask, asks.revision, ask_plans.step, ask_plans.run, ask_plans.files
+         FROM ask_plans JOIN asks ON asks.id = ask_plans.ask JOIN tasks ON tasks.id = asks.task
+         WHERE asks.task = ?1
+           AND ((asks.answer IS NULL AND asks.withdrawn IS NULL) OR NOT EXISTS (
+             SELECT 1 FROM results WHERE results.task = ?1 AND results.run > ask_plans.run
+             AND (results.step = 'plan' OR results.step LIKE 'plan-%')))
+           AND ((asks.answer IS NULL AND asks.withdrawn IS NULL) OR NOT EXISTS (
+             SELECT 1 FROM asks AS open WHERE open.task = ?1 AND open.answer IS NULL
+             AND open.withdrawn IS NULL AND instr(open.text, ?2)))
+           AND NOT EXISTS (SELECT 1 FROM claims WHERE claims.key = tasks.key
+             AND claims.hold != 'ended' AND claims.runner != (SELECT name FROM runner))
+         ORDER BY asks.answer IS NULL AND asks.withdrawn IS NULL DESC, asks.id DESC LIMIT 1",
+        params![task, crate::plan::NO_PLAN],
+    )?;
+    let Some(mut plan) = found.as_array_mut().and_then(Vec::pop) else {
+        return Ok(Value::Null);
+    };
+    let files = plan["files"].as_str().unwrap_or_default();
+    plan["files"] = serde_json::from_str(files).unwrap_or(Value::Null);
+    Ok(plan)
+}
 
 /// The latest pull request task `id` owns, as its stored GitHub events tell it: its title, state,
 /// latest review and the latest conclusion of each check run on its latest head. The head comes

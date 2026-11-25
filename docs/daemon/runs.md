@@ -17,7 +17,7 @@ has blocks the task with `step <id> is not in workflow <name>`. A human step wit
 its ask and the task falls `asleep`, as a move into the step does, so a workflow can start at a human
 step. A held task gets its ask once its hold releases it.
 
-The daemon creates the worktree on a new branch from `origin/HEAD`, and stores that commit as the
+The daemon creates the worktree on a new branch from the head that GitHub gives for the default branch, and stores that commit as the
 task's `base_sha` the first time. A revived task keeps it, so a scorer and a benchmark know where
 the task started. When the repository has recipes, a setup or resume runs first (see Recipes). The
 daemon then records the run and task as `running`, and starts the agent's
@@ -188,6 +188,34 @@ its next turn end for task 12 (blocker)`. The stopped task is `ready` again in i
 own place, and its next run resumes its session. See
 [room.md](room.md#urgent-wakes).
 
+### Milestone order
+
+The tasks of `linear.view` and `linear.project` triggers follow their project in Linear. Per band, a
+project's `queued` and `ready` tasks keep the places their age gives them in the queue, and fill
+those places in this order. A task in any other state, such as running, asleep or held, gives its
+place to no one:
+
+1. Their milestone's order, then its target date. A milestone without a date comes after one with a
+   date. Issues without a milestone come last.
+2. The issue's own order within the milestone.
+
+So tasks 3 and 8 of one project trade places when the issue of task 8 is in the earlier milestone,
+and the tasks between them stay where they are. Each project is ordered by itself. A task whose issue
+has no project starts by age.
+
+A later milestone queues behind an earlier one. It does not wait until the earlier one has no open
+task, so it can start while the earlier one's tasks run, sleep or are held.
+
+A task that [age](#aging) moved up trades places only with those that start in the same band.
+
+The intake's next poll after a change in Linear reorders the queued tasks. Bands, aging and a
+person's order come first: a task that `priory move` placed keeps its place. Such a move places every
+active task of its band, so those tasks follow no later change in Linear. `priory move <task> --band
+<band>` gives a task's place back. With [`fair = "lane"`](#turns-between-lanes), lanes take turns
+before milestones, and the order holds within each lane.
+
+The order is neither a band nor a place: the daemon keeps it as a sort key of its own.
+
 ### Aging
 
 Strict band order lets a steady flow of `today` tasks keep a `later` task waiting forever.
@@ -260,17 +288,36 @@ max_running = 2
 max_running = 3
 ```
 
-A run counts from its start to its end, so an asleep task counts for nothing. Once a lane's or a
-trigger's tasks have that many live runs, each of its other `queued` or `ready` tasks waits with a
-reason such as `waits: lane core/intake has 2 running tasks, its max_running`. The tasks behind it
-start if they fit: unlike a task that waits for room, a task at its cap holds no one back. It starts
-on the daemon's tick after one of those runs ends. A woken task waits too, since its run is a new
-start, and so does a task a person ordered. A running task carries on.
+A run counts from its start to its end, so an asleep task, with an ask or a wait open, counts for
+nothing. Once a lane's or a trigger's tasks have that many live runs, each of its other `queued` or
+`ready` tasks waits with the reason `waits for its lane: 2 of 2 running`, or `waits for its
+trigger: ...`. The tasks behind it start if they fit: unlike a task that waits for room, a task at
+its cap holds no one back. It starts on the daemon's tick after one of those runs ends. A woken
+task waits too, since its run is a new start, and so does a task a person ordered. A running task
+carries on: the cap never stops a run, it only holds new starts.
 
 The cap is hard: a task of the first band waits too, unlike under the [review limit](#review-limit).
 A lane or a trigger caps its runs for a service that limits its rate, such as an API that takes so
-many calls a minute, and an urgent task would hit that limit as any other. Only a lead's or an
-investigator's task passes the cap (see [Work already running](#work-already-running)).
+many calls a minute, and an urgent task would hit that limit as any other. A task at its cap waits
+for its lane, not for room, so it never stops a lower band's run under `[queue] preempt`. Only a
+lead's or an investigator's task passes the cap (see [Work already running](#work-already-running)).
+Under [`fair = "lane"`](#turns-between-lanes), the queue passes over a lane at its cap, and the
+other lanes keep their turns.
+
+A lane's cap can hold only in a window of the week, its `when`, in the runner's local time zone
+unless `when` names a `timezone`. Outside it, `max_running_outside` applies, or no cap without it:
+
+```toml
+# lanes.toml
+[lane."OSS/priory"]
+max_running = 2
+when = { days = ["mon", "tue", "wed", "thu", "fri"], hours = "08:00-18:00" }
+```
+
+The daemon reads its clock on each tick. When the window opens with more live runs than the cap,
+they carry on, and the lane's new starts wait until the count drops below the cap, such as with the
+reason `waits for its lane: 3 of 2 running`. `priory queue DIR` and the web Queue panel show each
+capped lane's live runs, the cap in force and its window.
 
 With several runners, each daemon counts only its own runs, so the count applies to each runner
 apart. See [`lanes.toml`](../reference/lanes.md) and [the trigger keys](../reference/triggers.md).
@@ -456,14 +503,16 @@ the next turn end, or as soon as the run is idle and none of those is true. A ru
 one with a prompt that is not confirmed, and one that took no prompt yet also keep the mark. A tmux client attached
 to the run does not keep it from being held.
 
-When a task's Linear issue leaves the watched view before the task's first run, the daemon holds
+When a task's Linear issue leaves the watched view or project before the task's first run, the daemon holds
 the task and asks a person whether to drop or keep it, since the view may have said "not this one":
 `ENG-7 left the view My loop backlog. Drop the task?`, with the options `drop` and `keep`. The
 reason reads `held: left the view My loop backlog, until a person answers whether to keep it`.
-`drop` drops the task with the reason `dropped by a person after its issue left the view`. `keep`
+`drop` drops the task with the reason `dropped by a person after its issue left the view`, or `the
+project`. `keep`
 releases that hold, back to the state it was held from. When the issue enters the view it left
 again before anyone answers, the daemon answers `keep` itself and the hold's condition reads
-`ENG-7 entered the view My loop backlog again`. Entering another view answers nothing. A task that already ran gets no ask: its
+`ENG-7 entered the view My loop backlog again`. Entering another view answers nothing, nor does entering the same project through another filter. Leaving
+a second project or filter asks again; leaving a second view does not. A task that already ran gets no ask: its
 agent hears `linear.issue.left` as an event of its own key, which wakes it when it sleeps at a model
 step (see [Subscriptions in tools.md](tools.md#subscriptions)). A batch entry gets the same ask.
 

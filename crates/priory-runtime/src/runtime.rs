@@ -57,6 +57,48 @@ pub fn command_timeout() -> Duration {
         .unwrap_or(Duration::from_secs(300))
 }
 
+/// How long the loop waits for a network call, or for git on a worktree it sweeps.
+pub const LOOP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// `LOOP_TIMEOUT`, or the command timeout when that is shorter.
+pub fn loop_timeout() -> Duration {
+    LOOP_TIMEOUT.min(command_timeout())
+}
+
+thread_local! {
+    /// When the work in `as_one` must end, on the thread that runs it.
+    static ENDS: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+}
+
+/// Runs `work`, whose `soon` commands share one `loop_timeout`.
+pub(crate) fn as_one<T>(work: impl FnOnce() -> T) -> T {
+    let before = ENDS.replace(Some(Instant::now() + loop_timeout()));
+    let done = work();
+    ENDS.set(before);
+    done
+}
+
+/// What is left of `loop_timeout`, or of the `as_one` around.
+fn loop_left() -> Duration {
+    ENDS.get()
+        .map_or_else(loop_timeout, left)
+        .min(loop_timeout())
+}
+
+/// As `run`, giving up after `loop_timeout`, or at the end of the `as_one` around.
+pub(crate) fn soon(command: &mut Command) -> Result<String, String> {
+    within(command, loop_left())
+}
+
+fn within(command: &mut Command, timeout: Duration) -> Result<String, String> {
+    fed_raw_within(command, None, timeout).map(|out| String::from_utf8_lossy(&out).into_owned())
+}
+
+/// Whether `error` is of a command that ran past its deadline.
+pub fn timed_out(error: &str) -> bool {
+    error.contains("timed out after ")
+}
+
 /// Runs `command` in its own process group and returns its output, or `None` when it ran past the
 /// command timeout. Then it kills the whole group, so a hung fetch cannot stop the daemon's one
 /// thread, and no child that ignores TERM keeps the output pipe open.
@@ -84,16 +126,21 @@ pub fn fed_within(
         .stderr(Stdio::piped())
         .process_group(0)
         .spawn()?;
+    let _running = crate::ticks::running(command);
     let group = child.id();
     let stdin = child.stdin.take();
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
-        let written = match (stdin, input) {
+        // Its output is read while it takes its input: a command that fills the output pipe first
+        // would wait for its reader, and the writer for it.
+        let writer = std::thread::spawn(move || match (stdin, input) {
             (Some(mut stdin), Some(input)) => stdin.write_all(&input),
             _ => Ok(()),
-        };
+        });
+        let output = child.wait_with_output();
+        let written = writer.join().expect("the writer does not panic");
         // A command that failed before reading its input explains itself better than the pipe.
-        sender.send(child.wait_with_output().and_then(|output| match written {
+        sender.send(output.and_then(|output| match written {
             Err(error)
                 if error.kind() == std::io::ErrorKind::BrokenPipe && !output.status.success() =>
             {
@@ -166,7 +213,7 @@ fn post(url: &str, body: &Path) -> Command {
 }
 
 /// Runs `command` and returns its stdout, or an error naming it with its stderr.
-pub(crate) fn run(command: &mut Command) -> Result<String, String> {
+pub fn run(command: &mut Command) -> Result<String, String> {
     fed(command, None)
 }
 
@@ -176,13 +223,23 @@ pub(crate) fn fed(command: &mut Command, input: Option<Vec<u8>>) -> Result<Strin
 }
 
 /// As `fed`, returning the command's stdout as it wrote it.
-fn fed_raw(command: &mut Command, input: Option<Vec<u8>>) -> Result<Vec<u8>, String> {
-    let output = fed_within(command, input, command_timeout())
+pub(crate) fn fed_raw(command: &mut Command, input: Option<Vec<u8>>) -> Result<Vec<u8>, String> {
+    fed_raw_within(command, input, command_timeout())
+}
+
+/// As `fed_raw`, giving up after `timeout`.
+pub(crate) fn fed_raw_within(
+    command: &mut Command,
+    input: Option<Vec<u8>>,
+    timeout: Duration,
+) -> Result<Vec<u8>, String> {
+    let output = fed_within(command, input, timeout)
         .map_err(|error| format!("{command:?}: {error}"))?
         .ok_or_else(|| {
+            // Rounded up, since what is left of a deadline is just under it.
             format!(
                 "{command:?}: timed out after {}s",
-                command_timeout().as_secs()
+                timeout.as_secs_f64().ceil()
             )
         })?;
     if !output.status.success() {
@@ -243,14 +300,14 @@ pub enum Added {
     /// The branch was there and its folder was not, as after a retirement or a sweep.
     Restored,
     /// A new branch, from this commit.
-    New(Option<String>),
+    New(String),
 }
 
 impl Added {
     /// The commit a new branch starts from; `None` when the branch already existed.
     pub fn base(&self) -> Option<&str> {
         match self {
-            Added::New(base) => base.as_deref(),
+            Added::New(base) => Some(base),
             Added::Kept(_) | Added::Restored => None,
         }
     }
@@ -357,7 +414,7 @@ fn recover(path: &Path, branch: &str, from: Option<String>) -> Result<Recovery, 
             "{shown} {place}, not on {branch}, and {branch} is gone"
         ));
     }
-    let at_risk = at_risk(path, Some(branch), SCAN)?;
+    let at_risk = at_risk(path, Some(branch), SCAN, PATCHES)?;
     let kept_branch = match (&from, at_risk) {
         (None, 1..) => {
             let kept = format!("{branch}-kept-{short}");
@@ -427,9 +484,16 @@ pub(crate) const SCAN: usize = 2000;
 
 /// How many commits on the HEAD of `path` are neither on `branch`, when given, nor on a
 /// remote-tracking ref, nor patch-equivalent to a commit there. A merge commit has no patch id, so
-/// it always counts. When more than `scan` remote commits could match, none is compared and every
-/// commit counts.
-pub(crate) fn at_risk(path: &Path, branch: Option<&str>, scan: usize) -> Result<usize, String> {
+/// it always counts. When more than `scan` remote commits could match, or
+/// their patches take more than `cap` bytes, none is compared and every commit counts. The whole scan
+/// gives up after `loop_timeout`.
+pub(crate) fn at_risk(
+    path: &Path,
+    branch: Option<&str>,
+    scan: usize,
+    cap: usize,
+) -> Result<usize, String> {
+    let deadline = Instant::now() + loop_left();
     let local: Vec<String> = branch
         .map(|branch| format!("refs/heads/{branch}"))
         .into_iter()
@@ -440,10 +504,13 @@ pub(crate) fn at_risk(path: &Path, branch: Option<&str>, scan: usize) -> Result<
         if !merges {
             command.arg("--no-merges");
         }
-        let out = run(command
-            .args(["HEAD", "--not"])
-            .args(&local)
-            .arg("--remotes"))?;
+        let out = by(
+            command
+                .args(["HEAD", "--not"])
+                .args(&local)
+                .arg("--remotes"),
+            deadline,
+        )?;
         Ok(out.lines().map(str::to_owned).collect())
     };
     let all = listed(true)?;
@@ -455,9 +522,12 @@ pub(crate) fn at_risk(path: &Path, branch: Option<&str>, scan: usize) -> Result<
     if plain.is_empty() {
         return Ok(merges);
     }
-    let dates = run(git(path)
-        .args(["log", "--no-walk=unsorted", "--format=%at"])
-        .args(&plain))?;
+    let dates = by(
+        git(path)
+            .args(["log", "--no-walk=unsorted", "--format=%at"])
+            .args(&plain),
+        deadline,
+    )?;
     let oldest = dates
         .lines()
         .filter_map(|date| date.trim().parse::<i64>().ok())
@@ -468,7 +538,10 @@ pub(crate) fn at_risk(path: &Path, branch: Option<&str>, scan: usize) -> Result<
     let mut window = vec!["--no-merges".to_owned(), since, "--remotes".to_owned()];
     window.extend(local);
     window.extend(["--not".to_owned(), "HEAD".to_owned()]);
-    let count = run(git(path).args(["rev-list", "--count"]).args(&window))?;
+    let count = by(
+        git(path).args(["rev-list", "--count"]).args(&window),
+        deadline,
+    )?;
     if count
         .trim()
         .parse::<usize>()
@@ -476,8 +549,12 @@ pub(crate) fn at_risk(path: &Path, branch: Option<&str>, scan: usize) -> Result<
     {
         return Ok(all.len());
     }
-    let ours = patch_ids(path, &[], &plain)?;
-    let theirs = patch_ids(path, &window, &[])?;
+    let Some(ours) = patch_ids(path, &[], &plain, deadline, cap)? else {
+        return Ok(all.len());
+    };
+    let Some(theirs) = patch_ids(path, &window, &[], deadline, cap)? else {
+        return Ok(all.len());
+    };
     let held: std::collections::HashSet<_> = theirs.into_iter().map(|(id, _)| id).collect();
     let unmatched = plain
         .iter()
@@ -493,11 +570,14 @@ pub(crate) fn at_risk(path: &Path, branch: Option<&str>, scan: usize) -> Result<
 /// The `(patch id, commit)` pairs of the commits that `walk` reaches, or of the `commits` alone,
 /// as `git patch-id --verbatim` reads them from `git log -p`. Whitespace counts, so a commit amended
 /// only in its indentation is a different patch. A commit with an empty diff has none.
+/// `None` when the patches take more than `cap` bytes.
 fn patch_ids(
     path: &Path,
     walk: &[String],
     commits: &[String],
-) -> Result<Vec<(String, String)>, String> {
+    deadline: Instant,
+    cap: usize,
+) -> Result<Option<Vec<(String, String)>>, String> {
     let mut log = git(path);
     log.args([
         "log",
@@ -509,14 +589,71 @@ fn patch_ids(
     if !commits.is_empty() {
         log.arg("--no-walk=unsorted").args(commits);
     }
-    let patches = fed_raw(log.args(walk), None)?;
-    let ids = fed(git(path).args(["patch-id", "--verbatim"]), Some(patches))?;
-    Ok(ids
-        .lines()
-        .filter_map(|line| line.split_once(' '))
-        .map(|(id, commit)| (id.to_owned(), commit.to_owned()))
-        .collect())
+    let Some(patches) = capped(log.args(walk), deadline, cap)? else {
+        return Ok(None);
+    };
+    let ids = fed_raw_within(
+        git(path).args(["patch-id", "--verbatim"]),
+        Some(patches),
+        left(deadline),
+    )?;
+    Ok(Some(
+        String::from_utf8_lossy(&ids)
+            .lines()
+            .filter_map(|line| line.split_once(' '))
+            .map(|(id, commit)| (id.to_owned(), commit.to_owned()))
+            .collect(),
+    ))
 }
+
+fn left(deadline: Instant) -> Duration {
+    deadline.saturating_duration_since(Instant::now())
+}
+
+/// As `run`, giving up at `deadline`.
+fn by(command: &mut Command, deadline: Instant) -> Result<String, String> {
+    within(command, left(deadline))
+}
+
+/// The output of `command`, or `None` when it prints more than `cap` bytes. It ends at `deadline`.
+fn capped(command: &mut Command, deadline: Instant, cap: usize) -> Result<Option<Vec<u8>>, String> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map_err(|error| format!("{command:?}: {error}"))?;
+    let _running = crate::ticks::running(command);
+    let group = child.id();
+    let stdout = child.stdout.take().expect("stdout is piped");
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut read = Vec::new();
+        let done = stdout.take(cap as u64 + 1).read_to_end(&mut read);
+        if read.len() > cap {
+            crate::script::kill(group);
+        }
+        sender.send(done.and_then(|_| child.wait()).map(|status| (read, status)))
+    });
+    match receiver.recv_timeout(left(deadline)) {
+        Ok(Ok((read, _))) if read.len() > cap => Ok(None),
+        Ok(Ok((read, status))) if status.success() => Ok(Some(read)),
+        Ok(Ok((_, status))) => Err(format!("{command:?}: {status}")),
+        Ok(Err(error)) => Err(format!("{command:?}: {error}")),
+        Err(_) => {
+            crate::script::kill(group);
+            let _ = receiver.recv_timeout(REAP);
+            Err(format!(
+                "{command:?}: timed out after {}s",
+                loop_timeout().as_secs()
+            ))
+        }
+    }
+}
+
+/// The most bytes of patches a comparison reads, 5 times the largest seen.
+pub(crate) const PATCHES: usize = 64 << 20;
 
 /// Whether `path` is a worktree of `clone` whose gitdir is gone, as a `git worktree remove` that
 /// failed partway leaves it: git deleted the tracked files and the gitdir, not the rest.
@@ -533,15 +670,27 @@ fn orphaned(path: &Path, clone: &Path) -> bool {
     gitdir.parent() == Some(registry.as_path()) && !gitdir.exists()
 }
 
+/// Why the folder `worktree` would replace must stay for now: it has no gitdir, and a mount is at or
+/// under it.
+pub fn mounted_orphan(home: &Path, repo: &str, name: &str) -> Option<String> {
+    let path = home.join("worktrees").join(repo).join(name);
+    if !orphaned(&path, &home.join("repos").join(repo)) {
+        return None;
+    }
+    crate::worktrees::unmounted(&path, &crate::worktrees::mountinfo).err()
+}
+
 /// The task's worktree folder `name` on `priory/<name>`, from the local branch `from` of Priory's
 /// own clone of `repo` (`owner/name`), else from its default branch. The clone has no checkout: a person trusts it and the worktrees
 /// folder once in Claude, which covers its worktrees. A worktree of that clone left on that branch by an interrupted
-/// start is reused. The third value says whether the folder was kept, added back, or new.
+/// start is reused. `vouch` reads the default branch's head from GitHub outside the clone, for a base
+/// that no agent chose. The third value says whether the folder was kept, added back, or new.
 pub fn worktree(
     home: &Path,
     repo: &str,
     name: &str,
     from: Option<&str>,
+    vouch: bool,
 ) -> Result<(PathBuf, String, Added), String> {
     check_repo(repo)?;
     let clone = home.join("repos").join(repo);
@@ -566,8 +715,13 @@ pub fn worktree(
     }
     // A person's `fetch.prune` would drop a merged branch, whose commits then look never pushed.
     let _ = run(git(&clone).args(["config", "remote.origin.prune", "false"]));
+    if let Some(reason) = mounted_orphan(home, repo, name) {
+        return Err(reason);
+    }
     if orphaned(&path, &clone) {
-        remove_sealed(&path);
+        if crate::worktrees::orphan_without_repository(&path).is_ok() {
+            crate::worktrees::discard_aside(home, &path);
+        }
         if path.exists() {
             move_aside(home, &path)?;
         }
@@ -605,24 +759,126 @@ pub fn worktree(
         })?;
         return Ok((path, branch, Added::Restored));
     }
-    phased("fetch", || {
-        run(git(&clone).args(["fetch", "--quiet", "origin"]))?;
-        run(git(&clone).args(["remote", "set-head", "origin", "--auto"]))
+    let trunk = phased("fetch", || {
+        // Before the fetch, which then brings the commit.
+        let trunk = (vouch && from.is_none())
+            .then(|| trunk(repo, loop_timeout()))
+            .transpose()?;
+        soon(git(&clone).args(["fetch", "--quiet", "origin"]))?;
+        soon(git(&clone).args(["remote", "set-head", "origin", "--auto"]))?;
+        if let Some(trunk) = &trunk
+            && run(git(&clone).args(["cat-file", "-e", trunk])).is_err()
+        {
+            soon(git(&clone).args(["fetch", "--quiet", "origin", trunk]))?;
+        }
+        Ok(trunk)
+    })
+    .inspect(|_| fetched(repo))
+    .map_err(|error| {
+        if timed_out(&error) {
+            put_off(repo)
+        } else {
+            error
+        }
     })?;
-    let start = match from {
-        Some(from) if head(&clone, from).is_some() => format!("refs/heads/{from}"),
-        Some(from) => return Err(format!("branch {from} to start from is gone")),
-        None => "origin/HEAD".to_owned(),
+    let start = match (from, trunk) {
+        (Some(from), _) => {
+            head(&clone, from).ok_or_else(|| format!("branch {from} to start from is gone"))?
+        }
+        (None, Some(trunk)) => trunk,
+        (None, None) => run(git(&clone).args(["rev-parse", "--verify", "origin/HEAD"]))?
+            .trim()
+            .to_owned(),
     };
     phased("checkout", || {
         run(git(&clone)
+            // An agent can write the clone's replace refs, which would swap the commit's content.
+            .arg("--no-replace-objects")
             // Tracking the trunk would let a bare `git push` with `push.default=upstream` land on it.
             .args(["worktree", "add", "--quiet", "--no-track", "-b", &branch])
             .arg(&path)
-            .arg(start))
+            .arg(&start))
     })?;
-    let base = head(&path, &branch);
-    Ok((path, branch, Added::New(base)))
+    // Not the branch's head: every worktree shares the clone's refs, so an agent can have moved it.
+    Ok((path, branch, Added::New(start)))
+}
+
+/// How a task's reason starts while its worktree waits for a fetch that timed out.
+pub const FETCH_WAITS: &str = "waits to fetch ";
+
+/// Each repository whose fetch timed out: when it may be tried again, and how long that wait is.
+static SLOW: std::sync::Mutex<std::collections::BTreeMap<String, (Instant, Duration)>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn slow() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<String, (Instant, Duration)>>
+{
+    SLOW.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn fetched(repo: &str) {
+    slow().remove(repo);
+}
+
+/// Waits 1 minute before `repo` is fetched again, twice as long after each next timeout, 10 minutes
+/// at most. Returns why its tasks wait.
+fn put_off(repo: &str) -> String {
+    let mut slow = slow();
+    let wait = slow.get(repo).map_or(Duration::from_secs(60), |(_, wait)| {
+        (*wait * 2).min(Duration::from_secs(600))
+    });
+    slow.insert(repo.to_owned(), (Instant::now() + wait, wait));
+    fetch_reason(repo)
+}
+
+fn fetch_reason(repo: &str) -> String {
+    format!(
+        "{FETCH_WAITS}{repo}: timed out after {}s",
+        loop_timeout().as_secs()
+    )
+}
+
+/// Why worktree `name` of `repo`, which a fetch would make, waits: the last fetch timed out a short
+/// while ago.
+pub fn fetch_waits(home: &Path, repo: &str, name: &str) -> Option<String> {
+    let waits = slow()
+        .get(repo)
+        .is_some_and(|(again, _)| *again > Instant::now());
+    let made = || {
+        home.join("worktrees").join(repo).join(name).exists()
+            || soon(git(&home.join("repos").join(repo)).args([
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/priory/{name}^{{commit}}"),
+            ]))
+            .is_ok()
+    };
+    (waits && !made()).then(|| fetch_reason(repo))
+}
+
+/// The head of `repo`'s default branch as GitHub has it. It runs outside the clone, whose refs and
+/// config an agent can write.
+pub(crate) fn trunk(repo: &str, within: Duration) -> Result<String, String> {
+    let url = format!("https://github.com/{repo}.git");
+    let refs = fed_raw_within(
+        git(Path::new("/")).args(["ls-remote", &url, "HEAD"]),
+        None,
+        within,
+    )?;
+    head_of(&String::from_utf8_lossy(&refs))
+        .map(str::to_owned)
+        .ok_or_else(|| format!("{url} names no HEAD commit"))
+}
+
+/// The commit of HEAD in `refs`, the output of `git ls-remote`.
+fn head_of(refs: &str) -> Option<&str> {
+    refs.lines()
+        .filter_map(|line| line.split_once('\t'))
+        .find(|(_, name)| *name == "HEAD")
+        .map(|(commit, _)| commit)
+        .filter(|commit| {
+            matches!(commit.len(), 40 | 64) && commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
 }
 
 /// Runs `phase` of a worktree's start, and times it for the metrics by how it ended.
@@ -631,7 +887,7 @@ fn phased<T>(phase: &'static str, step: impl FnOnce() -> Result<T, String>) -> R
     let done = step();
     let outcome = match &done {
         Ok(_) => "ok",
-        Err(error) if error.contains(": timed out after ") => "timeout",
+        Err(error) if timed_out(error) => "timeout",
         Err(_) => "error",
     };
     crate::ticks::timed_as(
@@ -659,16 +915,101 @@ pub fn kept_head(home: &Path, worktree: &Path, branch: &str) -> Option<String> {
 }
 
 /// The commit Priory's clone under `home` last pushed `branch` to, or fetched it at, on origin:
-/// its remote-tracking branch, as the worktree `worktree` of that clone shares it.
-pub fn pushed_head(home: &Path, worktree: &Path, branch: &str) -> Option<String> {
-    let repo = worktree
-        .parent()?
-        .strip_prefix(home.join("worktrees"))
-        .ok()?;
+/// its remote-tracking branch, as the worktree `worktree` of that clone shares it. A git that runs
+/// past `loop_timeout` is an error.
+pub fn pushed_head(home: &Path, worktree: &Path, branch: &str) -> Result<Option<String>, String> {
+    let Some(repo) = worktree
+        .parent()
+        .and_then(|parent| parent.strip_prefix(home.join("worktrees")).ok())
+    else {
+        return Ok(None);
+    };
     let commit = format!("refs/remotes/origin/{branch}^{{commit}}");
-    run(git(&home.join("repos").join(repo)).args(["rev-parse", "--verify", "--quiet", &commit]))
-        .ok()
-        .map(|head| head.trim().to_owned())
+    match soon(git(&home.join("repos").join(repo)).args([
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        &commit,
+    ])) {
+        Ok(head) => Ok(Some(head.trim().to_owned())),
+        Err(error) if timed_out(&error) => Err(error),
+        Err(_) => Ok(None),
+    }
+}
+
+/// `worktree`, or Priory's clone of its repository under `home` when it is gone.
+fn repository(home: &Path, worktree: &Path) -> Result<PathBuf, String> {
+    if worktree.exists() {
+        return Ok(worktree.to_path_buf());
+    }
+    worktree
+        .parent()
+        .and_then(|parent| parent.strip_prefix(home.join("worktrees")).ok())
+        .map(|repo| home.join("repos").join(repo))
+        .ok_or_else(|| format!("{} is gone", worktree.display()))
+}
+
+/// The branches a task stacks on its own, `own`, named after it: `priory/7-api` for `priory/7`.
+pub fn stacked(home: &Path, worktree: &Path, own: &str) -> Result<Vec<String>, String> {
+    let dir = repository(home, worktree)?;
+    let named = format!("refs/heads/{own}-*");
+    let found = run(git(&dir).args(["for-each-ref", "--format=%(refname:strip=2)", &named]))?;
+    Ok(found.lines().map(str::to_owned).collect())
+}
+
+/// The ones of `branches` that origin has, or why another task could not take over all the work of
+/// `worktree` from origin: a changed or untracked file, a commit of the checkout or of a branch that
+/// no branch of origin reaches, or a branch that is gone. Read from Priory's clone under `home` when
+/// the worktree is gone.
+pub fn unpushed(home: &Path, worktree: &Path, branches: &[String]) -> Result<Vec<String>, String> {
+    let live = worktree.exists();
+    let dir = repository(home, worktree)?;
+    let mut heads = Vec::new();
+    if live {
+        let status = run(git(&dir).args(["status", "--porcelain=v1", "--untracked-files=all"]))?;
+        let changed = changes(&status);
+        if !changed.is_empty() {
+            return Err(format!(
+                "the worktree has {changed}: commit and push them first, since the other task takes over only what is pushed"
+            ));
+        }
+    }
+    let mut pushed = Vec::new();
+    for branch in branches {
+        let reference = format!("refs/remotes/origin/{branch}^{{commit}}");
+        let on_origin =
+            run(git(&dir).args(["rev-parse", "--verify", "--quiet", &reference])).is_ok();
+        if on_origin {
+            pushed.push(branch.clone());
+        }
+        match head(&dir, branch) {
+            Some(head) => heads.push((format!("branch {branch}"), head)),
+            None if !on_origin => {
+                return Err(format!(
+                    "branch {branch} is gone, here and on origin: push its work first, since the other task takes over only what is pushed"
+                ));
+            }
+            None => {}
+        }
+    }
+    if live {
+        heads.extend(checked_out(&dir).map(|head| ("the checkout".to_owned(), head)));
+    }
+    for (name, head) in heads {
+        let missing = run(git(&dir).args([
+            "rev-list",
+            "--max-count=1",
+            &head,
+            "--not",
+            "--remotes=origin",
+        ]))?;
+        if !missing.trim().is_empty() {
+            return Err(format!(
+                "{name} has commits origin lacks: push it first, or delete what you abandoned, since the other task takes over only what is pushed"
+            ));
+        }
+    }
+    Ok(pushed)
 }
 
 /// The files `branch` changes against the default branch, read as `kept_head` reads, or `None`
@@ -782,9 +1123,14 @@ pub fn default_branch(worktree: &Path) -> Result<String, String> {
     )
 }
 
-/// Whether commit `below` is `commit` or one of its ancestors, in the repository of `worktree`.
-pub fn is_ancestor(worktree: &Path, below: &str, commit: &str) -> bool {
-    descends(worktree, below, commit).unwrap_or(false)
+/// Whether commit `below` is `commit` or one of its ancestors, in the repository of `worktree`. A
+/// git that runs past `loop_timeout` is an error, which is not a no.
+pub fn is_ancestor(worktree: &Path, below: &str, commit: &str) -> Result<bool, String> {
+    match soon(git(worktree).args(["merge-base", "--is-ancestor", below, commit])) {
+        Ok(_) => Ok(true),
+        Err(error) if timed_out(&error) => Err(error),
+        Err(_) => Ok(false),
+    }
 }
 
 /// As `is_ancestor`, with an error when git could not tell.
@@ -814,7 +1160,7 @@ pub fn in_line(home: &Path, worktree: &Path, branch: &str) -> Option<Vec<String>
         .ok()?;
     let clone = home.join("repos").join(repo);
     let head = kept_head(home, worktree, branch)?;
-    if is_ancestor(&clone, &head, "origin/HEAD") {
+    if is_ancestor(&clone, &head, "origin/HEAD").ok()? {
         return Some(Vec::new());
     }
     let refs = |filter: &[&str]| {
@@ -997,6 +1343,9 @@ pub struct Launch<'a> {
     pub env: &'a [String],
     /// The run takes a turn of a debate, so its MCP server serves `position`.
     pub debate: bool,
+    /// A command that waits on the memory gate gives up at a limit, so the run's agent learns what
+    /// to do then.
+    pub gives_up: bool,
     /// The MCP servers of the person's config the run gets, or turns off, beside Priory's own.
     pub servers: &'a Servers,
     /// Which of Priory's own tools its MCP server serves the run.
@@ -1461,7 +1810,7 @@ pub(crate) fn tmux_socket_fits(socket: &Path) -> Result<(), String> {
 }
 
 /// `stderr` as one line.
-pub(crate) fn one_line(stderr: &str) -> String {
+pub fn one_line(stderr: &str) -> String {
     let lines: Vec<_> = stderr
         .lines()
         .map(str::trim)
@@ -1473,8 +1822,14 @@ pub(crate) fn one_line(stderr: &str) -> String {
 /// Runs the rest under `direnv exec "$1"`, with direnv's stderr in `$0/direnv.error`. When direnv
 /// failed before the harness started, which no `$0/direnv.started` tells, it marks
 /// `$0/direnv.failed` and runs the rest without the `.envrc`.
-const DIRENV_EXEC: &str = r#"s=$0 d=$1; shift; rm -f "$s/direnv.started" "$s/direnv.failed"
-direnv exec "$d" sh -c ': > "$0"; exec 2>&3 3>&-; exec "$@"' "$s/direnv.started" "$@" 3>&2 2>"$s/direnv.error"
+/// direnv alone gets the run's private `XDG_DATA_HOME`. The harness gets the old one, or the one the
+/// `.envrc` exports.
+pub(crate) const DIRENV_EXEC: &str = r#"s=$0 d=$1; shift
+PRIORY_DATA_HOME=${XDG_DATA_HOME-} XDG_DATA_HOME=$DIRENV_CONFIG/data direnv exec "$d" sh -c ': > "$0"; exec 2>&3 3>&-
+if [ "${XDG_DATA_HOME-}" = "$1" ]; then
+  if [ -n "${PRIORY_DATA_HOME-}" ]; then XDG_DATA_HOME=$PRIORY_DATA_HOME; else unset XDG_DATA_HOME; fi
+fi
+unset PRIORY_DATA_HOME; shift; exec "$@"' "$s/direnv.started" "$DIRENV_CONFIG/data" "$@" 3>&2 2>"$s/direnv.error"
 c=$?; [ -e "$s/direnv.started" ] && exit $c; : > "$s/direnv.failed"; exec "$@""#;
 
 /// The folder where a run under direnv leaves `direnv.started` and `direnv.error`: its spool, which
@@ -1484,15 +1839,66 @@ pub fn direnv_spool(home: &Path, session: &str) -> PathBuf {
     crate::jail::spool_dir(&home, session)
 }
 
-/// What direnv wrote to stderr when it kept the run `session` from starting in its `.envrc`, as
-/// one line with its escape codes kept, if it did.
+/// What direnv wrote to stderr when it kept the run `session` from starting in its `.envrc`, if it
+/// did.
 pub fn direnv_failed(home: &Path, session: &str) -> Option<String> {
     let spool = direnv_spool(home, session);
     if !spool.join("direnv.failed").exists() {
         return None;
     }
-    let error = fs::read_to_string(spool.join("direnv.error")).unwrap_or_default();
-    Some(one_line(&error))
+    let error = read_regular(&spool.join("direnv.error"), 64 << 10).unwrap_or_default();
+    Some(String::from_utf8_lossy(&error).into_owned())
+}
+
+// Not libc's, which would be a new dependency for two numbers.
+#[cfg(all(
+    target_os = "linux",
+    any(
+        target_arch = "aarch64",
+        target_arch = "arm",
+        target_arch = "powerpc64"
+    )
+))]
+const O_NOFOLLOW: i32 = 0o100000;
+#[cfg(all(
+    target_os = "linux",
+    not(any(
+        target_arch = "aarch64",
+        target_arch = "arm",
+        target_arch = "powerpc64"
+    ))
+))]
+const O_NOFOLLOW: i32 = 0o400000;
+#[cfg(target_os = "macos")]
+const O_NOFOLLOW: i32 = 0x100;
+#[cfg(target_os = "linux")]
+const O_NONBLOCK: i32 = 0o4000;
+#[cfg(target_os = "macos")]
+const O_NONBLOCK: i32 = 0x4;
+
+/// The first `cap` bytes of the regular file at `path`, which an agent can write: no symlink is
+/// followed, and no FIFO blocks the daemon.
+pub(crate) fn read_regular(path: &Path, cap: u64) -> std::io::Result<Vec<u8>> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NOFOLLOW | O_NONBLOCK)
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::other("not a regular file"));
+    }
+    let mut bytes = Vec::new();
+    file.take(cap).read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// How long ago direnv handed the run `session` over to its harness, with or without the `.envrc`,
+/// if it did.
+pub fn direnv_handed(home: &Path, session: &str) -> Option<Duration> {
+    let spool = direnv_spool(home, session);
+    ["direnv.started", "direnv.failed"]
+        .iter()
+        .find_map(|name| fs::metadata(spool.join(name)).ok()?.modified().ok())
+        .map(|at| at.elapsed().unwrap_or_default())
 }
 
 /// Whether the run `session` started under direnv is still loading its `.envrc`.
@@ -1514,7 +1920,8 @@ pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), NotStarted> 
             .map_err(|error| format!("{}: {error}", file.display()))?;
     }
     if let Some((file, text)) = harness.private_file(&exe, launch) {
-        write_private(&file, &text).map_err(|error| format!("{}: {error}", file.display()))?;
+        write_private(&file, text.as_bytes())
+            .map_err(|error| format!("{}: {error}", file.display()))?;
     }
     let mut command = tmux();
     command
@@ -1578,6 +1985,10 @@ pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), NotStarted> 
     if launch.direnv.is_some() {
         let spool = direnv_spool(launch.home, launch.session);
         fs::create_dir_all(&spool).map_err(|error| format!("{}: {error}", spool.display()))?;
+        // A resumed session keeps its spool, and the daemon must not read its last run's markers.
+        for name in ["direnv.started", "direnv.failed", "direnv.error"] {
+            let _ = fs::remove_file(spool.join(name));
+        }
         // direnv's own failure exits 1 before the harness starts, as the harness's exit 1 might:
         // the marker tells them apart, and the harness then starts without the `.envrc`.
         command
@@ -1746,22 +2157,31 @@ fn move_aside(home: &Path, path: &Path) -> Result<(), String> {
 /// can hold a `PRIORY_HOME`: a user other than root cannot remove a sealed kit, plugin or memory
 /// folder with `fs::remove_dir_all` alone.
 pub fn remove_sealed(dir: &Path) {
-    unseal(dir);
+    unseal(dir, None);
     let _ = fs::remove_dir_all(dir);
 }
 
 /// Makes `dir` and every folder under it writable by its owner, so their files can be removed.
-pub(crate) fn unseal(dir: &Path) {
+/// False when it stopped at `deadline`.
+pub(crate) fn unseal(dir: &Path, deadline: Option<Instant>) -> bool {
+    let late = || deadline.is_some_and(|deadline| Instant::now() >= deadline);
     let mut folders = vec![dir.to_path_buf()];
     while let Some(folder) = folders.pop() {
+        if late() {
+            return false;
+        }
         if !fs::symlink_metadata(&folder).is_ok_and(|meta| meta.is_dir()) {
             continue;
         }
         let _ = fs::set_permissions(&folder, fs::Permissions::from_mode(0o755));
-        if let Ok(entries) = fs::read_dir(&folder) {
-            folders.extend(entries.filter_map(|entry| entry.ok().map(|entry| entry.path())));
+        for entry in fs::read_dir(&folder).into_iter().flatten().flatten() {
+            if late() {
+                return false;
+            }
+            folders.push(entry.path());
         }
     }
+    true
 }
 
 /// Renames `staging` to `target`, and moves aside and removes what `target` held before.
@@ -2068,7 +2488,7 @@ fn mcp_config(exe: &Path, launch: &Launch) -> String {
 }
 
 /// Writes `text` to `file`, readable by its owner alone, even when an older file was not.
-pub(crate) fn write_private(file: &Path, text: &str) -> std::io::Result<()> {
+pub(crate) fn write_private(file: &Path, text: &[u8]) -> std::io::Result<()> {
     fs::create_dir_all(file.parent().expect("the file has a parent"))?;
     let mut written = OpenOptions::new()
         .write(true)
@@ -2077,15 +2497,18 @@ pub(crate) fn write_private(file: &Path, text: &str) -> std::io::Result<()> {
         .mode(0o600)
         .open(file)?;
     written.set_permissions(fs::Permissions::from_mode(0o600))?;
-    written.write_all(text.as_bytes())
+    written.write_all(text)
 }
 
-/// `priory mcp --session <id>`, with `--debate` for a debate turn and the flag of its tool set, if
-/// any.
+/// `priory mcp --session <id>`, with `--debate` for a debate turn, `--gives-up` when the memory gate has
+/// a limit and the flag of its tool set, if any.
 fn mcp_args<'a>(launch: &Launch<'a>) -> Vec<&'a str> {
     let mut args = vec!["mcp", "--session", launch.session];
     if launch.debate {
         args.push("--debate");
+    }
+    if launch.gives_up {
+        args.push("--gives-up");
     }
     args.extend(launch.tools.flag());
     args
@@ -2482,13 +2905,19 @@ pub fn type_text(pane: &str, text: &str) -> Result<(), String> {
     press(pane, "Enter")
 }
 
-/// Pastes `text` into `pane` as one bracketed paste, read from stdin so no part of it is an
-/// argument tmux could take for a key name or a command.
+/// `text` without its control characters, newline and tab kept: an escape sequence would end a
+/// bracketed paste, and what follows would reach the terminal as keystrokes.
+pub fn typable(text: &str) -> String {
+    text.replace(|c: char| c.is_control() && !matches!(c, '\n' | '\t'), "")
+}
+
+/// Pastes the `typable` part of `text` into `pane` as one bracketed paste, read from stdin so no
+/// part of it is an argument tmux could take for a key name or a command.
 pub fn paste(pane: &str, text: &str) -> Result<(), String> {
     let buffer = format!("priory{pane}");
     fed(
         tmux().args(["load-buffer", "-b", &buffer, "-"]),
-        Some(text.as_bytes().to_vec()),
+        Some(typable(text).into_bytes()),
     )?;
     run(tmux().args(["paste-buffer", "-p", "-d", "-b", &buffer, "-t", pane]))?;
     Ok(())
@@ -2798,6 +3227,22 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    #[test]
+    fn a_command_that_answers_more_than_a_pipe_holds_while_it_reads_still_ends() {
+        let input = vec![b'x'; 4 << 20];
+
+        let output = fed_within(
+            &mut Command::new("cat"),
+            Some(input.clone()),
+            Duration::from_secs(20),
+        )
+        .unwrap()
+        .expect("cat ended in time");
+
+        assert!(output.status.success());
+        assert!(output.stdout == input);
+    }
+
     /// A socket file that refuses every connection, as a stopped daemon's does, in a fresh folder.
     fn refusing(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("priory-{name}-{}", std::process::id()));
@@ -2847,9 +3292,57 @@ mod tests {
         assert_eq!((code, starts), (Some(1), 1));
         assert_eq!(
             direnv_failed(&home, "s").as_deref(),
-            Some("direnv: error exit status 1")
+            Some("direnv: error exit status 1\n")
         );
         assert!(!direnv_loading(&home, "s"));
+    }
+
+    #[test]
+    fn direnvs_error_is_read_from_a_regular_file_alone_and_up_to_a_cap() {
+        let home = std::env::temp_dir().join(format!("priory-error-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        let spool = direnv_spool(&home, "s");
+        fs::create_dir_all(&spool).unwrap();
+        fs::write(spool.join("direnv.failed"), "").unwrap();
+        let error = spool.join("direnv.error");
+        let secret = home.join("secret");
+        fs::write(&secret, "secret").unwrap();
+
+        std::os::unix::fs::symlink(&secret, &error).unwrap();
+        assert_eq!(direnv_failed(&home, "s").as_deref(), Some(""));
+        fs::remove_file(&error).unwrap();
+
+        assert!(
+            Command::new("mkfifo")
+                .arg(&error)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert_eq!(direnv_failed(&home, "s").as_deref(), Some(""));
+        fs::remove_file(&error).unwrap();
+
+        fs::write(&error, vec![b'x'; 1 << 20]).unwrap();
+        assert_eq!(direnv_failed(&home, "s").unwrap().len(), 64 << 10);
+    }
+
+    proptest! {
+        #[test]
+        fn a_remotes_refs_name_a_full_commit_or_none(
+            refs in ".{0,200}", commit in "[0-9a-f]{0,64}", name in "HEAD|refs/heads/main",
+        ) {
+            prop_assert!(head_of(&refs).is_none_or(|commit| commit.len() >= 40));
+            let line = format!("{commit}\t{name}\n");
+            let full = matches!(commit.len(), 40 | 64) && name == "HEAD";
+            prop_assert_eq!(head_of(&line), full.then_some(commit.as_str()));
+        }
+    }
+
+    #[test]
+    fn a_remotes_head_is_found_among_its_refs() {
+        let commit = "0123456789".repeat(4);
+        let refs = format!("{commit}\tHEAD\nffff\trefs/remotes/origin/HEAD\n");
+        assert_eq!(head_of(&refs), Some(commit.as_str()));
     }
 
     #[test]
@@ -2957,6 +3450,7 @@ mod tests {
             scope: &[],
             env: &[],
             debate: false,
+            gives_up: false,
             servers,
             tools,
             jail: None,
@@ -3197,8 +3691,11 @@ mod tests {
                 ],
             );
             let home = Home { dir };
-            let (_, _, added) = worktree(&home.home(), "o/n", "1", None).unwrap();
-            assert!(matches!(added, Added::New(_)));
+            // By hand: `worktree` would read GitHub's `o/n` for a new one.
+            let tree = home.tree();
+            let start = ["worktree", "add", "--quiet", "--no-track", "-b", "priory/1"];
+            let path = [tree.to_str().unwrap(), "origin/HEAD"];
+            sh(&clone, &[&start[..], &path[..]].concat());
             home
         }
 
@@ -3211,7 +3708,7 @@ mod tests {
         }
 
         fn again(&self) -> Result<Added, String> {
-            worktree(&self.home(), "o/n", "1", None).map(|(_, _, added)| added)
+            worktree(&self.home(), "o/n", "1", None, true).map(|(_, _, added)| added)
         }
     }
 
@@ -3320,6 +3817,76 @@ mod tests {
     }
 
     #[test]
+    fn patches_over_the_byte_cap_count_every_commit_at_risk() {
+        let home = Home::new("cap");
+        let tree = home.tree();
+        sh(&tree, &["checkout", "--quiet", "--detach"]);
+        let head = commit(&tree, "a.txt", "a\n");
+        sh(&tree, &["checkout", "--quiet", "--detach", "origin/main"]);
+        sh(&tree, &["cherry-pick", "-x", &head]);
+        sh(
+            &tree,
+            &["push", "--quiet", "origin", "HEAD:refs/heads/copy"],
+        );
+        sh(&tree, &["checkout", "--quiet", "--detach", &head]);
+
+        assert_eq!(at_risk(&tree, Some("priory/1"), SCAN, PATCHES), Ok(0));
+        assert_eq!(at_risk(&tree, Some("priory/1"), SCAN, 10), Ok(1));
+    }
+
+    #[test]
+    fn a_capped_command_ends_at_its_deadline_and_keeps_no_more_than_its_cap() {
+        let soon = Instant::now() + Duration::from_millis(200);
+        let stuck = capped(Command::new("sleep").arg("60"), soon, 10).unwrap_err();
+        assert!(timed_out(&stuck), "{stuck}");
+
+        let later = Instant::now() + Duration::from_secs(20);
+        assert_eq!(capped(&mut Command::new("yes"), later, 1000), Ok(None));
+        let echo = capped(Command::new("printf").arg("ab"), later, 2);
+        assert_eq!(echo, Ok(Some(b"ab".to_vec())));
+    }
+
+    #[test]
+    fn a_hung_ancestor_check_is_an_error_and_not_a_no() {
+        let home = Home::new("ancestor");
+        let tree = home.tree();
+        let head = sh(&tree, &["rev-parse", "HEAD"]);
+        assert_eq!(is_ancestor(&tree, &head, "HEAD"), Ok(true));
+        assert_eq!(is_ancestor(&tree, "HEAD", "gone"), Ok(false));
+        // Git blocks on a fifo in place of its config.
+        let config = home.home().join("repos/o/n/.git/config");
+        fs::remove_file(&config).unwrap();
+        run(Command::new("mkfifo").arg(&config)).unwrap();
+
+        let started = Instant::now();
+        let hung = is_ancestor(&tree, &head, "HEAD").unwrap_err();
+
+        assert!(timed_out(&hung), "{hung}");
+        assert!(started.elapsed() < Duration::from_secs(45));
+    }
+
+    #[test]
+    fn a_fetch_that_timed_out_waits_longer_each_time_and_a_good_one_clears_it() {
+        let home = Path::new("/nowhere");
+        let wait = || slow().get("o/slow").map(|(_, wait)| wait.as_secs());
+        assert_eq!(fetch_waits(home, "o/slow", "1"), None);
+
+        let reason = put_off("o/slow");
+        assert_eq!(reason, "waits to fetch o/slow: timed out after 30s");
+        assert_eq!(fetch_waits(home, "o/slow", "1"), Some(reason));
+        assert_eq!(wait(), Some(60));
+        put_off("o/slow");
+        assert_eq!(wait(), Some(120));
+        for _ in 0..5 {
+            put_off("o/slow");
+        }
+        assert_eq!(wait(), Some(600));
+
+        fetched("o/slow");
+        assert_eq!(fetch_waits(home, "o/slow", "1"), None);
+    }
+
+    #[test]
     fn a_patch_scan_past_its_limit_counts_every_commit_at_risk() {
         let home = Home::new("scan");
         let tree = home.tree();
@@ -3334,8 +3901,64 @@ mod tests {
         );
         sh(&tree, &["checkout", "--quiet", "--detach", &head]);
 
-        assert_eq!(at_risk(&tree, Some("priory/1"), 1), Ok(0));
-        assert_eq!(at_risk(&tree, Some("priory/1"), 0), Ok(1));
+        assert_eq!(at_risk(&tree, Some("priory/1"), 1, PATCHES), Ok(0));
+        assert_eq!(at_risk(&tree, Some("priory/1"), 0, PATCHES), Ok(1));
+    }
+
+    #[test]
+    fn work_that_origin_lacks_is_unpushed_wherever_it_is() {
+        let home = Home::new("unpushed");
+        let tree = home.tree();
+        let of = |branches: &[&str]| {
+            let branches: Vec<String> = branches.iter().map(|name| (*name).to_owned()).collect();
+            unpushed(&home.dir, &tree, &branches)
+        };
+        assert_eq!(of(&["priory/1"]), Ok(vec![]), "no commits");
+
+        fs::write(tree.join("new.txt"), "n\n").unwrap();
+        assert!(of(&["priory/1"]).unwrap_err().contains("1 untracked file"));
+        sh(&tree, &["add", "new.txt"]);
+        assert!(of(&["priory/1"]).unwrap_err().contains("1 staged file"));
+        commit(&tree, "new.txt", "n\n");
+        assert!(
+            of(&["priory/1"])
+                .unwrap_err()
+                .contains("has commits origin lacks")
+        );
+        sh(&tree, &["push", "--quiet", "origin", "priory/1"]);
+        assert_eq!(of(&["priory/1"]), Ok(vec!["priory/1".to_owned()]));
+
+        sh(&tree, &["branch", "--quiet", "priory/10-api"]);
+        sh(&tree, &["checkout", "--quiet", "-b", "priory/1-api"]);
+        assert_eq!(
+            stacked(&home.dir, &tree, "priory/1"),
+            Ok(vec!["priory/1-api".to_owned()])
+        );
+        commit(&tree, "api.txt", "a\n");
+        sh(&tree, &["checkout", "--quiet", "priory/1"]);
+        assert_eq!(
+            of(&["priory/1", "priory/1-api"])
+                .unwrap_err()
+                .split(':')
+                .next(),
+            Some("branch priory/1-api has commits origin lacks")
+        );
+        sh(&tree, &["push", "--quiet", "origin", "priory/1-api"]);
+        assert_eq!(of(&["priory/1", "priory/1-api"]).unwrap().len(), 2);
+
+        sh(&tree, &["checkout", "--quiet", "--detach"]);
+        commit(&tree, "lost.txt", "l\n");
+        assert!(
+            of(&["priory/1"])
+                .unwrap_err()
+                .starts_with("the checkout has commits")
+        );
+        sh(&tree, &["checkout", "--quiet", "--detach", "priory/1"]);
+        assert!(of(&["priory/1"]).is_ok());
+
+        sh(&tree, &["branch", "--quiet", "-D", "priory/1-api"]);
+        assert!(of(&["priory/1-api"]).is_ok(), "origin still has it");
+        assert!(of(&["priory/gone"]).unwrap_err().contains("is gone"));
     }
 
     #[test]
@@ -3500,7 +4123,7 @@ mod tests {
             ],
         );
 
-        let reason = worktree(&home.home(), "o/n", "2", None).unwrap_err();
+        let reason = worktree(&home.home(), "o/n", "2", None, true).unwrap_err();
 
         assert_eq!(
             reason,
@@ -3553,8 +4176,30 @@ mod tests {
         assert_eq!(home.again(), Ok(Added::Restored));
 
         assert!(!sealed.exists());
+        let reclaim = home.home().join("reclaim");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while fs::read_dir(&reclaim).unwrap().next().is_some() {
+            assert!(Instant::now() < deadline, "the old folder goes on a thread");
+            std::thread::sleep(Duration::from_millis(10));
+        }
         assert!(home.tree().join("README.md").is_file());
         assert_eq!(sh(&home.tree(), &["branch", "--show-current"]), "priory/1");
+    }
+
+    #[test]
+    fn a_folder_whose_gitdir_is_gone_and_that_holds_a_repository_moves_into_the_trash() {
+        let home = Home::new("orphaned-repository");
+        sealed(&home);
+        sh(&home.tree(), &["init", "-q", "--bare", "target/o.git"]);
+        fs::remove_dir_all(home.home().join("repos/o/n/.git/worktrees/1")).unwrap();
+
+        assert_eq!(home.again(), Ok(Added::Restored));
+
+        let trash = home.home().join("trash");
+        let moved = fs::read_dir(trash).unwrap().next().unwrap().unwrap().path();
+        assert!(moved.join("target/o.git/HEAD").is_file());
+        assert!(!home.tree().join("target").exists());
+        remove_sealed(&moved);
     }
 
     #[test]

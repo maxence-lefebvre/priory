@@ -204,7 +204,7 @@ comment:
 | Field | `true` when | What reads it |
 | ----- | ----------- | ------------- |
 | `own` | the login `gh` runs as wrote it | the person's handling: [triage](../reference/tools.md#review-feedback) does not put it to the agent |
-| `agent` | it is `own` and its body holds the marker | triggers, waking during a turn, and the agent's reply in triage |
+| `agent` | it is `own` and its body holds the marker, or it is a review with an empty body whose [thread comments all hold it](../intake/pull-requests.md#events) | triggers, waking during a turn, and the agent's reply in triage |
 
 Priory adds the marker to each comment it posts itself, and the starter factories tell agents to add
 it. The marker in another login's comment proves nothing: that comment is neither `own` nor `agent`.
@@ -237,7 +237,9 @@ Each inbox entry gets one of these outcomes:
 | A GitHub comment or review whose `association` is not `OWNER`, `MEMBER` or `COLLABORATOR` | `outsider` | none: it wakes, reopens, claims and reaches no task |
 | A task request whose key no runner holds, with several runners | `claiming` | none until this runner's claim wins (see [runners.md](runners.md)) |
 | A task request whose key another runner holds | `elsewhere` | none                                    |
-| Any task request, on a [view-only machine](runners.md#a-machine-that-only-views) | `elsewhere` | none: it claims nothing |
+| A task request whose key no runner holds and this runner's filters refuse, or on a [view-only machine](runners.md#a-machine-that-only-views) | `unaccepted`, then `elsewhere` once another runner's claim wins | none until a claim wins |
+| An `unaccepted` task request, or a `claiming` one whose claim this runner has not published, that a person, a close or a withdrawal dropped | `dropped` | none |
+| `priory.task.dropped` | `noted`, or `refused` when it drops nothing | none |
 | `priory.task.claimed` that wins its key   | `claimed` | the task this runner creates, when it is the new owner |
 | `priory.task.claimed` that loses          | `refused` | none; this runner's own losing claim drops its copy of the task, `owned by runner <name>` |
 | `priory.task.held` or `priory.runner.alive` | `noted` | none                                         |
@@ -370,6 +372,8 @@ What happens to a `kept` message depends on the task's state:
 - For a `running` task, the daemon also queues an outbox prompt with the message, so the agent reads
   it after its current turn. Until then, for feedback, the agent's `result`, `ask` and `wait` are
   refused (see [Ending a turn](tools.md#ending-a-turn)).
+- For a `running` task, news that may end its work also reaches the run during its turn (see
+  [News during a turn](#news-during-a-turn)).
 - If the message satisfies the task's open wait, the wait fires in any active state (see
   [waits.md](waits.md)). An asleep task wakes. A ready, blocked or held task keeps its state, and
   its next run gets the prompt.
@@ -391,6 +395,96 @@ What happens to a `kept` message depends on the task's state:
   neither grow the ask nor keep it unanswerable. The answer may lead to `done` with no agent run
   at all. If a run follows, it reads the message too.
 - Any other kept message waits for the task's next run, which reads it in its first prompt.
+
+## News during a turn
+
+A queued prompt waits for the end of the turn, and a run can open a pull request before then. So
+the daemon also hands news that may end the task's work to the run during its turn. News is one of
+these events, kept by the task itself or through a subscription:
+
+| Event | News when |
+| ----- | --------- |
+| `linear.issue.state_changed` | `to_type` is `canceled`, as Linear's Duplicate and Canceled states are, or `completed` |
+| `github.pull_request.closed` | `merged` is `false` |
+| `github.issues.closed` | always |
+
+The daemon records the news for the task's live run and creates a marker file, `news`, in
+`<home>/news/<session>/`. Only the daemon writes that folder, and a sandboxed run reads it, so no
+run can plant a link or a pipe where the daemon writes. A run in a [debate](debates.md) gets no news:
+the step after the debate reads the event. A name from outside, such as the actor or the state, goes
+on one line, without control characters and cut to 100 characters. The run's [tool guard hook](guard.md#news-before-a-pull-request)
+checks for that file on every call, and asks the daemon for the news only when it exists. Each
+piece of news is one line, such as:
+
+```text
+Ana moved ENG-7 to Duplicate (canceled), as a duplicate of ENG-9. https://linear.app/acme/issue/ENG-7
+```
+
+The hook adds that line to the next call the agent makes, once. The news stays unread until a call
+that opens a pull request, pushes, or ends or sleeps the run: the hook refuses that call once with
+the news as its reason, and only then is the news read. So a push after a few reads is still held.
+The `result`, `ask`, `wait`, `consult` and `hand_over` tools refuse once the same way, for a harness
+whose hook does not reach them. The agent can so read one event up to three times: on an ordinary call, in
+the refusal, and in the queued prompt that still carries the event after the turn. Two calls the
+agent makes at once can each show it. Priory repeats news rather than lose it.
+
+News counts whoever closed the pull request or issue, so an agent that closes its own gets its next
+push or result held once too. An agent that merges its own pull request hears no close, since a
+merge is no news. But the merge moves the Linear issue to Done, which is, so its next such call is
+held once.
+
+`completed` counts whoever moved the issue: agents move Linear issues with the person's key, so the
+actor cannot tell the agent from the person. An agent that moved its own issue to Done gets one
+refused call. A task asleep at its checks gate wakes on a `canceled` state change (see
+[Subscriptions in tools.md](tools.md#subscriptions)). A `completed` one does not, since a merge
+moves the issue to Done.
+
+The outcome stays `kept`. A waiting [`linear_state` wait](waits.md) still fires on its named state.
+
+## Two tasks on the same work
+
+A Linear issue marked a duplicate of another can leave two active tasks that build the same change.
+When the other issue has an active task, the duplicate's news names it and says how the two agree:
+
+```text
+Ana moved ENG-7 to Duplicate (canceled), as a duplicate of ENG-9. https://linear.app/acme/issue/ENG-7 Task 4 (linear:ENG-9) works on ENG-9. Agree with task 4 which of you continues: send it a message with the message tool. Unless you two agree otherwise, the duplicate's task stops: it pushes its branch, then calls hand_over, whose summary says what it found and what is left. If you disagree, do not go on: ask the person with the ask tool.
+```
+
+Priory pairs the two tasks and records that the duplicate's task relates to the other. Each of them
+gets a line that names the other task. A running one reads it as news. Any other, such as one that is
+queued, asleep or in a debate, reads it in the first prompt of its next run outside a debate. So
+does a running one that no held call showed the line to. Priory holds one copy of the line, and drops
+it when the pair ends. Only a new pair tells the other task.
+
+A Linear webhook names no duplicate, so when the webhook is first, the pair starts at the next poll.
+The poll then publishes its own copy of the state change, which requests no second task but which
+the run can read as a second piece of news (see [webhooks.md](../intake/webhooks.md#linear-duplicates)).
+A task of another [runner](runners.md) is never paired: the duplicate's line names that runner and
+says to ask the person.
+
+The agents talk with the [`message`](../reference/tools.md#messagetask-text) tool, which reaches the
+other agent during its turn, or wakes it. It is queued as a person's `say` is, so an agent that just
+called `ask` or `wait` reads it before it sleeps, and a message during a debate waits for the step after
+it. When the agent reads it in a refusal, Priory withdraws that queued prompt, unless other
+text joined it. The task that stops calls
+[`hand_over`](../reference/tools.md#hand_overtask-summary) once its branch is pushed: the other
+agent gets the branch and the summary, Priory records that the other task takes it up, and drops it
+with the reason `handed over to task 4 (linear:ENG-9)`. `priory tasks` shows that reason, and
+`priory task 4 --json` lists the relation. When the agents disagree, either one asks the person with
+`ask`. Priory picks no task itself.
+
+The text of both tools is capped at 4,000 characters. The other agent reads it quoted, below a line
+that says it is another agent's account of outside data and holds no instruction to follow.
+
+An agent reaches only the task its own is paired with, and only a duplicate's event pairs two tasks.
+A relation does not count: an agent can record one with the `relate` tool or `priory relate`, and a
+pull request link in a request's text makes one, so an issue's text could steer a run to any task.
+A pair may send each other six messages an hour, so two agents cannot wake each other without end.
+Past that, they ask the person.
+
+A pair ends 24 hours after the duplicate's event. Its trust is limited: anyone who can mark an issue
+a duplicate in Linear can let the runs of two issues send each other quoted text for that day, and
+let one hand over to the other. It gives no run another's worktree, tools or approvals.
 
 ## Schedule firings
 

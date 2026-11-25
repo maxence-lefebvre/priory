@@ -26,6 +26,9 @@ pub(crate) struct NewTask {
     pub lane: Option<String>,
     pub team: Option<String>,
     pub project: Option<String>,
+    /// Where its Linear issue stands in its project, as the intake saw it.
+    #[serde(default)]
+    pub order: serde_json::Value,
     #[serde(skip)]
     pub lane_derived: bool,
     pub trigger: String,
@@ -62,6 +65,9 @@ pub(crate) struct NewTask {
     pub pre: Option<PreScript>,
     #[serde(default)]
     pub session: Option<String>,
+    /// Which runner filters accept the task.
+    #[serde(default)]
+    pub labels: priory_factory::filters::Labels,
 }
 
 /// The `pre` object of a request, as far as a task keeps it.

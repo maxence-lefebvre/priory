@@ -1,21 +1,65 @@
 #!/usr/bin/env bash
-# Runs the real git, found on PATH after this directory. FAKE_DIR/git-hang makes `fetch` hang in a
-# helper that ignores TERM and keeps stdout open, as a stuck network fetch can. git-hang-ls makes
-# `ls-remote` hang, after it logs to git-ls.log what may prompt. git-no-commit makes a fetch of a
-# commit by its SHA fail, as a dropped connection does.
+# Runs the real git, found on PATH after this directory. FAKE_DIR/git-fetches gets a line per fetch. FAKE_DIR/git-statuses gets one per status. FAKE_DIR/git-hang makes `fetch` hang in a
+# helper that ignores TERM and keeps stdout open, as a stuck network fetch can. FAKE_DIR/git-hostile
+# holds an `.envrc`: after a fetch into a clone, and after a `worktree add` of priory/1, the ref that
+# the daemon could read next points to a commit with it, as another task's agent can arrange.
+# FAKE_DIR/git-ls-remotes gets a line per ls-remote, which FAKE_DIR/git-unreachable makes fail.
+# FAKE_DIR/git-crash holds a subcommand, with hash-object's kind, such as `hash-object -t tree` or
+# `ls-files`, that git crashes on when it checks an `.envrc`.
+# git-hang-ls makes `ls-remote` hang, after it logs to git-ls.log what may prompt. git-no-commit
+# makes a fetch of a commit by its SHA fail, as a dropped connection does. git-hold-sha makes one wait
+# until it is gone, after it writes git-held. git-hang-status makes the status that lists every
+# untracked file hang, and git-hang-merge a merge.
 case " $* " in
+  *" status "*)
+    echo "$*" >> "$FAKE_DIR/git-statuses"
+    if [ -e "$FAKE_DIR/git-hang-status" ] && [[ "$*" = *--untracked-files=all* ]]; then exec sleep 60; fi
+    ;;
+  *" merge --quiet "*)
+    if [ -e "$FAKE_DIR/git-hang-merge" ]; then echo merge >> "$FAKE_DIR/git-merging"; exec sleep 60; fi
+    ;;
   *" fetch "*)
+    echo fetch >> "$FAKE_DIR/git-fetches"
     if [ -e "$FAKE_DIR/git-hang" ]; then (trap '' TERM; sleep 60) & sleep 60; fi
     if [ -e "$FAKE_DIR/git-no-commit" ] && [[ "$*" =~ [0-9a-f]{40} ]]; then
       echo 'fatal: the connection dropped' >&2
       exit 128
     fi
+    if [[ "$*" =~ [0-9a-f]{40} ]]; then
+      echo sha >> "$FAKE_DIR/git-shas"
+      while [ -e "$FAKE_DIR/git-hold-sha" ]; do echo held >> "$FAKE_DIR/git-held"; sleep 0.1; done
+    fi
     ;;
   *" ls-remote "*)
+    echo ls-remote >> "$FAKE_DIR/git-ls-remotes"
     if [ -e "$FAKE_DIR/git-hang-ls" ]; then
       echo "${GIT_TERMINAL_PROMPT-unset} ${GIT_SSH_COMMAND-unset}" >> "$FAKE_DIR/git-ls.log"
       exec sleep 60
     fi
+    if [ -e "$FAKE_DIR/git-unreachable" ]; then echo 'fatal: unreachable' >&2; exit 128; fi
     ;;
 esac
-PATH=${PATH#*:} exec git "$@"
+if [ -e "$FAKE_DIR/git-crash" ]; then
+  read -r crash < "$FAKE_DIR/git-crash" || true
+  case " $* " in
+    *" hash-object --literally -t "*" --stdin "*) ran="hash-object -t ${*: -2:1}" ;;
+    *" ls-files --error-unmatch -- .envrc "*) ran=ls-files ;;
+    *) ran= ;;
+  esac
+  [ "$ran" != "$crash" ] || kill -SEGV $$
+fi
+PATH=${PATH#*:}
+[ -e "$FAKE_DIR/git-hostile" ] || exec git "$@"
+git "$@"
+code=$?
+moves() {
+  blob=$(git -C "$1" hash-object -w "$FAKE_DIR/git-hostile")
+  tree=$(printf '100644 blob %s\t.envrc\n' "$blob" | git -C "$1" mktree)
+  commit=$(git -C "$1" -c user.name=t -c user.email=t@t commit-tree -m hostile "$tree")
+  git -C "$1" update-ref "$2" "$commit"
+}
+case " $* " in
+  *" fetch "*) moves "$2" refs/remotes/origin/main >&2 ;;
+  *" worktree add "*" priory/1 "*) moves "$2" refs/heads/priory/1 >&2 ;;
+esac
+exit $code

@@ -2057,6 +2057,25 @@ fn the_queue_lists_the_factorys_requestable_workflows_so_a_view_can_offer_them()
 }
 
 #[test]
+fn the_queue_names_the_request_tables_workflow_so_a_view_can_show_the_default() {
+    let mut setup = Setup::new("queue-default-workflow", DEFAULTS);
+    let address = setup.start(&["serve", &setup.factory()]);
+    let mut bare = Setup::new("queue-no-default-workflow", SERVE);
+    let bare_address = bare.start(&["serve", &bare.factory()]);
+
+    let queue = api(&address, "/api/queue");
+    assert_eq!(queue["default_workflow"], "implement");
+    assert_eq!(json_of(&setup, "queue")["default_workflow"], "implement");
+    let output = setup.priory(&["queue", "--json"]);
+    succeeded(&output);
+    let without_factory: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let bare_queue = api(&bare_address, "/api/queue");
+    for queue in [without_factory, bare_queue, json_of(&bare, "queue")] {
+        assert_eq!(queue.get("default_workflow"), Some(&Value::Null));
+    }
+}
+
+#[test]
 fn the_views_endpoint_returns_the_default_view_priory_ships() {
     let mut setup = Setup::new("views", SERVE);
     let address = setup.start(&["serve", &setup.factory()]);
@@ -2815,6 +2834,126 @@ fn a_failed_gh_api_user_is_asked_again_on_the_next_delivery() {
     assert_eq!(owns, [Value::Null, json!(false)]);
 }
 
+/// A `pull_request_review` delivery by `max`, the login `gh` runs as.
+fn own_review(id: u64, body: &str) -> String {
+    json!({
+        "action": "submitted",
+        "review": {
+            "id": id,
+            "state": "commented",
+            "body": body,
+            "html_url": format!("https://github.com/owner/repo/pull/43#pullrequestreview-{id}"),
+            "user": { "login": "max", "type": "User" },
+            "author_association": "OWNER",
+            "commit_id": "fff000",
+            "submitted_at": "2026-11-17T10:30:00Z"
+        },
+        "pull_request": { "number": 43, "state": "open", "user": { "login": "max" } },
+        "repository": { "full_name": "owner/repo" },
+        "sender": { "login": "max" }
+    })
+    .to_string()
+}
+
+#[test]
+fn a_delivered_empty_review_counts_as_its_thread_comments() {
+    let mut setup = Setup::hooks("hook-wrapper");
+    fs::write(
+        setup.dir.join("factory/triggers/my-reviews.toml"),
+        "source = \"github\"\nrepo = \"owner/repo\"\non = \"pull_request_review.submitted\"\nfilter = { author = \"max\", commenter = \"max\" }\nworkflow = \"implement\"\nkey = \"pull_request.number\"\n",
+    )
+    .unwrap();
+    fs::write(setup.dir.join("fake/gh-user"), "max").unwrap();
+    let address = setup.start(&["serve", &setup.factory()]);
+    let send = |event: &str, body: &str| {
+        let signature = sign(&setup.secret, body.as_bytes());
+        deliver(&address, event, "d-7", Some(&signature), body)
+    };
+    let reply = |id: u64, marked: bool| {
+        let marker = if marked {
+            "\n\n<!-- agent-comment -->"
+        } else {
+            ""
+        };
+        json!({
+            "id": id,
+            "body": format!("Fixed.{marker}"),
+            "html_url": format!("https://github.com/owner/repo/pull/43#discussion_r{id}"),
+            "created_at": "2026-11-17T10:30:00Z",
+            "path": "src/lib.rs",
+            "line": 12,
+            "in_reply_to_id": 801,
+            "user": { "login": "max", "type": "User" }
+        })
+    };
+    let answers = |comments: &Value| {
+        let path = setup.dir.join("fake/review-comments");
+        fs::write(path, comments.to_string()).unwrap();
+    };
+    let published = (202, r#"{"outcome":"published"}"#.to_owned());
+    let dropped = (202, r#"{"outcome":"dropped"}"#.to_owned());
+
+    answers(&json!([reply(811, true)]));
+    let marked = send("pull_request_review", &own_review(501, ""));
+    let redelivered = send("pull_request_review", &own_review(501, ""));
+    answers(&json!([reply(821, false)]));
+    let unmarked = send("pull_request_review", &own_review(502, ""));
+    answers(&json!([reply(831, true), reply(832, false)]));
+    let mixed = send("pull_request_review", &own_review(503, ""));
+    answers(&json!([reply(841, true)]));
+    let with_body = send("pull_request_review", &own_review(504, "One thing."));
+    let comment = json!({
+        "action": "created",
+        "comment": reply(851, true),
+        "pull_request": { "number": 43, "state": "open", "user": { "login": "max" } },
+        "repository": { "full_name": "owner/repo" }
+    });
+    send("pull_request_review_comment", &comment.to_string());
+    answers(&json!([reply(851, true)]));
+    let delivered = send("pull_request_review", &own_review(505, ""));
+    answers(&json!([]));
+    let young = own_review(507, "").replace("T10:30:00Z", "T11:59:30Z");
+    let early = send("pull_request_review", &young);
+    fs::write(setup.dir.join("fake/review-comments-fail"), "").unwrap();
+    let unread = send("pull_request_review", &own_review(506, ""));
+
+    assert_eq!(
+        [&marked, &redelivered, &unmarked, &mixed, &with_body],
+        [&published; 5]
+    );
+    assert_eq!(delivered, dropped);
+    assert_eq!(unread.0, 500);
+    assert_eq!(early.0, 500);
+    let reviews: Vec<_> = setup
+        .published()
+        .into_iter()
+        .filter(|message| message.kind == "github.pull_request_review.submitted")
+        .map(|message| {
+            let data = message.data;
+            (
+                data["github_id"].as_u64().unwrap(),
+                data["agent"] == true,
+                data["triggers"].clone(),
+            )
+        })
+        .collect();
+    let mine = || json!(["my-reviews"]);
+    assert_eq!(
+        reviews,
+        [
+            (501, true, json!([])),
+            (502, false, mine()),
+            (503, false, mine()),
+            (504, false, mine()),
+        ]
+    );
+    let requests = setup.kinds();
+    let requests = requests
+        .iter()
+        .filter(|kind| *kind == "factory.task.requested");
+    assert_eq!(requests.count(), 3);
+}
+
 #[test]
 fn a_poll_requests_the_task_a_crash_left_out_of_a_webhook() {
     let setup = Setup::hooks("hook-crash");
@@ -3543,6 +3682,14 @@ fn an_answer_through_the_endpoint_wakes_the_task_as_priory_answer_does() {
     let mut setup = Setup::new("web-answer", SERVE);
     setup.asleep_on_ask();
     let address = setup.start(&["daemon", &setup.factory()]);
+    let (status, body) = post(
+        &address,
+        "/api/asks/1/answer",
+        "",
+        r#"{"text": " ", "revision": 2}"#,
+    );
+    assert_eq!(status, 422, "{body}");
+    assert!(body.contains("ask 1 takes no blank answer"), "{body}");
 
     let (status, body) = post(
         &address,
@@ -4244,6 +4391,10 @@ fn editing_links_in_a_running_daemons_factory_changes_the_links_endpoint_without
         serde_json::from_slice::<Value>(&cli.stdout).unwrap(),
         edited
     );
+    // serve answers from the new factory before the daemon writes its record.
+    eventually("the reload record", || {
+        !records(&setup, "factory.config.reloaded").is_empty()
+    });
     let reloaded = records(&setup, "factory.config.reloaded");
     assert_eq!(reloaded.len(), 1, "{reloaded:?}");
     assert_eq!(reloaded[0]["factory"], "demo");
@@ -5903,7 +6054,8 @@ fn a_signed_linear_state_change_and_comment_publish_their_poll_types() {
             "issue": "ENG-7", "linear_id": "issue-7", "title": "Fix the thing",
             "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing", "team": "ENG",
             "project": null, "project_id": null, "state": "In Progress", "labels": ["agent"],
-            "from": null, "to": "In Progress", "actor": "max", "blockers": null,
+            "from": null, "to": "In Progress", "to_type": "started", "duplicate_of": null,
+            "actor": "max", "blockers": null,
             "time": "2026-11-17T10:00:00.000Z", "baseline": false
         })
     );
@@ -6042,6 +6194,38 @@ fn a_linear_webhook_then_a_poll_of_the_same_changes_make_one_message_each() {
             .count(),
         3
     );
+}
+
+#[test]
+fn a_poll_adds_what_the_issue_duplicates_to_a_webhooks_state_change_and_requests_no_second_task() {
+    let mut setup = Setup::linear_hooks("linear-hook-duplicate");
+    setup.poll_linear(json!([]), json!([]));
+    let address = setup.start(&["serve", &setup.factory()]);
+    assert_eq!(setup.send_linear(&address, &linear_state_change()).0, 200);
+    let requests = |setup: &Setup| {
+        setup
+            .published()
+            .iter()
+            .filter(|message| message.kind == "factory.task.requested")
+            .count()
+    };
+    let before = requests(&setup);
+    let mut issue = polled_issue();
+    issue["relations"] = json!({ "nodes": [
+        { "type": "duplicate", "relatedIssue": { "id": "issue-9", "identifier": "ENG-9" } }] });
+
+    setup.poll_linear(json!([issue.clone()]), json!([]));
+    setup.poll_linear(json!([issue]), json!([]));
+
+    let named: Vec<_> = setup
+        .published()
+        .into_iter()
+        .filter(|message| message.kind == "linear.issue.state_changed")
+        .map(|message| message.data["duplicate_of"].clone())
+        .collect();
+    assert_eq!(named, [serde_json::Value::Null, json!("ENG-9")]);
+    // The poll also publishes the issue's creation, which requests its own task.
+    assert_eq!(requests(&setup), before + 1);
 }
 
 #[test]

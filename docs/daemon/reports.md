@@ -227,4 +227,4 @@ ask until the next 06:00 UTC instead. Picking that option applies the act,
 records the choice and sets `applied` to `dismissed` or `snoozed until <until>`, all in one
 transaction. It wakes no task, so the act lands even while the report's agent is busy or asleep.
 The pick is refused, and nothing is recorded, when the act is refused: the ask is not open, or a
-step's ask takes only its options. An option cannot both request a task and act on an ask.
+step's ask or a hold's ask takes no dismissal. An option cannot both request a task and act on an ask.

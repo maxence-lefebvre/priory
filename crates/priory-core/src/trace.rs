@@ -614,6 +614,50 @@ pub(crate) fn auto_answered(
     append(tx, trace, "factory.ask.auto_answered", &time, data)
 }
 
+/// Appends a record of type `kind` about autopilot's answer to ask `ask` of a task, with `fields`:
+/// `factory.ask.autopilot_answered` when the daemon gave it, and `factory.ask.autopilot_replaced`
+/// when a person's answer took its place.
+pub(crate) fn autopilot(
+    tx: &Transaction,
+    trace: &Trace,
+    kind: &str,
+    ask: i64,
+    fields: serde_json::Value,
+) -> rusqlite::Result<()> {
+    let (task, workflow, step, key, generation, time): (i64, String, String, String, i64, String) =
+        tx.query_row(
+            "SELECT tasks.id, tasks.workflow, asks.step, tasks.key, tasks.generation,
+               strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             FROM asks JOIN tasks ON tasks.id = asks.task WHERE asks.id = ?1",
+            [ask],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )?;
+    let mut data = json!({
+        "factory": trace.factory.name,
+        "factory_revision": trace.revision,
+        "workflow": workflow,
+        "task": task.to_string(),
+        "key": key,
+        "generation": generation,
+        "step": step,
+        "machine": trace.machine,
+    });
+    if let (Value::Object(data), Value::Object(fields)) = (&mut data, fields) {
+        data.extend(fields);
+        data.retain(|_, value| !value.is_null());
+    }
+    append(tx, trace, kind, &time, data)
+}
+
 /// Appends a `factory.ask.session_answered` record, or `factory.ask.session_dismissed` when
 /// `option` is `None`: a person's own session decided ask `ask` at `revision` through `priory mcp
 /// --outside`. An outside ask has no task, so its record has no task fields.

@@ -17,6 +17,8 @@ It removes a folder and its branch `priory/<id>` only when all checks hold:
   the pid of the Priory process that runs it, and so do its children. A process counts as
   Priory's only when that pid runs Priory's program, is its ancestor, and that ancestor's child on
   the way carries the same value. Any process can set the variable, so the value alone hides none.
+- Its task has no live run and no memory grant, waiting or held (see Memory gate).
+- No mount is at or under it, and it holds no repository of its own (see What a removal never takes).
 - The branch tip is in `origin/HEAD`, or is the head commit of a merged pull request for the
   branch (a `github.pull_request.closed` event with `merged` true). Otherwise it stays as
   `unpushed commits` when a commit is on no remote branch, else as `not merged`.
@@ -26,7 +28,9 @@ is on a remote branch, any remote branch. A task that works on a person's pull r
 that person's branch, so its own branch never merges. A commit also counts as pushed when a remote
 branch holds a commit with the same patch (`git patch-id --verbatim`), as a rebase of that branch
 leaves. When more than 2000 remote commits could match, the sweep compares none and keeps the
-worktree. A merge commit or an empty commit has no patch, so it counts only when it is on a remote
+worktree. It also keeps it when the patches to compare take more than 64 MB. Each answer is kept until
+`HEAD` or a remote ref changes, and a sweep runs at most 2 new comparisons, the oldest first. The
+others stay as `its patch check waits for the next sweep`. A merge commit or an empty commit has no patch, so it counts only when it is on a remote
 branch itself.
 
 The worktree goes at the next sweep, even while the task's pull request is open. The sweep keeps
@@ -51,21 +55,61 @@ it. The worktree goes, the branch stays, and no sweep looks again. A failed work
 logged and retried at the next sweep. A git command that cannot run keeps the worktree as
 `cannot check: <error>`.
 
+The sweep waits at most 30 seconds for one git command, or `command_timeout` when that is shorter
+(see [home.md](home.md#command-timeout)), except for `git worktree remove` itself. A command that
+runs past it keeps its worktree, and the sweep asks git nothing about the worktrees after it, which
+stay as `its checks wait for the next sweep`. After a fetch that times out, the other clones wait for
+the next sweep too. Each of the fetches, the checks and the removals stops starting new work after
+30 seconds, and the next sweep takes what waited longest first. A walk of a worktree's files stops after 10 seconds and keeps the worktree, with
+`<path>: its files take over 10s to check`.
+
 Before `git worktree remove`, the sweep makes every folder under the worktree writable by its
 owner. A read-only folder, such as one a test run sealed under an ignored `target/`, would
 otherwise stop git after it deleted the tracked files and the worktree's entry in the clone. When
 a task's folder is left that way, with a `.git` file naming a gone entry of Priory's clone, the
-task's next run removes the folder and adds the worktree back from its branch.
+task's next run moves the folder to `PRIORY_HOME/reclaim/`, deletes it on a thread, and adds the worktree back from its branch.
 
 `priory desk` lists each kept folder with its reason: `no task <id>`, `kept while task <id> is <state>`,
 `not a worktree of <clone>`, `not recorded as the worktree of task <id>`, `not on branch priory/<id>`,
 `uncommitted changes`, `untracked files`, `a process runs in it`, `unpushed commits`, `not merged`,
-`teardown runs` or `teardown failed: ...`.
+`its patch check waits for the next sweep`, `its checks wait for the next sweep`,
+`<path>: its files take over 10s to check`, `teardown runs`, `teardown failed: ...`, `<path> is a mount`, `<path> holds a git repository` or
+`task <id> has a live run or a memory grant, or left its state`.
 It runs no git: it reads the reasons from `sweep/sizes.json`, which each sweep writes. Before the
 first sweep, it lists only the reasons it reads from the database. Each reason ends with the size of
 the folder in binary units, such as `not merged, 7.4 GiB`. After each periodic sweep, a thread of its
 own walks the kept folders and records their sizes, since that walk takes seconds. A folder the walk
 has not measured yet shows its reason alone.
+
+## What a removal never takes
+
+`git worktree remove` deletes the files of a folder mounted under the worktree, then fails. So the
+sweep and a retirement check, after any teardown and before git runs. Mounts are checked again
+before and after folders are made writable, right before the delete:
+
+- No mount is at or under the worktree, as `/proc/self/mountinfo` shows. A table that cannot be read
+  keeps the worktree.
+- No ignored file or folder is part of a repository: a `.git` entry, or a `HEAD` beside `objects` and
+  `refs`. Nor is a `.git` in a folder of tracked files. Its commits can be nowhere else, and the reclaim keeps it too. A repository in the `tmp`
+  folder of a cargo target does not count. A tracked folder that looks like a repository does not count
+  either, since the branch holds it.
+- The checks listed above still hold: the task's state, its runs and grants, uncommitted and untracked
+  files, and processes.
+
+A worktree that fails one stays, with the reason on the desk or the task, and the next sweep tries
+again. Unmount the mount (`findmnt -R <path>`) or move the repository out.
+
+Only the tick starts runs, and the checks and the removal are one step of it, so no run starts between
+them. A process that already runs elsewhere can still mount a folder in the worktree during the
+removal. A mount in a private namespace, such as a jail's, does not show in the daemon's table, and
+git does not enter it.
+
+A folder without its entry in the clone (see above) waits the same way: its task stays `queued` or
+`ready` with `waits to add its worktree back: <path> is a mount`, and each tick tries again. One that
+holds a repository, ignored or not, moves to `PRIORY_HOME/trash/` instead of going.
+
+The checkouts of a `record` command and of a `command` scorer also stay when a mount is in them. They
+are logged and not tried again.
 
 ## Reclaiming build output
 
@@ -87,12 +131,15 @@ that holds a file git tracks, such as a committed bundle, stays. A build folder 
 or that a symlink leads to, is never followed, and a symlink inside one goes without what it points
 to.
 
-These build folders stay too:
+These build folders stay too. One of them does not keep the worktree's other build folders, while a
+sweep or a retirement keeps the whole worktree for a mount or a repository (see What a removal never
+takes):
 
 - One with a mount at or under it, as `/proc/self/mountinfo` shows.
 - One inside a submodule or a nested repository.
 - One that holds a `.git` entry. A `.git` in the `tmp` folder of a cargo target does not count: tests
   keep scratch files there. Cargo's `CACHEDIR.TAG` marks such a target.
+- One that is or holds a bare repository: a `HEAD` beside `objects` and `refs`. The same `tmp` does not count.
 
 A thread lists and sizes each folder as `du` does, off the daemon's tick. Then each tick
 takes one folder, the largest first, and on equal sizes the task idle longest first. The tick checks
@@ -109,13 +156,13 @@ and its bytes (see [trace-schema.md](../trace-schema.md#factoryworktreereclaimed
 desk show `reclaimed 14.2 GB of build output from 3 folders in the last 24 hours, last at
 2026-11-23T19:30:02Z` while any happened in the last 24 hours.
 
-The thread looks for mounts and `.git` entries once more before it deletes a moved folder. If it finds
+The thread looks for mounts and repositories once more before it deletes a moved folder. If it finds
 one, it moves the folder back. If a new build folder took its place, the moved one stays in
 `PRIORY_HOME/reclaim/`.
 
 A daemon that stops during a delete leaves files in `PRIORY_HOME/reclaim/`, and the next sweep
-deletes them. It deletes only folders with a name it gave, a task's id and nanoseconds such as
-`304-1763926202412000000`. When `reclaim` is not a real folder, such as a symlink, nothing moves and
+deletes them. It deletes only folders with a name it gave, a task's id and 18 or more digits of
+nanoseconds, such as `304-1763926202412000000`. When `reclaim` is not a real folder, such as a symlink, nothing moves and
 nothing goes.
 
 The daemon logs a folder it cannot delete once, tries it again each sweep, and goes on with other
@@ -130,10 +177,14 @@ the folder with its mode, and does not try that folder again until it restarts.
 ## Retiring asleep tasks
 
 After each sweep, once the reclaim has nothing left to take, while free disk is at or under the room's disk floor (see Room), the daemon
-retires asleep tasks, longest asleep first, until the floor is met again. Retiring runs
+retires asleep tasks, longest asleep first, until the floor is met again. While a retirement waits,
+no sweep starts a walk or a delete of leftover files, so sweeps that come often cannot postpone it
+for ever. A delete that runs for 10 minutes no longer holds it up: the daemon logs the folder once
+and retires. Nothing else is reclaimed until that delete ends. Retiring runs
 `git worktree remove` without force. The worktree goes, while the branch `priory/<id>` and the
 task's sessions stay. A task retires only when its worktree is Priory's, on its branch, has nothing
-uncommitted or untracked, and no process runs in it. The daemon marks the task before removing the
+uncommitted or untracked, no process runs in it, its task has no memory grant, and nothing in it is
+what a removal never takes. The daemon marks the task before removing the
 worktree, so a crash in between leaves a mark on an existing folder, which the next sweep checks
 again.
 

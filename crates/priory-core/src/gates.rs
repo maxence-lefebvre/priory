@@ -19,7 +19,8 @@ const JUDGE_CALLS: f64 = 5.0;
 
 /// The scorers that grade `outcome` at `step` of `task` before the daemon stores it: the step's
 /// `gate` for the outcome, then the factory's critic when the outcome grades a plan that leads to a
-/// model or code step and no person approves the plan, as `intervention = "plan"` makes one.
+/// model or code step and no person approves the plan, as `intervention = "plan"` makes one, unless
+/// autopilot may approve it.
 pub(crate) fn scorers(
     tx: &Transaction,
     task: i64,
@@ -45,9 +46,9 @@ pub(crate) fn scorers(
         [task],
         |row| row.get(0),
     )?;
-    if intervention.as_deref() != Some(Intervention::Plan.as_str())
-        && !names.iter().any(|name| name == critic)
-    {
+    let unread = intervention.as_deref() != Some(Intervention::Plan.as_str())
+        || crate::autopilot::approves_plans(tx, factory, task, workflow)?;
+    if unread && !names.iter().any(|name| name == critic) {
         names.push(critic.to_owned());
     }
     Ok(names)

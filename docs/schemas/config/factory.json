@@ -25,6 +25,25 @@
       },
       "type": "object"
     },
+    "Autopilot": {
+      "additionalProperties": false,
+      "description": "What `priory autopilot` may answer while a person has it on.",
+      "properties": {
+        "approve_plans": {
+          "default": [],
+          "description": "The workflows whose green plans autopilot approves for a task with `intervention = \"plan\"`,\nwhere a person decides again before any irreversible step.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "timezone": {
+          "description": "The IANA zone `--until HH:MM` and the default end, 08:00, are read in, such as\n`Europe/Paris`; the machine's own when unset.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "Backend": {
       "enum": [
         "herdr-bus",
@@ -96,6 +115,14 @@
         }
       },
       "type": "object"
+    },
+    "Channel": {
+      "description": "The releases the daemon installs.",
+      "enum": [
+        "patch",
+        "minor"
+      ],
+      "type": "string"
     },
     "Cloud": {
       "additionalProperties": false,
@@ -553,6 +580,19 @@
       ],
       "type": "object"
     },
+    "MemoryGate": {
+      "additionalProperties": false,
+      "description": "`[memory]`: how long a command waits in the memory gate.",
+      "properties": {
+        "give_up_after": {
+          "default": null,
+          "description": "How long `priory memory acquire` without `--timeout` waits for its grant before it exits 75\nand says to run the command on CI, below 1 hour; it never does when unset.",
+          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "Notify": {
       "additionalProperties": false,
       "description": "Where the daemon tells a person that the desk's next item changed, besides Web Push.",
@@ -561,6 +601,28 @@
           "default": false,
           "description": "Whether the daemon runs `notify-send` with the title of each new next item that is an ask\nor an alarm.",
           "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "Private": {
+      "additionalProperties": false,
+      "description": "The factory's private terms, and the repositories they must stay out of.",
+      "properties": {
+        "repos": {
+          "default": [],
+          "description": "The GitHub repositories, each `owner/name`, that must never hold a term.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "terms": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/Term"
+          },
+          "type": "array"
         }
       },
       "type": "object"
@@ -610,6 +672,47 @@
           ]
         }
       },
+      "type": "object"
+    },
+    "Quiet": {
+      "additionalProperties": false,
+      "description": "The days and hours the daemon never upgrades in.",
+      "properties": {
+        "days": {
+          "description": "The weekdays it starts on; every day when unset.",
+          "items": {
+            "enum": [
+              "mon",
+              "tue",
+              "wed",
+              "thu",
+              "fri",
+              "sat",
+              "sun"
+            ]
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "from": {
+          "description": "When it starts, `HH:MM`.",
+          "pattern": "^([01]?[0-9]|2[0-3]):[0-5][0-9]$",
+          "type": "string"
+        },
+        "timezone": {
+          "description": "The IANA zone of the hours, such as `Europe/Paris`; the machine's own when unset.",
+          "type": "string"
+        },
+        "until": {
+          "description": "When it ends, `HH:MM`; the next day when it is not after `from`.",
+          "pattern": "^([01]?[0-9]|2[0-3]):[0-5][0-9]$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "from",
+        "until"
+      ],
       "type": "object"
     },
     "Recipe": {
@@ -1072,6 +1175,35 @@
       ],
       "type": "object"
     },
+    "Term": {
+      "additionalProperties": false,
+      "description": "Private terms under one label, which a refusal names instead of the term.",
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "regex": {
+          "default": [],
+          "description": "Regexes, in the regex crate's syntax.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "text": {
+          "default": [],
+          "description": "Literal strings, matched in any case and as whole words.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "type": "object"
+    },
     "Terminal": {
       "description": "What the HTTP server lets a token holder do with a run's terminal.",
       "oneOf": [
@@ -1091,6 +1223,54 @@
           "type": "string"
         }
       ]
+    },
+    "Upgrade": {
+      "additionalProperties": false,
+      "description": "`[upgrade]`: which releases the daemon installs by itself, and when.",
+      "properties": {
+        "channel": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Channel"
+            }
+          ],
+          "description": "`patch` takes releases of the running major and minor version; `minor` takes releases of the\nrunning major version."
+        },
+        "every": {
+          "default": null,
+          "description": "How often the daemon looks for a release; every hour when unset, and at least 10 minutes.",
+          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "type": "string"
+        },
+        "not_during": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Quiet"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "When the daemon never upgrades, such as working hours; it may at any time when unset."
+        },
+        "units": {
+          "default": [
+            "priory-daemon.service",
+            "priory-intake.service"
+          ],
+          "description": "The systemd user units of the daemon and the intake, in that order.",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        }
+      },
+      "required": [
+        "channel"
+      ],
+      "type": "object"
     },
     "Webhooks": {
       "additionalProperties": false,
@@ -1174,6 +1354,9 @@
   "properties": {
     "asks": {
       "$ref": "#/definitions/Asks"
+    },
+    "autopilot": {
+      "$ref": "#/definitions/Autopilot"
     },
     "bands": {
       "description": "The bands, highest first, when they are not the default ones.",
@@ -1308,6 +1491,9 @@
         }
       ]
     },
+    "memory": {
+      "$ref": "#/definitions/MemoryGate"
+    },
     "name": {
       "description": "The factory's name.",
       "type": "string"
@@ -1328,6 +1514,18 @@
         "string",
         "null"
       ]
+    },
+    "private": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/Private"
+        }
+      ],
+      "default": {
+        "repos": [],
+        "terms": []
+      },
+      "description": "Terms no run may publish to the repositories it lists."
     },
     "queue": {
       "$ref": "#/definitions/Queue"
@@ -1405,6 +1603,17 @@
       "default": false,
       "description": "Priory records Claude Code's and Codex's folder trust for the worktrees and clones it\ncreates for the repositories the factory names, so no run stops on a trust dialog.",
       "type": "boolean"
+    },
+    "upgrade": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Upgrade"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The daemon installs newer releases by itself; nothing is looked up or installed when unset."
     },
     "webhooks": {
       "anyOf": [

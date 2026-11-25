@@ -1,8 +1,8 @@
 use crate::factory::{
     ASK_SHAPE, Agent, Backend, Benchmark, CODEX_PROMPT_LIMIT, Confidence, Debate, Decider, Effect,
-    Factory, HELD_SIGNALS, Harness, INSTRUCTIONS, Intervention, Loaded, Moment, OPEN_MEMORIES_PR,
-    OnChange, PermissionMode, Problem, Proof, Recipe, ScoreKind, ScoreOn, Scorer, Session, Step,
-    Trigger, Until, Workflow, join_instructions,
+    Factory, FilterValue, HELD_SIGNALS, Harness, INSTRUCTIONS, Intervention, Loaded, Moment,
+    OPEN_MEMORIES_PR, OnChange, PermissionMode, Problem, Proof, Recipe, ScoreKind, ScoreOn, Scorer,
+    Session, Step, Trigger, Until, Workflow, join_instructions,
 };
 use crate::guard::{NEED_APPROVAL, PERSON, SIGN_IN, UNREADABLE};
 use crate::labels;
@@ -10,6 +10,7 @@ use crate::lanes::{self, Lanes};
 use priory_runtime::servers;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 const ENDS: [&str; 2] = ["done", "stop"];
 
@@ -27,8 +28,52 @@ pub fn validated(dir: &Path) -> Result<Factory, Vec<Problem>> {
     }
 }
 
+/// The gate's default timeout, which `[memory] give_up_after` stays below.
+const GIVE_UP_LIMIT: Duration = Duration::from_secs(60 * 60);
+
+fn check_give_up<T>(
+    loaded: &Loaded<T>,
+    give_up_after: Option<Duration>,
+    problems: &mut Vec<Problem>,
+) {
+    if give_up_after.is_some_and(|after| after >= GIVE_UP_LIMIT) {
+        problems.push(problem(
+            loaded,
+            loaded.lines.field("memory"),
+            "`[memory] give_up_after` is below 1h, the default timeout of a gated command".into(),
+        ));
+    }
+}
+
 pub fn check(factory: &Factory) -> Vec<Problem> {
     let mut problems = Vec::new();
+    // Each machine shows when the others' windows lift, so none may mean its own local zone.
+    for runner in factory
+        .runners
+        .values()
+        .filter(|_| factory.runners.len() > 1)
+    {
+        for filter in &runner.value.filters {
+            let Some(when) = &filter.when else { continue };
+            if when.timezone.is_none() {
+                problems.push(problem(
+                    runner,
+                    runner.lines.field("filters"),
+                    format!(
+                        "filter `{}` has a window with no `timezone`, which a factory of {} runners needs",
+                        filter.matches,
+                        factory.runners.len()
+                    ),
+                ));
+            }
+        }
+    }
+    if let Some(settings) = &factory.settings {
+        check_give_up(settings, settings.value.memory.give_up_after, &mut problems);
+    }
+    for runner in factory.runners.values() {
+        check_give_up(runner, runner.value.memory.give_up_after, &mut problems);
+    }
     let bands = factory.bands();
     if let Some(settings) = &factory.settings {
         let unique: BTreeSet<_> = bands.iter().collect();
@@ -156,6 +201,24 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 problems.push(problem(settings, settings.lines.field("critic"), message));
             }
         }
+        for name in &settings.value.autopilot.approve_plans {
+            let refused = match factory.workflows.get(name) {
+                None => Some(format!(
+                    "`approve_plans` names workflow `{name}`, which does not exist"
+                )),
+                Some(_) if settings.value.critic.is_none() => Some(format!(
+                    "`approve_plans` names workflow `{name}`, and the factory has no `critic` to read its plans first"
+                )),
+                Some(flow) => plan_never_approved(name, &flow.value),
+            };
+            if let Some(message) = refused {
+                problems.push(problem(
+                    settings,
+                    settings.lines.field("autopilot"),
+                    message,
+                ));
+            }
+        }
         if let Some(name) = &settings.value.pre_review {
             let refused = match factory.scorers.get(name) {
                 None => Some(format!("the pre-review `{name}` is no scorer in scorers/")),
@@ -258,6 +321,26 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
             }
             if telemetry.metrics_cap == Some(0) {
                 refuse("`metrics_cap` is 0: it needs to be 1 or more".to_owned());
+            }
+        }
+        if let Some(upgrade) = &settings.value.upgrade {
+            let line = settings.lines.field("upgrade");
+            let mut refuse = |message: &str| {
+                problems.push(problem(settings, line, message.to_owned()));
+            };
+            if settings.value.log.backend == crate::factory::Backend::Postgres {
+                refuse(
+                    "`[upgrade]` needs the herdr-bus log: Priory cannot tell whether a release \
+                     changes a Postgres log's tables, so upgrade these machines by hand",
+                );
+            }
+            if upgrade.units[0] == upgrade.units[1] {
+                refuse(
+                    "`[upgrade] units` names one unit twice: give the daemon's, then the intake's",
+                );
+            }
+            if upgrade.every.is_some_and(|every| every.as_secs() < 600) {
+                refuse("`[upgrade] every` is under 10 minutes: GitHub limits anonymous requests");
             }
         }
         if settings
@@ -444,7 +527,11 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 }
             }
         }
+        for message in settings.value.private.problems() {
+            problems.push(problem(settings, settings.lines.field("private"), message));
+        }
         let mut named: Vec<&str> = crate::guard::BUILT_IN.to_vec();
+        named.push(crate::guard::PRIVATE);
         for command in &settings.value.guard.commands {
             let message = if named.contains(&command.name.as_str()) {
                 format!(
@@ -511,7 +598,7 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
         }
         match trigger.value.source.as_str() {
             "github" => check_github(trigger, &mut problems),
-            "linear" | "linear.view" => check_linear(trigger, &mut problems),
+            "linear" | "linear.view" | "linear.project" => check_linear(trigger, &mut problems),
             "slack" => check_slack(trigger, &mut problems),
             "sentry" => check_hooked(
                 trigger,
@@ -554,6 +641,7 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
             "github",
             "linear",
             "linear.view",
+            "linear.project",
             "sentry",
             "cloudwatch",
             "honeycomb",
@@ -573,6 +661,29 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 trigger,
                 trigger.lines.field("repo"),
                 "a trigger's `repo` is `owner/name`".into(),
+            ));
+        }
+        if trigger.value.source != "linear.project" && trigger.value.project.is_some() {
+            problems.push(problem(
+                trigger,
+                trigger.lines.field("project"),
+                "only a `linear.project` trigger names a `project`".into(),
+            ));
+        }
+        for (key, _) in trigger
+            .value
+            .filter
+            .iter()
+            .flatten()
+            .filter(|(key, value)| {
+                value.one().is_none()
+                    && (trigger.value.source != "linear.project" || *key != "state")
+            })
+        {
+            problems.push(problem(
+                trigger,
+                trigger.lines.field("filter"),
+                format!("filter `{key}` is a string, not a list"),
             ));
         }
         if trigger.value.source != "slack" && trigger.value.channel.is_some() {
@@ -1080,6 +1191,11 @@ pub fn warnings(factory: &Factory) -> Vec<Problem> {
             ));
         }
     }
+    if let Some(settings) = &factory.settings {
+        for message in settings.value.private.warnings() {
+            warnings.push(problem(settings, settings.lines.field("private"), message));
+        }
+    }
     warnings.extend(caps_warnings(factory));
     warnings.extend(cloud_warnings(factory));
     warnings
@@ -1265,6 +1381,20 @@ fn check_lanes(lanes: &Loaded<Lanes>, problems: &mut Vec<Problem>) {
             lanes,
             lanes.lines.field("lane"),
             format!("`[lane]` `{name}` is not a lane such as `team/theme`"),
+        ));
+    }
+    for (name, _) in lanes
+        .value
+        .lane
+        .iter()
+        .filter(|(_, lane)| lane.is_incomplete())
+    {
+        problems.push(problem(
+            lanes,
+            lanes.lines.field("lane"),
+            format!(
+                "`[lane]` `{name}` needs `max_running` beside `when`, and `when` beside `max_running_outside`"
+            ),
         ));
     }
 }
@@ -1556,6 +1686,24 @@ fn cloud_step_problems(factory: &Factory, step: &Step, sandboxed: bool) -> Vec<S
         ));
     }
     problems
+}
+
+/// Why autopilot approves no plan of workflow `name`, when none of its steps has one it may.
+fn plan_never_approved(name: &str, workflow: &Workflow) -> Option<String> {
+    let mut refusals = Vec::new();
+    for step in &workflow.steps {
+        let why = crate::explain::plan_refusal(workflow, &step.id)?;
+        if step.next.contains_key("green") {
+            refusals.push(why);
+        }
+    }
+    let why = match refusals.is_empty() {
+        true => "no step grades a plan green".to_owned(),
+        false => refusals.join("; "),
+    };
+    Some(format!(
+        "`approve_plans` names workflow `{name}`, where autopilot may approve no plan: {why}"
+    ))
 }
 
 /// `auto_answer = "low"` would accept every ask an agent makes, which is `hands-off` with no reader.
@@ -1979,10 +2127,10 @@ fn check_github(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
             ),
         ));
     }
-    let label_only = |filter: &BTreeMap<String, String>| {
+    let label_only = |filter: &BTreeMap<String, FilterValue>| {
         value.on.ends_with(".labeled") && filter.keys().all(|key| key == "label")
     };
-    let by_people = |filter: &BTreeMap<String, String>| {
+    let by_people = |filter: &BTreeMap<String, FilterValue>| {
         filter.contains_key("author")
             && filter
                 .keys()
@@ -2144,16 +2292,40 @@ fn check_hooked(
     }
 }
 
+/// The types of a Linear workflow state.
+const STATES: [&str; 7] = [
+    "triage",
+    "backlog",
+    "unstarted",
+    "started",
+    "completed",
+    "canceled",
+    "duplicate",
+];
+
+/// Whether `user` has the shape of an email or of a Linear id, a UUID.
+fn linear_user(user: &str) -> bool {
+    match user.split_once('@') {
+        Some((name, host)) => {
+            !name.is_empty() && !host.is_empty() && !user.contains(char::is_whitespace)
+        }
+        None => {
+            let groups: Vec<usize> = user.split('-').map(str::len).collect();
+            groups == [8, 4, 4, 4, 12] && user.chars().all(|c| c == '-' || c.is_ascii_hexdigit())
+        }
+    }
+}
+
 fn check_linear(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
     let value = &trigger.value;
     let view = value.source == "linear.view";
-    let (on, filters): (&[&str], &[&str]) = if view {
-        (&["issue.entered", "issue.left"], &[])
-    } else {
-        (
+    let (on, filters): (&[&str], &[&str]) = match value.source.as_str() {
+        "linear.view" => (&["issue.entered", "issue.left"], &[]),
+        "linear.project" => (&["issue.entered", "issue.left"], &["assignee", "state"]),
+        _ => (
             &["issue.created", "issue.state_changed", "comment.created"],
             &["team", "project", "label", "state"],
-        )
+        ),
     };
     let mut report = |field: &str, message: String| {
         let line = trigger.lines.field(field).or(trigger.lines.field("source"));
@@ -2179,16 +2351,56 @@ fn check_linear(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
             ),
         );
     }
-    let unknown = |filter: &BTreeMap<String, String>| {
+    let unknown = |filter: &BTreeMap<String, FilterValue>| {
         filter.keys().any(|key| !filters.contains(&key.as_str()))
     };
     if value.filter.as_ref().is_some_and(unknown) {
-        let message = if view {
-            "a `linear.view` trigger takes no `filter`: its view filters".to_string()
-        } else {
-            "a `linear` trigger filters on `team`, `project`, `label` or `state`".to_string()
+        let message = match value.source.as_str() {
+            "linear.view" => "a `linear.view` trigger takes no `filter`: its view filters",
+            "linear.project" => "a `linear.project` trigger filters on `assignee` or `state`",
+            _ => "a `linear` trigger filters on `team`, `project`, `label` or `state`",
         };
-        report("filter", message);
+        report("filter", message.to_string());
+    }
+    if value.source == "linear.project" {
+        let named = |project: &str| {
+            !project.is_empty()
+                && project
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "-_".contains(c))
+        };
+        if !value.project.as_deref().is_some_and(named) {
+            report(
+                "project",
+                "a `linear.project` trigger names a `project`: its UUID or its slug id".into(),
+            );
+        }
+        let filter = |key: &str| value.filter.as_ref().and_then(|filter| filter.get(key));
+        if filter("assignee")
+            .and_then(FilterValue::one)
+            .is_some_and(|assignee| !linear_user(assignee))
+        {
+            report(
+                "filter",
+                "filter `assignee` is a Linear user's id or email".into(),
+            );
+        }
+        let states = match filter("state") {
+            Some(FilterValue::One(state)) => std::slice::from_ref(state),
+            Some(FilterValue::Any(states)) => states.as_slice(),
+            None => &[],
+        };
+        if filter("state").is_some()
+            && (states.is_empty() || states.iter().any(|state| !STATES.contains(&state.as_str())))
+        {
+            report(
+                "filter",
+                format!(
+                    "filter `state` lists state types: `{}`",
+                    STATES.join("`, `")
+                ),
+            );
+        }
     }
     if value.repo.as_deref().is_some_and(|repo| !owner_name(repo)) {
         report("repo", "a Linear trigger's `repo` is `owner/name`".into());

@@ -1,10 +1,15 @@
-use crate::runtime::{OWN_GIT, SCAN, at_risk, clone_of, git, remove_sealed, run, unseal};
-use std::collections::HashSet;
+use crate::runtime::{
+    OWN_GIT, PATCHES, SCAN, as_one, at_risk, clone_of, git, is_ancestor, run, soon, unseal,
+};
+use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::ErrorKind;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// A folder under `PRIORY_HOME/worktrees/<owner>/<name>/`, named for a task.
 pub struct Found {
@@ -58,9 +63,14 @@ pub fn found(home: &Path) -> Vec<Found> {
 /// Fetches `origin` into Priory's clone of `repo` and refreshes `origin/HEAD`.
 pub fn fetch(home: &Path, repo: &str) -> Result<(), String> {
     let clone = home.join("repos").join(repo);
-    run(git(&clone).args(["fetch", "--quiet", "origin"]))?;
-    run(git(&clone).args(["remote", "set-head", "origin", "--auto"])).map(drop)
+    as_one(|| {
+        soon(git(&clone).args(["fetch", "--quiet", "origin"]))?;
+        soon(git(&clone).args(["remote", "set-head", "origin", "--auto"])).map(drop)
+    })
 }
+
+/// Why a worktree stays when the sweep ran all its patch scans.
+pub const SCAN_WAITS: &str = "its patch check waits for the next sweep";
 
 /// What the sweep does with the worktree of an ended task.
 #[derive(Debug, PartialEq)]
@@ -77,8 +87,15 @@ pub enum Verdict {
 /// pull request, which a squash merge leaves out of the default branch. `done` retires a worktree
 /// whose commits are all pushed, or patch-equivalent to pushed ones. A check that cannot run keeps
 /// the worktree.
-pub fn verdict(home: &Path, found: &Found, merged_head: Option<&str>, done: bool) -> Verdict {
-    judged(home, found, merged_head, done)
+/// `scans` is how many patch scans this sweep may still run.
+pub fn verdict(
+    home: &Path,
+    found: &Found,
+    merged_head: Option<&str>,
+    done: bool,
+    scans: &mut usize,
+) -> Verdict {
+    as_one(|| judged(home, found, merged_head, done, scans))
         .unwrap_or_else(|error| Verdict::Keep(format!("cannot check: {error}")))
 }
 
@@ -87,28 +104,84 @@ fn judged(
     found: &Found,
     merged_head: Option<&str>,
     done: bool,
+    scans: &mut usize,
 ) -> Result<Verdict, String> {
     if let Some(reason) = unsettled(home, found, &[])? {
         return Ok(Verdict::Keep(reason));
     }
     let path = &found.path;
-    let tip = run(git(path).args(["rev-parse", "HEAD"]))?;
+    let tip = soon(git(path).args(["rev-parse", "HEAD"]))?;
     let tip = tip.trim();
-    let merged = run(git(path).args(["merge-base", "--is-ancestor", tip, "origin/HEAD"])).is_ok();
+    let merged = is_ancestor(path, tip, "origin/HEAD")?;
     if merged || merged_head == Some(tip) {
         return Ok(Verdict::Remove);
     }
     // A patch-equivalent commit counts as pushed only for a done task, which loses its worktree.
-    let pushed = if done {
-        at_risk(path, None, SCAN)? == 0
-    } else {
-        run(git(path).args(["rev-list", "-n1", tip, "--not", "--remotes"]))?.is_empty()
-    };
+    let mut pushed =
+        soon(git(path).args(["rev-list", "-n1", tip, "--not", "--remotes"]))?.is_empty();
+    if done && !pushed {
+        match scanned(path, tip, scans)? {
+            Some(at_risk) => pushed = at_risk == 0,
+            None => {
+                return Ok(Verdict::Keep(SCAN_WAITS.to_owned()));
+            }
+        }
+    }
     Ok(match (pushed, done) {
         (true, true) => Verdict::Retire,
         (true, false) => Verdict::Keep("not merged".to_owned()),
         (false, _) => Verdict::Keep("unpushed commits".to_owned()),
     })
+}
+
+/// A worktree's last patch scan.
+struct Scan {
+    /// HEAD and the remote-tracking refs it compared, hashed.
+    of: u64,
+    at_risk: usize,
+}
+
+static SCANS: Mutex<Option<HashMap<PathBuf, Scan>>> = Mutex::new(None);
+
+fn scans() -> MutexGuard<'static, Option<HashMap<PathBuf, Scan>>> {
+    SCANS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Forgets the scans of worktrees that are gone.
+pub fn forget_scans(home: &Path, found: &[Found]) {
+    if let Some(scans) = scans().as_mut() {
+        let kept: HashSet<&Path> = found.iter().map(|found| found.path.as_path()).collect();
+        scans.retain(|path, _| !path.starts_with(home) || kept.contains(path.as_path()));
+    }
+}
+
+/// What `at_risk` says of the worktree whose HEAD is `tip`, again only when HEAD or a remote ref
+/// changed. `None` when `left`, the scans this sweep may still run, is 0.
+fn scanned(path: &Path, tip: &str, left: &mut usize) -> Result<Option<usize>, String> {
+    let refs = soon(git(path).args([
+        "for-each-ref",
+        "--format=%(objectname) %(refname)",
+        "refs/remotes",
+    ]))?;
+    let mut hasher = DefaultHasher::new();
+    (tip, refs).hash(&mut hasher);
+    let of = hasher.finish();
+    if let Some(scan) = scans().as_ref().and_then(|scans| scans.get(path))
+        && scan.of == of
+    {
+        return Ok(Some(scan.at_risk));
+    }
+    if *left == 0 {
+        return Ok(None);
+    }
+    *left -= 1;
+    let at_risk = at_risk(path, None, SCAN, PATCHES)?;
+    scans()
+        .get_or_insert_default()
+        .insert(path.to_owned(), Scan { of, at_risk });
+    Ok(Some(at_risk))
 }
 
 /// The disk the folder takes, in bytes, without following symbolic links.
@@ -129,12 +202,6 @@ pub fn size(path: &Path) -> u64 {
         .sum::<u64>()
 }
 
-/// Why the worktree of an asleep task must stay, or `None` when it can retire. Retiring keeps the
-/// branch in the clone, so its commits need not be pushed.
-pub fn retire_blocker(home: &Path, found: &Found) -> Option<String> {
-    unsettled(home, found, &[]).unwrap_or_else(|error| Some(format!("cannot check: {error}")))
-}
-
 /// The folders of `build` that exist in the worktree, each with the disk it takes in bytes, or why
 /// none may go: the same checks as a retirement, where untracked files inside `build` do not count.
 /// A folder in `skip`, or one that must stay, is left out. It walks every file, so call it off the
@@ -152,7 +219,7 @@ pub fn build_output(
         .iter()
         .map(|folder| found.path.join(folder))
         .filter(|path| !skip.contains(path))
-        .filter(|path| deletable(found, path).is_ok() && no_repository(path).is_ok())
+        .filter(|path| deletable(found, path).is_ok() && no_repository(path, None).is_ok())
         .map(|path| {
             let bytes = size(&path);
             (path, bytes)
@@ -175,15 +242,17 @@ fn deletable(found: &Found, path: &Path) -> Result<(), String> {
             path.display()
         ));
     }
-    unmounted(path)?;
+    unmounted(path, &mountinfo)?;
     let nested = || Err(format!("{} is in a nested repository", path.display()));
     let within = || rest.ancestors().filter(|part| !part.as_os_str().is_empty());
     if within().any(|part| fs::symlink_metadata(worktree.join(part).join(".git")).is_ok()) {
         return nested();
     }
-    let staged = run(git(worktree)
-        .args(["ls-files", "--stage", "-z", "--"])
-        .args(within()))?;
+    let staged = soon(
+        git(worktree)
+            .args(["ls-files", "--stage", "-z", "--"])
+            .args(within()),
+    )?;
     let gitlink = |entry: &str| {
         entry
             .strip_prefix("160000 ")
@@ -193,7 +262,7 @@ fn deletable(found: &Found, path: &Path) -> Result<(), String> {
     if staged.split('\0').any(gitlink) {
         return nested();
     }
-    let tracked = run(git(worktree).args(["ls-files", "--"]).arg(rest))?;
+    let tracked = soon(git(worktree).args(["ls-files", "--"]).arg(rest))?;
     if !tracked.is_empty() {
         return Err(format!("{} holds tracked files", path.display()));
     }
@@ -203,15 +272,18 @@ fn deletable(found: &Found, path: &Path) -> Result<(), String> {
 /// Why the folder `path`, already moved aside, must not be deleted: a mount is at or under it, or it
 /// holds a git repository. It walks every file, so call it off the tick.
 pub fn expendable(path: &Path) -> Result<(), String> {
-    unmounted(path)?;
-    no_repository(path)
+    unmounted(path, &mountinfo)?;
+    no_repository(path, None)
 }
 
 /// Deletes the folder `path`, which `expendable` allows. The `tmp` of a cargo target goes first, so
 /// what a stopped delete leaves still has the tag that exempts the repositories in it.
 pub fn discard(path: &Path) -> Result<(), String> {
     let gone = |path: &Path| {
-        remove_sealed(path);
+        unseal(path, None);
+        // The walk takes a while, in which a mount can appear.
+        unmounted(path, &mountinfo)?;
+        let _ = fs::remove_dir_all(path);
         match fs::symlink_metadata(path) {
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
             _ => Err(format!("cannot delete {}", path.display())),
@@ -236,15 +308,30 @@ fn scratch(path: &Path) -> Option<PathBuf> {
     cargo.then_some(tmp)
 }
 
-/// Refuses a folder with a `.git` entry in it, except in a cargo target's `tmp`.
-fn no_repository(path: &Path) -> Result<(), String> {
+/// How long the loop walks the files of a worktree.
+const WALK: Duration = Duration::from_secs(10);
+
+fn slow_walk(path: &Path) -> String {
+    format!(
+        "{}: its files take over {}s to check",
+        path.display(),
+        WALK.as_secs()
+    )
+}
+
+/// Refuses a folder with a `.git` entry or a bare repository in it, except in a cargo target's `tmp`.
+/// It also refuses one it cannot walk by `deadline`.
+fn no_repository(path: &Path, deadline: Option<Instant>) -> Result<(), String> {
     let scratch = scratch(path);
     let mut folders = vec![path.to_path_buf()];
     while let Some(folder) = folders.pop() {
         let unread = |error| format!("cannot read {}: {error}", folder.display());
         for entry in fs::read_dir(&folder).map_err(unread)? {
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                return Err(slow_walk(path));
+            }
             let entry = entry.map_err(unread)?;
-            if entry.file_name() == ".git" {
+            if entry.file_name() == ".git" || entry.file_name() == "HEAD" && bare(&folder) {
                 return Err(format!("{} holds a git repository", folder.display()));
             }
             if entry.file_type().map_err(unread)?.is_dir() && Some(entry.path()) != scratch {
@@ -255,11 +342,160 @@ fn no_repository(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether `folder` is laid out as a bare repository.
+fn bare(folder: &Path) -> bool {
+    ["HEAD", "objects", "refs"]
+        .iter()
+        .all(|name| fs::symlink_metadata(folder.join(name)).is_ok())
+}
+
+/// Refuses a worktree whose ignored files hold a repository, as `no_repository` does, or with a
+/// `.git` in a folder of tracked files. A tracked folder laid out as a bare repository is on the
+/// branch.
+fn no_unsaved_repository(worktree: &Path, deadline: Instant) -> Result<(), String> {
+    let tracked = soon(git(worktree).args(["ls-files", "-z"]))?;
+    let folders: HashSet<&Path> = tracked
+        .split('\0')
+        .flat_map(|file| Path::new(file).ancestors().skip(1))
+        .filter(|folder| !folder.as_os_str().is_empty())
+        .collect();
+    for folder in folders {
+        if Instant::now() >= deadline {
+            return Err(slow_walk(worktree));
+        }
+        let folder = worktree.join(folder);
+        if fs::symlink_metadata(folder.join(".git")).is_ok() {
+            return Err(format!("{} holds a git repository", folder.display()));
+        }
+    }
+    let ignored = soon(git(worktree).args([
+        "--no-optional-locks",
+        "ls-files",
+        "--others",
+        "--ignored",
+        "--exclude-standard",
+        "--directory",
+        "-z",
+    ]))?;
+    for entry in ignored.split('\0').filter(|entry| !entry.is_empty()) {
+        if Instant::now() >= deadline {
+            return Err(slow_walk(worktree));
+        }
+        let path = worktree.join(entry);
+        let meta = fs::symlink_metadata(&path)
+            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        if meta.is_dir() {
+            no_repository(&path, Some(deadline))?;
+        }
+        let part = ["HEAD", "objects", "refs"]
+            .iter()
+            .any(|name| path.file_name().is_some_and(|file| file == *name));
+        if let Some(parent) = path.parent().filter(|parent| part && bare(parent)) {
+            return Err(format!("{} holds a git repository", parent.display()));
+        }
+    }
+    Ok(())
+}
+
+/// As `no_repository` for a worktree without its gitdir, whose own `.git` does not count.
+pub(crate) fn orphan_without_repository(path: &Path) -> Result<(), String> {
+    let deadline = Instant::now() + WALK;
+    let unread = |error| format!("cannot read {}: {error}", path.display());
+    for entry in fs::read_dir(path).map_err(unread)? {
+        if Instant::now() >= deadline {
+            return Err(slow_walk(path));
+        }
+        let entry = entry.map_err(unread)?;
+        if entry.file_name() != ".git" && entry.file_type().map_err(unread)?.is_dir() {
+            no_repository(&entry.path(), Some(deadline))?;
+        }
+    }
+    Ok(())
+}
+
+/// Reads a `mountinfo` table.
+type Mounts<'a> = &'a dyn Fn() -> std::io::Result<Vec<u8>>;
+
+pub(crate) fn mountinfo() -> std::io::Result<Vec<u8>> {
+    fs::read("/proc/self/mountinfo")
+}
+
+/// Removes the checkout `path` of `clone`, whatever it holds but a mount.
+pub fn remove_checkout(clone: &Path, path: &Path) -> Result<(), String> {
+    unmounted(path, &mountinfo)?;
+    run(git(clone).args(["worktree", "remove", "--force"]).arg(path)).map(drop)
+}
+
+/// Deletes the folder `path` unless a mount is at or under it.
+pub fn remove_unmounted(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    unmounted(path, &mountinfo)?;
+    fs::remove_dir_all(path).map_err(|error| format!("cannot delete {}: {error}", path.display()))
+}
+
+/// The folder of `home` a folder moves to before its delete on a thread.
+pub const RECLAIM: &str = "reclaim";
+
+/// `home/reclaim`, made when absent. Anything but a real folder there is refused, since a symlink
+/// would lead the delete out of `home`.
+pub fn reclaim_folder(home: &Path) -> Result<PathBuf, String> {
+    let folder = home.join(RECLAIM);
+    match fs::symlink_metadata(&folder) {
+        Ok(meta) if meta.is_dir() => Ok(folder),
+        Ok(_) => Err(format!("{} is not a folder", folder.display())),
+        Err(_) => match fs::create_dir(&folder) {
+            Ok(()) => Ok(folder),
+            Err(error) => Err(format!("cannot make {}: {error}", folder.display())),
+        },
+    }
+}
+
+/// A path in `home/reclaim` for a folder of `task`, as the sweep names what it deletes there.
+pub fn reclaim_path(home: &Path, task: i64) -> Result<PathBuf, String> {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    Ok(reclaim_folder(home)?.join(format!("{task}-{stamp:018}")))
+}
+
+/// Deletes the task folder `path`, a worktree without its gitdir that holds no repository: a rename,
+/// into `home/reclaim` or beside it on another filesystem, then a thread. It stays when neither
+/// works, and the caller moves it.
+pub(crate) fn discard_aside(home: &Path, path: &Path) {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let Some(task) = name.rsplit('-').next().and_then(|id| id.parse().ok()) else {
+        return;
+    };
+    let Ok(aside) = reclaim_path(home, task) else {
+        return;
+    };
+    let aside = match fs::rename(path, &aside) {
+        Ok(()) => aside,
+        Err(error) if error.kind() == ErrorKind::CrossesDevices => {
+            let beside = path.with_file_name(aside.file_name().unwrap_or_default());
+            if fs::rename(path, &beside).is_err() {
+                return;
+            }
+            beside
+        }
+        Err(_) => return,
+    };
+    // Its own link would keep the sweep from deleting what a stopped daemon leaves.
+    let _ = fs::remove_file(aside.join(".git"));
+    std::thread::spawn(move || {
+        if unmounted(&aside, &mountinfo).is_ok() {
+            let _ = discard(&aside);
+        }
+    });
+}
+
 /// Refuses a folder with a mount at or under it, which a rename carries along and a delete empties.
-fn unmounted(path: &Path) -> Result<(), String> {
+pub(crate) fn unmounted(path: &Path, mounts: Mounts) -> Result<(), String> {
     let unread = |error| format!("cannot check {} for mounts: {error}", path.display());
     let real = fs::canonicalize(path).map_err(unread)?;
-    let table = fs::read("/proc/self/mountinfo").map_err(unread)?;
+    let table = mounts().map_err(unread)?;
     match mount_under(&table, &real) {
         Some(mount) => Err(format!("{} is a mount", mount.display())),
         None => Ok(()),
@@ -339,8 +575,41 @@ pub fn set_aside(
 /// The branch stays even once pushed, since the sweep fetches remote refs without `--prune` and a
 /// reopen adds the worktree back from it.
 pub fn retire(home: &Path, found: &Found) -> Result<(), String> {
+    retire_under(home, found, &mountinfo)
+}
+
+/// Why the worktree must stay although its task is done with it: what `unsettled` says, a mount
+/// under it, or a repository its branch does not hold.
+pub fn removable(home: &Path, found: &Found) -> Result<(), String> {
+    as_one(|| removable_under(home, found, &mountinfo))
+}
+
+fn removable_under(home: &Path, found: &Found, mounts: Mounts) -> Result<(), String> {
+    // So the walk enters no mount.
+    unmounted(&found.path, mounts)?;
+    no_unsaved_repository(&found.path, Instant::now() + WALK)?;
+    unsettled(home, found, &[])?.map_or(Ok(()), Err)
+}
+
+/// Removes the worktree that `removable` just allowed.
+pub fn remove_allowed(home: &Path, found: &Found) -> Result<(), String> {
+    remove_allowed_under(home, found, &mountinfo)
+}
+
+fn retire_under(home: &Path, found: &Found, mounts: Mounts) -> Result<(), String> {
+    as_one(|| removable_under(home, found, mounts))?;
+    remove_allowed_under(home, found, mounts)
+}
+
+fn remove_allowed_under(home: &Path, found: &Found, mounts: Mounts) -> Result<(), String> {
+    // The walk and git take a while, in which a mount can appear.
+    unmounted(&found.path, mounts)?;
     // A read-only folder under an ignored `target/` would stop git halfway, with the gitdir gone.
-    unseal(&found.path);
+    if !unseal(&found.path, Some(Instant::now() + WALK)) {
+        return Err(slow_walk(&found.path));
+    }
+    // The walk above takes a while too.
+    unmounted(&found.path, mounts)?;
     run(git(&found.clone(home))
         .args(["worktree", "remove"])
         .arg(&found.path))
@@ -358,11 +627,11 @@ fn unsettled(home: &Path, found: &Found, build: &[String]) -> Result<Option<Stri
         return Ok(Some(format!("not a worktree of {}", clone.display())));
     }
     let branch = found.branch();
-    if run(git(path).args(["branch", "--show-current"]))?.trim() != branch {
+    if soon(git(path).args(["branch", "--show-current"]))?.trim() != branch {
         return Ok(Some(format!("not on branch {branch}")));
     }
     // Without it, the walk's status could hold `index.lock` while a run starts.
-    let status = run(git(path).args([
+    let status = soon(git(path).args([
         "--no-optional-locks",
         "status",
         "--porcelain",
@@ -475,15 +744,15 @@ pub fn remove(home: &Path, found: &Found) -> Result<(), String> {
     let clone = found.clone(home);
     let branch = found.branch();
     // A task branch tracks nothing, so `-d` alone would judge the merge against the clone's HEAD.
-    let merged =
-        run(git(&clone).args(["merge-base", "--is-ancestor", &branch, "origin/HEAD"])).is_ok();
+    let merged = is_ancestor(&clone, &branch, "origin/HEAD") == Ok(true);
     let delete = if merged { "-D" } else { "-d" };
-    run(git(&clone).args(["branch", delete, &branch])).map(drop)
+    soon(git(&clone).args(["branch", delete, &branch])).map(drop)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::remove_sealed;
     use proptest::prelude::*;
 
     const TABLE: &[u8] = b"22 1 8:1 / / rw - ext4 /dev/sda1 rw\n\
@@ -512,6 +781,189 @@ mod tests {
         assert!(refused.ends_with("is a mount"), "{refused}");
         let refused = expendable(proc).unwrap_err();
         assert!(refused.ends_with("is a mount"), "{refused}");
+        let refused = remove_unmounted(proc).unwrap_err();
+        assert!(refused.ends_with("is a mount"), "{refused}");
+        let refused = remove_checkout(Path::new("/"), proc).unwrap_err();
+        assert!(refused.ends_with("is a mount"), "{refused}");
+    }
+
+    /// A home with a clone of `o/n` and task 1's worktree, which ignores `target` and `HEAD`.
+    struct Home(PathBuf);
+
+    impl Drop for Home {
+        fn drop(&mut self) {
+            remove_sealed(&self.0);
+        }
+    }
+
+    impl Home {
+        fn new(name: &str) -> (Home, Found) {
+            let dir =
+                std::env::temp_dir().join(format!("priory-removal-{name}-{}", std::process::id()));
+            remove_sealed(&dir);
+            let clone = dir.join("repos/o/n");
+            fs::create_dir_all(clone.join("fixture/refs")).unwrap();
+            fs::create_dir_all(clone.join("fixture/objects")).unwrap();
+            for file in ["HEAD", "refs/a", "objects/a"] {
+                fs::write(clone.join("fixture").join(file), "x\n").unwrap();
+            }
+            fs::write(clone.join(".gitignore"), "target\n/split/HEAD\n").unwrap();
+            let path = dir.join("worktrees/o/n/1");
+            sh(&clone, &["init", "-q"]);
+            sh(&clone, &["add", "."]);
+            sh(&clone, &["commit", "-q", "-m", "a"]);
+            let tree = path.to_str().unwrap();
+            sh(&clone, &["worktree", "add", "-q", "-b", "priory/1", tree]);
+            let found = Found {
+                path,
+                repo: "o/n".to_owned(),
+                name: "1".to_owned(),
+            };
+            (Home(dir), found)
+        }
+    }
+
+    fn sh(dir: &Path, args: &[&str]) {
+        run(git(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args))
+        .unwrap();
+    }
+
+    #[test]
+    fn a_removal_with_a_mount_under_the_worktree_touches_nothing() {
+        let (home, found) = Home::new("mount");
+        let mount = found.path.join("target/mnt");
+        fs::create_dir_all(&mount).unwrap();
+        fs::write(mount.join("keep"), "x\n").unwrap();
+        fs::set_permissions(&mount, fs::Permissions::from_mode(0o555)).unwrap();
+        let point = fs::canonicalize(&mount).unwrap();
+        let table = format!("23 22 0:5 / {} rw - tmpfs tmpfs rw\n", point.display());
+
+        let read = || Ok(table.clone().into_bytes());
+        let refused = retire_under(&home.0, &found, &read).unwrap_err();
+
+        assert_eq!(refused, format!("{} is a mount", point.display()));
+        let failed = || Err(ErrorKind::PermissionDenied.into());
+        let refused = retire_under(&home.0, &found, &failed).unwrap_err();
+        assert!(refused.contains("for mounts"), "{refused}");
+        assert!(mount.join("keep").exists());
+        let mode = fs::metadata(&mount).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o555,
+            "nothing is made writable through a mount"
+        );
+        assert!(home.0.join("repos/o/n/.git/worktrees/1").exists());
+
+        let beside = || Ok(b"23 22 0:5 / /elsewhere rw - tmpfs tmpfs rw\n".to_vec());
+        retire_under(&home.0, &found, &beside).unwrap();
+        assert!(!found.path.exists());
+    }
+
+    #[test]
+    fn a_removal_keeps_a_worktree_whose_ignored_files_hold_a_repository() {
+        let (home, found) = Home::new("repository");
+        for made in [&["-q", "--bare", "target/o.git"][..], &["-q", "target/n"]] {
+            sh(&found.path, &[&["init"], made].concat());
+            let folder = found.path.join(made[made.len() - 1]);
+            let refused = retire(&home.0, &found).unwrap_err();
+            assert_eq!(
+                refused,
+                format!("{} holds a git repository", folder.display())
+            );
+            fs::remove_dir_all(folder).unwrap();
+        }
+        let split = found.path.join("split");
+        for folder in ["objects", "refs"] {
+            fs::create_dir_all(split.join(folder)).unwrap();
+            fs::write(split.join(folder).join("a"), "x\n").unwrap();
+        }
+        sh(&found.path, &["add", "."]);
+        sh(&found.path, &["commit", "-q", "-m", "split"]);
+        fs::write(split.join("HEAD"), "x\n").unwrap();
+        let refused = retire(&home.0, &found).unwrap_err();
+        assert!(
+            refused.ends_with("split holds a git repository"),
+            "{refused}"
+        );
+        fs::remove_file(split.join("HEAD")).unwrap();
+
+        sh(&found.path, &["init", "-q", "fixture"]);
+        let refused = retire(&home.0, &found).unwrap_err();
+        assert!(
+            refused.ends_with("fixture holds a git repository"),
+            "{refused}"
+        );
+        fs::remove_dir_all(found.path.join("fixture/.git")).unwrap();
+
+        retire(&home.0, &found).unwrap();
+        assert!(!found.path.exists(), "the tracked fixture does not count");
+    }
+
+    #[test]
+    fn a_mount_that_appears_after_the_checks_still_stops_the_removal() {
+        let (home, found) = Home::new("late-mount");
+        removable(&home.0, &found).unwrap();
+        let point = fs::canonicalize(&found.path).unwrap().join("target");
+        fs::create_dir_all(&point).unwrap();
+        let table = format!("23 22 0:5 / {} rw - tmpfs tmpfs rw\n", point.display());
+
+        let refused =
+            remove_allowed_under(&home.0, &found, &|| Ok(table.clone().into_bytes())).unwrap_err();
+
+        assert_eq!(refused, format!("{} is a mount", point.display()));
+        assert!(found.path.exists());
+        remove_allowed(&home.0, &found).unwrap();
+        assert!(!found.path.exists());
+    }
+
+    #[test]
+    fn a_walk_past_its_deadline_keeps_the_worktree() {
+        let (_home, found) = Home::new("slow-walk");
+        fs::create_dir_all(found.path.join("target/deep")).unwrap();
+        let now = Some(Instant::now());
+
+        let refused = no_repository(&found.path.join("target"), now).unwrap_err();
+
+        assert!(
+            refused.ends_with("its files take over 10s to check"),
+            "{refused}"
+        );
+        assert!(no_unsaved_repository(&found.path, Instant::now()).is_err());
+        assert!(!unseal(&found.path, now), "the delete does not start");
+        no_unsaved_repository(&found.path, Instant::now() + WALK).unwrap();
+    }
+
+    #[test]
+    fn a_patch_scan_runs_again_only_when_head_or_a_remote_ref_changed() {
+        let (_home, found) = Home::new("scans");
+        let tree = &found.path;
+        let commit = |text: &str| {
+            fs::write(tree.join("a"), text).unwrap();
+            sh(tree, &["add", "a"]);
+            sh(tree, &["commit", "-q", "-m", text]);
+            run(git(tree).args(["rev-parse", "HEAD"]))
+                .unwrap()
+                .trim()
+                .to_owned()
+        };
+        sh(tree, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        let tip = commit("one");
+        let mut left = 0;
+        assert_eq!(scanned(tree, &tip, &mut left), Ok(None), "none left");
+        left = 5;
+        assert_eq!(scanned(tree, &tip, &mut left), Ok(Some(1)));
+        assert_eq!(scanned(tree, &tip, &mut left), Ok(Some(1)));
+        assert_eq!(left, 4, "the second answer is the first one's");
+
+        let tip = commit("two");
+        assert_eq!(scanned(tree, &tip, &mut left), Ok(Some(2)));
+        assert_eq!(left, 3, "HEAD moved");
+        sh(tree, &["update-ref", "refs/remotes/origin/x", "HEAD"]);
+        assert_eq!(scanned(tree, &tip, &mut left), Ok(Some(0)));
+        assert_eq!(left, 2, "a remote ref changed");
     }
 
     proptest! {

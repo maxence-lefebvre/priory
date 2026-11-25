@@ -1,11 +1,17 @@
 //! The folder trust Priory records for its own worktrees and clones, when the factory turns on
 //! `trust_worktrees`, so no run stops on its harness's trust dialog (docs/daemon/sessions.md).
 
-use crate::runtime::{Harness, clone_of};
+use crate::runtime::{Harness, clone_of, command_timeout, fed_raw_within, fed_within, git};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::{ErrorKind, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+use std::sync::{Mutex, PoisonError};
+use std::time::Duration;
 
 /// The Codex profile Priory owns: `$CODEX_HOME/priory-trust.config.toml`, layered by `-p`.
 pub const CODEX_PROFILE: &str = "priory-trust";
@@ -101,52 +107,324 @@ pub fn direnv_folder(home: &Path, session: &str) -> PathBuf {
     home.join("direnv").join(session)
 }
 
-/// Makes direnv trust `worktree` of `repo` and its clone through `folder`, a config folder of
-/// Priory's own: the person's `direnv.toml` with both paths in `[whitelist] exact`, and links to
-/// their `direnvrc` and `lib`. No grant when `direnv` is not on PATH or the worktree has no `.envrc`.
-pub fn direnv(home: &Path, repo: &str, worktree: &Path, folder: &Path) -> Vec<Grant> {
+/// Makes direnv load `worktree` of `repo` through `folder`, a config folder of Priory's own, and
+/// only with the `.envrc` bytes checked here: the folder holds a copy of them, and direnv's allow
+/// files for them in `data`. No grant when `direnv` is not on PATH or the worktree has no `.envrc`.
+/// Refused unless the `.envrc` is the one of commit `base`, or of `repo`'s default branch.
+pub fn direnv(
+    home: &Path,
+    repo: &str,
+    worktree: &Path,
+    base: Option<&str>,
+    folder: &Path,
+) -> Vec<Grant> {
     if !crate::jail::on_path("direnv") || !worktree.join(".envrc").is_file() {
         return Vec::new();
     }
-    // direnv matches `exact` against the path as `direnv exec` gets it, so a symlinked home needs both.
-    let spelled = [worktree.to_path_buf(), home.join("repos").join(repo)];
-    let (worktree, clone) = match own(home, repo, worktree) {
+    let file = folder.join("direnv.toml");
+    let (real, clone) = match own(home, repo, worktree) {
         Ok(paths) => paths,
         Err(why) => return grants(folder, &[worktree], Err(why)),
     };
-    let file = folder.join("direnv.toml");
-    let person = direnv_config();
-    let result = person
-        .as_deref()
-        .ok_or_else(|| "no DIRENV_CONFIG, XDG_CONFIG_HOME or HOME".to_owned())
-        .and_then(|person| {
-            let own = ["direnv.toml", "config.toml"]
-                .map(|name| person.join(name))
-                .into_iter()
-                .find(|file| file.is_file());
-            let text = match &own {
-                Some(own) => fs::read_to_string(own)
-                    .map_err(|error| format!("{}: {error}", own.display()))?,
-                None => String::new(),
-            };
-            let paths = [&spelled[0], &worktree, &spelled[1], &clone].map(PathBuf::as_path);
-            let text = whitelisted(&text, &paths).map_err(|why| match &own {
-                Some(own) => format!("{}: {why}", own.display()),
-                None => why,
-            })?;
-            let failed = |error: std::io::Error| format!("{}: {error}", folder.display());
-            let _ = fs::remove_dir_all(folder);
-            fs::create_dir_all(folder).map_err(failed)?;
-            crate::runtime::write_private(&file, &text).map_err(failed)?;
-            // A link into the person's home that leads on, say into /nix/store, dangles in a jail.
-            for name in ["direnvrc", "lib"] {
-                if let Ok(target) = fs::canonicalize(person.join(name)) {
-                    std::os::unix::fs::symlink(&target, folder.join(name)).map_err(failed)?;
-                }
-            }
-            Ok(Outcome::Granted)
-        });
-    grants(&file, &[&worktree, &clone], result)
+    let result = vouched(&clone, repo, &real, base).and_then(|content| {
+        // direnv hashes the path as `direnv exec` gets it, so a symlinked home needs both.
+        let envrcs = [worktree, &real].map(|path| path.join(".envrc"));
+        if denied(person_data().as_deref(), &envrcs) {
+            return Err("a person denied this .envrc with direnv deny".to_owned());
+        }
+        let person = direnv_config().ok_or("no DIRENV_CONFIG, XDG_CONFIG_HOME or HOME")?;
+        if linked(home) {
+            return Err("the direnv folder in Priory home is a symlink".to_owned());
+        }
+        prepare(folder, &person, &content, &envrcs).map(|()| Outcome::Granted)
+    });
+    grants(&file, &[&real], result)
+}
+
+/// The `direnvrc` of a run's folder. direnv reads an `.envrc` once to hash it and again to run it,
+/// so it makes direnv's first `source_env` run the copy that Priory checked. The person's files and
+/// the `.envrc` see the person's `XDG_DATA_HOME`, which direnv alone gets replaced. The harness keeps
+/// `DIRENV_CONFIG`, so only the daemon's load may do this. `PRIORY_DATA_HOME` tells it too, since
+/// direnv's revert of an `.envrc` that exports `XDG_DATA_HOME` brings the private one back.
+const DIRENVRC: &str = r#"priory_folder=$DIRENV_CONFIG
+priory_data=
+if [[ ${XDG_DATA_HOME-} == "$priory_folder/data" ]]; then
+  [[ -z ${PRIORY_DATA_HOME+set} ]] || priory_data=$XDG_DATA_HOME
+  if [[ -n ${PRIORY_DATA_HOME-} ]]; then export XDG_DATA_HOME=$PRIORY_DATA_HOME; else unset XDG_DATA_HOME; fi
+fi
+if [[ -f $priory_folder/direnvrc.person ]]; then
+  source "$priory_folder/direnvrc.person"
+elif [[ -f $HOME/.direnvrc ]]; then
+  source "$HOME/.direnvrc"
+fi
+if [[ -n $priory_data ]]; then
+  priory_source_env=$(declare -f source_env)
+  source_env() {
+    eval "$priory_source_env"
+    watch_file "$1"
+    pushd "${1%/*}" >/dev/null || return 1
+    . "$priory_folder/envrc"
+    [[ ${XDG_DATA_HOME-} != "${PRIORY_DATA_HOME-}" ]] || export XDG_DATA_HOME=$priory_data
+    popd >/dev/null || return 1
+  }
+fi
+"#;
+
+/// Writes the run's direnv config folder for the checked `content` of the `.envrc` at `envrcs`,
+/// from the config folder `person`.
+fn prepare(folder: &Path, person: &Path, content: &[u8], envrcs: &[PathBuf]) -> Result<(), String> {
+    let own = ["direnv.toml", "config.toml"]
+        .into_iter()
+        .find(|name| person.join(name).is_file());
+    let text = match own {
+        Some(name) => {
+            let text = fs::read_to_string(person.join(name))
+                .map_err(|error| format!("{name}: {error}"))?;
+            unlisted(&text).map_err(|why| format!("{name}: {why}"))?
+        }
+        None => String::new(),
+    };
+    let failed = |error: std::io::Error| format!("the run's direnv folder: {error}");
+    let private = crate::runtime::write_private;
+    let _ = fs::remove_dir_all(folder);
+    let allow = folder.join("data/direnv/allow");
+    fs::create_dir_all(&allow).map_err(failed)?;
+    private(&folder.join("direnv.toml"), text.as_bytes()).map_err(failed)?;
+    private(&folder.join("direnvrc"), DIRENVRC.as_bytes()).map_err(failed)?;
+    private(&folder.join("envrc"), content).map_err(failed)?;
+    for envrc in envrcs {
+        let path = line_of(envrc);
+        private(&allow.join(sha256(&[&path, content])), &path).map_err(failed)?;
+    }
+    // A link into the person's home that leads on, say into /nix/store, dangles in a jail.
+    for (name, link) in [("direnvrc", PERSONS_DIRENVRC), ("lib", "lib")] {
+        if let Ok(target) = fs::canonicalize(person.join(name)) {
+            std::os::unix::fs::symlink(&target, folder.join(link)).map_err(failed)?;
+        }
+    }
+    Ok(())
+}
+
+/// The link in a run's direnv folder to the person's `direnvrc`.
+pub(crate) const PERSONS_DIRENVRC: &str = "direnvrc.person";
+
+fn line_of(path: &Path) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt;
+    [path.as_os_str().as_bytes(), b"\n"].concat()
+}
+
+fn sha256(parts: &[&[u8]]) -> String {
+    Sha256::digest(parts.concat())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// Whether the person ran `direnv deny` on one of `envrcs`, as their data folder `data` says.
+fn denied(data: Option<&Path>, envrcs: &[PathBuf]) -> bool {
+    data.is_some_and(|data| {
+        envrcs.iter().any(|envrc| {
+            data.join("direnv/deny")
+                .join(sha256(&[&line_of(envrc)]))
+                .exists()
+        })
+    })
+}
+
+/// The content of `worktree`'s `.envrc`, refused unless it is a file with the content of the one at
+/// `base`, or on `repo`'s default branch.
+fn vouched(
+    clone: &Path,
+    repo: &str,
+    worktree: &Path,
+    base: Option<&str>,
+) -> Result<Vec<u8>, String> {
+    let path = worktree.join(".envrc");
+    let failed = |error: std::io::Error| format!(".envrc: {error}");
+    if !fs::symlink_metadata(&path).map_err(failed)?.is_file() {
+        return Err(".envrc is not a regular file".to_owned());
+    }
+    let content = crate::runtime::read_regular(&path, ENVRC_CAP + 1).map_err(failed)?;
+    if content.len() as u64 > ENVRC_CAP {
+        return Err(format!(".envrc is over {ENVRC_CAP} bytes"));
+    }
+    let unchecked = |why: String| format!(".envrc could not be checked: {why}");
+    let blob = hash("blob", content.clone()).map_err(unchecked)?;
+    let at_base = base.map(|base| envrc_at(clone, base));
+    if matches!(&at_base, Some(Ok(Some(at))) if *at == blob) {
+        return Ok(content);
+    }
+    // No commit can vouch for an untracked file, so GitHub is not asked.
+    let listed = output(
+        "ls-files",
+        git(worktree).args(["ls-files", "--error-unmatch", "--", ".envrc"]),
+        None,
+    )
+    .map_err(unchecked)?;
+    if listed.status.code() == Some(1) {
+        return Err(
+            ".envrc is untracked, so neither the commit the task started from nor the default \
+             branch vouches for it"
+                .to_owned(),
+        );
+    }
+    succeeded("ls-files", listed).map_err(unchecked)?;
+    let on_base = match at_base {
+        Some(Ok(_)) => ".envrc differs from the commit the task started from".to_owned(),
+        Some(Err(why)) => {
+            format!(".envrc could not be checked against the commit the task started from ({why})")
+        }
+        None => "no commit the task started from is known to check .envrc against".to_owned(),
+    };
+    match envrc_on_trunk(clone, repo) {
+        Ok(Some(at)) if at == blob => Ok(content),
+        Ok(_) => Err(format!("{on_base}, and it differs from the default branch")),
+        Err(why) => Err(format!("{on_base}, and the default branch {why}")),
+    }
+}
+
+/// The blob id of the `.envrc` on `repo`'s default branch as GitHub has it. An agent can write the
+/// clone, so its objects are hashed again. The error says what the default branch could not be.
+fn envrc_on_trunk(clone: &Path, repo: &str) -> Result<Option<String>, String> {
+    // The error holds the command line, which names paths.
+    let unread = |why: String| {
+        eprintln!("priory daemon: the default branch of {repo}: {why}");
+        "could not be read".to_owned()
+    };
+    let trunk = crate::runtime::trunk(repo, TRUNK_WITHIN).map_err(unread)?;
+    envrc_at(clone, &trunk).or_else(|first| {
+        fed_raw_within(
+            git(clone).args(["fetch", "--quiet", "origin", &trunk]),
+            None,
+            TRUNK_WITHIN,
+        )
+        .map_err(|why| format!("{}, after its check failed ({first})", unread(why)))?;
+        envrc_at(clone, &trunk).map_err(|why| format!("could not be checked ({why})"))
+    })
+}
+
+/// The largest `.envrc` a run can start in.
+const ENVRC_CAP: u64 = 1 << 20;
+
+/// How long each of the default branch's two reads may take.
+// shortcut: they hold the daemon's thread, move them off when one often nears the limit.
+const TRUNK_WITHIN: Duration = Duration::from_secs(10);
+
+/// The output of `command`, git's `name`. The error names no path, since a person reads it on the
+/// task.
+fn output(name: &str, command: &mut Command, input: Option<Vec<u8>>) -> Result<Output, String> {
+    fed_within(command, input, command_timeout())
+        .map_err(|error| format!("git {name}: {error}"))?
+        .ok_or_else(|| format!("git {name}: timed out"))
+}
+
+/// The stdout of git's `name`, or its exit code as a shell gives it, so a crash is 128 and the
+/// signal.
+fn succeeded(name: &str, output: Output) -> Result<Vec<u8>, String> {
+    if output.status.success() {
+        return Ok(output.stdout);
+    }
+    let code = output
+        .status
+        .code()
+        .or_else(|| output.status.signal().map(|signal| 128 + signal))
+        .unwrap_or(-1);
+    eprintln!(
+        "priory daemon: git {name}: exit {code}: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    Err(format!("git {name}: exit {code}"))
+}
+
+/// The id git gives an object of `kind` with `content`.
+fn hash(kind: &str, content: Vec<u8>) -> Result<String, String> {
+    // Outside a repository, git's format check crashes on a tree with `.gitattributes`.
+    let hashed = output(
+        "hash-object",
+        git(Path::new("/")).args(["hash-object", "--literally", "-t", kind, "--stdin"]),
+        Some(content),
+    )?;
+    let id = succeeded("hash-object", hashed)?;
+    Ok(String::from_utf8_lossy(&id).trim().to_owned())
+}
+
+/// The content of the object `id` of `clone`, hashed again: git does not check a loose object on
+/// read, and an agent can write one.
+fn object(clone: &Path, kind: &str, id: &str) -> Result<Vec<u8>, String> {
+    let read = output(
+        "cat-file",
+        git(clone).args(["--no-replace-objects", "cat-file", kind, id]),
+        None,
+    )?;
+    let content = succeeded("cat-file", read)?;
+    if hash(kind, content.clone())? != id {
+        return Err(format!("{kind} {id} is forged"));
+    }
+    Ok(content)
+}
+
+/// The blob id of the regular file `.envrc` at `commit` of `clone`, if it has one.
+fn envrc_at(clone: &Path, commit: &str) -> Result<Option<String>, String> {
+    let content = object(clone, "commit", commit)?;
+    let tree = content
+        .strip_prefix(b"tree ")
+        .and_then(|rest| rest.split(|byte| *byte == b'\n').next())
+        .and_then(|id| std::str::from_utf8(id).ok())
+        .ok_or_else(|| format!("commit {commit} names no tree"))?;
+    let entries = object(clone, "tree", tree)?;
+    Ok(entry(&entries, b".envrc", tree.len() / 2))
+}
+
+/// The id of the regular file `name` in `tree`, git's raw tree of ids `width` bytes long.
+fn entry(mut tree: &[u8], name: &[u8], width: usize) -> Option<String> {
+    while !tree.is_empty() {
+        let nul = tree.iter().position(|byte| *byte == 0)?;
+        let id = tree.get(nul + 1..nul + 1 + width)?;
+        let space = tree[..nul].iter().position(|byte| *byte == b' ')?;
+        if &tree[space + 1..nul] == name {
+            let file = matches!(&tree[..space], b"100644" | b"100755");
+            return file.then(|| id.iter().map(|byte| format!("{byte:02x}")).collect());
+        }
+        tree = &tree[nul + 1 + width..];
+    }
+    None
+}
+
+/// The direnv folders whose failed removal is already logged.
+static KEPT: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
+
+/// Logs `why` the daemon keeps `path`, once.
+fn kept(path: PathBuf, why: &dyn std::fmt::Display) {
+    if KEPT
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(path.clone())
+    {
+        eprintln!("priory daemon: {}: {why}", path.display());
+    }
+}
+
+/// Whether the folder under Priory `home` that holds each run's direnv folder is a symlink.
+fn linked(home: &Path) -> bool {
+    home.join("direnv").is_symlink()
+}
+
+/// Removes the folder in `root` of each session that is not `live`. It logs a folder it cannot
+/// remove once.
+pub fn forget(root: &Path, live: &dyn Fn(&str) -> bool) {
+    if root.is_symlink() {
+        return kept(
+            root.to_owned(),
+            &"is a symlink, so nothing in it is removed",
+        );
+    }
+    for entry in fs::read_dir(root).into_iter().flatten().flatten() {
+        if !entry.file_name().to_str().is_some_and(live)
+            && let Err(error) = fs::remove_dir_all(entry.path())
+        {
+            kept(entry.path(), &error);
+        }
+    }
 }
 
 /// The person's own direnv config folder, as direnv finds it.
@@ -160,26 +438,20 @@ fn direnv_config() -> Option<PathBuf> {
     })
 }
 
-/// `text`, a `direnv.toml`, with each of `paths` in `[whitelist] exact`.
-fn whitelisted(text: &str, paths: &[&Path]) -> Result<String, String> {
+/// The person's data folder, where direnv keeps what they denied.
+fn person_data() -> Option<PathBuf> {
+    let set = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
+    set("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| set("HOME").map(|home| PathBuf::from(home).join(".local/share")))
+}
+
+/// `text`, a `direnv.toml`, without its `whitelist`, which skips direnv's check of the content.
+fn unlisted(text: &str) -> Result<String, String> {
     let mut table: toml::Table = text
         .parse()
         .map_err(|error| format!("not TOML, at line {}", line(text, &error)))?;
-    let exact = table
-        .entry("whitelist")
-        .or_insert_with(|| toml::Table::new().into())
-        .as_table_mut()
-        .ok_or("its whitelist is not a table")?
-        .entry("exact")
-        .or_insert_with(|| toml::value::Array::new().into())
-        .as_array_mut()
-        .ok_or("its whitelist.exact is not an array")?;
-    for path in paths {
-        let path: toml::Value = path.display().to_string().into();
-        if !exact.contains(&path) {
-            exact.push(path);
-        }
-    }
+    table.remove("whitelist");
     toml::to_string(&table).map_err(|error| error.to_string())
 }
 
@@ -527,7 +799,7 @@ mod tests {
         Temp(dir)
     }
 
-    fn git(dir: &Path, args: &[&str]) {
+    fn sh_git(dir: &Path, args: &[&str]) {
         let status = std::process::Command::new("git")
             .env("HOME", dir)
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -546,8 +818,8 @@ mod tests {
         let home = dir.path().join("home");
         let clone = home.join("repos/o/r");
         fs::create_dir_all(&clone).unwrap();
-        git(&clone, &["init", "-q"]);
-        git(
+        sh_git(&clone, &["init", "-q"]);
+        sh_git(
             &clone,
             &[
                 "-c",
@@ -563,7 +835,7 @@ mod tests {
         );
         fs::create_dir_all(home.join("worktrees/o/r")).unwrap();
         let worktree = home.join("worktrees/o/r/1");
-        git(
+        sh_git(
             &clone,
             &[
                 "worktree",
@@ -575,7 +847,7 @@ mod tests {
             ],
         );
         let outside = dir.path().join("elsewhere");
-        git(
+        sh_git(
             &clone,
             &[
                 "worktree",
@@ -607,7 +879,7 @@ mod tests {
         fs::create_dir_all(&away).unwrap();
         let elsewhere = away.join("r/1");
         fs::create_dir_all(away.join("r")).unwrap();
-        git(
+        sh_git(
             &clone,
             &[
                 "worktree",
@@ -738,33 +1010,211 @@ mod tests {
     }
 
     #[test]
-    fn a_direnv_whitelist_keeps_the_persons_keys_and_adds_each_path_once() {
-        let text =
-            "[global]\nwarn_timeout = \"1m\"\n[whitelist]\nprefix = [\"/w\"]\nexact = [\"/a\"]\n";
-        let merged = whitelisted(text, &[Path::new("/a"), Path::new("/b")]).unwrap();
-        let table: toml::Table = merged.parse().unwrap();
+    fn a_direnv_toml_loses_its_whitelist_alone() {
+        let text = "[global]\nwarn_timeout = \"1m\"\n[whitelist]\nprefix = [\"/w\"]\n";
+        let table: toml::Table = unlisted(text).unwrap().parse().unwrap();
         assert_eq!(table["global"]["warn_timeout"].as_str(), Some("1m"));
-        assert_eq!(table["whitelist"]["prefix"], toml::Value::from(vec!["/w"]));
-        assert_eq!(
-            table["whitelist"]["exact"],
-            toml::Value::from(vec!["/a", "/b"])
+        assert!(!table.contains_key("whitelist"));
+    }
+
+    #[test]
+    fn a_symlinked_direnv_folder_loses_nothing() {
+        let dir = temp();
+        let [home, other] = ["home", "other"].map(|name| dir.path().join(name));
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(other.join("s")).unwrap();
+        std::os::unix::fs::symlink(&other, home.join("direnv")).unwrap();
+        forget(&home.join("direnv"), &|_| false);
+        assert!(other.join("s").exists());
+    }
+
+    /// Runs real direnv on the files `prepare` writes, as `launch` does.
+    #[test]
+    #[ignore = "needs direnv 2.38 or later on PATH"]
+    fn real_direnv_loads_the_checked_bytes_alone() {
+        let dir = temp();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        let [real, link, folder, person, spool] =
+            ["real", "link", "folder", "person", "spool"].map(|name| root.join(name));
+        for made in [&real, &person, &spool] {
+            fs::create_dir_all(made).unwrap();
+        }
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        // A whitelist over the worktree would load any content.
+        fs::write(
+            person.join("direnv.toml"),
+            format!("[whitelist]\nprefix = [\"{}\"]\n", root.display()),
+        )
+        .unwrap();
+        // The person's direnvrc runs after direnv's hash, as a writer that waits for it would.
+        let late =
+            "[[ ! -e $PRIORY_TEST_LATE ]] || echo 'export V=bad' > \"$PRIORY_TEST_WORK/.envrc\"\n";
+        fs::write(person.join("direnvrc"), late).unwrap();
+        let good = "export V=good D=${XDG_DATA_HOME-unset} P=$PWD\n";
+        let run = |worktree: &Path, content: &str, late: bool, data: Option<&str>| {
+            let envrcs = [&link, &real].map(|path| path.join(".envrc"));
+            prepare(&folder, &person, good.as_bytes(), &envrcs).unwrap();
+            fs::write(real.join(".envrc"), content).unwrap();
+            let marker = root.join("late");
+            let _ = fs::remove_file(&marker);
+            let _ = fs::remove_file(spool.join("direnv.started"));
+            if late {
+                fs::write(&marker, "").unwrap();
+            }
+            let mut command = std::process::Command::new("sh");
+            command
+                .args(["-c", crate::runtime::DIRENV_EXEC])
+                .args([&spool, worktree])
+                .args(["sh", "-c"])
+                .arg("echo ${V-none} ${D-none} ${P-none} ${XDG_DATA_HOME-unset} ${PRIORY_DATA_HOME-gone}")
+                .env_remove("XDG_DATA_HOME")
+                .env_remove("DIRENV_DIFF")
+                .env("DIRENV_CONFIG", &folder)
+                .env("PRIORY_TEST_LATE", &marker)
+                .env("PRIORY_TEST_WORK", &real)
+                .current_dir("/");
+            if let Some(data) = data {
+                command.env("XDG_DATA_HOME", data);
+            }
+            let out = command.output().unwrap();
+            String::from_utf8(out.stdout).unwrap().trim().to_owned()
+        };
+        for worktree in [&real, &link] {
+            let at = real.display();
+            let loaded = run(worktree, good, false, Some("/d"));
+            assert!(loaded.starts_with("good /d "), "{loaded}");
+            assert!(loaded.ends_with(" /d gone"), "{loaded}");
+            let unset = run(worktree, good, false, None);
+            assert!(unset.starts_with("good unset "), "{unset}");
+            assert!(unset.ends_with(" unset gone"), "{unset}");
+            assert_eq!(
+                run(worktree, "export V=bad\n", false, Some("/d")),
+                "none none none /d gone",
+                "{at}"
+            );
+            for _ in 0..20 {
+                let late = run(worktree, good, true, Some("/d"));
+                assert!(late.starts_with("good /d "), "{late}");
+            }
+            assert_eq!(
+                fs::read_to_string(real.join(".envrc")).unwrap(),
+                "export V=bad\n"
+            );
+        }
+
+        // An agent's own loads, from the harness, of files the person allows.
+        let other = root.join("other");
+        fs::create_dir_all(&other).unwrap();
+        let data = root.join("data");
+        let allow = |data: &Path, envrc: &Path, content: &str| {
+            let allow = data.join("direnv/allow");
+            fs::create_dir_all(&allow).unwrap();
+            let path = line_of(envrc);
+            fs::write(allow.join(sha256(&[&path, content.as_bytes()])), &path).unwrap();
+        };
+        let [foreign, edited] =
+            ["other", "edited"].map(|v| format!("export V={v} D=${{XDG_DATA_HOME-unset}}\n"));
+        let custom = root.join("custom");
+        fs::write(other.join(".envrc"), &foreign).unwrap();
+        for data in [&data, &custom] {
+            allow(data, &other.join(".envrc"), &foreign);
+            allow(data, &real.join(".envrc"), &edited);
+        }
+        let exports = format!("export V=good XDG_DATA_HOME={}\n", custom.display());
+        // direnv's revert keeps no value of the person's under an `.envrc` that exports its own.
+        for (good, seen) in [
+            ("export V=good\n", data.to_str().unwrap()),
+            (&exports, "unset"),
+        ] {
+            let envrc = real.join(".envrc");
+            prepare(
+                &folder,
+                &person,
+                good.as_bytes(),
+                std::slice::from_ref(&envrc),
+            )
+            .unwrap();
+            fs::write(&envrc, good).unwrap();
+            let _ = fs::remove_file(root.join("late"));
+            let out = std::process::Command::new("sh")
+                .args(["-c", crate::runtime::DIRENV_EXEC])
+                .args([&spool, &real])
+                .args(["sh", "-c"])
+                .arg(
+                    r#"echo $V; direnv exec "$0" sh -c 'echo $V $D'
+printf %s "$EDITED" > "$1/.envrc"; direnv exec "$1" sh -c 'echo $V $D'"#,
+                )
+                .args([&other, &real])
+                .env("XDG_DATA_HOME", &data)
+                .env_remove("DIRENV_DIFF")
+                .env("DIRENV_CONFIG", &folder)
+                .env("EDITED", &edited)
+                .env("PRIORY_TEST_LATE", root.join("late"))
+                .env("PRIORY_TEST_WORK", &real)
+                .current_dir("/")
+                .output()
+                .unwrap();
+            assert_eq!(
+                String::from_utf8(out.stdout).unwrap(),
+                format!("good\nother {seen}\nedited {seen}\n"),
+                "{good}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_commit_whose_tree_holds_git_attributes_names_its_envrc() {
+        let dir = temp();
+        sh_git(dir.path(), &["init", "-q"]);
+        for name in [".envrc", ".gitattributes", ".gitmodules"] {
+            fs::write(dir.path().join(name), "").unwrap();
+        }
+        sh_git(dir.path(), &["add", "."]);
+        let identity = ["-c", "user.name=t", "-c", "user.email=t@t"];
+        sh_git(
+            dir.path(),
+            &[&identity[..], &["commit", "-qm", "i"]].concat(),
         );
-        assert_eq!(
-            whitelisted("whitelist = 1\n", &[Path::new("/a")]),
-            Err("its whitelist is not a table".into())
-        );
+        let id = |name| crate::runtime::run(git(dir.path()).args(["rev-parse", name])).unwrap();
+
+        let blob = envrc_at(dir.path(), id("HEAD").trim()).unwrap();
+
+        assert_eq!(blob.as_deref(), Some(id("HEAD:.envrc").trim()));
+    }
+
+    #[test]
+    fn a_tree_names_the_regular_file_of_that_name_alone() {
+        let tree = [
+            b"100644 a\0AB".as_slice(),
+            b"120000 .envrc\0CD",
+            b"100755 z\0\x01\xff",
+        ];
+        let tree = tree.concat();
+        assert_eq!(entry(&tree, b"a", 2).as_deref(), Some("4142"));
+        assert_eq!(entry(&tree, b"z", 2).as_deref(), Some("01ff"));
+        assert_eq!(entry(&tree, b".envrc", 2), None);
+        assert_eq!(entry(&tree, b"b", 2), None);
     }
 
     proptest::proptest! {
         #[test]
-        fn a_direnv_whitelist_merge_returns_or_refuses_without_panicking(
-            text in "(?s).{0,200}|\\[whitelist\\]\nexact = \\[(\"[a-z/]{0,8}\",? ?){0,3}\\]\n",
-            path in "/[a-z/]{0,12}",
+        fn any_bytes_as_a_tree_are_read_without_a_panic(
+            tree in proptest::collection::vec(0u8..128, 0..80), cut in 0usize..40,
         ) {
-            if let Ok(merged) = whitelisted(&text, &[Path::new(&path)]) {
-                let table: toml::Table = merged.parse().unwrap();
-                let exact = table["whitelist"]["exact"].as_array().unwrap();
-                proptest::prop_assert!(exact.contains(&toml::Value::from(path.as_str())));
+            let id = entry(&tree, b".envrc", 20);
+            proptest::prop_assert!(id.is_none_or(|id| id.len() == 40));
+            let whole = [b"100644 .envrc\0".as_slice(), &[7; 20]].concat();
+            let part = &whole[..cut.min(whole.len())];
+            proptest::prop_assert_eq!(entry(part, b".envrc", 20).is_some(), cut >= whole.len());
+        }
+
+        #[test]
+        fn a_direnv_toml_loses_its_whitelist_or_is_refused_without_panicking(
+            text in "(?s).{0,200}|\\[whitelist\\]\nexact = \\[(\"[a-z/]{0,8}\",? ?){0,3}\\]\n",
+        ) {
+            if let Ok(kept) = unlisted(&text) {
+                let table: toml::Table = kept.parse().unwrap();
+                proptest::prop_assert!(!table.contains_key("whitelist"));
             }
         }
 

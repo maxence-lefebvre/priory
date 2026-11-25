@@ -86,8 +86,9 @@ the desk's Since you looked ends the task request's line with `, added by sessio
 
 `answer` and `dismiss` let the session decide an ask, within the limit a [lead](#hands-off) and
 [auto](waits.md#answered-by-auto) have. The daemon refuses an ask that the same rule refuses: one
-that runs a command, one at a step that `approves` an irreversible step, and one whose answer can
-let an irreversible step run before a person decides again. It also refuses an ask no lead is sent: Priory's own asks, such as a hold's,
+that runs a command, one at a step that `approves` an irreversible step, one asked inside an irreversible step that is
+not `autonomous`, and one whose answer can let an irreversible step run before a person decides
+again. It also refuses an ask no lead is sent: Priory's own asks, such as a hold's,
 a gate's or a spend cap's, a graded plan's approval and a debate's pick, an outside ask that
 carries a command, and an outside ask the same session asked. The reply names the reason and says a person answers it:
 
@@ -98,7 +99,9 @@ ask 14 waits for a person: step approve-pr approves irreversible step open-pr. A
 `ask` is the ask's number, or an outside ask's name. `revision` is required, as it is for `priory
 answer`: an ask at another revision is refused with `ask 14 is at revision 2, not 1`, and the
 session reads it again with `asks`. An answer applies as a person's does: it moves a step's task by
-its option, or wakes an agent with `Answer to ask 14 (revision 1): ...`. A dismissal wakes the agent
+its option, or wakes an agent with `Answer to ask 14 (revision 1): ...`. A human step's ask takes
+only its options from a session, with or without a note: text is
+refused with `ask 14 takes one of: ship, wait`. A dismissal wakes the agent
 with `Session <session> dismissed ask 14 without an answer. Continue your task.`
 
 Priory never records the decision as a person's. The ask's `answered_by` is `session:` and the
@@ -136,6 +139,8 @@ may consult with a fifth, [`consult`](../reference/tools.md#consultagent-questio
 result, or an open ask, an open wait or both. A `result` after an open ask or wait is refused, as
 is a second `ask` or a second `wait`. An ask and a wait side by side wake the task on the first answer or event (see An ask
 beside a wait in [waits.md](waits.md)).
+[`hand_over`](../reference/tools.md#hand_overtask-summary) ends the turn and the run: it drops the
+task in favour of another (see [Two tasks on the same work](routing.md#two-tasks-on-the-same-work)).
 
 Feedback the task kept while the agent ran waits in a queued prompt (see
 [routing.md](routing.md#what-a-kept-message-does)). Feedback is a person's comment, reply or review
@@ -143,7 +148,8 @@ that asks for something, as [routing.md](routing.md#feedback-reopens-a-done-task
 Priory's own comment. Until that prompt is typed, `result`, `ask` and `wait` are refused with
 `feedback for this run is queued: end your turn to read it`. So a review comment read during the
 turn reaches the agent before the task ends or sleeps. Other kept events, such as check runs, do
-not refuse them.
+not refuse them. Unread news that may end the task's work refuses them once, with the news as the
+reason (see [News during a turn](routing.md#news-during-a-turn)).
 
 ## Subscriptions
 
@@ -154,7 +160,7 @@ subscription does not end when one event arrives. Its events reach the task by i
 | ---- | ------------------------ |
 | `running` | is queued as a prompt, read after the current turn |
 | `asleep` at a model step, with no checks gate | wakes it, unless the task has an open wait on the resource, which decides instead. The inbox records `woke` |
-| `asleep` at its checks gate | fires the gate when it is a comment on an issue or a Linear issue, or a Slack reply, as pull request feedback does. Other events wait for the next wake |
+| `asleep` at its checks gate | fires the gate when it is a comment on an issue or a Linear issue, a Slack reply, or a Linear state change whose `to_type` is `canceled`, as pull request feedback does. Other events wait for the next wake |
 | `done` | reopens it, when it is a comment or a review that asks for something and no pull request of the task merged (see [routing.md](routing.md#feedback-reopens-a-done-task)) |
 
 An event the task keeps that was written while it ran, from the start of its first run up to the
@@ -165,7 +171,8 @@ since no later wake would carry it.
 A GitHub comment or review whose `own` or `agent` is `false` is exempt: the intake knows no agent
 wrote it, so it wakes the task and fires the gate whenever it was written. `own` compares the
 author with the login that `gh api user` names, which a worker's `gh` posts as too. `agent` is
-`true` only when the comment is also `own` and its body holds `<!-- agent-comment -->` (see
+`true` only when the comment is also `own` and its body holds `<!-- agent-comment -->`, or it is a
+review with an empty body whose thread comments all hold it (see
 [An agent's own comments](routing.md#an-agents-own-comments)). So the person's unmarked comment is
 exempt even when agents post with the person's own account. The poll and the webhook each ask `gh`
 once per process, and both fields are absent when that ask failed, until the process restarts.
@@ -219,7 +226,9 @@ gate's exit code, or 1 when a signal killed the gate or the daemon did not recor
 `priory gate` runs nothing and exits 1 outside a run's pane, where `PRIORY_SESSION` is unset, in a
 factory with no `gate`, and in a worktree whose checked-out commit is not the head of its branch,
 since the gate would test another commit than the one it records. It records nothing either when
-the worktree moves to another commit while the gate runs.
+the worktree moves to another commit while the gate runs, or when the gate fails after a command in
+it gave up its wait for memory (see [memory-gate.md](memory-gate.md#giving-up)). It then exits with
+the gate's code, and an earlier run at the same commit still counts.
 
 A step with a proof ends its prompt with a line that names the outcomes to prove. When the agent
 sends a proved outcome, the daemon reads the task's gate runs in the trace and refuses the result,
@@ -383,6 +392,8 @@ session, instead of the person. These asks still go to the person:
   that `priory asks --json` marks with the `irreversible` risk;
 - the ask of a human step with `approves`, since its answer grants an approval, even after a `low`
   [merge risk](../reference/tools.md#merge-risk);
+- an ask made inside an irreversible step that is not `autonomous`, since a person approved that
+  step and the answer can steer it;
 - an ask whose answer runs a command;
 - the asks the daemon makes itself: a hold's, a stack's, and an approval asked again at a new
   commit;
@@ -400,7 +411,8 @@ lane. It starts ahead of its band's other tasks, and passes the pause, the revie
 `max_running` (see [runs.md](runs.md#work-already-running)). It starts the built-in workflow `priory/lead/<lead>`: one model step, `answer`, whose
 outcomes `answered` and `skipped` both lead to `done`. Its first prompt carries a
 `priory.ask.routed` event: the task, its key, the ask, its revision, question, options,
-recommendation, trade-off, title and text.
+recommendation, trade-off, title, text and, when it approves one, [the plan](asks.md#the-plan-an-ask-approves)
+as a list of files, each with `path`, `text` and `truncated`.
 
 The lead answers with `result`:
 
@@ -410,11 +422,12 @@ The lead answers with `result`:
 
 The summary, trimmed, is the answer. When the ask lists options, it must be one of them, or the
 result is refused with `ask <id> takes one of: <options>`. A person can still answer an agent's ask
-in free text. In the same
+in free text, and a human step's ask in writing (see [waits.md](waits.md#asks-and-answers)). A gate's
+ask takes only its options. In the same
 transaction the daemon applies it to the ask, as a person's answer would, and records it as
 answered by `agent:<lead>`. The asking task then wakes as after any answer. When the answer is
-refused, for example because the ask is no longer open, the result is refused with the reason, and
-the lead ends with `skipped` instead.
+refused, for example because the ask is no longer open or its plan changed, the refusal is kept on
+the ask, the result is refused with the reason, and the lead ends with `skipped` instead.
 
 The routed ask stays on the desk, marked `routed to <lead>` in the CLI and "with <lead>" in the web
 view and the Herdr panels, so a person can still answer it. Its detail says the lead is answering
@@ -559,6 +572,7 @@ branch's current commit:
 | ------------------------------ | ------------------------------------------------------------------- |
 | at the same commit             | the step runs                                                       |
 | at another commit              | the ask gets a new revision, with a line naming both commits, and the task sleeps at that human step. The step's queued prompt is taken back, so the next run never reads it |
+| voided by a written answer     | the same, with a line that says a person wrote an answer since      |
 | none                           | the task blocks: `step <id> is irreversible and no answer approved it` |
 
 A branch with no commit to compare also blocks the task. `priory check` refuses an irreversible step

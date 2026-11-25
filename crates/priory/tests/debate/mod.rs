@@ -57,7 +57,7 @@ fn conceding(verdict: &str, argument: &str, concedes: &str) -> serde_json::Value
 }
 
 /// Waits until task 1 is in `state`, and returns its row.
-fn until_state(setup: &Setup, state: &str) -> Vec<String> {
+pub(super) fn until_state(setup: &Setup, state: &str) -> Vec<String> {
     setup.until("tasks", |rows| {
         rows.first().is_some_and(|row| row[4] == state)
     })[0]
@@ -193,9 +193,9 @@ fn a_second_agent_that_changes_its_verdict_in_round_one_ends_the_step_with_the_s
     );
 }
 
-#[test]
-fn agents_that_never_agree_leave_the_task_asleep_on_an_ask_the_persons_answer_decides() {
-    let mut setup = debating("debate-split", &debate_workflow(2, "$5.00", "15m"));
+/// A setup whose task 1 sleeps on the ask of a debate that never agreed.
+pub(super) fn split(name: &str) -> Setup {
+    let mut setup = debating(name, &debate_workflow(2, "$5.00", "15m"));
     setup.calls(&[
         position("process", "Isolate the crash."),
         position("daemon", "Keep one service."),
@@ -209,6 +209,12 @@ fn agents_that_never_agree_leave_the_task_asleep_on_an_ask_the_persons_answer_de
     setup.start();
 
     until_state(&setup, "asleep");
+    setup
+}
+
+#[test]
+fn agents_that_never_agree_leave_the_task_asleep_on_an_ask_the_persons_answer_decides() {
+    let setup = split("debate-split");
     assert_eq!(setup.rows("runs").len(), 6);
     let asks = asks_json(&setup);
     let ask = &asks["asks"][0];
@@ -225,6 +231,12 @@ fn agents_that_never_agree_leave_the_task_asleep_on_an_ask_the_persons_answer_de
         "{text}"
     );
     assert!(text.contains("the rounds ran out"), "{text}");
+
+    let written = setup.priory(&["answer", "1", "keep both of them", "--revision", "1"]);
+    assert_eq!(
+        String::from_utf8_lossy(&written.stderr),
+        "priory answer: ask 1 takes one of: daemon, process, undecided\n"
+    );
 
     let answered = setup.priory(&["answer", "1", "daemon", "--revision", "1"]);
 
@@ -665,6 +677,37 @@ fn an_event_and_a_say_during_a_debate_turn_reach_the_step_after_the_debate_and_n
 }
 
 #[test]
+fn a_debate_reads_no_note_and_no_written_answer() {
+    let workflow = debate_workflow(2, "$5.00", "15m")
+        .replace("daemon = \"done\"", "daemon = \"check\"")
+        + r#"
+[[steps]]
+id = "check"
+decides = "human"
+effect = "none"
+options = ["go", "halt"]
+next = { go = "debate", halt = "stop" }
+"#;
+    let mut setup = debating("debate-written", &workflow);
+    setup.calls(&[position("daemon", "a"), position("daemon", "b")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+    until_state(&setup, "asleep");
+
+    assert_eq!(
+        refused_answer(&setup, "weigh latency"),
+        "priory answer: ask 1 takes one of: go, halt; no earlier model step reads a written answer\n"
+    );
+    assert_eq!(
+        refused_answer(&setup, "go: weigh latency"),
+        "priory answer: ask 1 answered go leads to debate, which reads no note: answer go alone\n"
+    );
+    assert_eq!(asks_json(&setup)["asks"][0]["state"], "open");
+    assert_eq!(with(&setup.rows("outbox"), 3, "queued"), 0);
+}
+
+#[test]
 fn a_hold_during_a_debate_turn_holds_the_task_before_the_next_turn() {
     let mut setup = debating("debate-hold", &debate_workflow(2, "$5.00", "15m"));
     setup.calls(&[
@@ -690,4 +733,59 @@ fn a_hold_during_a_debate_turn_holds_the_task_before_the_next_turn() {
     until_state(&setup, "dropped");
     assert_eq!(speakers(&setup), ["architect", "skeptic"]);
     assert_eq!(results(&setup)[0]["outcome"], "process");
+}
+
+#[test]
+fn a_debater_gets_no_news_of_a_cancel() {
+    let mut setup = debating("debate-news", &debate_workflow(2, "$5.00", "15m"));
+    setup.calls(&[serde_json::Value::Null]);
+    setup.hold("hold-stop");
+    setup.publish(&linear_requested("ENG-7", "source"));
+    setup.start();
+    setup.written("fake/submitted");
+    let session = setup.rows("runs")[0][4].clone();
+
+    setup.publish(&moved_to("Canceled", "canceled"));
+    setup.until("inbox", |rows| rows.len() == 2 && rows[1][4] == "kept");
+
+    assert_eq!(setup.hook_call(&session, "ls", None), "");
+}
+
+#[test]
+fn a_hand_over_to_a_task_in_a_debate_reaches_the_step_after_it_and_no_debater() {
+    let mut setup = debating("debate-hand-over", DEBATE_THEN_IMPLEMENT);
+    fs::write(setup.dir.join("factory/workflows/plain.toml"), WORKFLOW).unwrap();
+    setup.calls(&[
+        serde_json::Value::Null,
+        position("daemon", "No new service file."),
+        position("daemon", "Agreed."),
+        result("passed"),
+    ]);
+    setup.hold("hold-stop");
+    let mut plain = requested(41);
+    plain.data["workflow"] = json!("plain");
+    setup.publish(&plain);
+    setup.start();
+    let runs = setup.until("runs", |rows| rows.len() == 1);
+    setup.calls_left(3);
+    setup.publish(&requested(42));
+    setup.until("runs", |rows| rows.len() == 2);
+    setup.pair();
+
+    let replies = setup.mcp(&runs[0][4], &[hand_over_to(2)]);
+    setup.release("hold-stop");
+
+    let (text, error) = reply(&replies[0]);
+    assert!(!error, "{text}");
+    setup.until("tasks", |rows| rows[1][4] == "done");
+    let typed = setup.typed();
+    let readers: Vec<_> = typed
+        .iter()
+        .filter(|turn| turn.contains("> The fix is left."))
+        .collect();
+    assert_eq!(readers.len(), 1, "{typed:?}");
+    assert!(
+        readers[0].starts_with("Implement the verdict."),
+        "{readers:?}"
+    );
 }

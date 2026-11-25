@@ -35,9 +35,10 @@ Each type has a JSON Schema in [`docs/schemas/events/`](../schemas/events/), nam
 - Runners: [`priory.task.claimed`](#priorytaskclaimed), [`priory.task.held`](#priorytaskheld),
   [`priory.runner.alive`](#prioryrunneralive), [`priory.ask.answered`](#prioryaskanswered),
   [`priory.ask.dismissed`](#prioryaskdismissed), [`priory.ask.posted`](#prioryaskposted),
-  [`priory.ask.applied`](#prioryaskapplied)
+  [`priory.ask.applied`](#prioryaskapplied), [`priory.task.dropped`](#priorytaskdropped)
 - Memories: [`priory.memory.written`](#priorymemorywritten),
   [`priory.memory.accepted`](#priorymemoryaccepted), [`priory.memory.dropped`](#priorymemorydropped)
+- Autopilot: [`priory.autopilot.set`](#prioryautopilotset)
 
 ## The envelope
 
@@ -370,7 +371,7 @@ The pull request fields, and:
 | `github_id` | integer | GitHub's review id |
 | `association` | string, optional | GitHub's `author_association`, such as `OWNER`, `COLLABORATOR` or `NONE`. Feedback from anyone but `OWNER`, `MEMBER` or `COLLABORATOR` reaches no task (see [routing.md](../daemon/routing.md#outcomes)) |
 | `own` | boolean, optional | Whether the login `gh api user` names wrote it; absent while `gh` cannot say. `false` wakes a task even when written during its agent's turn (see [Subscriptions](../daemon/tools.md#subscriptions)) |
-| `agent` | boolean, optional | Whether an agent wrote it: `own`, and its body holds `<!-- agent-comment -->`; absent while `gh` cannot say. `true` starts no task, and `false` wakes a task even when written during its agent's turn (see [routing.md](../daemon/routing.md#an-agents-own-comments)) |
+| `agent` | boolean, optional | Whether an agent wrote it: `own`, and its body holds `<!-- agent-comment -->`, or its body is empty and every thread comment it wraps holds that; absent while `gh` cannot say. `true` starts no task, and `false` wakes a task even when written during its agent's turn (see [routing.md](../daemon/routing.md#an-agents-own-comments)) |
 
 <!-- example: events/github.pull_request_review.submitted.json -->
 ```json
@@ -680,10 +681,16 @@ the issue has more than 20 relations.
 
 ### `linear.issue.entered`
 
-One message per issue found in a view that was not in it at the previous poll.
+One message per issue found in a view or project that was not in it at the previous poll.
 Schema: [`linear.issue.entered.json`](../schemas/events/linear.issue.entered.json).
 
-The issue fields, and `view` (string), the view as the trigger names it.
+The issue fields, and these:
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `view` | string, optional | The view, as the trigger names it. View events only |
+| `stream` | string, optional | `linear.project:<project>`, then `:` and the trigger's filter as JSON when it has one. Project events only |
+| `order` | object or null, optional | The issue's place in its project: `project_id`, `milestone` (its `id`, `sort_order` and `target_date`, or null) and `sort_order`. Lower orders come first. Null without a project |
 
 <!-- example: events/linear.issue.entered.json -->
 ```json
@@ -703,6 +710,11 @@ The issue fields, and `view` (string), the view as the trigger names it.
     "state": "Todo",
     "labels": ["agent", "bug"],
     "view": "6b3c2f9a1d4e",
+    "order": {
+      "project_id": "c1d5e0a2-3b4f-4e8a-9a61-7f20d4b8e913",
+      "milestone": { "id": "7a0c2f64-1f0e-4f5f-8a35-3f1d5f0f2b11", "sort_order": 1.0, "target_date": "2026-12-01" },
+      "sort_order": -412.5
+    },
     "time": "2026-11-17T11:00:02.512Z",
     "baseline": false,
     "triggers": ["agent-ready"]
@@ -713,11 +725,11 @@ The issue fields, and `view` (string), the view as the trigger names it.
 
 ### `linear.issue.left`
 
-One message per issue gone from a view that was in it at the previous poll. Its issue fields come
+One message per issue gone from a view or project that was in it at the previous poll. Its issue fields come
 from that earlier poll.
 Schema: [`linear.issue.left.json`](../schemas/events/linear.issue.left.json).
 
-The issue fields, and `view` (string).
+The issue fields, and `view`, `stream` and `order`, as for `linear.issue.entered`.
 
 <!-- example: events/linear.issue.left.json -->
 ```json
@@ -737,6 +749,11 @@ The issue fields, and `view` (string).
     "state": "In Progress",
     "labels": ["agent", "bug"],
     "view": "6b3c2f9a1d4e",
+    "order": {
+      "project_id": "c1d5e0a2-3b4f-4e8a-9a61-7f20d4b8e913",
+      "milestone": { "id": "7a0c2f64-1f0e-4f5f-8a35-3f1d5f0f2b11", "sort_order": 1.0, "target_date": "2026-12-01" },
+      "sort_order": -412.5
+    },
     "time": "2026-11-17T12:31:40.077Z",
     "baseline": false,
     "triggers": []
@@ -825,6 +842,8 @@ Schema: [`linear.issue.state_changed.json`](../schemas/events/linear.issue.state
 | ----- | ---- | ------- |
 | `from` | string or null | The state it moved from; null from a webhook, whose payload names only its id |
 | `to` | string | The state it moved to |
+| `to_type` | string or null | The type of the state it moved to: `triage`, `backlog`, `unstarted`, `started`, `completed` or `canceled`. Linear's Duplicate state is `canceled`. Null from an older intake |
+| `duplicate_of` | string or null | The issue it duplicates, from its `duplicate` relation; null without one, and from a webhook |
 | `actor` | string or null | Who moved it |
 | `blockers` | array of strings or null | Its open blockers |
 | `delivery` | string | Present when a webhook delivery published it: its `Linear-Delivery`. See [webhooks.md](../intake/webhooks.md#linear) |
@@ -848,6 +867,8 @@ Schema: [`linear.issue.state_changed.json`](../schemas/events/linear.issue.state
     "labels": ["agent", "bug"],
     "from": "Todo",
     "to": "In Progress",
+    "to_type": "started",
+    "duplicate_of": null,
     "actor": "Ada Lovelace",
     "blockers": ["ENG-3"],
     "time": "2026-11-17T12:31:12.330Z",
@@ -1361,12 +1382,14 @@ Schema: [`factory.task.requested.json`](../schemas/events/factory.task.requested
 | `source` | UUID string | The `id` of the source event's message |
 | `team` | string or null, optional | The Linear issue's team. Linear sources only |
 | `project` | string or null, optional | The Linear issue's project. Linear sources only |
+| `order` | object or null, optional | The Linear issue's place in its project, as for [`linear.issue.entered`](#linearissueentered). Linear view and project sources only |
 | `repo` | string or null, optional | `priory request --repo` for a CLI request; the pull request's repository for a review request. Those sources only |
 | `hold` | object, optional | The trigger's `hold` or `priory request --hold`. See [triggers.md](triggers.md#hold) |
 | `tldr` | string, optional | `priory request --tldr` |
 | `relates` | array, optional | `priory request` or `priory add --relates`: each `{ "kind", "task" }`, the relation's kind and the other task's id. See [relations.md](../daemon/relations.md) |
 | `intervention` | `plan` or `hands-off`, optional | `priory request` or `priory add --intervention`; the task takes its trigger's when absent |
 | `session` | string, optional | The outside session that added the task through [`priory mcp --outside`](../daemon/tools.md#the-outside-server): its hc terminal, then a space and its Claude session id, or `outside` without an hc terminal. The task keeps it as `added_by` |
+| `labels` | object, optional | The trigger's `labels`, or `priory request` or `priory add --label`: each key and value a string. [Runner filters](runners.md#filters) match them |
 | `auto_answer` | `high` or `medium`, optional | `priory request` or `priory add --auto-answer`; the task takes its trigger's when absent. See [triggers.md](triggers.md#auto_answer) |
 | `batch` | object, optional | `priory batch add`: `issues`, the batch's issues as task keys, and `entries`, the workflow of each entry's task. The task it creates plans that batch. See [batches.md](../daemon/batches.md) |
 | `scheduled` | RFC 3339, optional | When the firing was due. Schedule sources only |
@@ -1449,7 +1472,7 @@ Schema: [`factory.intake.dropped.json`](../schemas/events/factory.intake.dropped
 
 ### `factory.intake.baseline`
 
-A marker of where a stream stands, published after a poll that moved it. Consumers can ignore it.
+A marker of where a stream stands, published after a poll that moved it. Consumers can ignore it. The daemon reads the `order` of a Linear view's or project's members.
 See [github-polling.md](../intake/github-polling.md). Subject: `owner/name <stream>` for GitHub, the
 stream otherwise.
 Schema: [`factory.intake.baseline.json`](../schemas/events/factory.intake.baseline.json).
@@ -1459,7 +1482,7 @@ Schema: [`factory.intake.baseline.json`](../schemas/events/factory.intake.baseli
 | `repo` | string, optional | `owner/name`. GitHub streams only |
 | `stream` | string | The stream, such as `github.issues.labeled`, `github.review_requests:octocat`, `linear.comments` or `slack.channel:C0123` |
 | `position` | integer or string | A GitHub id or number, a count of set changes, a Linear time or a Slack `ts` |
-| `members` | array, optional | The issue fields of every issue in the view, or the pull request fields of every review request. Linear view and review request streams only |
+| `members` | array, optional | The issue fields and `order` of every issue in the view or project, or the pull request fields of every review request. Linear view, Linear project and review request streams only |
 | `seen` | array of strings, optional | The ids of the events at the position's instant. Linear issue and comment streams only |
 
 <!-- example: events/factory.intake.baseline.json -->
@@ -1790,6 +1813,30 @@ A runner applied or refused an action that another machine sent to one of its ta
 }
 ```
 
+### `priory.task.dropped`
+
+A person dropped the requests of a key that no runner claimed, with `priory cancel [DIR] KEY`. Every
+machine drops the ones it holds as `unaccepted`, or as `claiming` with a claim it has not published,
+and refuses the message when it holds none. A claim on the log still wins. See [runners.md](../daemon/runners.md#placing-tasks-with-filters). Subject: the key.
+Schema: [`priory.task.dropped.json`](../schemas/events/priory.task.dropped.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `key` | string | The key |
+| `by` | string | `cli` |
+
+<!-- example: events/priory.task.dropped.json -->
+```json
+{
+  "id": "0196f1c5-4e5f-7a61-9c2d-3e4f5a6b7c8d",
+  "type": "priory.task.dropped",
+  "subject": "github:acme/widgets#42",
+  "time": "2026-11-24T10:22:00Z",
+  "data": { "key": "github:acme/widgets#42", "by": "cli" },
+  "links": []
+}
+```
+
 ## Memories
 
 Every daemon publishes `priory.memory.written` when an agent calls `remember` or `forget`, in a
@@ -1880,6 +1927,38 @@ Schema: [`priory.memory.dropped.json`](../schemas/events/priory.memory.dropped.j
   "time": "2026-11-21T17:00:05Z",
   "data": {
     "candidate": "0196f1d0-9a8b-7c6d-8e9f-0a1b2c3d4e5f"
+  },
+  "links": []
+}
+```
+
+## Autopilot
+
+### `priory.autopilot.set`
+
+A person turns autopilot on or off, in a factory of several runners. Each runner applies it in log
+order. It is recorded as `refused` in a factory of one runner, and when `until` is more than 7 days
+away, `level` is not `high` or `medium`, or `lanes` is missing. An empty `data` turns it off.
+Subject: `autopilot`.
+Schema: [`priory.autopilot.set.json`](../schemas/events/priory.autopilot.set.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `until` | RFC 3339, absent to turn it off | When it ends by itself |
+| `level` | string, absent to turn it off | The lowest confidence it acts on |
+| `lanes` | array of strings, absent to turn it off | The lanes it covers; every lane when empty |
+
+<!-- example: events/priory.autopilot.set.json -->
+```json
+{
+  "id": "0196f1d3-7d80-7f90-a1b2-3c4d5e6f7082",
+  "type": "priory.autopilot.set",
+  "subject": "autopilot",
+  "time": "2026-11-24T21:00:00Z",
+  "data": {
+    "until": "2026-11-25T07:00:00Z",
+    "level": "high",
+    "lanes": []
   },
   "links": []
 }

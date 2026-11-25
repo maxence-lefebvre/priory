@@ -42,6 +42,8 @@ pub struct Settings {
     pub queue: Queue,
     #[serde(default)]
     pub intake: IntakeSettings,
+    #[serde(default)]
+    pub memory: MemoryGate,
     /// The agent whose model reads a stalled run's screen; no handler runs without one.
     pub handler: Option<String>,
     /// How long a run goes without a hook event or a change on its pane before it counts as stalled.
@@ -75,12 +77,17 @@ pub struct Settings {
     #[serde(default)]
     pub asks: Asks,
     #[serde(default)]
+    pub autopilot: Autopilot,
+    #[serde(default)]
     pub runs: Runs,
     pub request: Option<RequestDefaults>,
     pub batch: Option<BatchDefaults>,
     /// Irreversible commands and MCP tools on top of the built-in ones.
     #[serde(default)]
     pub guard: crate::guard::Guards,
+    /// Terms no run may publish to the repositories it lists.
+    #[serde(default, deserialize_with = "crate::private::private")]
+    pub private: crate::private::Private,
     /// Autolinks, in order: each key a regex, each value an `https://` URL template whose `$1`
     /// names the regex's first group. An entry with a built-in link's regex replaces it.
     #[serde(default, deserialize_with = "links")]
@@ -111,6 +118,89 @@ pub struct Settings {
     /// creates for the repositories the factory names, so no run stops on a trust dialog.
     #[serde(default)]
     pub trust_worktrees: bool,
+    /// The daemon installs newer releases by itself; nothing is looked up or installed when unset.
+    pub upgrade: Option<Upgrade>,
+}
+
+/// `[upgrade]`: which releases the daemon installs by itself, and when.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Upgrade {
+    /// `patch` takes releases of the running major and minor version; `minor` takes releases of the
+    /// running major version.
+    pub channel: Channel,
+    /// How often the daemon looks for a release; every hour when unset, and at least 10 minutes.
+    #[serde(default, deserialize_with = "duration")]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    pub every: Option<Duration>,
+    /// When the daemon never upgrades, such as working hours; it may at any time when unset.
+    pub not_during: Option<Quiet>,
+    /// The systemd user units of the daemon and the intake, in that order.
+    #[serde(default = "units")]
+    pub units: [String; 2],
+}
+
+fn units() -> [String; 2] {
+    ["priory-daemon", "priory-intake"].map(|unit| format!("{unit}.service"))
+}
+
+/// The releases the daemon installs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Channel {
+    Patch,
+    Minor,
+}
+
+/// The days and hours the daemon never upgrades in.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Quiet {
+    /// When it starts, `HH:MM`.
+    #[serde(deserialize_with = "time_of_day")]
+    #[schemars(with = "String", regex(pattern = r"^([01]?[0-9]|2[0-3]):[0-5][0-9]$"))]
+    pub from: Option<jiff::civil::Time>,
+    /// When it ends, `HH:MM`; the next day when it is not after `from`.
+    #[serde(deserialize_with = "time_of_day")]
+    #[schemars(with = "String", regex(pattern = r"^([01]?[0-9]|2[0-3]):[0-5][0-9]$"))]
+    pub until: Option<jiff::civil::Time>,
+    /// The weekdays it starts on; every day when unset.
+    #[serde(default, deserialize_with = "weekdays")]
+    #[schemars(
+        with = "Vec<String>",
+        length(min = 1),
+        extend("items" = { "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] })
+    )]
+    pub days: Option<Vec<jiff::civil::Weekday>>,
+    /// The IANA zone of the hours, such as `Europe/Paris`; the machine's own when unset.
+    #[serde(default, deserialize_with = "time_zone")]
+    #[schemars(with = "String")]
+    pub timezone: Option<jiff::tz::TimeZone>,
+}
+
+impl Quiet {
+    /// Whether the daemon must not upgrade at `at`.
+    pub fn hold(&self, at: jiff::Timestamp) -> bool {
+        let zone = self
+            .timezone
+            .clone()
+            .unwrap_or_else(jiff::tz::TimeZone::system);
+        let now = at.to_zoned(zone);
+        let on = |date: jiff::civil::Date| {
+            self.days
+                .as_ref()
+                .is_none_or(|days| days.contains(&date.weekday()))
+        };
+        // Serde refuses hours without either.
+        let (Some(from), Some(until)) = (self.from, self.until) else {
+            return true;
+        };
+        let (date, time) = (now.date(), now.time());
+        if from < until {
+            return on(date) && from <= time && time < until;
+        }
+        (time >= from && on(date)) || (time < until && date.yesterday().is_ok_and(on))
+    }
 }
 
 /// `[sandboxes.<name>]`: a jail around a run's agent, which sees its worktree, its harness's own
@@ -658,6 +748,21 @@ pub struct Asks {
     pub deliver: Option<PathBuf>,
 }
 
+/// What `priory autopilot` may answer while a person has it on.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Autopilot {
+    /// The workflows whose green plans autopilot approves for a task with `intervention = "plan"`,
+    /// where a person decides again before any irreversible step.
+    #[serde(default)]
+    pub approve_plans: Vec<String>,
+    /// The IANA zone `--until HH:MM` and the default end, 08:00, are read in, such as
+    /// `Europe/Paris`; the machine's own when unset.
+    #[serde(default, deserialize_with = "time_zone")]
+    #[schemars(with = "String")]
+    pub timezone: Option<jiff::tz::TimeZone>,
+}
+
 /// What happens when a run starts.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -1067,6 +1172,17 @@ pub struct Cloud {
     pub max: Option<std::num::NonZeroU32>,
     /// How many cloud sessions one task may start, 10 when unset. Past it, the task blocks.
     pub sessions: Option<std::num::NonZeroU32>,
+}
+
+/// `[memory]`: how long a command waits in the memory gate.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryGate {
+    /// How long `priory memory acquire` without `--timeout` waits for its grant before it exits 75
+    /// and says to run the command on CI, below 1 hour; it never does when unset.
+    #[serde(default, deserialize_with = "duration")]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    pub give_up_after: Option<Duration>,
 }
 
 /// How the queue orders tasks.
@@ -1671,7 +1787,7 @@ pub const ASK_SHAPE: [&str; 3] = ["short", "whatWaits", "nextAction"];
 #[serde(deny_unknown_fields)]
 #[schemars(title = "trigger")]
 pub struct Trigger {
-    /// `github`, `linear`, `linear.view`, `sentry`, `honeycomb`, `intercom`, `cloudwatch`, `figma`, `slack` or `schedule`.
+    /// `github`, `linear`, `linear.view`, `linear.project`, `sentry`, `honeycomb`, `intercom`, `cloudwatch`, `figma`, `slack` or `schedule`.
     pub source: String,
     /// The repository the trigger's tasks work in, a GitHub `owner/name` with no `.` or `..` name;
     /// the polled one for `github`.
@@ -1685,11 +1801,14 @@ pub struct Trigger {
     pub teams: Option<Vec<String>>,
     /// The saved Linear view a `linear.view` trigger reads: its id, or the slug id ending its URL.
     pub view: Option<String>,
+    /// The Linear project a `linear.project` trigger reads: its UUID or its slug id.
+    pub project: Option<String>,
     /// The Slack channel id a `slack` trigger reads, such as `C0123`.
     pub channel: Option<String>,
     /// Values an event must have: `label` for GitHub, or `author` and `commenter` for a comment or
-    /// review; `team`, `project` (its name or id), `label`, `state` for Linear; `text` for Slack.
-    pub filter: Option<BTreeMap<String, String>>,
+    /// review; `team`, `project` (its name or id), `label`, `state` for Linear; `assignee` (a user id or email)
+    /// and `state` (a list of state types) for `linear.project`; `text` for Slack.
+    pub filter: Option<BTreeMap<String, FilterValue>>,
     /// The workflow a matching event starts, by file name.
     pub workflow: String,
     /// Which events are the same work, such as `issue.number`; for a schedule, a fixed key.
@@ -1698,6 +1817,16 @@ pub struct Trigger {
     pub band: Option<String>,
     /// The lane of its tasks, `<team>/<theme>`; `lanes.toml` derives it when unset.
     pub lane: Option<String>,
+    /// The labels of its tasks, such as `{ project = "oss" }`, which runner filters match.
+    #[serde(default, deserialize_with = "crate::filters::labels")]
+    #[schemars(
+        with = "BTreeMap<String, String>",
+        extend(
+            "propertyNames" = { "pattern": "^[a-z0-9][a-z0-9_.-]*$" },
+            "additionalProperties" = { "type": "string", "pattern": "^[A-Za-z0-9_.:/-]+$" }
+        )
+    )]
+    pub labels: Option<BTreeMap<String, String>>,
     /// Whether the events of the first poll start tasks too.
     pub backfill: Option<bool>,
     /// The local time of day a schedule fires, `HH:MM`.
@@ -1760,6 +1889,31 @@ pub struct Trigger {
     #[serde(default)]
     #[schemars(extend("items" = { "minLength": 1 }))]
     pub noop: Vec<String>,
+}
+
+/// What a trigger's filter takes for one key.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(untagged, expecting = "expected a string or a list of strings")]
+pub enum FilterValue {
+    One(String),
+    /// Any of these. Only the `state` of a `linear.project` trigger takes a list.
+    Any(Vec<String>),
+}
+
+impl FilterValue {
+    /// The value, none for a list.
+    pub fn one(&self) -> Option<&str> {
+        match self {
+            FilterValue::One(value) => Some(value),
+            FilterValue::Any(_) => None,
+        }
+    }
+}
+
+impl PartialEq<FilterValue> for serde_json::Value {
+    fn eq(&self, other: &FilterValue) -> bool {
+        other.one().is_some_and(|value| self == value)
+    }
 }
 
 /// A trigger's `[pre]` script. Priory execs `argv` with no shell, writes the event and the request
@@ -1928,12 +2082,13 @@ fn time_of_day<'de, D: Deserializer<'de>>(input: D) -> Result<Option<jiff::civil
         .map_err(|_| D::Error::custom(format!("{text:?} is not a time of day such as \"09:00\"")))
 }
 
-fn weekdays<'de, D: Deserializer<'de>>(
+pub(crate) fn weekdays<'de, D: Deserializer<'de>>(
     input: D,
 ) -> Result<Option<Vec<jiff::civil::Weekday>>, D::Error> {
     use jiff::civil::Weekday::*;
     const NAMES: [&str; 7] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
-    let names = Vec::<String>::deserialize(input)?;
+    let names = Vec::<String>::deserialize(input)
+        .map_err(|_| D::Error::custom("`days` is not a list such as [\"mon\", \"fri\"]"))?;
     if names.is_empty() {
         return Err(D::Error::custom("`days` is empty, so it never fires"));
     }
@@ -1951,7 +2106,9 @@ fn weekdays<'de, D: Deserializer<'de>>(
         .map(Some)
 }
 
-fn time_zone<'de, D: Deserializer<'de>>(input: D) -> Result<Option<jiff::tz::TimeZone>, D::Error> {
+pub(crate) fn time_zone<'de, D: Deserializer<'de>>(
+    input: D,
+) -> Result<Option<jiff::tz::TimeZone>, D::Error> {
     let text = String::deserialize(input)?;
     jiff::tz::TimeZone::get(&text).map(Some).map_err(|_| {
         D::Error::custom(format!(
@@ -2333,6 +2490,14 @@ pub struct Runner {
     pub platform: Platform,
     /// The share of the machine its agents may take together; 90% of each when unset.
     pub agents: Option<Share>,
+    /// Whether the factory's `[upgrade]` applies to this machine.
+    #[serde(default = "on")]
+    pub upgrade: bool,
+    /// The tasks it claims and starts: only those every filter whose window is open accepts.
+    #[serde(default)]
+    pub filters: Vec<crate::filters::Filter>,
+    #[serde(default)]
+    pub memory: MemoryGate,
 }
 
 /// The machine's operating system and CPU architecture.
@@ -2661,6 +2826,12 @@ impl Factory {
             .unwrap_or_default()
     }
 
+    /// The factory's `[private]` table, when it holds a repository and a term.
+    pub fn private(&self) -> Option<&crate::private::Private> {
+        let private = &self.settings.as_ref()?.value.private;
+        (!private.repos.is_empty() && !private.terms.is_empty()).then_some(private)
+    }
+
     /// The recipe of `repo` that runs at `moment`, if the factory has one.
     pub fn recipe(&self, repo: &str, moment: Moment) -> Option<&Recipe> {
         self.settings
@@ -2696,6 +2867,13 @@ impl Factory {
             .as_ref()
             .and_then(|settings| settings.value.intake.alarm_after)
             .unwrap_or(Duration::from_secs(15 * 60))
+    }
+
+    /// How long a gated command waits on the runner named `host` before it gives up; none never does.
+    pub fn give_up_after(&self, host: Option<&str>) -> Option<Duration> {
+        host.and_then(|host| self.runners.get(host))
+            .and_then(|runner| runner.value.memory.give_up_after)
+            .or_else(|| self.settings.as_ref()?.value.memory.give_up_after)
     }
 
     /// The OTLP/HTTP base URL the daemon exports spans to; none sends nothing.
@@ -2776,6 +2954,11 @@ impl Factory {
         self.settings.as_ref()?.value.batch.as_ref()
     }
 
+    /// Which releases the daemon installs by itself; none when unset.
+    pub fn upgrade(&self) -> Option<&Upgrade> {
+        self.settings.as_ref()?.value.upgrade.as_ref()
+    }
+
     /// The HTTP server's settings; none listens nowhere.
     pub fn serve(&self) -> Option<&Serve> {
         self.settings.as_ref()?.value.serve.as_ref()
@@ -2827,6 +3010,21 @@ impl Factory {
         self.settings
             .as_ref()
             .and_then(|settings| settings.value.critic.as_deref())
+    }
+
+    /// The workflows whose green plans autopilot approves, from `factory.toml`.
+    pub fn approve_plans(&self) -> &[String] {
+        self.settings
+            .as_ref()
+            .map_or(&[], |settings| &settings.value.autopilot.approve_plans)
+    }
+
+    /// The zone autopilot's end is read in, from `factory.toml`, or the machine's.
+    pub fn autopilot_timezone(&self) -> jiff::tz::TimeZone {
+        self.settings
+            .as_ref()
+            .and_then(|settings| settings.value.autopilot.timezone.clone())
+            .unwrap_or_else(jiff::tz::TimeZone::system)
     }
 
     /// The judge that reads an approval step's lessons before it asks a person, from `factory.toml`.

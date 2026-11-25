@@ -66,9 +66,9 @@ a group. `PRIORY_METRICS` replaces that list for one process, such as `process,l
 
 ## Asking for work
 
-- `priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... <text>`:
+- `priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... [--label KEY=VALUE]... <text>`:
   asks for a task from one line of text and prints its key. See [cli.md](../intake/cli.md).
-- `priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... [--hold <reason> [CONDITION]...] <text>`:
+- `priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... [--label KEY=VALUE]... [--hold <reason> [CONDITION]...] <text>`:
   asks for a task with a key of your own, and every field as a flag. See
   [cli.md](../intake/cli.md).
 - `priory adopt [DIR] TRIGGER [PR...]`: parks a task on each open pull request of a comment or
@@ -101,7 +101,8 @@ a group. `PRIORY_METRICS` replaces that list for one process, such as `process,l
   error ends with the command to run, the current revision filled in:
   `; run: priory answer --revision 1 smoke.1 ok`. See [waits.md](../daemon/waits.md#asks-and-answers),
   [tools.md](tools.md#commands-an-answer-runs) and
-  [runners.md](../daemon/runners.md#answering-another-runners-ask).
+  [runners.md](../daemon/runners.md#answering-another-runners-ask). It shows no plan: see
+  [The plan an ask approves](../daemon/asks.md#the-plan-an-ask-approves).
 - `priory dismiss [--revision N | --expected N] [DIR] [RUNNER:]ASK`: closes an ask with no answer.
   `RUNNER:ASK` needs a revision too, and exits 2 without it, as `answer` does, with the command to
   run when this machine's mirror holds the ask open.
@@ -149,11 +150,26 @@ a group. `PRIORY_METRICS` replaces that list for one process, such as `process,l
 - `priory (resume | cancel | release | revive [--step STEP]) [--generation N] [DIR] RUNNER:KEY`,
   `priory say [--generation N] [DIR] RUNNER:KEY TEXT`: sends the action to another runner's task.
   See [runners.md](../daemon/runners.md#acting-on-another-runners-task).
+- `priory cancel [DIR] KEY`: drops the requests of a key that no runner claimed. A key that waits here
+  wins over `RUNNER:KEY`, when a runner is named like the key's first part. See
+  [runners.md](../daemon/runners.md#placing-tasks-with-filters).
 - `priory give [DIR] KEY RUNNER [--force]`: moves a task to another runner, once its runner's lease
   ended or with `--force`. See
   [runners.md](../daemon/runners.md#giving-a-task-to-another-runner).
 - `priory pause [REASON]`, `priory unpause`: stops new tasks from starting, then lets them start
   again. See [desk.md](../daemon/desk.md#pause).
+- `priory autopilot on [DIR] [--until TIME | --for DURATION] [--level high|medium] [--lane LANE]...`:
+  lets the daemon answer eligible asks with their recommendation until it ends by itself. `TIME` is
+  the next `HH:MM` in [`[autopilot] timezone`](factory.md#autopilot), or an RFC 3339 instant. Without
+  an end, it ends at the next 08:00. The longest is 7 days, and the default level is `high`. `LANE`
+  reads `<team>/<theme>`. See
+  [waits.md](../daemon/waits.md#autopilot).
+- `priory autopilot off [DIR]`: ends it here first, whatever the daemon, the factory or the log do.
+  It then tells the other runners, and exits nonzero when it cannot: the factory does not load, this
+  machine has no role in it, or a view-only machine's publish fails.
+- `priory autopilot [status [--json]]`: prints whether it is on, until when, and its counts.
+- `priory autopilot report [WINDOW] [--json]`: prints what a window, the latest by default, answered
+  and left, why, and how to reverse each answer.
 - `priory subscribe TASK RESOURCE [--expected REVISION]`, `priory unsubscribe TASK RESOURCE`: routes
   a pull request's, Linear issue's or Slack thread's events to a task, or stops routing them. See
   [tools.md](tools.md#subscribeon-and-unsubscribeon).
@@ -244,8 +260,8 @@ See [Columns](#columns).
 
 An agent's settings and its shell call these. A person rarely does.
 
-- `priory mcp --session ID [--debate] [--consult | --investigator]`: the MCP server of one run, on
-  stdio. `--debate` adds the `position` tool, for a debate turn's run. `--consult` adds the
+- `priory mcp --session ID [--debate] [--gives-up] [--consult | --investigator]`: the MCP server of
+  one run, on stdio. `--gives-up` tells the agent what to do when the memory gate gives up. `--debate` adds the `position` tool, for a debate turn's run. `--consult` adds the
   `consult` tool; `--investigator` serves `result`, `memory` and `search` alone. See
   [tools.md](../daemon/tools.md#the-mcp-server).
 - `priory mcp --eval LOG [--describe TOOL TEXT]`: the fake MCP server of `priory eval`. See
@@ -260,6 +276,17 @@ An agent's settings and its shell call these. A person rarely does.
 - `priory hook PreToolUse --outside`: the `PreToolUse` hook of a person's own session. It denies a
   shell call that runs a verb only a person runs, and asks no daemon. See
   [tools.md](../daemon/tools.md#the-outside-hook).
+- `priory upgrade retry VERSION`: forgets that an automatic upgrade to the version was refused or put
+  off, so the daemon tries it again. It exits 1 for a version that is neither. Only a person runs
+  `priory upgrade`.
+- `priory upgrade resume`: the helper of an automatic upgrade, which the daemon starts. It takes the
+  upgrade in progress to its end, and does nothing without one. See
+  [upgrades.md](../daemon/upgrades.md).
+- `priory upgrade probe DIR`: migrates the state and opens the log, on the copies an upgrade's
+  rehearsal makes.
+- `priory upgrade startable DIR [ADDR]`: exits 1 when a daemon could not start in this environment: a
+  token or a webhook secret is unset, or the `[serve]` address is taken. `ADDR` is the address the
+  running daemon holds, which counts as free.
 - `priory gate`: runs the factory's `gate` in the run's worktree and records its exit code for the
   branch's head.
   See [tools.md](../daemon/tools.md#proofs).
@@ -267,8 +294,8 @@ An agent's settings and its shell call these. A person rarely does.
   worktree to the run's result, once it passes the admission checks. It refuses an image or a
   video. See [evidence.md](../daemon/evidence.md#a-cast-the-agent-adds).
 - `priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]`: runs a heavy command once
-  the machine has the memory for it, or prints the grants. See
-  [memory-gate.md](../daemon/memory-gate.md).
+  the machine has the memory for it, or prints the grants. `acquire` exits 75 when its wait passes
+  the factory's `[memory] give_up_after`. See [memory-gate.md](../daemon/memory-gate.md).
 
 ## Columns
 
@@ -295,7 +322,9 @@ the band, id, key, workflow, step, state, band, the band `[queue] age` moved it 
 and reason. When a task is asleep, a blank
 line and an `asleep` table follow: id, key, since when it sleeps, and what each open wait waits on
 and since when, or `an ask`. `priory queue DIR` reads the factory in `DIR` too, so its up next
-includes schedule firings.
+includes schedule firings. After a blank line, it prints one line for each lane with a
+`max_running`, such as `lane OSS/priory: 2 of 2 running; max_running 2 mon-fri 08:00-18:00, no
+cap outside`. Outside the window, the line reads `3 running, no cap now` or `3 of 6 running`.
 
 `priory schedules [DIR]` prints each schedule trigger: its name, next firing, key, task and
 workflow.

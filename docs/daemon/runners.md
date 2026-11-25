@@ -58,9 +58,15 @@ while the owner routes it as [routing.md](routing.md) says.
 The runners publish more message types on the same output, which
 [events.md](../reference/events.md#runners) lists: `priory.task.claimed`, `priory.task.held`,
 `priory.runner.alive`, `priory.ask.posted`, `priory.ask.applied`, `priory.ask.answered`,
-`priory.ask.dismissed`, `priory.task.acted` and `priory.task.applied`, and the memory messages
+`priory.ask.dismissed`, `priory.task.acted`, `priory.task.applied` and `priory.task.dropped`, and the memory messages
 `priory.memory.written`, `priory.memory.accepted` and `priory.memory.dropped` (see
-[skills.md](skills.md#memories-agents-write)). The daemon stores each claim,
+[skills.md](skills.md#memories-agents-write)), and `priory.autopilot.set`, which turns
+[autopilot](waits.md#autopilot) on or off on every runner. A runner applies its own setting at once
+and the others' as it reads the log, where the last one wins. Until it reads its own setting back,
+it ignores the settings it reads, which are older. After an `off` that could not tell the others, it
+ignores them until a person sets autopilot there again. A runner cut off from the log keeps its
+window until it ends or a person runs `priory autopilot off` there. A view-only machine sends the
+setting and answers nothing. The daemon stores each claim,
 hold, alive, post and applied message in its state file before it publishes it, so a crash between
 the two publishes it at the next start. A message published twice adds nothing, because the log
 keeps the first message of each id. `priory answer`, `priory dismiss`, `priory give`, an action on
@@ -88,6 +94,76 @@ claim of a request that came before the key's last winning claim never wins, so 
 the log late does not start a finished task over. Another request of the key that arrived while the
 claim was pending goes to the winner's task, as it would had the task existed. A task that moves
 gets those requests again on its new runner.
+
+## Placing tasks with filters
+
+A task can carry labels, such as `project=oss`, from its trigger's `labels` or from
+`priory request --label`. They travel in `factory.task.requested`, so every runner reads them. Each
+runner file can list filters, each with an optional window of days and hours, as
+[runners.md](../reference/runners.md#filters) describes. A runner takes only the tasks that every
+filter whose window is open accepts. Take a desktop whose filter `!project=oss` applies on weekdays
+from 08:00 to 18:00, and a server with no filter: by day the server takes the oss tasks, and at
+night either runner can.
+
+Each runner checks its own filters twice, on its own clock:
+
+1. When it reads a request whose key no runner holds. A runner whose filters refuse the request
+   sends no claim, and records the request as `unaccepted`. The first claim in log order still
+   wins, so filters only decide which runners send one.
+2. Before the first run or code step of a task it owns. A task its filters refuse now waits with
+   the reason `runner desktop's filter !project=oss holds it until 18:00`, and starts once the
+   window lifts. This check applies in a factory of one runner too. It skips a task that ran any
+   step, and lead, investigator and sweeper tasks.
+
+A runner keeps a task it claimed when its window closes before the task's first run. The task
+stays `waiting` on the log, as any unstarted task does, and runs when the window lifts. Use
+`priory give` to move it before then. Moving it on its own would need either a new hold or a
+takeover that reads each runner's filter files, and two runners with different copies of
+`runners/` could then both take the key. Keeping it changes no claim rule, so the proof in [Why no
+task runs twice](#why-no-task-runs-twice) holds as it is. A task that started never moves for a
+filter. When a window opens after the runner read its `kept` back and before the first run, the
+runner publishes `waiting` again. It sends nothing more about the key and starts no run until it
+reads that `waiting` back.
+
+When no runner's filters accept a request, no runner claims it. Each runner and view-only machine lists it in
+`priory tasks`, its JSON, `priory desk` and `/api/desk`, with no runner and the reason
+`no runner accepts it until 18:00`: the first time a runner's filters lift, in that runner's
+filter timezone, which a window must name when the factory has two or more runner files. A request no window ever lifts says `no runner accepts it`. Each runner checks
+its unaccepted requests again when it reads its own alive message, once a minute, and claims the
+first request of each key its filters accept by then, whichever of the key's requests that is. When a
+runner wins a key, every unaccepted request of that key goes to its task, as a later request of the
+key does. The same holds when an owner says it holds a key again, as after feedback reopened its
+ended task: on a hold other than `ended`, the owner routes its own unaccepted requests of the key,
+and every other machine records them as `elsewhere`. So a request the owner served is never claimed
+again once its task ends. A Linear issue that moves to another team takes its unaccepted requests to
+its new key, and a claim of the old
+key not published yet is taken back. A claim of the old key that reaches the log in the seconds
+between the move and its runner reading it still wins that key. A factory that goes from several runner files to one routes its unaccepted requests when
+its daemon starts. A view-only machine reads the reason again at any
+runner's alive message, so it can be out of date while every runner is off. The web Desk's queue
+does not show these requests.
+
+`priory cancel [DIR] KEY` drops such a request from any machine that lists it: it publishes
+`priory.task.dropped`, and every machine drops the key's requests as it reads that. A waiting key
+wins over a runner of the same name as its first part. These events
+drop the requests of a key that no runner holds too:
+
+- the close of the issue or pull request of the key, unless the request is newer than the close;
+- the removal of the review request of a review key, when the reviewer did not review;
+- a Linear issue that leaves the view whose entry made the request.
+
+A drop takes the `unaccepted` requests of each machine, and the `claiming` ones whose claim that
+machine has not published, which it then never publishes. So a runner that was off and reads a
+request and its drop together claims nothing. A drop never decides who wins a claim: a claim on the
+log when the drop is read still wins, and its task starts. `priory cancel
+RUNNER:KEY` then drops the task.
+
+Upgrade runners together. A runner on a build without filters or drops claims every request of a
+free key, including one that a person or a close dropped on the other machines. The task then runs
+on that runner alone, because every machine accepts its claim.
+
+A takeover asks the filters as well: a runner leaves a lapsed `waiting` task alone while its filters
+refuse it, and checks again with each alive message.
 
 ## Holds and leases
 
@@ -256,6 +332,7 @@ A view-only machine can:
   endpoints or the command line, which publishes the action for that runner, as
   [Acting on another runner's task](#acting-on-another-runners-task) says;
 - give a task to a runner with `priory give`;
+- drop a request no runner claimed with `priory cancel [DIR] KEY`;
 - list the memory candidates that agents wrote, and accept or drop one with
   `priory memories accept` or `priory memories drop`, which publishes the verdict for every runner
   (see [skills.md](skills.md));
@@ -263,8 +340,8 @@ A view-only machine can:
 
 A view-only machine cannot:
 
-- claim a task, start a run or apply an answer: it records each task request as `elsewhere` and
-  every other source event as `ignored`;
+- claim a task, start a run or apply an answer: it records a task request as `unaccepted` until a
+  runner's claim wins its key, then as `elsewhere`, and every other source event as `ignored`;
 - publish an alive, held, claimed, posted, applied or memory candidate message: no runner's
   lease, claim or memory depends on it;
 - change anything else. Its socket refuses every other write, such as `priory resume`, a snooze,
@@ -276,8 +353,8 @@ this machine is view-only: it runs no task and changes none here. Answer or dism
 
 Runners refuse a message that names a runner with no file in `runners/`. A view-only machine sends
 only answers, dismisses and task actions, each of which names the runner that applies it, so that
-runner applies them as it applies another runner's, and memory accepts and drops, which name no
-runner.
+runner applies them as it applies another runner's, and memory accepts and drops and request drops,
+which name no runner.
 
 `priory daemon --view-only` refuses to start on a machine that has a runner file, and in a factory
 of fewer than two runners, which posts no ask:
@@ -414,3 +491,6 @@ Every runner also refuses a claim for a runner without a runner file.
 - A key's newer task starts at generation 1 again. An action sent to the old task and read after
   the key's new task started can apply to the new one.
 - Each runner adds one alive message a minute to `factory.intake`.
+- A task its runner claimed waits there while that runner's filter holds it, even when another
+  runner would accept it. A filter lifted at the window's end takes up to a minute to claim a
+  request no runner accepted.

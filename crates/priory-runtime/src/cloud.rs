@@ -160,7 +160,7 @@ fn create(start: &Start, dir: &Path) -> Result<Started, NotStarted> {
     // tmux refuses a command over about 16 KiB, so the prompt reaches the CLI through a file.
     let file = start.home.join("prompts").join(name);
     fs::create_dir_all(file.parent().expect("the file has a parent"))
-        .and_then(|()| write_private(&file, &start.prompt))
+        .and_then(|()| write_private(&file, start.prompt.as_bytes()))
         .map_err(|error| format!("{}: {error}", file.display()))?;
     let upload = ["CCR_FORCE_BUNDLE", "CCR_ENABLE_BUNDLE"];
     // The prompt, which the CLI may echo, cannot hold this mark.

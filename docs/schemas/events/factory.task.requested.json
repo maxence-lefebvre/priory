@@ -186,6 +186,37 @@
         }
       ]
     },
+    "IssueOrder": {
+      "description": "Where a Linear issue stands in its project, as the intake saw it.",
+      "properties": {
+        "milestone": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MilestoneOrder"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The issue's milestone; null without one."
+        },
+        "project_id": {
+          "description": "Linear's id of the project.",
+          "type": "string"
+        },
+        "sort_order": {
+          "description": "The issue's manual order in Linear. Lower comes first.",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "project_id",
+        "milestone",
+        "sort_order"
+      ],
+      "type": "object"
+    },
     "Link": {
       "additionalProperties": false,
       "description": "A link for people.",
@@ -201,6 +232,33 @@
       "required": [
         "label",
         "url"
+      ],
+      "type": "object"
+    },
+    "MilestoneOrder": {
+      "description": "Where a milestone stands in its project.",
+      "properties": {
+        "id": {
+          "description": "Linear's id of the milestone.",
+          "type": "string"
+        },
+        "sort_order": {
+          "description": "The milestone's manual order in its project. Lower comes first.",
+          "format": "double",
+          "type": "number"
+        },
+        "target_date": {
+          "description": "The milestone's target date, `YYYY-MM-DD`; null without one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "sort_order",
+        "target_date"
       ],
       "type": "object"
     },
@@ -423,12 +481,37 @@
           "description": "Which events are the same work, such as `github:owner/name#42` or `linear:ENG-7`.",
           "type": "string"
         },
+        "labels": {
+          "additionalProperties": {
+            "pattern": "^[A-Za-z0-9_.:/-]+$",
+            "type": "string"
+          },
+          "description": "The task's labels, which runner filters match: the trigger's `labels`, or `priory request`\nor `priory add --label`.",
+          "propertyNames": {
+            "pattern": "^[a-z0-9][a-z0-9_.-]*$"
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
         "lane": {
           "description": "The trigger's or the request's lane; null when `lanes.toml` derives it.",
           "type": [
             "string",
             "null"
           ]
+        },
+        "order": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/IssueOrder"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Where the Linear issue stands in its project, which orders the task in the queue; null\nwithout a project. Linear view and project sources only."
         },
         "pre": {
           "anyOf": [

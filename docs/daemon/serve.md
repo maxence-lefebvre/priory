@@ -227,9 +227,9 @@ to type.
   outcome. A request a crash cut before its outcome becomes `uncertain` when the daemon starts, and
   is never sent again.
 - **The outbox waits.** While a grant is open, the outbox types nothing into that run, and `say`
-  queues as usual. Once the grant ends, the outbox types at the run's next idle point. Text the
-  person typed and did not submit still sits in the agent's input box then, so give the keyboard
-  back with the box empty.
+  queues as usual. The Enter of a prompt pasted before the grant waits too. Once the grant ends,
+  the outbox types at the run's next idle point. Text the person typed and did not submit still
+  sits in the agent's input box then, so give the keyboard back with the box empty.
 
 Keys from a person are not tool calls, so the tool guard never reads them. Claude Code's `!` bash
 mode, a shell the pane fell back to, and slash commands such as `/permissions` all reach past it.

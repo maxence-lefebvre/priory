@@ -12,6 +12,7 @@ cannot tell which keys a source refuses; `priory check` does.
 - [`github`](#github)
 - [`linear`](#linear)
 - [`linear.view`](#linearview)
+- [`linear.project`](#linearproject)
 - [`sentry`](#sentry)
 - [`cloudwatch`](#cloudwatch)
 - [`honeycomb`](#honeycomb)
@@ -30,12 +31,13 @@ cannot tell which keys a source refuses; `priory check` does.
 
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
-| `source` | string | yes | | `github`, `linear`, `linear.view`, `sentry`, `honeycomb`, `intercom`, `cloudwatch`, `figma`, `slack` or `schedule` | `"github"` |
+| `source` | string | yes | | `github`, `linear`, `linear.view`, `linear.project`, `sentry`, `honeycomb`, `intercom`, `cloudwatch`, `figma`, `slack` or `schedule` | `"github"` |
 | `workflow` | string | yes | | The workflow a matching event starts, by file name | `"implement"` |
 | `repo` | string | per source | | The repository the trigger's tasks work in, a GitHub `owner/name`. `priory check` refuses any other shape, such as `..` or a path | `"owner/name"` |
 | `key` | string | no | per source | Which events are the same work. A factory holds at most one active task per key | `"issue.number"` |
 | `band` | string | no | the workflow's `band`, else the last band | The band of its tasks | `"today"` |
 | `lane` | string | no | derived by `lanes.toml` | The lane of its tasks, `<team>/<theme>` | `"core/intake"` |
+| `labels` | table of strings | no | none | The labels of its tasks, which [runner filters](runners.md#filters) match. A key is lower case letters, digits, `_`, `.` and `-`. A value is letters, digits, `_`, `.`, `:`, `/` and `-` | `{ project = "oss" }` |
 | `hold` | table | no | | Files each task held. See [`hold`](#hold) | `{ reason = "triage first" }` |
 | `intervention` | `plan` or `hands-off` | no | a person answers every ask | Who answers its tasks' asks. See [`intervention` and `lead`](#intervention-and-lead) | `"plan"` |
 | `lead` | string | with `hands-off` | | The agent that answers asks of a `hands-off` task | `"lead"` |
@@ -190,6 +192,39 @@ workflow = "implement"
 key = "issue.identifier"       # the task key is linear:ENG-7
 band = "now"
 ```
+
+## `linear.project`
+
+Starts a task when an issue enters or leaves a Linear project. An issue counts as in the project
+only while it matches the whole `filter`, so an issue assigned to the filter's `assignee` enters,
+and one assigned to someone else leaves. See [linear.md](../intake/linear.md).
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `project` | string | yes | | The project: its UUID, or its slug id. The name and the URL are not taken | `"3f0c9a52-6d1b-4e8f-a7c4-b1d2e3f40516"` |
+| `on` | string | yes | | `issue.entered` or `issue.left` | `"issue.entered"` |
+| `filter` | table | no | | `assignee` (a Linear user's id or email, in any case) and `state` (one state type or a list of them: `triage`, `backlog`, `unstarted`, `started`, `completed`, `canceled`, `duplicate`). Every key must match, and a list matches any of its types. Set `state`: without it each poll reads every issue of the project (see [Complexity](../intake/linear.md#complexity)) | `{ state = ["backlog", "unstarted"] }` |
+| `key` | string | no | the identifier | `issue.identifier`. The task key is `linear:ENG-7` | `"issue.identifier"` |
+| `backfill` | boolean | no | `false` | Whether the issues in the project at the first poll start tasks. A changed `filter` or `project` has its own first poll (see [Filter changes](../intake/linear.md#filter-changes)) | `true` |
+
+<!-- example: factory/triggers/my-project.toml -->
+```toml
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
+source = "linear.project"
+project = "3f0c9a52-6d1b-4e8f-a7c4-b1d2e3f40516" # the project's UUID, or its slug id
+on = "issue.entered"           # or issue.left
+repo = "owner/name"            # where its tasks work; without it they block
+workflow = "implement"
+key = "issue.identifier"       # the task key is linear:ENG-7
+band = "today"
+
+[filter]                       # every key must match
+assignee = "ada@example.com"   # a Linear user's email or id
+state = ["triage", "backlog", "unstarted"]
+```
+
+Tasks of a `linear.view` or `linear.project` trigger start in milestone order. See
+[runs.md](../daemon/runs.md#milestone-order).
 
 ## `sentry`
 
@@ -391,7 +426,7 @@ workflow = "implement"
 | `caps` | Always: they count toward every `cli` task |
 | `staged` | Always: every `cli` task blocks before its first irreversible step |
 
-A request ignores `source`, `workflow`, `key`, `lane`, `hold` and `pre`. Like every trigger's
+A request ignores `source`, `workflow`, `key`, `lane`, `labels`, `hold` and `pre`: its labels are its `--label` flags. Like every trigger's
 `repo`, that repository is polled for GitHub events.
 
 <!-- example: factory/triggers/cli.toml -->
@@ -538,6 +573,8 @@ noop = [
 | ------- | ----- |
 | `` unknown field `<key>`, expected one of ... `` | A key no table above lists |
 | `` missing field `workflow` `` | No `workflow` |
+| `` label key "<key>" is not lower case letters, digits, `_`, `.` or `-` `` | A `labels` key with another character |
+| `` label <key> has value "<value>": use letters, digits, `_`, `.`, `:`, `/` or `-` `` | A `labels` value that is empty or has another character |
 | `<n> is not a spend cap: give dollars above zero` | A `caps` value of zero or less, or not finite |
 | `` `caps` needs prices.toml, which turns the steps' tokens into dollars `` | `caps` in a factory without `prices.toml` |
 | `` `max_running` is 0: give at least 1, or hold the tasks instead `` | `max_running = 0` |

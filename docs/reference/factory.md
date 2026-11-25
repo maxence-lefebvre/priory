@@ -23,6 +23,7 @@ one: [reload.md](../daemon/reload.md#what-a-reload-changes) lists them.
 | `writing` | path | no | none: agents get only their own prompt | A file, relative to the factory folder, whose text Priory appends to the system prompt of every agent it starts. `priory check` refuses a missing file and warns past 4096 bytes. See [writing.md](../daemon/writing.md) | `"WRITING.md"` |
 | `sweep` | table | no | the built-in worktree sweep alone | How the daemon frees room. See [`[sweep]`](#sweep) | |
 | `intake` | table | no | a failing poll reports after 15 minutes | How the intake treats a failing poll. See [`[intake]`](#intake) | |
+| `memory` | table | no | no limit | How long a gated command waits. See [`[memory]`](#memory) | |
 | `search` | table | no | keyword search, no summarizer | How tasks are found. See [`[search]`](#search) | |
 | `log` | table | no | herdr-bus's file on this machine | Where the event log lives. See [`[log]`](#log) | |
 | `telemetry` | table | no | no export | Where trace records go. See [`[telemetry]`](#telemetry) | |
@@ -32,6 +33,7 @@ one: [reload.md](../daemon/reload.md#what-a-reload-changes) lists them.
 | `slack` | table | no | no Slack shortcut | The Slack message shortcut. See [`[slack.shortcut]`](#slackshortcut) | |
 | `asks` | table | no | answers are only stored | What happens to the answer of an ask from outside Priory. See [`[asks]`](#asks) | |
 | `runs` | table | no | no command at a run's start | What the daemon runs when a run starts. See [`[runs]`](#runs) | |
+| `autopilot` | table | no | no plan approved, the machine's zone | What `priory autopilot` may approve, and the zone of its end. See [`[autopilot]`](#autopilot) | |
 | `links` | table of strings | no | the built-in `#n` link | Autolinks, each a regex and a URL template. See [`[links]`](#links) | |
 | `request` | table | no | `priory add` needs `--workflow` | The defaults of `priory add` and `POST /api/request`. See [`[request]`](#request) | |
 | `batch` | table | no | `priory batch add` is refused | How `priory batch add` plans batches. See [`[batch]`](#batch) | |
@@ -41,8 +43,10 @@ one: [reload.md](../daemon/reload.md#what-a-reload-changes) lists them.
 | `consult` | table | no | no agent consults | Who may consult which investigator, and the bounds of one consult. See [`[consult]`](#consult) | |
 | `mcp` | table of tables | no | | A person's statement about each MCP server or connector an investigator names. See [`[mcp.<name>]`](#mcpname) | |
 | `guard` | table | no | the built-in guards alone | Irreversible commands and MCP tools the tool guard denies on top of the built-in ones. See [`[guard]`](#guard) | |
+| `private` | table | no | no term is private | Terms no run may publish to the repositories it lists. See [`[private]`](#private) | |
 | `sandboxes` | table of tables | no | no sandbox | The jails a workflow can start its agents in, by name. See [`[sandboxes.<name>]`](#sandboxesname) | |
-| `trust_worktrees` | bool | no | `false`: a person trusts each folder by hand | The daemon records Claude Code's, Codex's and direnv's folder trust for each run's worktree and clone, for the repositories the factory names. When the worktree has an `.envrc` and `direnv` is installed, the run starts in its environment. See [sessions.md](../daemon/sessions.md#trusting-the-worktrees-and-the-clone) | `true` |
+| `trust_worktrees` | bool | no | `false`: a person trusts each folder by hand | The daemon records Claude Code's, Codex's and direnv's folder trust for each run's worktree and clone, for the repositories the factory names. When the worktree has an `.envrc` that passes the check against the commit the task started from or the default branch, and `direnv` is installed, the run starts in its environment. See [sessions.md](../daemon/sessions.md#trusting-the-worktrees-and-the-clone) | `true` |
+| `upgrade` | table | no | nothing is looked up or installed | Which releases the daemon installs by itself. See [`[upgrade]`](#upgrade) | |
 | `repos` | table of tables | no | no recipe runs | The setup, resume and teardown recipes, the cloud opt-in and the cloud setup script of each repository. See [`[repos]`](#repos) | |
 
 A duration is a whole number followed by `s`, `m`, `h` or `d`, such as `"90s"`, `"15m"`, `"2h"` or `"7d"`.
@@ -53,7 +57,8 @@ See [runs.md](../daemon/runs.md#overlapping-files) for how the overlap hold work
 [room.md](../daemon/room.md#urgent-wakes) for how `preempt` stops a run,
 [runs.md](../daemon/runs.md#aging) for how `age` moves a waiting task up,
 [runs.md](../daemon/runs.md#turns-between-lanes) for how `fair` orders a band, and
-[runs.md](../daemon/runs.md#review-limit) for how `review_limit` holds new starts.
+[runs.md](../daemon/runs.md#review-limit) for how `review_limit` holds new starts. A lane's cap on
+running tasks, and the hours it holds in, live in [`lanes.toml`](lanes.md#lane-keys).
 
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
@@ -79,6 +84,15 @@ See [desk.md](../daemon/desk.md#intake-banner) for the report and the banner a f
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `alarm_after` | duration | no | `"15m"` | How long a source's polls fail before the intake posts its `intake` report, which the desk ranks as an alarm and Web Push sends. Until then, the desk shows only the banner `the intake retries <source> ...`. A source that cannot start reports at once | `"5m"` |
+
+## `[memory]`
+
+See [memory-gate.md](../daemon/memory-gate.md#giving-up) for what the command does at the limit.
+A runner file's `memory` table sets the same key for its machine (see [runners.md](runners.md)).
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `give_up_after` | duration, below `"1h"` | no | none: it waits until `--timeout` | How long `priory memory acquire` without `--timeout` waits for its grant before it exits 75 and says to run the command on CI. Set it when your repositories' CI runs the gated commands | `"10m"` |
 
 ## `[sweep]`
 
@@ -201,6 +215,27 @@ On Postgres, `timeout` bounds the connect, sets the server's `statement_timeout`
 `tcp_user_timeout` on the socket. TCP keepalives probe a quiet connection after 10 seconds, every
 10 seconds, 3 times. A call that gets no answer within `timeout`, such as over an ssh tunnel that
 hangs, is given up on.
+
+## `[upgrade]`
+
+The releases the daemon installs by itself, and when. See [upgrades.md](../daemon/upgrades.md) for
+how, and [How to upgrade Priory automatically](../upgrading-automatically.md) to turn it on.
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `channel` | `"patch"` or `"minor"` | yes | | `patch` takes releases of the running major and minor version, `minor` those of the running major version. Neither takes a pre-release or an older version | `"patch"` |
+| `every` | duration | no | `"1h"` | How often the daemon looks for a release. At least `"10m"` | `"6h"` |
+| `units` | list of two strings | no | `["priory-daemon.service", "priory-intake.service"]` | The systemd user units of the daemon and the intake, in that order | `["acme-daemon.service", "acme-intake.service"]` |
+| `not_during` | table | no | it may upgrade at any time | When the daemon never upgrades. See below | |
+
+### `[upgrade.not_during]`
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `from` | `HH:MM` | yes | | When it starts | `"09:00"` |
+| `until` | `HH:MM` | yes | | When it ends: the next day when it is not after `from` | `"19:00"` |
+| `days` | list of weekdays | no | every day | The days it starts on: `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun` | `["mon", "fri"]` |
+| `timezone` | string | no | the machine's own | The IANA zone of the hours | `"Europe/Paris"` |
 
 ## `[telemetry]`
 
@@ -354,6 +389,15 @@ and [tools.md](tools.md#commands-an-answer-runs) for the commands an answer runs
 | `deliver` | string | no | none: an answer is only stored | The command that delivers an outside ask's answer or dismissal to the session that asked, relative to the factory folder. `priory check` refuses one that is not an executable file | `"adapters/herdr/deliver"` |
 | `targets` | table of strings | no | none: only `worktree` | The folders, by name, where an answer can run an agent's ask command besides the task's worktree, relative to the factory folder or absolute | `{ ops = "../ops" }` |
 
+## `[autopilot]`
+
+See [waits.md](../daemon/waits.md#autopilot) for what `priory autopilot` answers while it is on.
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `approve_plans` | array of strings | no | `[]`: no plan | The workflows whose green plans autopilot approves for a task with `intervention = "plan"`. `priory check` refuses a workflow where every green plan leads to a person, to a batch, or to an irreversible step before a person decides again, and any workflow in a factory with no `critic` | `["implement"]` |
+| `timezone` | string | no | the machine's zone | The IANA zone that `--until HH:MM` and the default end, 08:00, are read in | `"Europe/Paris"` |
+
 ## `[runs]`
 
 See [sessions.md](../daemon/sessions.md#opening-a-run-when-it-starts) for when the daemon runs the
@@ -446,6 +490,39 @@ Each entry of `commands`:
 commands = [{ name = "fly-deploy", run = ["fly", "deploy"] }]
 tools = ["mcp__stripe__*"]
 ```
+
+## `[private]`
+
+Terms, such as ticket ids or other repositories' names, that no run may publish to the listed
+repositories. See [guard.md](../daemon/guard.md#private-terms) for which calls are screened and how.
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `repos` | array of strings | no | `[]`: nothing is screened | The GitHub repositories to keep the terms out of, each `owner/name`, in any case | `["acme/widgets"]` |
+| `terms` | array of tables | no | `[]`: nothing is screened | The terms, in labelled groups | see below |
+
+Each entry of `terms` needs `text` or `regex`, or both:
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `label` | string | yes | | The name a refusal gives in place of the term. Used once, and holds no term itself | `"ticket-id"` |
+| `text` | array of strings | no | `[]` | Literal strings, matched in any case. An end that is a letter, a digit or `_` matches only at a word's edge, so `acme` does not match `acme_x`: use `regex` for that | `["acme-internal"]` |
+| `regex` | array of strings | no | `[]` | Regexes, in the [regex crate's syntax](https://docs.rs/regex/latest/regex/#syntax), matched one line at a time | `['\bACME-\d+']` |
+
+```toml
+[private]
+repos = ["acme/widgets"]
+terms = [
+  { label = "ticket-id", regex = ['\bACME-\d+'] },
+  { label = "internal-repo", text = ["acme-internal"] },
+]
+```
+
+`priory check` warns about a term that matches an entry of `repos`, since a text that names the
+repository is then refused. An error in the table repeats none of its values.
+
+The factory's folder holds the terms as plain text, so keep it in a private repository. A run that
+started before the factory had `[private]` is not screened until it restarts.
 
 ## `[caps]`
 
@@ -652,8 +729,19 @@ day = 10.0                                     # dollars the lane may spend in a
 | `` the critic `<name>` reads on = "<on>": a critic reads a plan, which names no commit, so use one on result `` | `critic` names a scorer on `diff` or `ask` |
 | `` the pre-review `<name>` is no scorer in scorers/ `` | `pre_review` names a scorer the factory lacks |
 | `` the pre-review `<name>` is of kind <kind>: a pre-review is a judge, which reads the lessons `` | `pre_review` names a scorer that is not a `judge` |
+| `` `approve_plans` names workflow `<name>`, which does not exist `` | `[autopilot] approve_plans` names no file under `workflows/` |
+| `` `approve_plans` names workflow `<name>`, and the factory has no `critic` to read its plans first `` | `[autopilot] approve_plans` is set and `critic` is not |
+| `` `approve_plans` names workflow `<name>`, where autopilot may approve no plan: <why> `` | No step of that workflow grades a plan that autopilot may approve |
 | `` `[guard]` command `<name>` has the name of another guard `` | A `[guard]` command takes a built-in guard's name or another command's |
 | `` `[guard]` command `<name>` needs a program in `run` `` | A `[guard]` command with an empty `run` |
+| `` `[private] repos` `<repo>` needs to be `owner/name` `` | A `[private] repos` entry that is not a GitHub `owner/name` |
+| `` `[private]` term <n> needs a label `` | A blank `label` |
+| `` `[private]` label `<label>` is used twice `` | Two entries of `terms` with one label |
+| `` `[private]` term `<label>` needs `text` or `regex` `` | An entry with neither, or with empty ones |
+| `` `[private]` term `<label>` has a regex that does not compile: <reason> `` | A `regex` the regex crate refuses |
+| `` `[private]` term `<label>` matches empty text `` | An empty `text`, or a `regex` such as `a*`, which would match every line |
+| `` `[private]` label <n> holds a private term, and refusals print labels `` | A label that one of the terms matches |
+| `` `[private]` takes `repos`, an array of strings, and `terms`, ... `` | A key or a value of `[private]` that the tables above do not list. The error repeats neither |
 | `` unknown field `<key>`, expected one of ... `` | A key the tables above do not list, or a top-level key such as `gate` written below a table such as `[serve]`, which makes it that table's key |
 | `"<text>" is not a duration such as 90s, 15m or 2h` | A duration that is not a whole number and `s`, `m`, `h` or `d` |
 | `` `[repos."<repo>"]` `cloud_setup` is `<path>`: a cloud setup script is relative and stays inside the repository `` | `cloud_setup` is empty, absolute, or holds `.` or `..` |
@@ -724,6 +812,9 @@ day = 10.0                                     # dollars the lane may spend in a
 | `` `[consult.allow]` names investigator `<name>` as an asker: an investigator cannot consult, so a consult is one hop `` | An investigator as a key of `[consult.allow]` |
 | `` `[consult.allow]` lets `<asker>` consult `<name>`, which is no agent `` | A target with no folder under `agents/` |
 | `` `[consult.allow]` lets `<asker>` consult `<name>`, which is no investigator: set `investigator = true` on it `` | A target that is no investigator |
+| `` `[upgrade]` needs the herdr-bus log: Priory cannot tell whether a release changes a Postgres log's tables, so upgrade these machines by hand `` | `[upgrade]` beside `[log] backend = "postgres"` |
+| `` `[upgrade] units` names one unit twice: give the daemon's, then the intake's `` | The same unit twice in `units` |
+| `` `[upgrade] every` is under 10 minutes: GitHub limits anonymous requests `` | `every` under `"10m"` |
 | `invalid socket address syntax` | `listen` is not an IP address and port, such as `127.0.0.1:7340` |
 
 Each line starts with the file and line, such as `factory.toml:3:1:`. A file that does not parse
