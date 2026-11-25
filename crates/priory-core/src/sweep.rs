@@ -482,9 +482,6 @@ fn failing(home: &Path, repo: &str) -> Option<Failing> {
     serde_json::from_slice(&std::fs::read(failing_file(home, repo)).ok()?).ok()
 }
 
-/// How long a fetch lets its worktrees go when a later sweep has no time to fetch again.
-const FRESH: Duration = Duration::from_secs(60 * 60);
-
 /// The key of `TRIED` for the last good fetch of `repo`.
 fn fetched(home: &Path, repo: &str) -> PathBuf {
     home.join("fetches").join(repo)
@@ -507,9 +504,7 @@ fn fetch(home: &Path, repos: &[String], now: jiff::Timestamp) -> Vec<String> {
         // One timeout says the network hangs: the other clones wait for the next sweep.
         if hung || started.elapsed() >= BUDGET {
             // Its refs from an earlier sweep still say what merged.
-            let fresh = tried()
-                .get(&fetched(home, repo))
-                .is_some_and(|at| at.elapsed() < FRESH);
+            let fresh = tried().contains_key(&fetched(home, repo));
             if !fresh {
                 unfetched.push(repo.clone());
             }

@@ -281,7 +281,10 @@ pub fn expendable(path: &Path) -> Result<(), String> {
 /// what a stopped delete leaves still has the tag that exempts the repositories in it.
 pub fn discard(path: &Path) -> Result<(), String> {
     let gone = |path: &Path| {
-        remove_sealed(path);
+        unseal(path, None);
+        // The walk takes a while, in which a mount can appear.
+        unmounted(path, &mountinfo)?;
+        let _ = fs::remove_dir_all(path);
         match fs::symlink_metadata(path) {
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
             _ => Err(format!("cannot delete {}", path.display())),
@@ -483,12 +486,8 @@ pub(crate) fn discard_aside(home: &Path, path: &Path) {
     // Its own link would keep the sweep from deleting what a stopped daemon leaves.
     let _ = fs::remove_file(aside.join(".git"));
     std::thread::spawn(move || {
-        // Checked again after the walk, which takes a while.
-        if unmounted(&aside, &mountinfo).is_ok()
-            && unseal(&aside, None)
-            && unmounted(&aside, &mountinfo).is_ok()
-        {
-            let _ = fs::remove_dir_all(&aside);
+        if unmounted(&aside, &mountinfo).is_ok() {
+            let _ = discard(&aside);
         }
     });
 }
