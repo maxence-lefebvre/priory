@@ -288,4 +288,5 @@ export function terminalKey(event) {
 addEventListener("pagehide", () => keyboard.leave());
 keyboardSheet().addEventListener("click", (event) => { if (event.target === keyboardSheet()) keyboardSheet().close(); });
 keyboardSheet().addEventListener("close", () => document.querySelector("#app [data-action='term-menu']")?.focus());
+document.addEventListener("visibilitychange", () => syncTerminal(document.getElementById("app")));
 addEventListener("resize", () => { if (terminal.fit) paintTerminal(document.getElementById("app")); });

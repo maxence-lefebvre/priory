@@ -7,7 +7,7 @@
  *   `Drawer`. Each takes no prop but `Detail` and `Drawer`, which take the `id` an address names, and
  *   `Drawer` the `panels` beside it.
  * - Legacy, the same four in lower case, each a function that answers the HTML: `list(wide)`,
- *   `page(size)`, `detail(id)`, `drawer(wide, panels)`. `needs` are the listings `list` and `page`
+ *   `page(size)`, `detail(id)`, `drawer(id, wide, panels)`. `needs` are the listings `list` and `page`
  *   draw from, `detailNeeds` those of `detail` and `drawer`, read by nobody once a part is in React.
  * - Document events: `click(action, target, event)`, `submit(action, form)`, `input(target)`,
  *   `change(target)`, `key(event)`, and `keyFirst(event)`, which also runs inside a field. True: acted.

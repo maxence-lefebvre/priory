@@ -43,13 +43,13 @@ const Slot = memo(function Slot({ slot, kind, name, id, panels }) {
 });
 
 // Lands the listings the legacy slots read, and draws them. It comes after the slots: theirs mount first.
-const LegacyOwner = memo(function LegacyOwner({ parts, names, pending }) {
+const LegacyOwner = memo(function LegacyOwner({ names, pending }) {
   const { href, entry, trail, size } = usePlace();
   // The frame's listings too: the page lands, and reads what it alone reads, once they all did.
   const { reading, read } = useListings([...FRAME, ...names], useStore(asked));
   const minute = useMinute();
   useLayoutEffect(() => legacy.mount(), []);
-  useLayoutEffect(() => legacy.open({ href, entry, trail, size, names }), [href, entry, trail, size, names, parts, pending]);
+  useLayoutEffect(() => legacy.open({ href, entry, trail, size, names }), [href, entry, trail, size, names, pending]);
   // A hidden tab draws nothing: a legacy draw may read.
   const visible = useStore(shown);
   useLayoutEffect(() => {
@@ -58,16 +58,17 @@ const LegacyOwner = memo(function LegacyOwner({ parts, names, pending }) {
   return null;
 });
 
-// The view file's tree, for a layout that is not a plain set of tabs. `at` names each slot.
-const Tree = memo(function Tree({ node, list, at = "list" }) {
-  if (node.panel) return <Slot slot={at} kind="list" name={node.panel} />;
+// The view file's tree, for a layout that is not a plain set of tabs. Its first
+// panel is the main slot's, which a smaller screen draws alone.
+const Tree = memo(function Tree({ node, list, slot = "main" }) {
+  if (node.panel) return <Slot slot={slot} kind="list" name={node.panel} />;
   const [kind, children] = Object.entries(node)[0];
-  if (kind !== "tabs") return <div className={`tree tree-${kind}`}>{children.map((child, i) => <Tree key={i} node={child} list={list} at={`${at}.${i}`} />)}</div>;
+  if (kind !== "tabs") return <div className={`tree tree-${kind}`}>{children.map((child, i) => <Tree key={i} node={child} list={list} slot={i ? `${slot}.${i}` : slot} />)}</div>;
   const open = shownTab(children, list);
   return (
     <div className="tree-tabs">
       <nav className="tabbar" aria-label="Tabs">{children.map((child) => <TreeTab key={leaves(child)[0]} panel={leaves(child)[0]} open={child === open} />)}</nav>
-      <Tree node={open} list={list} at={`${at}.tab`} />
+      <Tree node={open} list={list} slot={slot} />
     </div>
   );
 });
@@ -93,9 +94,9 @@ export const PageGrid = memo(function PageGrid() {
   const loading = pending && !main.kind && legacyParts.length === parts.length;
   return (
     <>
-      {loading ? <LegacySlot slot="list" kind="loading" /> : main.kind ? <Slot slot="list" {...main} /> : <Tree node={main} list={list} />}
+      {loading ? <LegacySlot slot="main" kind="loading" /> : main.kind ? <Slot slot="main" {...main} /> : <Tree node={main} list={list} />}
       {drawer && !loading ? <Slot slot="drawer" kind="drawer" name="asks" id={ask} panels={shell.panels} /> : null}
-      {legacyParts.length ? <LegacyOwner parts={parts} names={names} pending={pending} /> : null}
+      {legacyParts.length ? <LegacyOwner names={names} pending={pending} /> : null}
     </>
   );
 });

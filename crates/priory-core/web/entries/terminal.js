@@ -6,7 +6,6 @@ export const terminal = {
   needs: ["tasks"],
   list: () => html`<div class="list" role="region" aria-label="Terminal"><div class="lhead"><h1>Terminal</h1></div>${terminalsPanel()}</div>`,
   page: () => html`<div class="top"><h1>Terminal</h1></div>${terminalsPanel()}`,
-  fields: ["term-line", "term-keys"],
   click: terminalClick,
   submit: terminalSubmit,
   input: terminalInput,

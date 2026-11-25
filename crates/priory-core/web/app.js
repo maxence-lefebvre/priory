@@ -10,16 +10,22 @@ import { each, entries, entryOf, first } from "./registry.js";
 import { go } from "./router.js";
 import { signOut } from "./session.js";
 
-// What each legacy element draws: { kind, name, slot, id, panels }.
+// What each legacy element draws, { slot, kind, name, id, panels }, and whether it has.
 const slots = new Map();
 // The elements on screen, in document order.
 const hosts = () => (slots.size ? [...document.querySelectorAll("#app .legacy")].filter((element) => slots.has(element)) : []);
+
+// The focus in an element React takes away before the next draw, such as a panel a resize moves.
+let lost = null;
+const typed = () => entries.flatMap((entry) => entry.fields ?? []);
+const focusOf = (active) => ({ key: focusKey(active), caret: typed().includes(active.id) ? [active.id, active.selectionStart, active.selectionEnd, active.selectionDirection] : null });
 
 /** A LegacySlot shows `element`, which draws `part`; the answer takes it away again. */
 export function show(element, part) {
   slots.set(element, part);
   return () => {
     keepScroll(element);
+    if (element.contains(document.activeElement)) lost = focusOf(document.activeElement);
     slots.delete(element);
   };
 }
@@ -29,6 +35,7 @@ export function mount() {
   return () => {
     dropObservers();
     state.renderedKey = null;
+    lost = null;
     each("left");
     // No legacy page is on screen, so none of its keys or actions finds an ask.
     Object.assign(place, { href: "", entry: {} });
@@ -51,7 +58,8 @@ const dropObservers = () => {
 
 const scrollKey = (element) => `${slots.get(element).slot} ${state.renderedKey}`;
 const keepScroll = (element) => {
-  if (state.renderedKey) state.scrolls.set(scrollKey(element), [...element.querySelectorAll(".scroll")].map((part) => part.scrollTop));
+  // An element React just put there has drawn nothing: its scroll is the one kept before.
+  if (state.renderedKey && slots.get(element).drawn) state.scrolls.set(scrollKey(element), [...element.querySelectorAll(".scroll")].map((part) => part.scrollTop));
 };
 
 // A draw that throws is reported and leaves the page as it was: React would unmount the root.
@@ -73,9 +81,8 @@ export function render() {
   each("before");
   shown.forEach(keepScroll);
   const active = document.activeElement;
-  const focused = shown.some((host) => host.contains(active)) ? focusKey(active) : null;
-  const typed = entries.flatMap((entry) => entry.fields ?? []);
-  const caret = focused && typed.includes(active.id) ? [active.id, active.selectionStart, active.selectionEnd, active.selectionDirection] : undefined;
+  const { key: focused, caret } = shown.some((host) => host.contains(active)) ? focusOf(active) : (active === document.body && lost) || {};
+  lost = null;
   dropObservers();
   // A Cancel armed on another runner's task holds for the generation the list shows.
   if (typeof state.taskArmed?.task === "string" && remoteGeneration(state.taskArmed.task) !== state.taskArmed.generation) disarmTask();
@@ -85,6 +92,7 @@ export function render() {
     // The answer bar shows once the options scroll away; a redraw keeps it shown, so focus on it stays.
     const barShown = host.querySelector(".abar:not([hidden])") !== null;
     host.innerHTML = html;
+    slots.get(host).drawn = true;
     if (barShown) host.querySelector(".abar")?.removeAttribute("hidden");
   }
   state.renderedKey = routeKey();
@@ -93,7 +101,7 @@ export function render() {
   // The Desk table draws some controls twice and CSS hides one copy: focus goes to the shown one.
   const again = (selector) => shown.flatMap((host) => [...host.querySelectorAll(selector)]);
   if (focused) again(focused).find((element) => !element.closest("[inert]") && element.getClientRects().length)?.focus({ preventScroll: true });
-  if (caret !== undefined) again(`#${caret[0]}`)[0]?.setSelectionRange(caret[1], caret[2], caret[3]);
+  if (caret) again(`#${caret[0]}`)[0]?.setSelectionRange(caret[1], caret[2], caret[3]);
 }
 
 // The HTML of a legacy part. Until its listings are read, the first one says so and the others stay empty.
