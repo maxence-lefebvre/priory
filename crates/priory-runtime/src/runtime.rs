@@ -88,12 +88,16 @@ pub fn fed_within(
     let stdin = child.stdin.take();
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
-        let written = match (stdin, input) {
+        // Its output is read while it takes its input: a command that fills the output pipe first
+        // would wait for its reader, and the writer for it.
+        let writer = std::thread::spawn(move || match (stdin, input) {
             (Some(mut stdin), Some(input)) => stdin.write_all(&input),
             _ => Ok(()),
-        };
+        });
+        let output = child.wait_with_output();
+        let written = writer.join().expect("the writer does not panic");
         // A command that failed before reading its input explains itself better than the pipe.
-        sender.send(child.wait_with_output().and_then(|output| match written {
+        sender.send(output.and_then(|output| match written {
             Err(error)
                 if error.kind() == std::io::ErrorKind::BrokenPipe && !output.status.success() =>
             {
@@ -2879,6 +2883,22 @@ pub fn send(home: &Path, line: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn a_command_that_answers_more_than_a_pipe_holds_while_it_reads_still_ends() {
+        let input = vec![b'x'; 4 << 20];
+
+        let output = fed_within(
+            &mut Command::new("cat"),
+            Some(input.clone()),
+            Duration::from_secs(20),
+        )
+        .unwrap()
+        .expect("cat ended in time");
+
+        assert!(output.status.success());
+        assert!(output.stdout == input);
+    }
 
     /// A socket file that refuses every connection, as a stopped daemon's does, in a fresh folder.
     fn refusing(name: &str) -> PathBuf {
