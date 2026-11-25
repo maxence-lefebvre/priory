@@ -538,7 +538,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
                 limits.check(&slice, &share, &home);
             }
         }
-        let short = || room::measure(&home).is_ok_and(|room| crate::room::short_of_disk(&room));
+        // A measure from before the last removal would retire one task too many.
+        let short =
+            || room::measure_fresh(&home).is_ok_and(|room| crate::room::short_of_disk(&room));
         let ended = sweeping.tick(&db, factory, &home, short)?;
         if ended {
             sweep::measure(&home);
@@ -1686,7 +1688,6 @@ fn tend(
             let repo = repo_of(trace.factory, &admission.trigger, admission.repo.as_deref())?;
             let name = worktree_name(db, trace.runner.as_deref(), admission.task).ok()?;
             runtime::mounted_orphan(home, repo, &name)
-                .map(|reason| format!("waits to add its worktree back: {reason}"))
                 .or_else(|| runtime::fetch_waits(home, repo, &name))
         };
         let pass = state::admissible(
@@ -2259,8 +2260,14 @@ fn restore_worktree(
             state::set_base(db, task, added.base(), factory.trust_worktrees())?;
             db.execute(
                 "UPDATE tasks SET reason = NULL WHERE id = ?1
-                 AND (substr(reason, 1, length(?2)) = ?2 OR substr(reason, 1, length(?3)) = ?3)",
-                rusqlite::params![task, crate::room::RESTORES, runtime::FETCH_WAITS],
+                 AND (substr(reason, 1, length(?2)) = ?2 OR substr(reason, 1, length(?3)) = ?3
+                      OR substr(reason, 1, length(?4)) = ?4)",
+                rusqlite::params![
+                    task,
+                    crate::room::RESTORES,
+                    runtime::FETCH_WAITS,
+                    runtime::ORPHAN_WAITS
+                ],
             )?;
             // The code step needs no resume; the task's next run starts it first.
             let resume = factory.recipe(repo, factory::Moment::Resume);
@@ -2275,7 +2282,7 @@ fn restore_worktree(
                 )?;
             }
         }
-        Err(reason) if reason.starts_with(runtime::FETCH_WAITS) => {
+        Err(reason) if runtime::waits(&reason) => {
             set_reason(db, task, &reason)?;
             return Ok(Restored::Waits);
         }
@@ -2809,7 +2816,7 @@ fn start(
             }
             (worktree, branch, added)
         }
-        Err(reason) if reason.starts_with(runtime::FETCH_WAITS) => {
+        Err(reason) if runtime::waits(&reason) => {
             set_reason(db, admission.task, &reason)?;
             return Ok(Ok(()));
         }

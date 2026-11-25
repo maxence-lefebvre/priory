@@ -82,7 +82,7 @@ macro_rules! undo_scheduled_sweeps {
     };
 }
 
-/// Undoes migration 122, a cloud run's start commit, the news and pairs migrations and migrations 119, who answered each revision, 117, labels, 114, a Linear place, 113, a subscription's kinds, 112, scheduled sweeps, 111, memory lapses, 110, a run under direnv, 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
+/// Undoes migration 123, a cloud run's start commit, the news and pairs migrations and migrations 119, who answered each revision, 117, labels, 114, a Linear place, 113, a subscription's kinds, 112, scheduled sweeps, 111, memory lapses, 110, a run under direnv, 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
 /// `auto_answer` level, 97, the task's `added_by`, and 93: the `pre` script's task columns and the
 /// pending requests.
 macro_rules! undo_pre {
@@ -580,7 +580,10 @@ impl Drop for Setup {
 
 fn git(dir: &Path) -> Command {
     let mut command = harness::command("git");
-    command.current_dir(dir);
+    // Detached maintenance would outlive a commit and occupy the worktree.
+    command
+        .current_dir(dir)
+        .args(["-c", "maintenance.auto=false"]);
     command
 }
 
@@ -3961,7 +3964,7 @@ fn a_lane_window_that_opens_stops_no_running_task_and_shows_in_the_queue() {
     setup.publish(&requested_lane(42, "a/x"));
     setup.publish(&requested_lane(43, "a/x"));
     start_at(&mut setup, SATURDAY_10);
-    setup.until("tasks", |rows| with(rows, 4, "running") == 2);
+    setup.until("runs", |_| setup.replies().len() == 2);
     setup.crash();
 
     start_at(&mut setup, MONDAY_10);
@@ -12974,6 +12977,8 @@ impl Setup {
         let output = self
             .command("git")
             .current_dir(dir)
+            // Detached maintenance would outlive a commit and occupy the worktree.
+            .args(["-c", "maintenance.auto=false"])
             .args(args)
             .output()
             .unwrap();
@@ -18414,6 +18419,50 @@ fn a_sweep_keeps_a_done_task_worktree_with_a_mount_and_takes_it_once_unmounted()
     setup.start();
     setup.removed(2);
     assert!(outside.join("keep").exists());
+}
+
+#[test]
+fn a_mount_in_a_worktree_does_not_keep_its_teardown_from_running() {
+    if !mounts_allowed() {
+        return;
+    }
+    let mut setup = Setup::ended("teardown-mount", 2);
+    ignore_target(&setup);
+    let point = setup.worktree(2).join("target/mnt");
+    let (exe, outside) = mounting(&setup, &point);
+    setup.recipes(r#"teardown = { shell = "echo $PRIORY_TASK >> $FAKE_DIR/torn" }"#);
+    setup.work_on(1);
+    setup.push(1);
+    setup.merge(1);
+    setup.start_as(&exe);
+    setup.removed(1);
+
+    let reason = format!("{} is a mount", point.display());
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while setup.stays(2).as_ref() != Some(&reason) {
+        assert!(Instant::now() < deadline, "{:?}", setup.stays(2));
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(setup.faked("torn").lines().any(|task| task == "2"));
+    assert!(outside.join("keep").exists());
+}
+
+#[test]
+fn a_command_scorer_that_deletes_its_checkout_leaves_no_entry() {
+    let (setup, _) = committed_task("score-deleted");
+    let script = "#!/bin/sh\nrm -rf \"$PWD\"\n";
+    command_scorer(&setup, "deletes", "1m", script);
+
+    scores(&setup, &[]);
+
+    let listed = harness::command("git")
+        .arg("-C")
+        .arg(setup.clone())
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .unwrap();
+    let listed = String::from_utf8_lossy(&listed.stdout);
+    assert!(!listed.contains("/scores/"), "{listed}");
 }
 
 #[test]
@@ -32673,6 +32722,7 @@ fn a_failed_fetch_keeps_the_last_good_commit_and_says_so_on_the_desk() {
     setup.until("runs", |rows| {
         rows.first().is_some_and(|row| row[9] == good)
     });
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
     setup.crash();
     let bare = setup.dir.join("kit.git");
     let gone = setup.dir.join("kit-gone.git");
@@ -34937,6 +34987,7 @@ fn a_failed_memories_fetch_keeps_the_last_good_commit_and_says_so_on_the_desk() 
     setup.until("runs", |rows| {
         rows.first().is_some_and(|row| row[10] == good)
     });
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
     setup.crash();
     let bare = setup.dir.join("scriptorium.git");
     let gone = setup.dir.join("scriptorium-gone.git");

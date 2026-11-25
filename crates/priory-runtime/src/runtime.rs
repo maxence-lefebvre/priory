@@ -95,6 +95,11 @@ pub(crate) fn soon(command: &mut Command) -> Result<String, String> {
     within(command, loop_left())
 }
 
+/// As `soon`, returning the command's stdout as it wrote it.
+pub(crate) fn soon_raw(command: &mut Command) -> Result<Vec<u8>, String> {
+    fed_raw_within(command, None, loop_left())
+}
+
 /// As `soon`, with `input` on the command's stdin.
 pub(crate) fn fed_soon(command: &mut Command, input: Vec<u8>) -> Result<String, String> {
     fed_raw_within(command, Some(input), loop_left())
@@ -688,7 +693,9 @@ pub fn mounted_orphan(home: &Path, repo: &str, name: &str) -> Option<String> {
     if !orphaned(&path, &home.join("repos").join(repo)) {
         return None;
     }
-    crate::worktrees::unmounted(&path, &crate::worktrees::mountinfo).err()
+    crate::worktrees::unmounted(&path, &crate::worktrees::mountinfo)
+        .err()
+        .map(|reason| format!("{ORPHAN_WAITS}{reason}"))
 }
 
 /// The task's worktree folder `name` on `priory/<name>`, from the local branch `from` of Priory's
@@ -739,12 +746,7 @@ pub fn worktree(
         return Err(sweep_removes(repo));
     }
     if orphaned(&path, &clone) {
-        if crate::worktrees::orphan_without_repository(&path).is_ok() {
-            crate::worktrees::discard_aside(home, &path);
-        }
-        if path.exists() {
-            move_aside(home, &path)?;
-        }
+        crate::worktrees::clear_orphan(home, &path, &crate::worktrees::mountinfo)?;
     }
     if path.exists() {
         let common =
@@ -885,6 +887,14 @@ fn config(clone: &Path) -> Command {
 
 /// How a task's reason starts while its worktree waits for a fetch that timed out.
 pub const FETCH_WAITS: &str = "waits to fetch ";
+
+/// How a task's reason starts while a mount is in the folder its worktree would replace.
+pub const ORPHAN_WAITS: &str = "waits to add its worktree back: ";
+
+/// Whether `reason`, which `worktree` gave, passes by itself, so the start waits.
+pub fn waits(reason: &str) -> bool {
+    reason.starts_with(FETCH_WAITS) || reason.starts_with(ORPHAN_WAITS)
+}
 
 /// Each repository whose fetch timed out: when it may be tried again, and how long that wait is.
 static SLOW: std::sync::Mutex<std::collections::BTreeMap<String, (Instant, Duration)>> =
@@ -1968,7 +1978,7 @@ pub fn direnv_failed(home: &Path, session: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&error).into_owned())
 }
 
-// Not libc's, which would be a new dependency for two numbers.
+// Not libc's, which would be a new dependency for a few numbers.
 #[cfg(all(
     target_os = "linux",
     any(
@@ -1977,7 +1987,7 @@ pub fn direnv_failed(home: &Path, session: &str) -> Option<String> {
         target_arch = "powerpc64"
     )
 ))]
-const O_NOFOLLOW: i32 = 0o100000;
+pub(crate) const O_NOFOLLOW: i32 = 0o100000;
 #[cfg(all(
     target_os = "linux",
     not(any(
@@ -1986,7 +1996,27 @@ const O_NOFOLLOW: i32 = 0o100000;
         target_arch = "powerpc64"
     ))
 ))]
-const O_NOFOLLOW: i32 = 0o400000;
+pub(crate) const O_NOFOLLOW: i32 = 0o400000;
+#[cfg(all(
+    target_os = "linux",
+    any(
+        target_arch = "aarch64",
+        target_arch = "arm",
+        target_arch = "powerpc64"
+    )
+))]
+pub(crate) const O_DIRECTORY: i32 = 0o40000;
+#[cfg(all(
+    target_os = "linux",
+    not(any(
+        target_arch = "aarch64",
+        target_arch = "arm",
+        target_arch = "powerpc64"
+    ))
+))]
+pub(crate) const O_DIRECTORY: i32 = 0o200000;
+#[cfg(target_os = "linux")]
+pub(crate) const O_PATH: i32 = 0o10000000;
 #[cfg(target_os = "macos")]
 const O_NOFOLLOW: i32 = 0x100;
 #[cfg(target_os = "linux")]
@@ -2254,8 +2284,8 @@ fn seal(dir: &Path) -> std::io::Result<()> {
 
 /// Moves `path`, a worktree folder the daemon could not remove (a container can leave root-owned
 /// files under an ignored folder), into `home/trash`, so the task's worktree can be added back. A
-/// rename needs write access on the parent folder only.
-pub(crate) fn move_aside(home: &Path, path: &Path) -> Result<(), String> {
+/// rename needs write access on the parent folder only. Returns where it went.
+pub(crate) fn move_aside(home: &Path, path: &Path) -> Result<PathBuf, String> {
     let trash = home.join("trash");
     fs::create_dir_all(&trash).map_err(|error| format!("{}: {error}", trash.display()))?;
     let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -2268,7 +2298,8 @@ pub(crate) fn move_aside(home: &Path, path: &Path) -> Result<(), String> {
             "{} could not be removed or moved aside ({error}): remove it by hand",
             path.display()
         )
-    })
+    })?;
+    Ok(aside)
 }
 
 /// Removes `dir` and everything under it, a sealed folder included. Use it for any folder that

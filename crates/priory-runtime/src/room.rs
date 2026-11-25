@@ -23,9 +23,18 @@ pub struct Room {
 /// Measures memory and load from `/proc`, or from `PRIORY_PROC` when set, and disk with `df` on
 /// `home`. On macOS, which has no `/proc`, memory and load come from `sysctl` and `vm_stat`.
 pub fn measure(home: &Path) -> Result<Room, String> {
+    measure_within(home, KEPT)
+}
+
+/// As `measure`, and never a measure made before the call.
+pub fn measure_fresh(home: &Path) -> Result<Room, String> {
+    measure_within(home, Duration::ZERO)
+}
+
+fn measure_within(home: &Path, kept: Duration) -> Result<Room, String> {
     if macos() {
         static LAST: Mutex<Option<Last>> = Mutex::new(None);
-        return recent(&LAST, home, KEPT, || measure_now(home));
+        return recent(&LAST, home, kept, || measure_now(home));
     }
     measure_now(home)
 }
@@ -485,6 +494,7 @@ mod tests {
         assert_eq!(ask("/a", long), "1");
         assert_eq!(ask("/b", long), "2");
         assert_eq!(ask("/b", Duration::ZERO), "3");
+        assert_eq!(ask("/b", long), "3");
     }
 
     #[test]

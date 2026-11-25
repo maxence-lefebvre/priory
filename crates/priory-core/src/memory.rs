@@ -346,7 +346,15 @@ fn started_by_ps(pids: &BTreeSet<u32>, run: RunPs) -> Starts {
     let mut tried = 1;
     loop {
         let starts = match run(&mut ps, until.saturating_duration_since(Instant::now())) {
-            Ok(Some(output)) => started_of_output(pids, &output),
+            Ok(Some(output)) => {
+                let starts = started_of_output(pids, &output);
+                // `ps` would print the same rows again.
+                let said = !output.stdout.trim_ascii().is_empty() && output.stderr.is_empty();
+                if said && output.status.success() {
+                    return starts;
+                }
+                starts
+            }
             // It used up the deadline.
             Ok(None) => return all(format!("ps: timed out after {}s", TOOL.as_secs())),
             Err(error) => all(format!("ps: {error}")),
@@ -1422,7 +1430,8 @@ mod tests {
     }
 
     #[test]
-    fn one_ps_asks_for_every_pid_and_runs_again_when_it_cannot_run_and_not_past_its_deadline() {
+    fn one_ps_asks_for_every_pid_and_runs_again_only_when_it_cannot_say_and_not_past_its_deadline()
+    {
         let pids = BTreeSet::from([7, 8]);
         let mut calls = 0;
         let told = started_by_ps(&pids, &mut |command, _| {
@@ -1453,6 +1462,13 @@ mod tests {
             Ok(None)
         });
         assert!(late[&7].clone().unwrap_err().contains("timed out") && calls == 1);
+
+        let mut calls = 0;
+        let odd = started_by_ps(&pids, &mut |_, _| {
+            calls += 1;
+            Ok(Some(output(0, &format!("{LIVE}    8 Ss   -\n"), "")))
+        });
+        assert!(odd[&7] == Ok(Some(20261123070741)) && odd[&8].is_err() && calls == 1);
 
         let none = started_by_ps(&BTreeSet::new(), &mut |_, _| panic!("no pid to ask for"));
         assert!(none.is_empty());

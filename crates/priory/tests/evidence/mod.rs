@@ -707,6 +707,22 @@ fn a_record_command_that_mounts_a_folder_loses_nothing_of_it() {
 }
 
 #[test]
+fn a_record_command_that_deletes_its_checkout_leaves_no_entry() {
+    let script = "#!/bin/sh\nrm -rf \"$PWD\"\n";
+    let mut setup = Setup::recording("record-deleted", RECORDED, script);
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(1));
+    setup.start_recording();
+
+    setup.recorded(1);
+
+    let entries = setup.clone().join(".git/worktrees");
+    let entries = fs::read_dir(entries).unwrap().flatten();
+    let names: Vec<_> = entries.map(|entry| entry.file_name()).collect();
+    assert_eq!(names, ["1"]);
+}
+
+#[test]
 fn an_approval_a_written_answer_voids_keeps_its_items_listed() {
     let workflow = open_pr_recorded().replace("opened = \"done\"", "opened = \"confirm\"")
         + r#"

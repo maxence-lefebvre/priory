@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 122;
+const VERSION: i64 = 123;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -2179,10 +2179,20 @@ CREATE TABLE messages (
 PRAGMA user_version = 121;
 ";
 
-// The commit a cloud run's session started from, which its push must descend from.
+// The listings look up the task an event created by its source, and a pull request's close by its
+// resource. Without these each lookup scans every task or inbox entry. `risk::PULLS` repeats the
+// second one's expression.
 const SCHEMA_122: &str = "
-ALTER TABLE runs ADD COLUMN cloud_head TEXT;
+CREATE INDEX IF NOT EXISTS tasks_by_source ON tasks (source);
+CREATE INDEX IF NOT EXISTS inbox_closed_pulls ON inbox ('github:' || json_extract(data, '$.repo')
+  || '#' || json_extract(data, '$.pull_request')) WHERE type = 'github.pull_request.closed';
 PRAGMA user_version = 122;
+";
+
+// The commit a cloud run's session started from, which its push must descend from.
+const SCHEMA_123: &str = "
+ALTER TABLE runs ADD COLUMN cloud_head TEXT;
+PRAGMA user_version = 123;
 ";
 
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
@@ -2202,7 +2212,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
     SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112, SCHEMA_113,
     SCHEMA_114, SCHEMA_115, SCHEMA_116, SCHEMA_117, SCHEMA_118, SCHEMA_119, SCHEMA_120, SCHEMA_121,
-    SCHEMA_122,
+    SCHEMA_122, SCHEMA_123,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -2402,6 +2412,20 @@ pub(crate) fn memory() -> Connection {
     let mut db = Connection::open_in_memory().expect("an in-memory state opens");
     migrate(&mut db).expect("the migrations apply");
     db
+}
+
+/// The steps of SQLite's plan for `sql`, for unit tests.
+#[cfg(test)]
+pub(crate) fn query_plan(db: &Connection, sql: &str) -> String {
+    let mut statement = db
+        .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+        .expect("the query parses");
+    let steps = statement
+        .raw_query()
+        .mapped(|row| row.get::<_, String>("detail"))
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .expect("SQLite explains the query");
+    steps.join("\n")
 }
 
 /// Applies the migrations the file lacks in one transaction, which a broken reference rolls back.
@@ -5321,6 +5345,40 @@ mod push_kinds {
             )
             .unwrap();
         assert_eq!(row, ("e".to_owned(), None));
+    }
+}
+
+#[cfg(test)]
+mod listing_indexes {
+    use super::*;
+
+    #[test]
+    fn an_upgrade_from_121_adds_the_indexes_over_the_rows_it_keeps() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.execute_batch(&MIGRATIONS[..121].concat()).unwrap();
+        db.execute_batch(
+            r#"INSERT INTO tasks (key, workflow, step, state, trigger, source)
+               VALUES ('k', 'w', 's', 'done', 't', 'e');
+             INSERT INTO inbox (id, type, time, data, links, outcome)
+               VALUES ('e', 'github.pull_request.closed', 'x',
+                 '{"repo":"owner/repo","pull_request":1}', '[]', 'ignored');"#,
+        )
+        .unwrap();
+
+        migrate(&mut db).unwrap();
+
+        let found: i64 = db
+            .query_row(
+                "SELECT count(*) FROM tasks INDEXED BY tasks_by_source
+                 JOIN inbox INDEXED BY inbox_closed_pulls ON inbox.id = tasks.source
+                 WHERE tasks.source = 'e' AND inbox.type = 'github.pull_request.closed'
+                   AND 'github:' || json_extract(data, '$.repo') || '#'
+                     || json_extract(data, '$.pull_request') = 'github:owner/repo#1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(found, 1);
     }
 }
 
