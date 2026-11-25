@@ -51,8 +51,10 @@ task keeps its worktree as `not merged`, since a person revives it in place.
 
 When the task's repository has a [`teardown` recipe](runs.md#recipes), the sweep runs it in the
 worktree first, once all checks hold, and removes the worktree at the sweep after it succeeds. Before the
-first teardown it also looks for repositories, so a worktree that must stay is not torn down. A mount
-does not hold the teardown back, since the teardown may unmount it. The sweep looks again after it. The
+first teardown it also looks for what certainly keeps the worktree: a repository, a submodule or a
+lock. Then it runs no teardown. Anything it could not learn does not hold the teardown back, since the
+teardown may remove the cause, such as a mount or a folder that a container's user owns. The sweep
+looks again after it, and that walk decides. The
 daemon sweeps again as soon as a teardown ends. A failed teardown keeps the worktree. The desk says
 `teardown failed: <status>. Its output ended with: <lines>`, and no sweep runs it again until the
 factory's teardown changes. While it runs, the desk says `teardown runs` or
@@ -175,10 +177,17 @@ check, after any teardown:
   `refs`. Nor is a `.git` in a folder of tracked files. Its commits can be nowhere else, and the reclaim keeps it too. A repository in the `tmp`
   folder of a cargo target, also a nested one, does not count. A tracked folder that looks like a repository does not count
   either, since the branch holds it.
-- Every folder in it can be read. First, while no process runs in the worktree, the daemon adds the owner's read, write and search bits to each folder
+- Every folder in it can be read. First, the daemon adds the owner's read, write and search bits to each folder
   of its own user that it cannot read, such as one a test left with mode 000. git lists none of the files
-  in such a folder. The bits stay when the worktree stays. A folder of another user keeps the worktree
+  in such a folder. Before each one, it checks that no process runs in the worktree and no mount is there.
+  On Linux it changes the mode through a handle on the folder it looked at, so a symlink that takes the
+  place of the folder, or of one above it, leads nowhere else. On macOS a symlink above it still can. A
+  mount that appears while the daemon only reads is not seen until the next check.
+  The bits stay when the worktree stays. A folder of another user keeps the worktree
   as `cannot read <path>: <error>`: give the daemon's user access, or delete that folder.
+  The checks after the move, the reclaim and the walk of a folder without its entry open no folder. A
+  worktree with a folder closed after the first walk moves to `PRIORY_HOME/trash/`, and the
+  reclaim keeps such build output.
 - The checks listed above still hold: the task's state, its runs and grants, uncommitted and untracked
   files, and processes.
 
@@ -202,15 +211,15 @@ are logged and not tried again. A checkout that its command deleted loses its en
 ## The trash
 
 Nothing empties `PRIORY_HOME/trash/`, since what is there can hold the only copy of a commit. The desk
-lists each folder in it as `in the trash until a person empties it`, with its size once a sweep measured
-it. The size leaves out what the daemon cannot read. To empty it:
+lists each folder or file in it as `in the trash until a person empties it`, with its size once a sweep measured
+it. A path's control characters, and bytes that are not UTF-8, show escaped, such as `\n` or `\xFF`. The size leaves out what the daemon cannot read. To empty it:
 
-1. Read in the daemon's log why the folder moved there.
+1. Read in the daemon's log why it moved there.
 2. Look for mounts: `findmnt -l | grep <path>`. Unmount each one first: `chmod -R` and `rm -rf` go through it.
 3. Run `chmod -R u+rwx <path>`, then look for repositories: `find <path> -name .git -o -name HEAD`. Push or
    copy the commits you want. A `.git` file in `<path>` itself may name an entry that is gone, so git may
    not work there.
-4. Run `rm -rf <path>`, with `sudo` for another user's files. The folder leaves the desk at once.
+4. Run `rm -rf <path>`, with `sudo` for another user's files. It leaves the desk at once.
 
 ## Reclaiming build output
 

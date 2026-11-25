@@ -687,7 +687,9 @@ pub fn mounted_orphan(home: &Path, repo: &str, name: &str) -> Option<String> {
     if !orphaned(&path, &home.join("repos").join(repo)) {
         return None;
     }
-    crate::worktrees::unmounted(&path, &crate::worktrees::mountinfo).err()
+    crate::worktrees::unmounted(&path, &crate::worktrees::mountinfo)
+        .err()
+        .map(|reason| format!("{ORPHAN_WAITS}{reason}"))
 }
 
 /// The task's worktree folder `name` on `priory/<name>`, from the local branch `from` of Priory's
@@ -822,6 +824,14 @@ pub fn worktree(
 
 /// How a task's reason starts while its worktree waits for a fetch that timed out.
 pub const FETCH_WAITS: &str = "waits to fetch ";
+
+/// How a task's reason starts while a mount is in the folder its worktree would replace.
+pub const ORPHAN_WAITS: &str = "waits to add its worktree back: ";
+
+/// Whether `reason`, which `worktree` gave, passes by itself, so the start waits.
+pub fn waits(reason: &str) -> bool {
+    reason.starts_with(FETCH_WAITS) || reason.starts_with(ORPHAN_WAITS)
+}
 
 /// Each repository whose fetch timed out: when it may be tried again, and how long that wait is.
 static SLOW: std::sync::Mutex<std::collections::BTreeMap<String, (Instant, Duration)>> =
@@ -1888,7 +1898,7 @@ pub fn direnv_failed(home: &Path, session: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&error).into_owned())
 }
 
-// Not libc's, which would be a new dependency for two numbers.
+// Not libc's, which would be a new dependency for a few numbers.
 #[cfg(all(
     target_os = "linux",
     any(
@@ -1897,7 +1907,7 @@ pub fn direnv_failed(home: &Path, session: &str) -> Option<String> {
         target_arch = "powerpc64"
     )
 ))]
-const O_NOFOLLOW: i32 = 0o100000;
+pub(crate) const O_NOFOLLOW: i32 = 0o100000;
 #[cfg(all(
     target_os = "linux",
     not(any(
@@ -1906,7 +1916,27 @@ const O_NOFOLLOW: i32 = 0o100000;
         target_arch = "powerpc64"
     ))
 ))]
-const O_NOFOLLOW: i32 = 0o400000;
+pub(crate) const O_NOFOLLOW: i32 = 0o400000;
+#[cfg(all(
+    target_os = "linux",
+    any(
+        target_arch = "aarch64",
+        target_arch = "arm",
+        target_arch = "powerpc64"
+    )
+))]
+pub(crate) const O_DIRECTORY: i32 = 0o40000;
+#[cfg(all(
+    target_os = "linux",
+    not(any(
+        target_arch = "aarch64",
+        target_arch = "arm",
+        target_arch = "powerpc64"
+    ))
+))]
+pub(crate) const O_DIRECTORY: i32 = 0o200000;
+#[cfg(target_os = "linux")]
+pub(crate) const O_PATH: i32 = 0o10000000;
 #[cfg(target_os = "macos")]
 const O_NOFOLLOW: i32 = 0x100;
 #[cfg(target_os = "linux")]
