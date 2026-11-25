@@ -90,6 +90,11 @@ pub(crate) fn soon(command: &mut Command) -> Result<String, String> {
     within(command, loop_left())
 }
 
+/// As `soon`, returning the command's stdout as it wrote it.
+pub(crate) fn soon_raw(command: &mut Command) -> Result<Vec<u8>, String> {
+    fed_raw_within(command, None, loop_left())
+}
+
 fn within(command: &mut Command, timeout: Duration) -> Result<String, String> {
     fed_raw_within(command, None, timeout).map(|out| String::from_utf8_lossy(&out).into_owned())
 }
@@ -721,12 +726,7 @@ pub fn worktree(
         return Err(sweep_removes(repo));
     }
     if orphaned(&path, &clone) {
-        if crate::worktrees::orphan_without_repository(&path).is_ok() {
-            crate::worktrees::discard_aside(home, &path);
-        }
-        if path.exists() {
-            move_aside(home, &path)?;
-        }
+        crate::worktrees::clear_orphan(home, &path, &crate::worktrees::mountinfo)?;
     }
     if path.exists() {
         let common =
@@ -2152,8 +2152,8 @@ fn seal(dir: &Path) -> std::io::Result<()> {
 
 /// Moves `path`, a worktree folder the daemon could not remove (a container can leave root-owned
 /// files under an ignored folder), into `home/trash`, so the task's worktree can be added back. A
-/// rename needs write access on the parent folder only.
-pub(crate) fn move_aside(home: &Path, path: &Path) -> Result<(), String> {
+/// rename needs write access on the parent folder only. Returns where it went.
+pub(crate) fn move_aside(home: &Path, path: &Path) -> Result<PathBuf, String> {
     let trash = home.join("trash");
     fs::create_dir_all(&trash).map_err(|error| format!("{}: {error}", trash.display()))?;
     let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -2166,7 +2166,8 @@ pub(crate) fn move_aside(home: &Path, path: &Path) -> Result<(), String> {
             "{} could not be removed or moved aside ({error}): remove it by hand",
             path.display()
         )
-    })
+    })?;
+    Ok(aside)
 }
 
 /// Removes `dir` and everything under it, a sealed folder included. Use it for any folder that

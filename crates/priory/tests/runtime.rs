@@ -18416,6 +18416,50 @@ fn a_sweep_keeps_a_done_task_worktree_with_a_mount_and_takes_it_once_unmounted()
 }
 
 #[test]
+fn a_mount_in_a_worktree_does_not_keep_its_teardown_from_running() {
+    if !mounts_allowed() {
+        return;
+    }
+    let mut setup = Setup::ended("teardown-mount", 2);
+    ignore_target(&setup);
+    let point = setup.worktree(2).join("target/mnt");
+    let (exe, outside) = mounting(&setup, &point);
+    setup.recipes(r#"teardown = { shell = "echo $PRIORY_TASK >> $FAKE_DIR/torn" }"#);
+    setup.work_on(1);
+    setup.push(1);
+    setup.merge(1);
+    setup.start_as(&exe);
+    setup.removed(1);
+
+    let reason = format!("{} is a mount", point.display());
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while setup.stays(2).as_ref() != Some(&reason) {
+        assert!(Instant::now() < deadline, "{:?}", setup.stays(2));
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(setup.faked("torn").lines().any(|task| task == "2"));
+    assert!(outside.join("keep").exists());
+}
+
+#[test]
+fn a_command_scorer_that_deletes_its_checkout_leaves_no_entry() {
+    let (setup, _) = committed_task("score-deleted");
+    let script = "#!/bin/sh\nrm -rf \"$PWD\"\n";
+    command_scorer(&setup, "deletes", "1m", script);
+
+    scores(&setup, &[]);
+
+    let listed = harness::command("git")
+        .arg("-C")
+        .arg(setup.clone())
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .unwrap();
+    let listed = String::from_utf8_lossy(&listed.stdout);
+    assert!(!listed.contains("/scores/"), "{listed}");
+}
+
+#[test]
 fn an_asleep_task_with_a_mount_in_its_worktree_never_retires_and_says_why() {
     if !mounts_allowed() {
         return;

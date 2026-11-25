@@ -43,6 +43,8 @@ struct Job {
     done: bool,
     /// No teardown is left to run, so the walk of its files is the last one before the removal.
     torn: bool,
+    /// Its teardown did not run yet, so a worktree that must stay is not torn down.
+    fresh: bool,
 }
 
 /// What the thread found of one worktree. `walked` is `None` when nothing called for the walk.
@@ -196,6 +198,7 @@ fn jobs(db: &Connection, factory: &Factory, all: Vec<Found>) -> rusqlite::Result
             merged,
             done: state == "done",
             torn: recipe::torn(db, factory, task, &found.repo)?,
+            fresh: recipe::teardown_of(db, task)?.is_none(),
             found,
         });
     }
@@ -226,12 +229,15 @@ fn judge(home: &Path, repos: &[String], mut jobs: Vec<Job>) -> Judged {
         if verdict != Verdict::Keep(worktrees::SCAN_WAITS.to_owned()) {
             tried().insert(job.found.path.clone(), Instant::now());
         }
-        let goes = job.torn
-            && !matches!(verdict, Verdict::Keep(_))
-            && !unfetched.contains(&job.found.repo);
+        // A teardown may remove a mount, so a mount does not keep it from running.
+        let walks = job.torn || job.fresh && !worktrees::mounted(&job.found);
+        let goes =
+            walks && !matches!(verdict, Verdict::Keep(_)) && !unfetched.contains(&job.found.repo);
         // shortcut: one walk at a time, so a huge worktree delays the others; walk several at once when it shows.
         let walked = goes.then(|| worktrees::removable(home, &job.found));
         hung |= matches!(&walked, Some(Err(why)) if timed_out(why));
+        // The walk that allows the removal comes after the teardown.
+        let walked = walked.filter(|walked| job.torn || walked.is_err());
         answers.insert(job.found.path, Answer { verdict, walked });
         if hung {
             break;
@@ -458,6 +464,7 @@ impl Sweeping {
         }
         if self.open {
             self.open = false;
+            record(home, &self.entries);
             self.ended = self.started;
             return Ok(true);
         }
@@ -550,7 +557,10 @@ impl Sweeping {
         if let Some(entry) = entry {
             entry.stays = Some(error.clone());
             entry.judged = Some(error);
-            record(home, &self.entries);
+            // The end of the sweep records it otherwise.
+            if !self.open {
+                record(home, &self.entries);
+            }
         }
     }
 
@@ -800,19 +810,31 @@ fn write_record(home: &Path, record: &Record) {
     }
 }
 
-/// Records each folder that stays and why git keeps it, with the size the last walk measured.
+/// The path of each folder in `home/trash`, which nothing empties.
+fn trash(home: &Path) -> Vec<String> {
+    let entries = std::fs::read_dir(home.join("trash"));
+    let mut paths: Vec<String> = entries
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path().display().to_string())
+        .collect();
+    paths.sort();
+    paths
+}
+
+/// Records each folder that stays or is in the trash and why git keeps it, with the size the last walk measured.
 fn record(home: &Path, entries: &[Entry]) {
     let _recording = RECORDING
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut before = recorded(home);
-    let record = entries
-        .iter()
-        .filter(|entry| entry.stays.is_some())
-        .map(|entry| {
-            let path = entry.found.path.display().to_string();
+    let stay = entries.iter().filter(|entry| entry.stays.is_some());
+    let record = stay
+        .map(|entry| (entry.found.path.display().to_string(), entry.judged.clone()))
+        .chain(trash(home).into_iter().map(|path| (path, None)))
+        .map(|(path, reason)| {
             let bytes = before.remove(&path).and_then(|kept| kept.bytes);
-            let reason = entry.judged.clone();
             (path, Kept { reason, bytes })
         })
         .collect();
@@ -1512,22 +1534,31 @@ fn removing(worktree: &Path) -> PathBuf {
     worktree.join("removal")
 }
 
-/// Every worktree under `home` that stays: its path, its task when its name is one, and why, with
-/// the size the last walk measured. It reads why git keeps a folder from the last sweep's record,
+/// Every worktree under `home` that stays and every folder in the trash: its path, its task when its
+/// name is one, and why, with the size the last walk measured. It reads why git keeps a folder from the last sweep's record,
 /// so it runs no git.
 pub fn stays(db: &Connection, home: &Path) -> rusqlite::Result<Vec<(String, Option<i64>, String)>> {
     let record = recorded(home);
+    let trash = trash(home).into_iter().map(|path| {
+        (
+            path,
+            None,
+            "in the trash until a person empties it".to_owned(),
+        )
+    });
     Ok(assess(db, home, Judge::Recorded(&record))?
         .into_iter()
         .filter_map(|entry| {
-            let reason = entry.stays?;
             let task = entry.found.name.parse().ok();
-            let path = entry.found.path.display().to_string();
+            Some((entry.found.path.display().to_string(), task, entry.stays?))
+        })
+        .chain(trash)
+        .map(|(path, task, reason)| {
             let reason = match record.get(&path).and_then(|kept| kept.bytes) {
                 Some(bytes) => format!("{reason}, {}", human(bytes)),
                 None => reason,
             };
-            Some((path, task, reason))
+            (path, task, reason)
         })
         .collect())
 }
@@ -2342,6 +2373,88 @@ mod tests {
             )
             .unwrap();
         while !home.sweep_tick() {}
+        assert!(tree.exists());
+    }
+
+    /// The reasons of the desk's rows, by the last part of each path.
+    fn rows(home: &Home) -> BTreeMap<String, String> {
+        stays(&home.db, &home.dir)
+            .unwrap()
+            .into_iter()
+            .map(|(path, _, reason)| (path.rsplit('/').next().unwrap().to_owned(), reason))
+            .collect()
+    }
+
+    #[test]
+    fn a_sweep_records_why_each_worktree_that_was_to_go_stays() {
+        let mut home = ignoring_target("busy");
+        let trees = [1, 2, 3].map(|task| home.task(task, "done"));
+        assert!(home.start_sweep());
+        let judging = home.sweeping.judging.as_ref().unwrap();
+        until(|| judging.thread.is_finished());
+        home.sweep_tick();
+        assert_eq!(home.sweeping.next.len(), 3, "each may go");
+        home.db
+            .execute_batch(
+                "INSERT INTO grants (bytes, pid, started, task, command, created)
+                 VALUES (1, 1, 1, 1, 'build', 'now');
+                 UPDATE tasks SET state = 'asleep' WHERE id = 2;",
+            )
+            .unwrap();
+        home.sweep_tick();
+        home.sweep_tick();
+        home.sweep_tick();
+        while !home.sweep_tick() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        assert_eq!(trees.map(|tree| tree.exists()), [true, true, false]);
+        let reason = recorded(&home.dir)[&home.dir.join("worktrees/o/r/1").display().to_string()]
+            .reason
+            .clone();
+        let busy =
+            |task| format!("task {task} has a live run or a memory grant, or left its state");
+        assert_eq!(reason, Some(busy(1)));
+        home.db
+            .execute("UPDATE tasks SET state = 'done'", [])
+            .unwrap();
+        assert_eq!(rows(&home)["2"], busy(2));
+    }
+
+    #[test]
+    fn the_desk_lists_what_is_in_the_trash_with_its_size() {
+        let mut home = ignoring_target("trash");
+        let trashed = home.dir.join("trash/1-5");
+        std::fs::create_dir_all(&trashed).unwrap();
+        std::fs::write(trashed.join("file"), "x").unwrap();
+        let waits = "in the trash until a person empties it";
+        assert_eq!(rows(&home)["1-5"], waits);
+        home.sweep();
+        measure(&home.dir);
+        until(|| rows(&home)["1-5"].starts_with(&format!("{waits}, ")));
+        std::fs::remove_dir_all(trashed).unwrap();
+        assert!(rows(&home).is_empty());
+    }
+
+    #[test]
+    fn a_worktree_that_holds_a_repository_is_not_torn_down() {
+        let mut home = ignoring_target("untorn");
+        std::fs::write(
+            home.dir.join("factory.toml"),
+            "name = \"demo\"\n[repos.\"o/r\"]\nteardown = { shell = \"true\" }\n",
+        )
+        .unwrap();
+        home.factory = priory_factory::factory::load(&home.dir).0;
+        let tree = home.task(1, "done");
+        git(&tree, &["init", "-q", "target/n"]);
+        home.sweep();
+        let held = format!("{} holds a git repository", tree.join("target/n").display());
+        assert_eq!(rows(&home)["1"], held);
+        assert!(recipe::teardown_of(&home.db, 1).unwrap().is_none());
+
+        std::fs::remove_dir_all(tree.join("target/n")).unwrap();
+        home.sweep();
+        assert_eq!(rows(&home)["1"], "teardown runs");
         assert!(tree.exists());
     }
 
