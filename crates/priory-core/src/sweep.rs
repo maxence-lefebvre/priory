@@ -5,7 +5,7 @@ use priory_runtime::runtime::timed_out;
 use priory_runtime::slice;
 use priory_runtime::worktrees::{self, Found, RECLAIM, Verdict, reclaim_folder};
 use rusqlite::{Connection, OptionalExtension};
-use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -38,11 +38,16 @@ fn task_of(found: &Found) -> Option<i64> {
 /// The patch scans one sweep runs, each a few seconds.
 const SCANS: usize = 2;
 
-/// The worktrees whose last check timed out, which the next sweep checks last.
-static STALLED: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
+/// How long each part of a sweep (its fetches, its checks, its removals) starts new work. What is
+/// left waits for the next sweep.
+const BUDGET: Duration = Duration::from_secs(30);
 
-fn stalled() -> std::sync::MutexGuard<'static, BTreeSet<PathBuf>> {
-    STALLED
+/// When each clone was last fetched and each worktree last checked, so a sweep takes the oldest
+/// first and none starves.
+static TRIED: Mutex<BTreeMap<PathBuf, Instant>> = Mutex::new(BTreeMap::new());
+
+fn tried() -> std::sync::MutexGuard<'static, BTreeMap<PathBuf, Instant>> {
+    TRIED
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
@@ -53,16 +58,11 @@ fn assess(db: &Connection, home: &Path, judge: Judge) -> rusqlite::Result<Vec<En
     let mut scans = SCANS;
     // A check that timed out says the disk hangs, so the sweep asks git nothing more.
     let mut hung = false;
+    let started = Instant::now();
     if matches!(judge, Judge::Git) {
         worktrees::forget_scans(home, &all);
-        let mut late = stalled();
-        late.retain(|path| !path.starts_with(home) || all.iter().any(|found| found.path == *path));
-        all.sort_by_key(|found| {
-            (
-                late.contains(&found.path),
-                worktrees::last_scan(&found.path),
-            )
-        });
+        let tried = tried();
+        all.sort_by_key(|found| tried.get(&found.path).copied());
     }
     for found in all {
         let mut retire = false;
@@ -94,16 +94,15 @@ fn assess(db: &Connection, home: &Path, judge: Judge) -> rusqlite::Result<Vec<En
             }
             Some(state) => {
                 let verdict = match judge {
-                    Judge::Git if hung => {
+                    Judge::Git if hung || started.elapsed() >= BUDGET => {
                         Verdict::Keep("its checks wait for the next sweep".to_owned())
                     }
                     Judge::Git => {
                         let verdict = verdict(db, home, &found, state == "done", &mut scans)?;
                         hung = matches!(&verdict, Verdict::Keep(why) if timed_out(why));
-                        match hung {
-                            true => stalled().insert(found.path.clone()),
-                            false => stalled().remove(&found.path),
-                        };
+                        if verdict != Verdict::Keep(worktrees::SCAN_WAITS.to_owned()) {
+                            tried().insert(found.path.clone(), Instant::now());
+                        }
                         verdict
                     }
                     Judge::Recorded(record) => record
@@ -186,8 +185,9 @@ pub fn run(db: &Connection, factory: &Factory, home: &Path) -> rusqlite::Result<
     record(home, &entries);
     let mut refused = false;
     let mut hung = false;
+    let started = Instant::now();
     for entry in &mut entries {
-        if hung || unfetched.contains(&entry.found.repo) {
+        if hung || started.elapsed() >= BUDGET || unfetched.contains(&entry.found.repo) {
             continue;
         }
         // A teardown that failed stays failed until the factory's teardown changes.
@@ -484,9 +484,15 @@ fn fetch(home: &Path, repos: &[String], now: jiff::Timestamp) -> Vec<String> {
     let now = jiff::Timestamp::from_second(now.as_second()).unwrap_or(now);
     let mut unfetched = Vec::new();
     let mut hung = false;
-    for repo in repos {
+    let started = Instant::now();
+    let mut oldest: Vec<&String> = repos.iter().collect();
+    {
+        let tried = tried();
+        oldest.sort_by_key(|repo| tried.get(&home.join("repos").join(repo)).copied());
+    }
+    for repo in oldest {
         // One timeout says the network hangs: the other clones wait for the next sweep.
-        if hung {
+        if hung || started.elapsed() >= BUDGET {
             unfetched.push(repo.clone());
             continue;
         }
@@ -499,6 +505,7 @@ fn fetch(home: &Path, repos: &[String], now: jiff::Timestamp) -> Vec<String> {
             continue;
         }
         let file = failing_file(home, repo);
+        tried().insert(home.join("repos").join(repo), Instant::now());
         match worktrees::fetch(home, repo) {
             Ok(()) if failed.is_some() => {
                 let _ = std::fs::remove_file(&file);
@@ -937,6 +944,14 @@ pub fn reclaim_line(db: &Connection, now: jiff::Timestamp) -> rusqlite::Result<O
     )))
 }
 
+/// A retirement that takes this long and fails is tried last at the next ones.
+const SLOW: Duration = Duration::from_secs(5);
+
+/// The key of `TRIED` for the retirement of `worktree`.
+fn retiring(worktree: &str) -> PathBuf {
+    Path::new(worktree).join("retire")
+}
+
 /// Retires asleep tasks, longest asleep first, while `short` says the disk is short: removes each
 /// clean worktree and keeps its branch and sessions. A task that cannot retire gets the reason once.
 pub(crate) fn retire(
@@ -959,10 +974,18 @@ pub(crate) fn retire(
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let found = worktrees::found(home);
     let mut hung = false;
+    let started = Instant::now();
+    let mut asleep = asleep;
+    {
+        // Slow ones go last, or they would starve those behind them.
+        let tried = tried();
+        asleep.sort_by_key(|(_, worktree)| tried.get(&retiring(worktree)).copied());
+    }
     for (task, worktree) in asleep {
-        if hung {
+        if hung || started.elapsed() >= BUDGET {
             return Ok(());
         }
+        let began = Instant::now();
         let Some(found) = found
             .iter()
             .find(|found| found.path.to_str() == Some(&worktree) && found.name == task.to_string())
@@ -972,9 +995,6 @@ pub(crate) fn retire(
         // Checked before the mark too, which clears the reason. Reading the teardown's state runs
         // nothing, so the checks still hold after it.
         let mut stays = worktrees::removable(home, found).err();
-        if stays.as_deref().is_some_and(timed_out) {
-            hung = true;
-        }
         if stays.is_none() {
             // One teardown at a time: the next task's waits until this one retired and the disk
             // is measured again.
@@ -998,6 +1018,10 @@ pub(crate) fn retire(
             if stays.is_some() {
                 db.execute("UPDATE tasks SET retired = NULL WHERE id = ?1", [task])?;
             }
+        }
+        hung = stays.as_deref().is_some_and(timed_out);
+        if stays.is_some() && began.elapsed() >= SLOW {
+            tried().insert(retiring(&worktree), Instant::now());
         }
         let Some(stays) = stays else {
             if short() {
@@ -1687,7 +1711,11 @@ mod tests {
             reasons(&home),
             ["unpushed commits", "unpushed commits", waits]
         );
-        assert_eq!(reasons(&home), ["unpushed commits"; 3]);
+        assert_eq!(
+            reasons(&home),
+            ["unpushed commits"; 3],
+            "all cached or scanned"
+        );
 
         // A new remote ref asks for every scan again, and the one scanned longest ago goes first.
         git(
@@ -1695,11 +1723,11 @@ mod tests {
             &["update-ref", "refs/remotes/origin/x", "HEAD"],
         );
         let order = assess(&home.db, &home.dir, Judge::Git).unwrap();
-        assert_eq!(order[0].found.name, "1");
-        assert_eq!(order[2].found.name, "3");
+        let last = order[2].found.name.clone();
         assert_eq!(order[2].stays.as_deref(), Some(waits));
         let order = assess(&home.db, &home.dir, Judge::Git).unwrap();
-        assert_eq!(order[0].found.name, "3", "not starved");
+        assert_eq!(order[0].found.name, last, "not starved");
+        assert_eq!(order[0].stays.as_deref(), Some("unpushed commits"));
     }
 
     #[test]

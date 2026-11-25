@@ -560,14 +560,20 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         // A pasted prompt's Enter is due before the next whole tick.
         let wait = entering.due().map_or(EVERY, |due| due.min(EVERY));
         match listening.lines.recv_timeout(wait) {
-            Ok(line) => apply(
-                &mut db,
-                line,
-                &trace,
-                counting.get(&home),
-                kit.current(),
-                &searching,
-            )?,
+            Ok(line) => {
+                ticks::begin();
+                ticks::phase("signals");
+                let applied = apply(
+                    &mut db,
+                    line,
+                    &trace,
+                    counting.get(&home),
+                    kit.current(),
+                    &searching,
+                );
+                crate::watchdog::ended(&home);
+                applied?;
+            }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
         }

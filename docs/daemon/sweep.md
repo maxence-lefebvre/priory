@@ -59,7 +59,8 @@ The sweep waits at most 30 seconds for one git command, or `command_timeout` whe
 (see [home.md](home.md#command-timeout)), except for `git worktree remove` itself. A command that
 runs past it keeps its worktree, and the sweep asks git nothing about the worktrees after it, which
 stay as `its checks wait for the next sweep`. After a fetch that times out, the other clones wait for
-the next sweep too. A walk of a worktree's files stops after 10 seconds and keeps the worktree, with
+the next sweep too. Each of the fetches, the checks and the removals stops starting new work after
+30 seconds, and the next sweep takes what waited longest first. A walk of a worktree's files stops after 10 seconds and keeps the worktree, with
 `<path>: its files take over 10s to check`.
 
 Before `git worktree remove`, the sweep makes every folder under the worktree writable by its
@@ -83,8 +84,8 @@ has not measured yet shows its reason alone.
 ## What a removal never takes
 
 `git worktree remove` deletes the files of a folder mounted under the worktree, then fails. So the
-sweep and a retirement check, after any teardown and before git runs. Mounts are checked once more
-right before the delete:
+sweep and a retirement check, after any teardown and before git runs. Mounts are checked again
+before and after folders are made writable, right before the delete:
 
 - No mount is at or under the worktree, as `/proc/self/mountinfo` shows. A table that cannot be read
   keeps the worktree.

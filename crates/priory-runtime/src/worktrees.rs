@@ -67,6 +67,9 @@ pub fn fetch(home: &Path, repo: &str) -> Result<(), String> {
     soon(git(&clone).args(["remote", "set-head", "origin", "--auto"])).map(drop)
 }
 
+/// Why a worktree stays when the sweep ran all its patch scans.
+pub const SCAN_WAITS: &str = "its patch check waits for the next sweep";
+
 /// What the sweep does with the worktree of an ended task.
 #[derive(Debug, PartialEq)]
 pub enum Verdict {
@@ -118,9 +121,7 @@ fn judged(
         match scanned(path, tip, scans)? {
             Some(at_risk) => pushed = at_risk == 0,
             None => {
-                return Ok(Verdict::Keep(
-                    "its patch check waits for the next sweep".to_owned(),
-                ));
+                return Ok(Verdict::Keep(SCAN_WAITS.to_owned()));
             }
         }
     }
@@ -133,7 +134,6 @@ fn judged(
 
 /// A worktree's last patch scan.
 struct Scan {
-    at: Instant,
     /// HEAD and the remote-tracking refs it compared, hashed.
     of: u64,
     at_risk: usize,
@@ -145,11 +145,6 @@ fn scans() -> MutexGuard<'static, Option<HashMap<PathBuf, Scan>>> {
     SCANS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-/// When the worktree's patches were last scanned, so a sweep takes the oldest first.
-pub fn last_scan(path: &Path) -> Option<Instant> {
-    Some(scans().as_ref()?.get(path)?.at)
 }
 
 /// Forgets the scans of worktrees that are gone.
@@ -181,10 +176,9 @@ fn scanned(path: &Path, tip: &str, left: &mut usize) -> Result<Option<usize>, St
     }
     *left -= 1;
     let at_risk = at_risk(path, None, SCAN, PATCHES)?;
-    let at = Instant::now();
     scans()
         .get_or_insert_default()
-        .insert(path.to_owned(), Scan { at, of, at_risk });
+        .insert(path.to_owned(), Scan { of, at_risk });
     Ok(Some(at_risk))
 }
 
@@ -398,6 +392,9 @@ pub(crate) fn orphan_without_repository(path: &Path) -> Result<(), String> {
     let deadline = Instant::now() + WALK;
     let unread = |error| format!("cannot read {}: {error}", path.display());
     for entry in fs::read_dir(path).map_err(unread)? {
+        if Instant::now() >= deadline {
+            return Err(slow_walk(path));
+        }
         let entry = entry.map_err(unread)?;
         if entry.file_name() != ".git" && entry.file_type().map_err(unread)?.is_dir() {
             no_repository(&entry.path(), Some(deadline))?;
@@ -453,8 +450,9 @@ pub fn reclaim_path(home: &Path, task: i64) -> Result<PathBuf, String> {
     Ok(reclaim_folder(home)?.join(format!("{task}-{stamp:018}")))
 }
 
-/// Deletes the task folder `path`, a worktree without its gitdir that holds no repository: a rename
-/// into `home/reclaim`, then a thread. It stays when neither works, and the caller moves it.
+/// Deletes the task folder `path`, a worktree without its gitdir that holds no repository: a rename,
+/// into `home/reclaim` or beside it on another filesystem, then a thread. It stays when neither
+/// works, and the caller moves it.
 pub(crate) fn discard_aside(home: &Path, path: &Path) {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     let Some(task) = name.rsplit('-').next().and_then(|id| id.parse().ok()) else {
@@ -463,19 +461,24 @@ pub(crate) fn discard_aside(home: &Path, path: &Path) {
     let Ok(aside) = reclaim_path(home, task) else {
         return;
     };
-    match fs::rename(path, &aside) {
-        Ok(()) => {
-            // Its own link would keep the sweep from deleting what a stopped daemon leaves.
-            let _ = fs::remove_file(aside.join(".git"));
-            std::thread::spawn(move || {
-                if unmounted(&aside, &mountinfo).is_ok() {
-                    remove_sealed(&aside);
-                }
-            });
+    let aside = match fs::rename(path, &aside) {
+        Ok(()) => aside,
+        Err(error) if error.kind() == ErrorKind::CrossesDevices => {
+            let beside = path.with_file_name(aside.file_name().unwrap_or_default());
+            if fs::rename(path, &beside).is_err() {
+                return;
+            }
+            beside
         }
-        Err(error) if error.kind() == ErrorKind::CrossesDevices => remove_sealed(path),
-        Err(_) => {}
-    }
+        Err(_) => return,
+    };
+    // Its own link would keep the sweep from deleting what a stopped daemon leaves.
+    let _ = fs::remove_file(aside.join(".git"));
+    std::thread::spawn(move || {
+        if unmounted(&aside, &mountinfo).is_ok() {
+            remove_sealed(&aside);
+        }
+    });
 }
 
 /// Refuses a folder with a mount at or under it, which a rename carries along and a delete empties.
@@ -595,6 +598,8 @@ fn remove_allowed_under(home: &Path, found: &Found, mounts: Mounts) -> Result<()
     if !unseal(&found.path, Some(Instant::now() + WALK)) {
         return Err(slow_walk(&found.path));
     }
+    // The walk above takes a while too.
+    unmounted(&found.path, mounts)?;
     run(git(&found.clone(home))
         .args(["worktree", "remove"])
         .arg(&found.path))

@@ -2,6 +2,7 @@
 
 use priory_runtime::ticks;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 /// A tick that takes over this long is reported.
@@ -12,6 +13,15 @@ const OVER: Duration = Duration::from_secs(10);
 struct Noted {
     at: jiff::Timestamp,
     what: String,
+}
+
+/// Serializes the watcher and the loop, which write one file.
+static NOTING: Mutex<()> = Mutex::new(());
+
+fn noting() -> MutexGuard<'static, ()> {
+    NOTING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn note(home: &Path, what: String) {
@@ -38,7 +48,10 @@ pub(crate) fn watch(home: &Path) {
                 && told != Some(tick)
             {
                 told = Some(tick);
-                note(&home, what);
+                let _noting = noting();
+                if ticks::stuck(OVER).is_some_and(|(now, _)| now == tick) {
+                    note(&home, what);
+                }
             }
         }
     });
@@ -46,7 +59,9 @@ pub(crate) fn watch(home: &Path) {
 
 /// Ends the tick, and reports a long one with what took longest.
 pub(crate) fn ended(home: &Path) {
-    if let Some(what) = ticks::end(OVER) {
+    let ended = ticks::end(OVER);
+    if let Some(what) = ended {
+        let _noting = noting();
         note(home, what);
     }
 }

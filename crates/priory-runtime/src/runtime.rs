@@ -817,7 +817,13 @@ pub fn fetch_waits(home: &Path, repo: &str, name: &str) -> Option<String> {
         .is_some_and(|(again, _)| *again > Instant::now());
     let made = || {
         home.join("worktrees").join(repo).join(name).exists()
-            || head(&home.join("repos").join(repo), &format!("priory/{name}")).is_some()
+            || soon(git(&home.join("repos").join(repo)).args([
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/priory/{name}^{{commit}}"),
+            ]))
+            .is_ok()
     };
     (waits && !made()).then(|| fetch_reason(repo))
 }
@@ -888,7 +894,7 @@ pub fn pushed_head(home: &Path, worktree: &Path, branch: &str) -> Option<String>
         .strip_prefix(home.join("worktrees"))
         .ok()?;
     let commit = format!("refs/remotes/origin/{branch}^{{commit}}");
-    run(git(&home.join("repos").join(repo)).args(["rev-parse", "--verify", "--quiet", &commit]))
+    soon(git(&home.join("repos").join(repo)).args(["rev-parse", "--verify", "--quiet", &commit]))
         .ok()
         .map(|head| head.trim().to_owned())
 }
@@ -2011,17 +2017,21 @@ pub fn remove_sealed(dir: &Path) {
 /// Makes `dir` and every folder under it writable by its owner, so their files can be removed.
 /// False when it stopped at `deadline`.
 pub(crate) fn unseal(dir: &Path, deadline: Option<Instant>) -> bool {
+    let late = || deadline.is_some_and(|deadline| Instant::now() >= deadline);
     let mut folders = vec![dir.to_path_buf()];
     while let Some(folder) = folders.pop() {
-        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        if late() {
             return false;
         }
         if !fs::symlink_metadata(&folder).is_ok_and(|meta| meta.is_dir()) {
             continue;
         }
         let _ = fs::set_permissions(&folder, fs::Permissions::from_mode(0o755));
-        if let Ok(entries) = fs::read_dir(&folder) {
-            folders.extend(entries.filter_map(|entry| entry.ok().map(|entry| entry.path())));
+        for entry in fs::read_dir(&folder).into_iter().flatten().flatten() {
+            if late() {
+                return false;
+            }
+            folders.push(entry.path());
         }
     }
     true

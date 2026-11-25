@@ -1,7 +1,22 @@
 use crate::trace::Trace;
 use priory_runtime::runtime;
 use rusqlite::{Connection, TransactionBehavior, params};
+use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, Instant};
+
+/// How long an entry waits after git timed out on it.
+const AGAIN: Duration = Duration::from_secs(600);
+
+/// Each entry git timed out on, and when to ask it again.
+static STALLED: Mutex<BTreeMap<i64, Instant>> = Mutex::new(BTreeMap::new());
+
+fn stalled() -> MutexGuard<'static, BTreeMap<i64, Instant>> {
+    STALLED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// Tells each stacked entry that started when the task it stacks on pushed its branch again, while
 /// that branch has a pull request open: `task 31 pushed priory/31 to <sha>; rebase onto it`. The
@@ -29,6 +44,12 @@ pub(crate) fn pushed(db: &mut Connection, trace: &Trace, home: &Path) -> rusqlit
         })?
         .collect::<rusqlite::Result<_>>()?;
     for (task, parent, branch, worktree, told) in stacked {
+        if stalled()
+            .get(&task)
+            .is_some_and(|again| *again > Instant::now())
+        {
+            continue;
+        }
         let Some(head) =
             runtime::pushed_head(home, Path::new(&worktree), &branch).filter(|head| *head != told)
         else {
@@ -39,8 +60,12 @@ pub(crate) fn pushed(db: &mut Connection, trace: &Trace, home: &Path) -> rusqlit
         match runtime::is_ancestor(Path::new(&worktree), &head, &told) {
             Ok(false) => {}
             Ok(true) => continue,
-            // The next tick asks again, and a hung disk would hold this one for each entry.
-            Err(_) => return Ok(()),
+            // A hung disk would hold this tick for each entry, and each tick for this one.
+            Err(why) => {
+                eprintln!("priory daemon: task {task}: {why}; asked again in 10 minutes");
+                stalled().insert(task, Instant::now() + AGAIN);
+                return Ok(());
+            }
         }
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let moved = tx.execute(
