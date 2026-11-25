@@ -2211,7 +2211,14 @@ fn restore_worktree(
         set_reason(db, task, &reason)?;
         return Ok(Restored::Waits);
     }
-    match runtime::worktree(home, repo, &name, None, factory.trust_worktrees()) {
+    match runtime::worktree(
+        home,
+        repo,
+        &name,
+        None,
+        factory.trust_worktrees(),
+        factory.cloud_repo(repo),
+    ) {
         Ok((worktree, _, added)) => {
             state::set_base(db, task, added.base(), factory.trust_worktrees())?;
             db.execute(
@@ -2748,6 +2755,7 @@ fn start(
         &folder,
         base.as_deref(),
         factory.trust_worktrees(),
+        factory.cloud_repo(repo),
     ) {
         Ok((worktree, branch, added)) => {
             if let runtime::Added::Kept(Some(recovery)) = &added {
@@ -2816,8 +2824,7 @@ fn start(
         let head = match priory_runtime::cloud::clean_head(&worktree, &branch) {
             Ok(head) => head,
             Err(reason) if runtime::timed_out(&reason) => {
-                crate::cloud::slow(admission.task);
-                return Ok(Ok(()));
+                return Ok(crate::cloud::slow(admission.task, &reason));
             }
             Err(reason) => return Ok(Err(reason)),
         };
@@ -2830,12 +2837,12 @@ fn start(
                     )));
                 }
                 Err(reason) if runtime::timed_out(&reason) => {
-                    crate::cloud::slow(admission.task);
-                    return Ok(Ok(()));
+                    return Ok(crate::cloud::slow(admission.task, &reason));
                 }
                 Err(reason) => return Ok(Err(reason)),
             }
         }
+        crate::cloud::checked(admission.task);
         // Preparing the worktree takes time, in which a filter's window can open.
         if state::filtered(db, factory, runner, admission.task)?.is_some() {
             return Ok(Ok(()));

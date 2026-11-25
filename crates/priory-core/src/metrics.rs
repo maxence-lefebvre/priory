@@ -1302,7 +1302,7 @@ struct Ended {
 struct RunState {
     /// The starts and recipes that ended at or after the time asked.
     ended: Vec<Ended>,
-    /// Each live run with no `SessionStart` yet: its harness, or its agent, and its age in seconds.
+    /// Each live run whose session has not started yet: its harness, or its agent, and its age in seconds.
     starting: Vec<(Option<String>, u64)>,
 }
 
@@ -1371,7 +1371,8 @@ fn run_state(db: &Connection, since: f64) -> rusqlite::Result<RunState> {
     let starting = db
         .prepare(
             "SELECT coalesce(harness, agent), CAST((julianday('now') - julianday(started)) * 86400 AS INTEGER)
-             FROM runs WHERE ended IS NULL AND ready = 0",
+             FROM runs WHERE ended IS NULL AND ready = 0
+             AND NOT (harness IS 'claude-cloud' AND thread IS NOT NULL)",
         )?
         .query_map([], |row| {
             Ok((
@@ -1554,8 +1555,12 @@ mod tests {
                  '2026-11-23T10:01:00Z', 0, NULL, NULL, NULL),
                (1, 'implement', 'implementer', 'p', 'c', '2026-11-23T09:00:00Z',
                  '2026-11-23T09:01:00Z', 0, 'codex', 0, NULL);
+             INSERT INTO tasks (key, workflow, step, state, trigger, source)
+               VALUES ('cli:b', 'build', 'implement', 'running', 'cli', 'b'),
+                 ('cli:c', 'build', 'implement', 'running', 'cli', 'c');
              INSERT INTO runs (task, step, agent, tmux, session, ready, harness, thread)
-             VALUES (1, 'implement', 'implementer', 'p', 'd', 0, 'claude-cloud', 'session_1');
+             VALUES (2, 'implement', 'implementer', 'p', 'd', 0, 'claude-cloud', 'session_1'),
+               (3, 'implement', 'implementer', 'p', 'e', 0, 'claude-cloud', NULL);
              INSERT INTO recipes (task, moment, worktree, argv, timeout, started, ended, status)
              VALUES (1, 'setup', 'w', '[]', 60, '2026-11-23T10:00:00Z', '2026-11-23T10:00:30Z',
                  'timed out after 30s');",
@@ -1598,7 +1603,9 @@ mod tests {
                 (("recipe", 1), None, "setup", "timeout", 30.0),
             ]
         );
-        assert!(state.starting.is_empty());
+        // Run 4's session started, run 5's has not.
+        let starting: Vec<_> = state.starting.iter().map(|(of, _)| of.as_deref()).collect();
+        assert_eq!(starting, [Some("claude-cloud")]);
         let agents = BTreeMap::from([("implementer".to_owned(), "codex")]);
         assert_eq!(known_harness("implementer", &agents), Some("codex"));
         assert_eq!(known_harness("claude-cloud", &agents), Some("claude-cloud"));

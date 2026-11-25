@@ -690,13 +690,15 @@ pub fn mounted_orphan(home: &Path, repo: &str, name: &str) -> Option<String> {
 /// own clone of `repo` (`owner/name`), else from its default branch. The clone has no checkout: a person trusts it and the worktrees
 /// folder once in Claude, which covers its worktrees. A worktree of that clone left on that branch by an interrupted
 /// start is reused. `vouch` reads the default branch's head from GitHub outside the clone, for a base
-/// that no agent chose. The third value says whether the folder was kept, added back, or new.
+/// that no agent chose. `keep_branches` keeps each branch that `origin`
+/// deletes in the clone. The third value says whether the folder was kept, added back, or new.
 pub fn worktree(
     home: &Path,
     repo: &str,
     name: &str,
     from: Option<&str>,
     vouch: bool,
+    keep_branches: bool,
 ) -> Result<(PathBuf, String, Added), String> {
     check_repo(repo)?;
     let clone = home.join("repos").join(repo);
@@ -719,8 +721,9 @@ pub fn worktree(
         })?;
         fs::rename(&partial, &clone).map_err(|error| error.to_string())?;
     }
-    // A person's `fetch.prune` would drop a merged branch, whose commits then look never pushed.
-    let _ = run(git(&clone).args(["config", "remote.origin.prune", "false"]));
+    if keep_branches {
+        never_prune(&clone);
+    }
     if let Some(reason) = mounted_orphan(home, repo, name) {
         return Err(reason);
     }
@@ -807,6 +810,26 @@ pub fn worktree(
     })?;
     // Not the branch's head: every worktree shares the clone's refs, so an agent can have moved it.
     Ok((path, branch, Added::New(start)))
+}
+
+/// Turns off a person's `fetch.prune` in `clone`, which would drop a merged branch, whose commits
+/// then look never pushed. Its git commands share one `loop_timeout`. Best effort.
+fn never_prune(clone: &Path) {
+    let config = || {
+        let mut command = git(clone);
+        command.args(["config", "--local"]);
+        command
+    };
+    as_one(|| {
+        match soon(config().args(["--get", "remote.origin.prune"])) {
+            Ok(set) if set.trim() == "false" => {}
+            // A write killed midway leaves a lock file, so a slow disk gets none.
+            Err(error) if timed_out(&error) => {}
+            _ => {
+                let _ = soon(config().args(["--replace-all", "remote.origin.prune", "false"]));
+            }
+        }
+    });
 }
 
 /// How a task's reason starts while its worktree waits for a fetch that timed out.
@@ -3714,7 +3737,7 @@ mod tests {
         }
 
         fn again(&self) -> Result<Added, String> {
-            worktree(&self.home(), "o/n", "1", None, true).map(|(_, _, added)| added)
+            worktree(&self.home(), "o/n", "1", None, true, false).map(|(_, _, added)| added)
         }
     }
 
@@ -3850,6 +3873,20 @@ mod tests {
         assert_eq!(capped(&mut Command::new("yes"), later, 1000), Ok(None));
         let echo = capped(Command::new("printf").arg("ab"), later, 2);
         assert_eq!(echo, Ok(Some(b"ab".to_vec())));
+    }
+
+    #[test]
+    fn a_hung_prune_setting_ends_within_the_loops_timeout() {
+        let home = Home::new("prune");
+        home.tree();
+        let config = home.home().join("repos/o/n/.git/config");
+        fs::remove_file(&config).unwrap();
+        run(Command::new("mkfifo").arg(&config)).unwrap();
+
+        let started = Instant::now();
+        never_prune(&home.home().join("repos/o/n"));
+
+        assert!(started.elapsed() < Duration::from_secs(45));
     }
 
     #[test]
@@ -4129,7 +4166,7 @@ mod tests {
             ],
         );
 
-        let reason = worktree(&home.home(), "o/n", "2", None, true).unwrap_err();
+        let reason = worktree(&home.home(), "o/n", "2", None, true, false).unwrap_err();
 
         assert_eq!(
             reason,

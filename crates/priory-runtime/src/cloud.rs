@@ -128,8 +128,16 @@ fn holds_unpushed_now(
 
 /// Pushes the task's branch, then runs `claude --cloud` in an isolated clone of that branch alone.
 /// The CLI uploads the whole clone it runs in when the Claude GitHub App is not on the repository,
-/// and a Priory worktree shares its clone with every other task.
-pub fn start(start: &Start) -> Result<Started, NotStarted> {
+/// and a Priory worktree shares its clone with every other task. `live` is read right before the push
+/// and right before the CLI runs: a run that ended starts nothing.
+pub fn start(
+    start: &Start,
+    live: impl Fn() -> Result<bool, String>,
+) -> Result<Started, NotStarted> {
+    let goes_on = || match live()? {
+        true => Ok(()),
+        false => Err("its run ended during the start".to_owned()),
+    };
     let target = format!("{}:refs/heads/{}", start.head, start.branch);
     // A person's git settings may add tags or submodules, which nobody screened.
     let pushed = [
@@ -140,6 +148,7 @@ pub fn start(start: &Start) -> Result<Started, NotStarted> {
         "origin",
         &target,
     ];
+    goes_on()?;
     remote(&start.worktree, &pushed, command_timeout())?;
     let found = remote_head(&start.worktree, &start.branch, command_timeout())?;
     if found.as_deref() != Some(&start.head) {
@@ -152,6 +161,7 @@ pub fn start(start: &Start) -> Result<Started, NotStarted> {
     }
     let dir = folder(&start.home, &start.repo);
     let started = isolate(start, &dir)
+        .and_then(|()| goes_on())
         .map_err(NotStarted::Refused)
         .and_then(|()| create(start, &dir));
     let _ = fs::remove_dir_all(&dir);

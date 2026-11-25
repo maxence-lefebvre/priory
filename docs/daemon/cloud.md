@@ -28,13 +28,14 @@ When a task reaches a step whose agent runs in the cloud, the daemon:
 1. creates the task's worktree as for any run, on the task's own branch, `priory/<task>`;
 2. checks that the repository opted in with `cloud = true`, and that the worktree is on that branch
    with no staged, unstaged or untracked file, since the session would not see it. Otherwise the
-   task blocks and says which. When git runs past 30 seconds here, the task waits and the daemon
-   tries again 15 seconds later;
+   task blocks and says which. When git runs past 30 seconds here, the task waits a minute, twice
+   as long after each further timeout, and blocks after the fifth in a row;
 3. records the run, with a harness session id of its own and the commit the branch is at;
 4. records Claude's trust of the folder below, when the factory sets `trust_worktrees`, since
    `claude --cloud` shows Claude's trust dialog in a folder it does not trust;
 5. writes the prompt: the agent's prompt, the step's prompt, the task's event, everything queued
-   for the task, and the rules below in place of the line that names the `result` tool.
+   for the task, and the rules below in place of the line that names the `result` tool. It leaves out the lines
+   about a duplicate that tell an agent to use the `message`, `hand_over` or `ask` tool.
 
 Some tasks start no cloud run:
 
@@ -44,8 +45,9 @@ Some tasks start no cloud run:
   since the push would carry them. Priory checks the parent's branch and the commits the task
   started from, so a commit the parent amended away counts too. The state of the parent's pull
   request does not matter. Push those commits, or rebase the task's branch onto a branch that is on
-  `origin`, then resume the task. Priory turns off `fetch.prune` in its clone, so a merged parent's
-  branch still counts as pushed once GitHub deletes it.
+  `origin`, then resume the task. Priory turns off `fetch.prune` in the clone of a repository
+  with `cloud = true`, so a merged parent's branch still counts as pushed once GitHub deletes it. All
+  tasks of that repository share the clone. Every other clone keeps a person's setting.
 - A task whose commits past the default branch hold a private term of the factory, in a repository
   [`[private]`](../reference/factory.md#private) lists. It blocks before the push, and the reason
   names the rule and the place, never the term. It does not count as a session.
@@ -58,11 +60,12 @@ a row doubles the wait, to 30 minutes at most.
 The rest runs off the daemon's tick, so a slow command delays no other run. One session starts at a
 time. The daemon:
 
-1. pushes the task's branch to `origin`, without force, and checks that `origin` has that commit;
-2. makes a clone of that branch alone in `cloud/<owner>/<name>` under Priory's home;
-3. runs `claude --cloud PROMPT` in that clone, in a tmux session named `priory-cloud-<task>`, and
+1. reads that the run is still live, after any check for private terms, so a cancel stops the push;
+2. pushes the task's branch to `origin`, without force, and checks that `origin` has that commit;
+3. makes a clone of that branch alone in `cloud/<owner>/<name>` under Priory's home;
+4. reads again that the run is live, and runs `claude --cloud PROMPT` in that clone, in a tmux session named `priory-cloud-<task>`, and
    waits up to `command_timeout` for it to exit;
-4. removes the clone, and stores the `session_<id>` the command printed as the run's cloud session,
+5. removes the clone, and stores the `session_<id>` the command printed as the run's cloud session,
    which `priory runs` shows in its `session` column.
 
 The rules tell the session to push its work to the branch `claude/priory-<task>-<token>`, where
@@ -86,7 +89,8 @@ task, which starts a new session.
 
 ## How a cloud run ends its step
 
-At most once a minute, off the tick, the daemon asks `origin` for each live cloud run's branch with
+At most once a minute, or every 15 seconds to confirm a push it saw and once the deadline passed,
+off the tick, the daemon asks `origin` for each live cloud run's branch with
 `git ls-remote`, which has 15 seconds, and fetches the commit it names, which has `command_timeout`.
 Neither prompts. The daemon takes the commit only when all of these hold:
 
@@ -122,7 +126,7 @@ first late look, and then the run ends `failed` with the error.
 A step with no `pushed` or `failed` outcome cannot store that result, so the task blocks with the
 summary and the refusal. `priory check` refuses such a step first.
 
-The daemon's self-upgrade waits for a cloud session that starts, and for any live run when the
+The daemon's self-upgrade waits for a cloud session that starts, even once its run was cancelled, and for any live run when the
 release migrates. It does not wait for a cloud run whose session started, except while the daemon looks for its push.
 
 A daemon restart keeps a live cloud run: it has no tmux pane to lose, so it is never `lost`, and the
@@ -134,7 +138,8 @@ effect once the run ends.
 
 `priory cancel`, a review request's removal and a move to another runner drop the task, and its
 reason names the session's page, which `priory cancel` prints too. During a start it says that a session
-may still start, and the dropped task's reason then names the session that did. The session itself goes on until a
+may still start, and the dropped task's reason then names the session that did. A cancel before
+`claude --cloud` runs starts none. The session itself goes on until a
 person archives it, and the branches it pushed stay on `origin`.
 
 ## Asks and feedback
@@ -152,7 +157,8 @@ a local run's result gives. A person's own items are still recorded as `persons-
 has no class, so the human step after it is where a person reads what it did. Feedback that comes
 during the run does not hold up its push: the next model step's prompt has it, and an ask that opens next shows it.
 News that may end the work, such as an issue marked a duplicate, does the same: no session reads it,
-so it never refuses the push, and the ask shows it with the task to agree with.
+so it never refuses the push, and the ask shows it with the task to agree with. The task's later
+cloud prompts leave it out too: it stays for the next ask and the next local run.
 
 ## What still applies, and what a cloud run gives up
 

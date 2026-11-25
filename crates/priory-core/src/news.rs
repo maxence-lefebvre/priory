@@ -132,7 +132,7 @@ fn agree(
         return elsewhere
             .map(|runner| {
                 let text = format!(
-                    "A task on runner {runner} works on {of}. Priory pairs only tasks of one runner, so neither can message the other: ask the person with the ask tool which one continues."
+                    "A task on runner {runner} works on {of}. Priory pairs only tasks of one runner, {ELSEWHERE} which one continues."
                 );
                 let waits = later(tx, task, None, &text)?;
                 Ok((text, waits))
@@ -214,10 +214,62 @@ pub(crate) fn expire(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// What a pair's line holds when it tells an agent to use a tool. A cloud session has none of them.
+const AGREE: &str = "Agree with task ";
+const TALK: &str = " which of you continues: send it a message with the message tool";
+const ELSEWHERE: &str = "so neither can message the other: ask the person with the ask tool";
+/// The answer to a peer's message, with its task's id after it.
+pub(crate) const ANSWER: &str = "Answer it with the message tool, giving task ";
+
+/// Whether `line` tells an agent to talk to a paired task or ask which of the two continues.
+fn instructs(line: &str) -> bool {
+    !line.starts_with("> ")
+        && [TALK, ELSEWHERE, ANSWER]
+            .iter()
+            .any(|text| line.contains(text))
+}
+
+/// `text` without the lines that tell an agent to talk to a paired task.
+pub(crate) fn untold(text: &str) -> String {
+    let kept: Vec<_> = text.lines().filter(|line| !instructs(line)).collect();
+    kept.join("\n")
+}
+
+/// The task a pair's line names, if any.
+fn named(line: &str) -> Option<i64> {
+    [AGREE, ANSWER].iter().find_map(|text| {
+        let rest = line.split_once(text)?.1;
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        rest[..end].parse::<i64>().ok()
+    })
+}
+
+/// Holds the lines that `untold` takes from `text` for the next ask and agent run of `task`.
+pub(crate) fn hold_back(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<()> {
+    for line in text.lines().filter(|line| instructs(line)) {
+        let pair = match named(line) {
+            Some(other) if paired(tx, task, other)? => Some(other),
+            _ => None,
+        };
+        // Alone on an ask, this line would not say what it answers.
+        let line = match line.strip_prefix(ANSWER) {
+            Some(from) => format!(
+                "A cloud session read what task {} said and cannot answer it. {line}",
+                from.trim_end_matches('.')
+            ),
+            None => line.to_owned(),
+        };
+        later(tx, task, pair, &line)?;
+    }
+    Ok(())
+}
+
 /// How two tasks on the same work agree which continues, for the agent whose pair is `other`.
 fn agreement(other: i64) -> String {
     format!(
-        "Agree with task {other} which of you continues: send it a message with the message tool. Unless you two agree otherwise, the duplicate's task stops: it pushes its branch, then calls hand_over, whose summary says what it found and what is left. If you disagree, do not go on: ask the person with the ask tool."
+        "{AGREE}{other}{TALK}. Unless you two agree otherwise, the duplicate's task stops: it pushes its branch, then calls hand_over, whose summary says what it found and what is left. If you disagree, do not go on: ask the person with the ask tool."
     )
 }
 
@@ -362,8 +414,53 @@ pub fn held(lines: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::line;
+    use super::*;
+    use proptest::prelude::*;
     use serde_json::json;
+
+    #[test]
+    fn a_message_for_a_cloud_run_keeps_its_text_and_its_answer_line_is_held() {
+        let mut db = crate::state::memory();
+        db.execute_batch(
+            "INSERT INTO tasks (id, key, workflow, step, state, trigger, source)
+               VALUES (1, 'a', 'w', 's', 'ready', 't', 's'), (2, 'b', 'w', 's', 'ready', 't', 't');
+             INSERT INTO pairs (task, other, created)
+               VALUES (1, 2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));",
+        )
+        .unwrap();
+        let said = format!("Task 2 (b) says:\n> {ANSWER}7.\n> Yours.");
+        let text = format!("{said}\n{ANSWER}2.\nAna moved it. {}", agreement(3));
+        let tx = db.transaction().unwrap();
+
+        hold_back(&tx, 1, &text).unwrap();
+        hold_back(&tx, 1, &text).unwrap();
+
+        assert_eq!(untold(&text), said);
+        let held: Vec<(String, Option<i64>)> = tx
+            .prepare("SELECT text, pair FROM outbox WHERE task = 1 AND state = 'held' ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let unanswered =
+            format!("A cloud session read what task 2 said and cannot answer it. {ANSWER}2.");
+        // Task 3 is no pair of task 1, so no pair's end withdraws its line.
+        let agree = format!("Ana moved it. {}", agreement(3));
+        assert_eq!(held, [(unanswered, Some(2)), (agree, None)]);
+    }
+
+    proptest! {
+        #[test]
+        fn no_line_for_a_cloud_run_keeps_an_instruction_or_panics(
+            lines in proptest::collection::vec(
+                "(> )?.{0,9}( which of you continues: send it a message with the message tool|Agree with task |Answer it with the message tool, giving task |)[0-9é]{0,30}.{0,9}", 0..4)
+        ) {
+            let text = lines.join("\n");
+            let _ = text.lines().map(named).collect::<Vec<_>>();
+            prop_assert!(untold(&text).lines().all(|line| !instructs(line)));
+        }
+    }
 
     #[test]
     fn a_duplicate_is_news_and_a_move_to_in_review_is_not() {

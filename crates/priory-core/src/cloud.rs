@@ -34,8 +34,14 @@ static STARTING: Mutex<Option<(i64, Starting)>> = Mutex::new(None);
 
 type Starting = Receiver<Result<Started, NotStarted>>;
 
-/// When each task's checks before a cloud start last ran out of time.
-static SLOW: Mutex<BTreeMap<i64, Instant>> = Mutex::new(BTreeMap::new());
+/// How many times in a row a task's checks before a cloud start may run out of time.
+const SLOW_TRIES: u32 = 5;
+
+/// Each task whose checks before a cloud start ran out of time: when the next try may start, and
+/// how many timeouts in a row it had.
+// shortcut: a restart forgets the count, as it does a put-off fetch's; move it to the state file if
+// a daemon restarts more often than the waits pass.
+static SLOW: Mutex<BTreeMap<i64, (Instant, u32)>> = Mutex::new(BTreeMap::new());
 
 /// How many polls' threads run.
 static POLLS: AtomicUsize = AtomicUsize::new(0);
@@ -131,11 +137,25 @@ pub(crate) fn spent(
     }))
 }
 
-/// Holds back `task`'s next try to start a cloud run: git ran out of time on its worktree.
-pub(crate) fn slow(task: i64) {
+/// Holds back `task`'s next try to start a cloud run, since git ran out of time on its worktree, as
+/// `reason` says: a minute, twice as long after each next timeout. Says why a person must look once
+/// it has `SLOW_TRIES` of them.
+pub(crate) fn slow(task: i64, reason: &str) -> Result<(), String> {
     let mut slow = SLOW.lock().expect("no insert panics");
-    slow.retain(|_, at| at.elapsed() < SOON);
-    slow.insert(task, Instant::now());
+    let tries = slow.remove(&task).map_or(0, |(_, tries)| tries) + 1;
+    if tries >= SLOW_TRIES {
+        return Err(format!(
+            "git was too slow to check the worktree before a cloud start, {tries} times in a row: {reason}. Check the disk and the worktree, then resume the task"
+        ));
+    }
+    let wait = Duration::from_secs(BACKOFF.unsigned_abs()) * (1 << (tries - 1));
+    slow.insert(task, (Instant::now() + wait, tries));
+    Ok(())
+}
+
+/// Forgets the timeouts of `task`: its checks ended in time.
+pub(crate) fn checked(task: i64) {
+    SLOW.lock().expect("no insert panics").remove(&task);
 }
 
 /// Why a task cannot start a cloud run now.
@@ -163,10 +183,12 @@ pub(crate) fn waits(
         )));
     }
     let slow = SLOW.lock().expect("no insert panics").get(&task).copied();
-    if slow.is_some_and(|at| at.elapsed() < SOON) {
-        return Ok(Some(
-            "waits to check its worktree again: git was too slow".to_owned(),
-        ));
+    if let Some((again, tries)) = slow
+        && again > Instant::now()
+    {
+        return Ok(Some(format!(
+            "waits to check its worktree again: git was too slow {tries} of {SLOW_TRIES} times"
+        )));
     }
     let live: u32 = db.query_row(
         "SELECT count(*) FROM runs WHERE ended IS NULL AND harness = ?1",
@@ -261,8 +283,10 @@ pub(crate) fn dispatch(
     )?;
     let entry = entry(&tx, task, step)?;
     let source = crate::state::source(&tx, task)?;
+    let queued = queued.join("\n");
+    crate::news::hold_back(&tx, task, &queued)?;
     tx.commit()?;
-    let queued = unended(&queued.join("\n"), step);
+    let queued = unended(&crate::news::untold(&queued), step);
     // A cloud session cannot send the classes the rule asks for.
     let queued: Vec<_> = queued
         .lines()
@@ -286,7 +310,7 @@ pub(crate) fn dispatch(
     std::thread::spawn(move || {
         let started = screen()
             .map_err(NotStarted::Denied)
-            .and_then(|()| cloud::start(&start));
+            .and_then(|()| cloud::start(&start, || still_live(run)));
         let _ = sender.send(started);
     });
     Ok(())
@@ -344,7 +368,8 @@ fn collect(db: &mut Connection, trace: &Trace, kit: crate::kit::Current<'_>) -> 
     match started {
         Ok(started) => {
             db.execute(
-                "UPDATE runs SET thread = ?2 WHERE id = ?1",
+                "UPDATE runs SET thread = ?2,
+                 session_started = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?1",
                 params![run, started.id],
             )?;
             db.execute(
@@ -427,6 +452,8 @@ fn give_back(
         .query_map([run], |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
     for (id, text) in claimed {
+        // `dispatch` held these lines for the next run already.
+        let text = crate::news::untold(&text);
         let text = match step {
             Some(step) => unended(&text, step),
             None => text,
@@ -666,9 +693,10 @@ fn still_live(run: i64) -> Result<bool, String> {
         .map_err(|error| error.to_string())
 }
 
-/// Whether a poll works on a worktree, which an upgrade must not cut short.
+/// Whether a poll works on a worktree or a start is under way, whose run may have ended. An upgrade
+/// must not cut either short.
 pub(crate) fn polling() -> bool {
-    POLLS.load(Ordering::SeqCst) > 0
+    POLLS.load(Ordering::SeqCst) > 0 || STARTING.lock().expect("no start panics").is_some()
 }
 
 /// Counts a poll's thread until it exits, which may be after its run ended.
@@ -913,6 +941,29 @@ mod tests {
         let counted = polling();
         *STARTING.lock().unwrap() = None;
         assert!(counted);
+    }
+
+    #[test]
+    fn slow_checks_wait_twice_as_long_each_time_then_need_a_person() {
+        let wait = || {
+            let (again, tries) = SLOW.lock().unwrap()[&9];
+            let left = again.saturating_duration_since(Instant::now());
+            (tries, left.as_secs_f64().round())
+        };
+        for (tries, seconds) in [(1, 60.0), (2, 120.0), (3, 240.0), (4, 480.0)] {
+            assert_eq!(slow(9, "timed out after 30s"), Ok(()));
+            assert_eq!(wait(), (tries, seconds));
+        }
+        let reason = slow(9, "timed out after 30s").unwrap_err();
+        assert!(
+            reason.contains("5 times in a row: timed out after 30s"),
+            "{reason}"
+        );
+        // A resume has all its tries again.
+        assert_eq!(slow(9, "timed out after 30s"), Ok(()));
+        assert_eq!(wait(), (1, 60.0));
+        checked(9);
+        assert!(!SLOW.lock().unwrap().contains_key(&9));
     }
 
     #[test]
