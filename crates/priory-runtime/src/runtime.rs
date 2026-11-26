@@ -3128,6 +3128,8 @@ impl Listening {
     /// Takes no more connections, has `apply` answer each line that arrived, then ends this process
     /// by SIGTERM. The socket's file stays, so clients are refused and wait.
     pub fn stop<E>(self, mut apply: impl FnMut(Line) -> Result<(), E>) -> Result<(), E> {
+        // Tells clients a daemon restarts here, so they wait for it. A crash writes none.
+        let _ = fs::write(stopping_path(&self.path), "");
         self.open.closing.store(true, Ordering::SeqCst);
         // Wakes the listener.
         let _ = UnixStream::connect(&self.path);
@@ -3176,6 +3178,7 @@ pub fn listen(home: &Path, lock: Lock) -> Result<Listening, String> {
     let _ = fs::remove_file(&bound);
     let listener = UnixListener::bind(&bound).map_err(at)?;
     fs::rename(&bound, &path).map_err(at)?;
+    let _ = fs::remove_file(stopping_path(&path));
     CAUGHT.clone()?;
     let (sender, lines) = mpsc::channel();
     let open = Arc::new(Open::default());
@@ -3317,16 +3320,47 @@ pub const NO_DAEMON: &str = "no priory daemon listens on";
 /// How long `call_through_restart` tries again while the daemon's socket refuses it.
 pub const RESTART: Duration = Duration::from_secs(30);
 
+/// The reply to a line a stopping daemon did not apply: the client may send it again.
+pub const NOT_APPLIED: &str = "the daemon stopped before it applied this line: send it again";
+
+/// The file a stopping daemon writes beside its socket at `path`, and its next start removes.
+fn stopping_path(path: &Path) -> PathBuf {
+    path.with_extension("stopping")
+}
+
+/// Whether a daemon stopped at the socket `path` lately, so its restart is worth waiting for.
+fn restarting(path: &Path) -> bool {
+    fs::metadata(stopping_path(path))
+        .and_then(|marker| marker.modified())
+        .is_ok_and(|at| at.elapsed().is_ok_and(|age| age < STOP + RESTART))
+}
+
 /// Sends one line to the daemon and returns its reply within about `wait`. Nothing is spooled:
 /// with no daemon, it fails at once.
 pub fn call(home: &Path, line: &str, wait: Duration) -> Result<String, String> {
-    call_at(&socket_path(home), line, wait, Duration::ZERO)
+    call_at(&socket_path(home), line, wait, Duration::ZERO, false)
 }
 
-/// `call` that outlives a daemon restart: while no daemon takes the connection, it tries again for
-/// up to `RESTART`, then waits `wait`.
+/// `call` for a person's verb, which outlives a daemon restart: while a daemon that stopped lately
+/// restarts, it tries again for up to `RESTART`, then waits `wait`. Without a stop, it fails at once.
 pub fn call_through_restart(home: &Path, line: &str, wait: Duration) -> Result<String, String> {
-    call_at(&socket_path(home), line, wait, RESTART)
+    call_at(&socket_path(home), line, wait, RESTART, false)
+}
+
+/// `call_through_restart` for an MCP server, which a run keeps across a daemon restart: it also
+/// waits for a socket that refuses it after a crash, which systemd restarts.
+pub fn call_for_run(home: &Path, line: &str, wait: Duration) -> Result<String, String> {
+    call_at(&socket_path(home), line, wait, RESTART, true)
+}
+
+/// `call_through_restart` that tries again for up to `retry` alone.
+pub fn call_retrying(
+    home: &Path,
+    line: &str,
+    wait: Duration,
+    retry: Duration,
+) -> Result<String, String> {
+    call_at(&socket_path(home), line, wait, retry.min(RESTART), false)
 }
 
 /// A line with its call id, which the daemon applies once however often it arrives.
@@ -3373,15 +3407,22 @@ fn exchange(path: &Path, line: &str, wait: Duration) -> Result<String, Failed> {
     Ok(reply.trim_end().to_owned())
 }
 
-/// Sends `line` with a call id on the socket at `path`. A refused or missing socket, and a line
-/// whose reply was lost, go again with the same id for up to `retry`, so a restart applies it once.
-/// Once connected, the reply has the whole of `wait`.
-fn call_at(path: &Path, line: &str, wait: Duration, retry: Duration) -> Result<String, String> {
+/// Sends `line` with a call id on the socket at `path`. A line whose reply was lost goes again with
+/// the same id for up to `retry`, so a restart applies it once. While a daemon that stopped there
+/// restarts, a refused or missing socket, and a line the stop did not apply, go again too; with
+/// `crash`, any refused socket. Once connected, the reply has the whole of `wait`.
+fn call_at(
+    path: &Path,
+    line: &str,
+    wait: Duration,
+    retry: Duration,
+    crash: bool,
+) -> Result<String, String> {
     let deadline = Instant::now() + retry;
     let sent = envelope(line);
-    let mut lost = false;
+    let (mut lost, mut said) = (false, false);
     loop {
-        match exchange(path, &sent, wait) {
+        let failed = match exchange(path, &sent, wait) {
             // A daemon from before call ids never applied it, so the plain line is safe once.
             Ok(reply) if unread(&reply) && !lost => {
                 return exchange(path, line, wait)
@@ -3390,10 +3431,27 @@ fn call_at(path: &Path, line: &str, wait: Duration, retry: Duration) -> Result<S
             Ok(reply) if unread(&reply) => {
                 return Err("the daemon may have applied this call before it restarted: read the state before you retry".to_owned());
             }
+            Ok(reply) if reply.contains(NOT_APPLIED) => Ok(reply),
             Ok(reply) => return Ok(reply),
-            Err(Failed::Refused(_)) if Instant::now() < deadline => {}
-            Err(Failed::Lost(_)) if Instant::now() < deadline => lost = true,
-            Err(Failed::Refused(error) | Failed::Lost(error)) => return Err(error),
+            Err(Failed::Lost(error)) => {
+                lost = true;
+                if Instant::now() >= deadline {
+                    return Err(error);
+                }
+                std::thread::sleep(Duration::from_millis(200));
+                continue;
+            }
+            Err(Failed::Refused(error)) => Err(error),
+        };
+        let waits = Instant::now() < deadline && (crash && path.exists() || restarting(path));
+        if !waits {
+            return failed;
+        }
+        if !std::mem::replace(&mut said, true) {
+            eprintln!(
+                "priory: the daemon is restarting: waiting up to {} s for it",
+                retry.as_millis().div_ceil(1000)
+            );
         }
         std::thread::sleep(Duration::from_millis(200));
     }
@@ -3417,6 +3475,8 @@ pub fn send(home: &Path, line: &str) -> Result<(), String> {
                 return Ok(());
             }
         },
+        // A stop that applied nothing: the next daemon applies it, once by its id.
+        Ok(reply) if reply.contains(NOT_APPLIED) => sent,
         Ok(reply) => {
             eprintln!("priory hook: the daemon answered {reply}");
             return Ok(());
@@ -3459,7 +3519,7 @@ mod tests {
             got
         });
 
-        let reply = call_at(&path, r#"{"todo":1}"#, REPLY, Duration::ZERO).unwrap();
+        let reply = call_at(&path, r#"{"todo":1}"#, REPLY, Duration::ZERO, false).unwrap();
 
         assert_eq!(reply, r#"{"Ok":"done"}"#);
         let got = daemon.join().unwrap();
@@ -3493,6 +3553,118 @@ mod tests {
 
         assert_eq!(fs::read_to_string(&path).unwrap(), "second\n");
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_drain_waits_for_a_hook_that_holds_the_spool_to_finish_its_line() {
+        let dir = std::env::temp_dir().join(format!("priory-drain-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(spool(&dir), "first\n").unwrap();
+        // A hook between its lock and its write.
+        let mut hook = OpenOptions::new().append(true).open(spool(&dir)).unwrap();
+        hook.lock().unwrap();
+        let drained = std::thread::spawn({
+            let dir = dir.clone();
+            move || {
+                let mut lines = Vec::new();
+                drain(&dir, &mut |line: &str| {
+                    lines.push(line.to_owned());
+                    Ok(())
+                })
+                .map(|()| lines)
+            }
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        hook.write_all(b"second\n").unwrap();
+        drop(hook);
+
+        assert_eq!(drained.join().unwrap().unwrap(), ["first", "second"]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A socket at `path` that answers each connection's line with the next of `replies`, and
+    /// returns the lines it read.
+    fn answering(
+        path: &Path,
+        after: Duration,
+        replies: &'static [&'static str],
+    ) -> std::thread::JoinHandle<Vec<String>> {
+        let path = path.to_owned();
+        std::thread::spawn(move || {
+            std::thread::sleep(after);
+            let bound = path.with_extension("new");
+            let listener = UnixListener::bind(&bound).unwrap();
+            fs::rename(&bound, &path).unwrap();
+            let mut lines = Vec::new();
+            for reply in replies {
+                let (mut stream, _) = listener.accept().unwrap();
+                lines.extend(line_within(&stream, Duration::from_secs(5)));
+                stream.write_all(format!("{reply}\n").as_bytes()).unwrap();
+            }
+            lines
+        })
+    }
+
+    #[test]
+    fn a_verb_fails_at_once_on_a_socket_whose_daemon_did_not_stop() {
+        let path = refusing("crashed");
+        let started = Instant::now();
+
+        let reply = call_at(&path, "hello", Duration::from_secs(2), RESTART, false);
+
+        assert!(reply.is_err_and(|error| error.starts_with(NO_DAEMON)));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_verb_waits_for_a_missing_socket_while_its_stopped_daemon_restarts() {
+        let path = refusing("restarting");
+        fs::remove_file(&path).unwrap();
+        fs::write(stopping_path(&path), "").unwrap();
+        let daemon = answering(&path, Duration::from_secs(1), &["done"]);
+
+        let reply = call_at(&path, "hello", Duration::from_secs(2), RESTART, false);
+
+        assert_eq!(reply, Ok("done".to_owned()));
+        let sent: Vec<serde_json::Value> = daemon
+            .join()
+            .unwrap()
+            .iter()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0]["line"], "hello");
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_line_a_stop_did_not_apply_goes_to_the_next_daemon() {
+        let path = refusing("not-applied");
+        fs::write(stopping_path(&path), "").unwrap();
+        let refused: &'static str =
+            Box::leak(format!("{{\"Err\":\"{NOT_APPLIED}\"}}").into_boxed_str());
+        let daemon = answering(
+            &path,
+            Duration::ZERO,
+            Box::leak(Box::new([refused, "done"])),
+        );
+
+        let reply = call_at(&path, "hello", Duration::from_secs(2), RESTART, false);
+
+        assert_eq!(reply, Ok("done".to_owned()));
+        let sent: Vec<serde_json::Value> = daemon
+            .join()
+            .unwrap()
+            .iter()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0]["line"], "hello");
+        // The same call, which the next daemon applies once.
+        assert_eq!(sent[0], sent[1]);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[test]
@@ -3638,6 +3810,7 @@ mod tests {
     #[test]
     fn a_call_through_a_restart_has_its_whole_wait_after_a_late_connect() {
         let path = refusing("late");
+        fs::write(stopping_path(&path), "").unwrap();
         let daemon = {
             let path = path.clone();
             std::thread::spawn(move || {
@@ -3655,7 +3828,7 @@ mod tests {
             })
         };
 
-        let reply = call_at(&path, "hello", Duration::from_secs(2), RESTART);
+        let reply = call_at(&path, "hello", Duration::from_secs(2), RESTART, false);
 
         assert_eq!(reply, Ok("done".to_owned()));
         let sent: serde_json::Value =
@@ -3669,7 +3842,13 @@ mod tests {
         let path = refusing("refused");
         let started = Instant::now();
 
-        let reply = call_at(&path, "hello", Duration::from_secs(2), Duration::ZERO);
+        let reply = call_at(
+            &path,
+            "hello",
+            Duration::from_secs(2),
+            Duration::ZERO,
+            false,
+        );
 
         assert!(
             reply

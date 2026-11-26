@@ -114,10 +114,22 @@ started elsewhere does not change it. A command you run yourself must see the sa
 `no priory daemon listens on <path>`. The path is in that error. The daemon reads one connection at a time, and drops one that sends no
 full line within 2 seconds, so a silent client cannot stop the others.
 
-On `SIGTERM` the daemon takes no more connections, answers those it has within 20 seconds, and then
-ends by that signal. A second `SIGTERM` ends it at once. The socket's file stays, so a command that
-writes, an MCP server and `priory memory` wait up to 30 seconds for the next daemon. `priory attach`,
-a web server's write and the tool guard do not.
+On `SIGTERM` the daemon finishes the phase of its tick in progress, then takes no more connections,
+answers those it has within 20 seconds, and ends by that signal. A phase can take as long as its
+slowest step, so the stop takes that plus 20 seconds. systemd kills the daemon after `TimeoutStopSec`,
+90 seconds by default: raise it when a factory's steps can take longer than about 60 seconds. A second
+`SIGTERM` ends the daemon at once.
+
+The stop writes `<socket>.stopping` beside the socket, and the next daemon removes it. While that file
+is under 50 seconds old, a command that writes and `priory memory` wait up to 30 seconds for the next
+daemon, with a line on stderr. `priory memory acquire --timeout` caps that wait. Without it, as after a
+crash, with no daemon or with another `PRIORY_HOME`, they fail at once. An MCP server waits up to 30
+seconds for any socket that refuses it, as after a crash that systemd restarts. `priory attach`, a web
+server's write and the tool guard do not wait.
+
+A runner that has not read the whole log yet applies no line of the socket, so its stop applies none
+either. It answers each one that the daemon stopped before applying it. The command then sends it to
+the next daemon, and a hook spools it.
 
 Each client sends its line as `{"call": ID, "line": LINE}`, with a new UUID for each call. The
 daemon notes the id before it applies the line, and stores the reply for an hour. A client whose

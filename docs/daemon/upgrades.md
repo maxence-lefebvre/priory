@@ -54,8 +54,9 @@ An edit of a key that only a restart applies, such as `[serve]`, puts the upgrad
 daemon restarted with it: nothing shows yet that a daemon starts with it.
 
 A tool call the agent makes while the daemon is down waits up to 30 seconds, as in an upgrade by
-hand. A call in flight at the stop is answered first, within 20 seconds of it. The tool guard does
-not wait: a guarded command the agent starts in the gap is denied, and the agent sees why.
+hand. A call in flight at the stop is answered first, after the phase of the tick in progress
+([home.md](home.md#socket-spool-and-lock)). The tool guard does not wait: a guarded command the agent
+starts in the gap is denied, and the agent sees why.
 
 ## The rehearsal
 
