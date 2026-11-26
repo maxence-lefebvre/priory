@@ -671,6 +671,10 @@ mod tests {
                 run: false,
                 by: "cli".to_owned(),
             };
+            let answer = tools::Called {
+                write: answer,
+                call: None,
+            };
             tools::answer(&mut self.db, &answer, &trace, &|_, _| None).unwrap()
         }
 
@@ -968,6 +972,10 @@ mod tests {
             revision: 1,
             run: false,
             by: "cli".to_owned(),
+        };
+        let answer = tools::Called {
+            write: answer,
+            call: None,
         };
         let trace = trace_of(&setup.factory);
         tools::answer(&mut setup.db, &answer, &trace, &|_, _| None)

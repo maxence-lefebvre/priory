@@ -193,8 +193,8 @@ application/json` and a JSON body of at most 16 KiB with exactly the fields belo
 
 | Endpoint | Body |
 | -------- | ---- |
-| `POST /api/asks/{id}/answer` | `revision`, an integer, and one of `option` or `text`, a string. Both become the answer: a human step's ask takes one of its options, `OPTION: NOTE` or a written answer (see [waits.md](../daemon/waits.md#asks-and-answers)). `run`, a boolean, default `false`: `true` confirms an answer that runs the ask's command, as `priory answer --run` does. Without it, that answer gets `422` |
-| `POST /api/asks/{id}/dismiss` | `revision`, an integer |
+| `POST /api/asks/{id}/answer` | `revision`, an integer, and one of `option` or `text`, a string. Both become the answer: a human step's ask takes one of its options, `OPTION: NOTE` or a written answer (see [waits.md](../daemon/waits.md#asks-and-answers)). `run`, a boolean, default `false`: `true` confirms an answer that runs the ask's command, as `priory answer --run` does. Without it, that answer gets `422`. `call`, optional, as below |
+| `POST /api/asks/{id}/dismiss` | `revision`, an integer, and optionally `call` |
 | `POST /api/snooze` | `kind` (`ask`, `blocked`, `failed` or `prompt`) and `id`, an integer, then one of: `for`, a duration such as `1h`; `until`, an RFC 3339 time; or `"clear": true` |
 | `POST /api/request` | `text`, a string, then optionally `workflow`, `band`, `lane` and `repo`, strings, `intervention`, `plan` or `hands-off`, and `auto_answer`, `high` or `medium`. What it leaves unset comes from `[request]` and the URLs in `text`, as for [`priory add`](../intake/cli.md#priory-add) |
 | `POST /api/tasks/{id}/resume` | `{}` |
@@ -222,7 +222,10 @@ application/json` and a JSON body of at most 16 KiB with exactly the fields belo
 
 In `/api/asks/{id}`, `{id}` is the ask's `id` as `/api/asks` lists it: its number, an outside
 ask's name, or `<runner>:<ask>` for another runner's ask, and `revision` is the ask's `revision` the
-client showed.
+client showed. `call` is a UUID the client makes once per press and repeats on a resend. A resend of
+the same write gets the first reply and changes nothing, for 7 days. The same `call` with another
+write gets `422`, and a `call` that is no UUID gets `400`. The `200` of an answer or a dismiss also
+carries `ask`, the stored ask.
 
 A write to another runner's ask is not applied here. The server checks it against that runner's last
 post: an ask the post shows closed or at another revision gets `409` with the ask, and an answer that
