@@ -26281,19 +26281,24 @@ fn overlapping_as(
     first: impl Fn(&Setup),
     work: impl Fn(&Setup),
 ) -> Setup {
-    overlapping_in(name, TWO_MODEL_STEPS, request, factory, first, work)
+    overlapping_in(name, &[], request, factory, first, work)
 }
 
+/// As `overlapping_as`, with each `(name, toml)` of `workflows` written over the default ones.
 fn overlapping_in(
     name: &str,
-    workflow: &str,
+    workflows: &[(&str, &str)],
     request: &Message,
     factory: &str,
     first: impl Fn(&Setup),
     work: impl Fn(&Setup),
 ) -> Setup {
-    let mut setup = Setup::with_workflow(name, workflow);
+    let mut setup = Setup::with_workflow(name, TWO_MODEL_STEPS);
     fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
+    for (workflow, toml) in workflows {
+        let file = setup.dir.join(format!("factory/workflows/{workflow}.toml"));
+        fs::write(file, toml).unwrap();
+    }
     setup.publish(&requested(42));
     setup.start();
     setup.until("tasks", |rows| with(rows, 4, "running") == 1);
@@ -26372,7 +26377,7 @@ fn a_factory_with_overlap_off_holds_no_task() {
 fn a_task_whose_workflow_turns_overlap_off_is_not_held() {
     let setup = overlapping_in(
         "overlap-workflow-off",
-        &format!("overlap = false\n{TWO_MODEL_STEPS}"),
+        &[("implement", &format!("overlap = false\n{TWO_MODEL_STEPS}"))],
         &requested(43),
         "name = \"demo\"",
         |_| {},
@@ -26387,6 +26392,47 @@ fn a_task_whose_workflow_turns_overlap_off_is_not_held() {
     });
 
     assert_eq!(state_of(&setup, "2").0, "running");
+}
+
+#[test]
+fn a_task_whose_workflow_turns_overlap_off_still_holds_a_later_task_of_another_workflow() {
+    let key = "github:owner/repo#43";
+    let request = Message::new(
+        "factory.task.requested",
+        json!({
+            "workflow": "strict",
+            "key": key,
+            "band": null,
+            "lane": null,
+            "trigger": "agent-label",
+            "source": "source"
+        }),
+    )
+    .subject(key);
+    let setup = overlapping_in(
+        "overlap-workflow-off-holds",
+        &[
+            ("implement", &format!("overlap = false\n{TWO_MODEL_STEPS}")),
+            ("strict", TWO_MODEL_STEPS),
+        ],
+        &request,
+        "name = \"demo\"",
+        |_| {},
+        |setup| {
+            setup.commit(2, "shared.txt");
+        },
+    );
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "2" && row[4] != "ready")
+    });
+
+    let (state, reason) = state_of(&setup, "2");
+
+    assert_eq!(state, "held", "{reason}");
+    assert!(
+        reason.starts_with("held: overlaps task 1 on shared.txt"),
+        "{reason}"
+    );
 }
 
 #[test]
