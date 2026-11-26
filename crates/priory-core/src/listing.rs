@@ -862,19 +862,16 @@ fn done_holding(db: &Connection, repo: &str, number: u64) -> rusqlite::Result<Va
     let done = rows(
         db,
         &holders(
-            "state = 'done' AND held.how != 'review'",
+            "state = 'done' AND held.task NOT IN (SELECT task FROM named WHERE how = 'review')",
             "min(rank) > 1, id DESC",
         ),
         params![resource, format!("github:{repo}:pulls/{number}:review:*")],
     )?;
     let done = done.as_array().cloned().unwrap_or_default();
-    if done.is_empty() || crate::tools::last_read(db, &resource)? != "open" {
-        return Ok(json!([]));
-    }
     let mut reopen = Vec::new();
     for task in done {
         let id = task["id"].as_i64().expect("a task has an id");
-        if crate::tools::says_reopens(db, id, None)?.is_ok() {
+        if crate::tools::says_reopens(db, id, None, Some(&resource))?.is_ok() {
             reopen.push(task);
         }
     }

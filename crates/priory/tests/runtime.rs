@@ -11551,46 +11551,135 @@ fn a_say_on_a_done_task_whose_pull_request_another_active_task_owns_is_refused()
     say_refused(&setup, "task 2 is already active on github:owner/repo#7");
 }
 
+/// Adds the inbox event `id` that reads pull request `number` of `repo` open.
+fn read_open(setup: &Setup, id: &str, repo: &str, number: i64) {
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute(
+            "INSERT INTO inbox (id, type, subject, time, data, links, outcome) VALUES
+               (?1, 'github.pull_request.opened', ?2 || '#' || ?3, '2026-11-17T10:00:00Z',
+                json_object('repo', ?2, 'pull_request', ?3, 'open', json('true')), '[]', 'ignored')",
+            rusqlite::params![id, repo, number],
+        )
+        .unwrap();
+}
+
+/// Runs `sql` on the state database of `setup`.
+fn state_sql(setup: &Setup, sql: &str) {
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute_batch(sql)
+        .unwrap();
+}
+
 #[test]
-fn a_say_reopens_a_done_task_on_the_one_pull_request_of_its_stack_no_other_task_holds() {
-    let setup = done_with_open_pull_request("say-stack-rival");
-    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
-    db.execute_batch(
-        "INSERT INTO tasks (key, workflow, step, state, band, trigger, source)
-           SELECT 'cli:above', workflow, step, 'blocked', band, trigger, source FROM tasks WHERE id = 1;
-         INSERT INTO subscriptions (task, resource) VALUES (2, 'github:owner/repo#7'),
-           (1, 'github:owner/repo#8');
-         INSERT INTO inbox (id, type, subject, time, data, links, outcome) VALUES
-           ('seen', 'github.pull_request.opened', 'owner/repo#8', '2026-11-17T10:00:00Z',
-            '{\"repo\":\"owner/repo\",\"pull_request\":8}', '[]', 'ignored');",
-    )
-    .unwrap();
+fn a_say_on_a_done_task_whose_pull_request_merged_is_refused_though_it_subscribes_to_an_open_one() {
+    let setup = gated("say-merged-held");
+    setup.publish(&closed());
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    state_sql(
+        &setup,
+        "INSERT INTO subscriptions (task, resource) VALUES (1, 'github:owner/repo#9');",
+    );
+    read_open(&setup, "nine", "owner/repo", 9);
 
-    let said = setup.priory(&["say", "1", "Fix the empty case."]);
-
-    assert!(said.status.success(), "{said:?}");
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
-    let typed = setup.typed();
-    assert!(
-        typed[2].contains("generation 2: github:owner/repo#8 is still open."),
-        "{typed:?}"
+    say_refused(
+        &setup,
+        "task 1 is done and its pull request github:owner/repo#7 is merged",
     );
 }
 
 #[test]
-fn a_say_on_a_task_done_at_a_step_no_agent_runs_reopens_its_last_model_step() {
+fn a_say_reopens_no_done_task_through_a_spent_wait_another_repository_or_an_unread_pull_request() {
+    let setup = done_with_open_pull_request("say-stale-holds");
+    let mut close = closed().time(herdr_bus::Timestamp::now());
+    close.data["merged"] = json!(false);
+    setup.publish(&close);
+    setup.until("inbox", |rows| rows.len() == 4);
+    state_sql(
+        &setup,
+        "INSERT INTO waits (id, task, run, kind, resource, fired)
+           VALUES (0, 1, 1, 'pull_request', 'github:owner/repo#9', '2026-11-17T10:00:00Z');
+         INSERT INTO subscriptions (task, resource) VALUES (1, 'github:other/repo#9'),
+           (1, 'github:owner/repo#10');",
+    );
+    read_open(&setup, "nine", "owner/repo", 9);
+    read_open(&setup, "other", "other/repo", 9);
+
+    say_refused(
+        &setup,
+        "task 1 is done and its pull request github:owner/repo#7 is closed",
+    );
+}
+
+#[test]
+fn a_say_on_a_done_task_is_refused_while_another_active_task_holds_a_pull_request_of_its_stack() {
+    let setup = done_with_open_pull_request("say-stack-rival");
+    state_sql(
+        &setup,
+        "INSERT INTO tasks (key, workflow, step, state, band, trigger, source)
+           SELECT 'cli:above', workflow, step, 'blocked', band, trigger, source FROM tasks WHERE id = 1;
+         INSERT INTO subscriptions (task, resource) VALUES (2, 'github:owner/repo#7'),
+           (1, 'github:owner/repo#8');",
+    );
+    read_open(&setup, "eight", "owner/repo", 8);
+
+    say_refused(&setup, "task 2 is already active on github:owner/repo#7");
+}
+
+#[test]
+fn a_say_through_the_api_reopens_a_done_task_on_the_pull_request_it_names() {
+    let setup = done_with_open_pull_request("say-names-pr");
+    state_sql(
+        &setup,
+        "INSERT INTO subscriptions (task, resource) VALUES (1, 'github:owner/repo#9');",
+    );
+    read_open(&setup, "nine", "owner/repo", 9);
+    let (mut server, address) = served(&setup);
+    let say = |pull_request: &str| {
+        post(
+            &address,
+            "/api/tasks/1/say",
+            json!({ "text": "Fix the empty case.", "pull_request": pull_request }),
+        )
+    };
+
+    let foreign = say("github:owner/repo#11");
+    let said = say("github:owner/repo#9");
+
+    server.kill().unwrap();
+    server.wait().unwrap();
+    assert!(
+        foreign
+            .1
+            .to_string()
+            .contains("task 1 is done and does not hold github:owner/repo#11"),
+        "{foreign:?}"
+    );
+    assert_eq!(said.0, 200, "{said:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    assert!(
+        typed[2].contains("generation 2: github:owner/repo#9 is still open."),
+        "{typed:?}"
+    );
+    let reopened: Vec<_> = setup
+        .trace()
+        .into_iter()
+        .filter(|record| record["type"] == "factory.task.reopened")
+        .map(|record| record["data"]["pull_request"].clone())
+        .collect();
+    assert_eq!(reopened, [json!("github:owner/repo#9")]);
+}
+
+#[test]
+fn a_say_on_a_task_done_at_a_step_no_agent_runs_is_refused_and_names_the_reopen_key() {
     let setup = done_with_open_pull_request("say-code-step");
-    rusqlite::Connection::open(setup.dir.join("priory.db"))
-        .unwrap()
-        .execute("UPDATE tasks SET step = 'gate' WHERE id = 1", [])
-        .unwrap();
+    state_sql(&setup, "UPDATE tasks SET step = 'gate' WHERE id = 1;");
 
-    let said = setup.priory(&["say", "1", "Fix the empty case."]);
-
-    assert!(said.status.success(), "{said:?}");
-    assert_eq!(
-        String::from_utf8_lossy(&said.stdout).trim(),
-        "task 1 reopened at implement, generation 2"
+    say_refused(
+        &setup,
+        "task 1 is done and would reopen at step gate, which no agent runs: name the step it goes back to in its workflow's `reopen`",
     );
 }
 

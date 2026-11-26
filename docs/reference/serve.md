@@ -201,7 +201,7 @@ application/json` and a JSON body of at most 16 KiB with exactly the fields belo
 | `POST /api/tasks/{id}/revive` | optionally `step`, a string: the step to restart at, as `--step` |
 | `POST /api/tasks/{id}/cancel` | optionally `revision`, an integer: the state's revision the client showed, as `--expected`. A newer state gets `409` |
 | `POST /api/tasks/{id}/release` | optionally `revision`, an integer, as `--expected`. A newer state gets `409` |
-| `POST /api/tasks/{id}/say` | `text`, a string: what the task's agent hears |
+| `POST /api/tasks/{id}/say` | `text`, a string: what the task's agent hears. Optionally `pull_request`, a resource such as `github:owner/repo#7`: the pull request a done task reopens on. An active task ignores it |
 | `POST /api/tasks/{runner}:{key}/{act}` | `generation`, an integer: the task's `generation` the client showed. Then, as for the same action on a task here, `text` for `say` and optionally `step` for `revive`. It takes no `revision` |
 | `POST /api/tasks/{id}/move` | `revision`, an integer: the state's revision the client showed, as `--expected`. Then `band`, one of the factory's bands, a place, or both. The place is one of `"top": true`, `before` or `after`, a task's id, as `--top`, `--before` and `--after`. A body with two places, or with neither a band nor a place, gets `400`, a newer state `409`, and a band the factory lacks or a task that is not active `422` |
 | `POST /api/subscribe` | `task`, an integer, and `resource`, a string such as `github:owner/name#7`, `linear:ENG-7` or `slack:C0123:1763500000.000100`, as `priory subscribe TASK RESOURCE`. Optionally `revision`, an integer, as `--expected`: a newer state gets `409`. A resource it cannot name gets `400`, a missing task `404`, and a resource another active task owns `422`, naming that task |
@@ -675,8 +675,9 @@ request, in this order:
 
 The tasks that hold it by `key` or `stack`, which own its branch, come first, then the others, each
 group by id. When no active task holds it, `tasks` lists the done tasks that hold it and that
-[`say`](../daemon/desk.md#say) reopens while it is open, in the same two groups, newest first. A
-done task that only reviewed it is left out. An empty `tasks` means neither kind holds the pull
+[`say`](../daemon/desk.md#say) reopens on it, in the same two groups, newest first. A done task
+that reviewed it is left out, even when it also waits on or subscribes to it. The list skips the
+check of the workflow's steps, so a `say` to a listed task can still be refused. An empty `tasks` means neither kind holds the pull
 request.
 
 ## Task in detail

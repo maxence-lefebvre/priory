@@ -1042,11 +1042,7 @@ fn reverse(
     };
     let tx = db.unchecked_transaction()?;
     let over = ["done", "failed", "dropped"].contains(&state);
-    // A done task's rivals are those of the pull request it reopens on, which `says_reopens` checks.
-    if over
-        && state != "done"
-        && let Some(rival) = tools::rival(&tx, task, ask["key"].as_str().unwrap_or_default())?
-    {
+    if over && let Some(rival) = tools::rival(&tx, task, ask["key"].as_str().unwrap_or_default())? {
         return Ok(Some(Err(format!("task {task} is {state}, and {rival}"))));
     }
     let workflow = ask["workflow"].as_str().unwrap_or_default();
@@ -1063,7 +1059,7 @@ fn reverse(
         ))));
     }
     Ok(Some(match (state, ask["kind"] == "step") {
-        ("done", _) => match tools::says_reopens(&tx, task, factory)? {
+        ("done", _) => match tools::says_reopens(&tx, task, factory, None)? {
             Ok(()) => Ok(format!("priory say {task} TEXT")),
             Err(why) => Err(format!(
                 "task {task} is done and {why}: ask for the change in a new task, with `priory add TEXT`"

@@ -53,7 +53,10 @@ answers. A `401` from the daemon signs you out too.
 ## What it shows
 
 - **The strip**: the owning task, its state and step, and a pill when asks wait on you. On a pull
-  request no active task holds, it says so, with Add a task…. When the daemon is out of reach, it
+  request no active task holds, it shows the newest done task that `say` reopens on it, with Say
+  on. Else it says no task holds it, with Add a task…. When Say to a listed done task is refused,
+  for example because no agent runs the step it would reopen at, the strip shows the reason and no
+  Add a task…. When the daemon is out of reach, it
   says how old the last read is.
 - **Ask**: the open asks of the task, oldest first, with the web view's order: context, question,
   recommendation, options, Write an answer, Dismiss and Snooze. Every open ask shows
