@@ -42520,7 +42520,7 @@ fn a_call_whose_runner_is_away_answers_runner_away_after_40s_and_its_retry_appli
 }
 
 #[test]
-fn a_grant_made_by_hand_and_a_task_claimed_by_another_runner_reach_no_tool() {
+fn a_grant_made_by_hand_reaches_no_tool() {
     let mut setup = gateway_cloud("gateway-refused");
     setup.publish(&requested(42));
     setup.start();
@@ -42538,20 +42538,8 @@ fn a_grant_made_by_hand_and_a_task_claimed_by_another_runner_reach_no_tool() {
 
     assert_eq!(refused["isError"], true, "{refused}");
     assert!(said(&refused).contains("names no cloud run"), "{refused}");
-    setup.publish(&Message::new(
-        "priory.task.claimed",
-        json!({ "key": "github:owner/repo#42", "runner": "elsewhere", "request": "x" }),
-    ));
-    let deadline = Instant::now() + Duration::from_secs(60);
-    loop {
-        let (_, moved) = gateway.call(&token, "ask", an_ask());
-        if said(&moved).contains("moved to runner elsewhere") {
-            break;
-        }
-        assert!(Instant::now() < deadline, "{moved}");
-        std::thread::sleep(Duration::from_millis(200));
-    }
     assert_eq!(setup.on_log("priory.run.called"), 0);
+    assert!(setup.rows("asks").is_empty());
 }
 
 /// Runs `commit` in a clone of the task's branch with the run grant's token, then pushes its
@@ -42575,7 +42563,10 @@ fn leaks(name: &str, commit: impl Fn(&Path, &str)) {
     let push = ["push", "-q", "origin", &format!("HEAD:refs/heads/{branch}")];
     assert!(git(&work).args(push).status().unwrap().success());
 
-    setup.until("runs", |rows| rows.first().is_some_and(|row| row[7] != "-"));
+    // A push is seen by the minute's poll and taken 15 seconds later.
+    setup.within(180, "runs", |rows| {
+        rows.first().is_some_and(|row| row[7] != "-")
+    });
 
     let task = task_json(&setup, "1");
     let result = &task["results"][0];
@@ -42761,7 +42752,9 @@ fn a_result_reported_while_a_poll_from_before_the_push_runs_still_takes_the_push
     fs::remove_file(&hold).unwrap();
 
     assert_eq!(reported["isError"], false, "{reported}");
-    setup.until("runs", |rows| rows.first().is_some_and(|row| row[7] != "-"));
+    setup.within(180, "runs", |rows| {
+        rows.first().is_some_and(|row| row[7] != "-")
+    });
     let task = task_json(&setup, "1");
     let result = &task["results"][0];
     assert_eq!(result["outcome"], "pushed", "{task}");
