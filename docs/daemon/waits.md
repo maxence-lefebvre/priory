@@ -120,12 +120,15 @@ The daemon answers an ask with its recommendation when all of these hold:
 
 1. An agent's `ask` call made it, with a confidence at or above `--level`, `high` by default.
 2. A `hands-off` lead could answer it, as [above](#answered-by-auto), at a step the workflow still has.
-3. `--lane` names its task's lane, or no lane was named.
+3. `--lane` names its task's lane, or no lane was named. A lane in use nowhere is
+   [refused](../reference/cli.md).
 4. Its task is not held, nor to be held after this turn.
 5. It is neither snoozed nor with a lead. An ask comes back to autopilot when its snooze ends or its
    lead gives up. A new ask is answered before a lead is called.
 
-Every other open ask stays for the person. Its desk row starts with `autopilot left this (<why>): `,
+Every other open ask stays for the person. The daemon judges each in a read transaction, and writes
+only to answer it or to note a new reason. An ask whose answer is refused as it is given, such as a
+batch's go, is judged again in a write transaction on each tick. Its desk row starts with `autopilot left this (<why>): `,
 and its JSON carries the reason as `autopilot_left`. A pause changes nothing: an answered task goes
 on as after a person's answer.
 
