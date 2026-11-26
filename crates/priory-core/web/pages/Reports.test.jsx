@@ -49,7 +49,8 @@ test("a report draws its bar, its head, its section chips and its rows", (t) => 
   assert.match(html, /<section class="sect" id="report-2" aria-labelledby="report-2-title"><h2 class="sh" id="report-2-title">Sentry<span class="meta num">3<\/span><\/h2><div class="rfilter"><div role="group" aria-label="Show in Sentry"><button type="button" aria-pressed="true">All<span class="num">2<\/span><\/button>/);
   assert.match(html, /<div role="group" aria-label="Recommends in Sentry"><span class="cap">Recommends<\/span><button type="button" aria-pressed="false">Take<span class="num">1<\/span><\/button><button type="button" aria-pressed="false">Later<span class="num">1<\/span><\/button><\/div><button type="button" class="btn primary" aria-disabled="false">Pick all recommended<span class="num">1<\/span><\/button>/);
   assert.match(html, /<h2 class="sh" id="report-4-title">Blocked<span class="meta num">2<\/span><\/h2><ol class="rrows">/, "a section without a pick has no chips");
-  assert.match(html, /<p class="rl1"><span class="rtext">Yesterday: merged the MCP v2 plan review[^<]*&lt;b&gt;not html&lt;\/b&gt;<\/span><\/p>/, "agent text stays text");
+  assert.match(html, /<div class="rl1"><div class="rtext"><div class="md"><p>Yesterday: merged the MCP v2 plan review[^<]*<br\/?>Today: [^<]*&#60;b&#62;not html&#60;\/b&#62;<\/p><\/div><\/div><\/div>/, "agent text stays text");
+  assert.match(html, /<p class="rl2"><span class="rmeta" title="opentelemetry.io, 8 min">opentelemetry.io, 8 min<\/span><\/p>/, "the meta keeps its full text in its title");
 });
 
 test("a pick is open, agreed with a Change, or applied", (t) => {
@@ -57,13 +58,13 @@ test("a pick is open, agreed with a Change, or applied", (t) => {
   const id = (...parts) => encodeURIComponent(JSON.stringify(parts)).replace(/[%()]/g, (c) => `\\${c}`);
   assert.match(html, /<p class="note rpicked"><svg class="ico s15"[^>]*>.*?<\/svg><span><b>Picked Take\.<\/b> requested task cli:ROW-2409<\/span><\/p>/);
   assert.match(html, new RegExp(`<div class="rpick" role="group" aria-label="Pick for ROW-2413"><button type="button" id="${id("pick", "2026-11-20_sentry_row-2413", "Take")}" class="" aria-pressed="false" aria-disabled="false">Take</button>`));
-  assert.match(html, /<\/div><p class="note">Recommends Later<\/p>/);
+  assert.match(html, new RegExp(`id="${id("pick", "2026-11-20_sentry_row-2413", "Later")}" class="rec" aria-label="Later, recommended" aria-pressed="false"`), "the recommended option is marked, with no note");
   assert.match(html, /<span><b>Picked Take\.<\/b> Waiting for the workflow to apply it\.<\/span><button type="button" id="[^"]+" class="ghost">Change<\/button><\/p>/);
 });
 
 test("a row's threads take a reply, a resolve or a reopen, and the newest report takes comments", (t) => {
   const html = draw(t);
-  assert.match(html, /<div class="rthread" aria-label="Thread 5"><ol><li><p class="rwho"><b>lead<\/b> <span>[^<]+<\/span><\/p><p class="rsay">why later\?<\/p><\/li><li><p class="rwho"><b>agent<\/b> <span>[^<]+<\/span><\/p><p class="rsay">needs a &lt;b&gt;repro&lt;\/b&gt;<\/p><\/li><\/ol>/);
+  assert.match(html, /<details class="rthreads"><summary><svg[^>]*>.*?<\/svg>2 comments<\/summary><div class="rthread" aria-label="Thread 5"><ol><li><p class="rwho"><b>lead<\/b> <span>[^<]+<\/span><\/p><p class="rsay">why later\?<\/p><\/li><li><p class="rwho"><b>agent<\/b> <span>[^<]+<\/span><\/p><p class="rsay">needs a &lt;b&gt;repro&lt;\/b&gt;<\/p><\/li><\/ol>/);
   assert.match(html, /<p class="racts"><button type="button" id="reply-5" class="ghost" aria-disabled="false">Reply<\/button><button type="button" id="resolve-5" class="ghost" aria-disabled="false">Resolve<\/button><\/p><\/div>/);
   assert.match(html, /<p class="note rresolved"><svg[^>]*>.*?<\/svg><span>Resolved: seen<\/span><button type="button" id="reopen-7" class="ghost" aria-disabled="false">Reopen<\/button><\/p>/);
   assert.equal(html.match(/>Comment<\/button>/g).length, 2, "each row with its own id");

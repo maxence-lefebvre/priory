@@ -53,7 +53,7 @@ test("an open pick offers its options with the recommended one marked, and a cho
       { label: "Later", key: "2", recommended: true },
       { label: "Drop", key: "3", recommended: false },
     ],
-    note: "Recommends Later",
+    note: null,
     chosen: null,
     recommended: "Later",
   });
@@ -388,12 +388,14 @@ test("a section's Open chip keeps its open rows", async () => {
   assert.match(text(view()), /Private fonts/);
 });
 
-test("a check marks the chosen option only; the recommendation is the note's words", async () => {
-  const { view, press, find, all, text } = await mounted({ report: reports });
+test("a check marks the chosen option only; the recommended option is underlined", async () => {
+  const { view, press, find, all } = await mounted({ report: reports });
   const row = '["sentry","fnd-2413"]';
   const checks = (key) => all(find(view(), `pick-${row}-${key}`), "svg").length;
   assert.equal(checks(2), 0, "the recommended option shows no check before a choice");
-  assert.match(text(view()), /Recommends Later/);
+  assert.ok(find(view(), `pick-${row}-2`).calls.underline);
+  assert.equal(find(view(), `pick-${row}-1`).calls.underline, undefined);
+  assert.match(find(view(), `pick-${row}-2`).calls.accessibility_label[0], /Later, recommended/);
 
   press(view(), `pick-${row}-1`);
 
@@ -472,11 +474,24 @@ test("a selected row or a row a search found shows past the fold", async () => {
   assert.ok(drawnRow(view(), last));
 });
 
-test("a row with a comment thread shows past the fold", async () => {
+test("a row with a comment thread shows past the fold, its thread folded to its count", async () => {
   const commented = structuredClone(long);
   const rows = commented.report.sections.find((/** @type {any} */ section) => section.id === "sentry").rows;
   rows.at(-1).comments = [{ id: 9, author: "max", created: "2026-11-20T08:00:00Z", text: "Why this one?", resolved: false, replies: [] }];
   const { view, text } = await mounted({ ...longReplies, report: (/** @type {string[]} */ args) => (args[1] === "list" ? { revision: 6, reports: [] } : commented) });
   assert.ok(drawnRow(view(), sentry().at(-1)));
+  // A pick row's thread folds to its count until the row is selected.
+  assert.match(text(view()), /1 comment/);
+  assert.doesNotMatch(text(view()), /Why this one\?/);
+});
+
+test("a pick row's comment count selects the row and unfolds its thread", async () => {
+  const commented = structuredClone(long);
+  const rows = commented.report.sections.find((/** @type {any} */ section) => section.id === "sentry").rows;
+  rows[0].comments = [{ id: 9, author: "max", created: "2026-11-20T08:00:00Z", text: "Why this one?", resolved: false, replies: [] }];
+  const { view, text, press } = await mounted({ ...longReplies, report: (/** @type {string[]} */ args) => (args[1] === "list" ? { revision: 6, reports: [] } : commented) });
+
+  press(view(), `comment-${sentry()[0].id}`);
+
   assert.match(text(view()), /Why this one\?/);
 });
