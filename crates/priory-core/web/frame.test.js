@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { START, entryOf, needs, shellOf, step, where } from "./frame.js";
+import { START, entryOf, partsIn, partsOf, shellOf, step, where } from "./frame.js";
 
 const tabs = (...panels) => ({ tabs: panels.map((panel) => ({ panel })) });
 const layout = tabs("desk", "asks", "tasks", "runs", "inbox");
 const shell = (href, size = "wide", list = "desk", node = layout) => shellOf(where(href), { size, list, layout: node });
-const read = (href, size = "wide", list = "desk", node = layout) => needs(where(href), shell(href, size, list, node), href.split("/")[2]);
+const parts = (href, size = "wide", list = "desk", node = layout) => partsOf(where(href), shell(href, size, list, node), { size, layout: node });
 
 test("an address leads to its page, and to the ask, task or batch it opens", () => {
   assert.deepEqual(where("/"), { here: "desk", ask: null, task: null, batch: null });
@@ -17,32 +17,26 @@ test("an address leads to its page, and to the ask, task or batch it opens", () 
   assert.equal(where("/batches/x").batch, null);
 });
 
-test("each page reads the listings it shows and no other", () => {
-  assert.deepEqual(read("/"), ["asks", "queue", "tasks"]);
-  assert.deepEqual(read("/asks", "wide", "asks"), ["asks"]);
-  assert.deepEqual(read("/tasks"), ["tasks"]);
-  assert.deepEqual(read("/runs"), ["runs"]);
-  assert.deepEqual(read("/queue"), ["queue", "tasks"]);
-  assert.deepEqual(read("/inbox"), ["tasks"]);
-  assert.deepEqual(read("/terminal"), ["tasks"]);
-  assert.deepEqual(read("/reports"), ["report", "reports", "tasks"]);
-  assert.deepEqual(read("/tasks/7"), ["asks", "tasks"]);
-  assert.deepEqual(read("/batches/2"), ["tasks"]);
-  for (const href of ["/costs", "/workflow", "/more", "/memories", "/settings/notifications"]) assert.deepEqual(read(href), [], href);
-  assert.deepEqual(read("/settings/appearance"), ["asks", "queue", "tasks"], "the theme previews draw the Desk");
+test("each page fills the shell with its own part, beside a drawer where the screen has one", () => {
+  const list = (name) => ({ kind: "list", name });
+  assert.deepEqual(parts("/"), { main: list("desk"), drawer: true });
+  assert.deepEqual(parts("/", "medium"), { main: list("desk"), drawer: true });
+  assert.deepEqual(parts("/", "compact"), { main: { kind: "page", name: "desk" }, drawer: false });
+  assert.deepEqual(parts("/tasks"), { main: list("tasks"), drawer: false });
+  assert.deepEqual(parts("/inbox"), { main: list("inbox"), drawer: false });
+  assert.deepEqual(parts("/costs"), { main: { kind: "page", name: "costs" }, drawer: false });
+  assert.deepEqual(parts("/tasks/7"), { main: { kind: "detail", name: "tasks", id: 7 }, drawer: false });
+  assert.deepEqual(parts("/batches/2", "compact"), { main: { kind: "detail", name: "batches", id: "2" }, drawer: false });
+  assert.deepEqual(parts("/asks/4", "wide", "asks"), { main: list("asks"), drawer: true });
+  assert.deepEqual(parts("/asks/4", "compact"), { main: { kind: "detail", name: "asks", id: "4" }, drawer: false });
 });
 
-test("an ask reads the list drawn beside it, and only on a screen that draws one", () => {
-  assert.deepEqual(read("/asks/4", "wide", "desk"), ["asks", "queue", "tasks"]);
-  assert.deepEqual(read("/asks/4", "wide", "asks"), ["asks", "tasks"]);
-  assert.deepEqual(read("/asks/4", "compact", "desk"), ["asks", "tasks"]);
-});
-
-test("a view of several panels reads each of them on a wide screen, and one below it", () => {
+test("a view of several panels fills a wide screen, and one of them a smaller one", () => {
   const node = { columns: [{ panel: "desk" }, { tabs: [{ panel: "runs" }, { panel: "inbox" }] }] };
-  assert.deepEqual(read("/", "wide", "desk", node), ["asks", "queue", "runs", "tasks"]);
-  assert.deepEqual(read("/", "medium", "desk", node), ["asks", "queue", "tasks"]);
-  assert.deepEqual(read("/", "compact", "desk", node), ["asks", "queue", "tasks"]);
+  assert.deepEqual(parts("/", "wide", "desk", node), { main: node, drawer: true });
+  assert.deepEqual(partsIn(node, "inbox").map((part) => part.name), ["desk", "inbox"]);
+  assert.deepEqual(parts("/", "medium", "desk", node).main, { kind: "list", name: "desk" });
+  assert.deepEqual(parts("/tasks", "wide", "desk", node).main, { kind: "list", name: "tasks" }, "a list whose rows open a page takes the whole width");
 });
 
 test("the shell fits the page and the screen", () => {

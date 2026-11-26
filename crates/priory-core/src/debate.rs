@@ -609,6 +609,7 @@ pub(crate) fn stop(
         "UPDATE tasks SET state = 'asleep', reason = NULL WHERE id = ?1",
         [run.task],
     )?;
+    crate::hold::show_mark(tx, run.task)?;
     Ok(Some(run.tmux.clone()))
 }
 

@@ -1406,6 +1406,17 @@ fn a_task_endpoint_shows_its_brief_plan_pull_request_and_each_runs_tokens() {
         (2, "github.check_run.completed", pr("test", "failure")),
         (3, "github.check_run.completed", pr("test", "success")),
         (4, "github.check_run.completed", pr("lint", "success")),
+        // A job of the same name in another workflow.
+        (7, "github.check_run.completed", {
+            let mut other = pr("docs", "failure");
+            other["origin"] = json!("workflow:1:push");
+            other
+        }),
+        (8, "github.check_run.completed", {
+            let mut other = pr("docs", "success");
+            other["origin"] = json!("workflow:2:push");
+            other
+        }),
         // A review the intake read without the pull request's branches and head.
         (5, "github.pull_request_review.submitted", {
             let mut review = pr("", "");
@@ -1454,6 +1465,8 @@ fn a_task_endpoint_shows_its_brief_plan_pull_request_and_each_runs_tokens() {
     assert_eq!(
         pull["checks"],
         json!([
+            { "name": "docs", "conclusion": "failure", "at": "2026-11-17T11:07:00Z" },
+            { "name": "docs", "conclusion": "success", "at": "2026-11-17T11:08:00Z" },
             { "name": "lint", "conclusion": "success", "at": "2026-11-17T11:04:00Z" },
             { "name": "test", "conclusion": "success", "at": "2026-11-17T11:03:00Z" }
         ])
@@ -2729,7 +2742,7 @@ fn a_comment_a_poll_published_publishes_nothing_more_from_its_webhook() {
         "pull_request_url": "https://api.github.com/repos/owner/repo/pulls/43",
         "user": { "login": "ana", "type": "User" }
     });
-    let open = json!([{ "data": { "repository": { "pullRequests": { "nodes": [{
+    let open = json!({ "data": { "repository": { "pullRequests": { "nodes": [{
         "number": 43,
         "headRefName": "priory/3",
         "headRefOid": "abc123",
@@ -2746,9 +2759,9 @@ fn a_comment_a_poll_published_publishes_nothing_more_from_its_webhook() {
             "author": { "login": "ana", "__typename": "User" }
         }] },
         "commits": { "nodes": [] }
-    }] } } } }]);
+    }] } } } });
     setup.poll_answering(&[
-        ("graphql --paginate", open),
+        ("graphql -F", open),
         (
             "repos/owner/repo/pulls/comments?sort=created&direction=desc&per_page=100",
             json!([thread]),
@@ -3122,15 +3135,15 @@ fn waiters_beyond_the_cap_get_503_while_listings_still_answer() {
     let mut setup = Setup::new("events-cap", SERVE);
     let address = setup.start(&["serve", &setup.factory()]);
     let revision = api(&address, "/api/tasks")["revision"].as_i64().unwrap();
-    let path = format!("/api/events?since={revision}&timeout=3");
+    let path = format!("/api/events?since={revision}&timeout=10");
 
-    let waiters: Vec<_> = (0..4)
+    let waiters: Vec<_> = (0..128)
         .map(|_| {
             let (address, path) = (address.clone(), path.clone());
             std::thread::spawn(move || get(&address, &path, Some(TOKEN)).0)
         })
         .collect();
-    std::thread::sleep(Duration::from_millis(500));
+    std::thread::sleep(Duration::from_secs(2));
 
     assert_eq!(get(&address, &path, Some(TOKEN)).0, 503);
     assert_eq!(get(&address, "/api/tasks", Some(TOKEN)).0, 200);
@@ -3699,12 +3712,14 @@ fn an_answer_through_the_endpoint_wakes_the_task_as_priory_answer_does() {
     );
 
     assert_eq!(status, 200, "{body}");
-    assert_eq!(
-        serde_json::from_str::<Value>(&body).unwrap(),
-        json!({ "ok": "ask 1 answered" })
-    );
+    let body: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(body["ok"], "ask 1 answered");
     let ask = setup.ask();
     assert_eq!([&ask["state"], &ask["answer"]], ["answered", "left"]);
+    assert_eq!(
+        [&body["ask"]["state"], &body["ask"]["answer"]],
+        ["answered", "left"]
+    );
     let prompt: String = setup
         .db()
         .query_row(
@@ -3717,6 +3732,149 @@ fn an_answer_through_the_endpoint_wakes_the_task_as_priory_answer_does() {
         prompt.starts_with("Answer to ask 1 (revision 2): left"),
         "{prompt}"
     );
+}
+
+#[test]
+fn a_resent_answer_gets_the_first_reply_and_applies_once_also_after_a_restart() {
+    let mut setup = Setup::new("web-resend", SERVE);
+    setup.asleep_on_ask();
+    // A written answer to a hold's ask leaves it open, so a resend would queue its text twice.
+    setup
+        .db()
+        .execute_batch(
+            "INSERT INTO holds (task, reason, kind, target, resume, ask)
+             VALUES (1, 'b', 'person', 2, 'ready', 1)",
+        )
+        .unwrap();
+    let call = "0a1b2c3d-0000-4000-8000-000000000001";
+    let body = json!({ "text": "use the new schema", "revision": 2, "call": call }).to_string();
+    let address = setup.start(&["daemon", &setup.factory()]);
+
+    let first = post(&address, "/api/asks/1/answer", "", &body);
+    let resent = post(&address, "/api/asks/1/answer", "", &body);
+    setup.server_log();
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let restarted = post(&address, "/api/asks/1/answer", "", &body);
+    let other = post(
+        &address,
+        "/api/asks/1/answer",
+        "",
+        &json!({ "text": "no", "revision": 2, "call": call }).to_string(),
+    );
+
+    assert_eq!(first.0, 200, "{}", first.1);
+    let said = |reply: &str| serde_json::from_str::<Value>(reply).unwrap()["ok"].clone();
+    assert_eq!((resent.0, said(&resent.1)), (200, said(&first.1)));
+    assert_eq!((restarted.0, said(&restarted.1)), (200, said(&first.1)));
+    assert_eq!(other.0, 422, "{}", other.1);
+    let queued: i64 = setup
+        .db()
+        .query_row(
+            "SELECT count(*) FROM outbox WHERE text LIKE '%use the new schema%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(queued, 1);
+    let bad = r#"{"text": "x", "revision": 2, "call": "not an id"}"#;
+    assert_eq!(post(&address, "/api/asks/1/answer", "", bad).0, 400);
+}
+
+#[test]
+fn a_listing_the_client_holds_gets_304_with_the_new_revision() {
+    let mut setup = Setup::new("unchanged", SERVE);
+    setup.seed();
+    let address = setup.start(&["serve", &setup.factory()]);
+    let read = |tag: &str| {
+        let mut stream = TcpStream::connect(&address).unwrap();
+        let head = format!(
+            "GET /api/asks HTTP/1.1\r\nAuthorization: Bearer {TOKEN}\r\nIf-None-Match: {tag}\r\n\r\n"
+        );
+        stream.write_all(head.as_bytes()).unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response
+    };
+    let header = |response: &str, name: &str| {
+        let line = response.lines().find(|line| line.starts_with(name));
+        line.unwrap_or_default()[name.len()..].trim().to_owned()
+    };
+    let first = read("\"other\"");
+    assert!(first.starts_with("HTTP/1.1 200"), "{first}");
+    let tag = header(&first, "ETag:");
+    let revision = api(&address, "/api/asks")["revision"].as_i64().unwrap();
+
+    // Another row moves the revision, and no ask.
+    succeeded(&setup.priory(&["daemon", &setup.factory(), "--once"]));
+    setup
+        .db()
+        .execute("UPDATE inbox SET read = 'x'", [])
+        .unwrap();
+    let same = read(&tag);
+    setup
+        .db()
+        .execute("UPDATE asks SET question = 'Which?' WHERE id = 1", [])
+        .unwrap();
+    let changed = read(&tag);
+
+    assert!(same.starts_with("HTTP/1.1 304 Not Modified"), "{same}");
+    assert!(same.ends_with("\r\n\r\n"), "{same}");
+    let moved: i64 = header(&same, "Priory-Revision:").parse().unwrap();
+    assert!(moved > revision, "{moved} after {revision}");
+    assert!(changed.starts_with("HTTP/1.1 200"), "{changed}");
+    assert!(changed.contains("Which?"), "{changed}");
+}
+
+#[test]
+fn an_answer_is_stored_while_slow_listing_reads_and_long_polls_wait() {
+    let mut setup = Setup::new("web-busy", SERVE);
+    setup.asleep_on_ask();
+    // Enough asks that each read of all of them is slow, as a long inbox makes it.
+    setup
+        .db()
+        .execute_batch(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1500)
+             INSERT INTO asks (kind, name, question, options, text)
+             SELECT 'outside', 'bulk-' || i, 'q', '[\"yes\"]', printf('%.*c', 4000, 't') FROM n",
+        )
+        .unwrap();
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let revision = api(&address, "/api/tasks")["revision"].as_i64().unwrap();
+    let started = Instant::now();
+    assert_eq!(get(&address, "/api/asks?all=1", Some(TOKEN)).0, 200);
+    let alone = started.elapsed();
+    let timed = |path: String| {
+        let address = address.clone();
+        std::thread::spawn(move || get(&address, &path, Some(TOKEN)).0)
+    };
+    // Reads several times over every worker but the writers.
+    let reads: Vec<_> = (0..40)
+        .map(|_| timed("/api/asks?all=1".to_owned()))
+        .collect();
+    let polls: Vec<_> = (0..16)
+        .map(|_| timed(format!("/api/events?since={revision}&timeout=25")))
+        .collect();
+    std::thread::sleep(Duration::from_millis(100));
+
+    let body = r#"{"option": "left", "revision": 2}"#;
+    let started = Instant::now();
+    let (status, reply) = post(&address, "/api/asks/1/answer", "", body);
+    let answered = started.elapsed();
+
+    assert_eq!(status, 200, "{reply}");
+    assert_eq!(setup.ask()["state"], "answered");
+    // A slow runner may give a read 503 after its 10 s wait for a worker: reads degrade first.
+    for read in reads {
+        assert!([200, 503].contains(&read.join().unwrap()));
+    }
+    // Behind the reads, the answer would wait for rounds of them.
+    assert!(
+        answered < alone * 2,
+        "answered in {answered:?}, a read alone took {alone:?}"
+    );
+    for poll in polls {
+        assert_eq!(poll.join().unwrap(), 200);
+    }
 }
 
 #[test]
