@@ -4805,6 +4805,7 @@ fn open_ask(
         Some("sibling-fired") => Some(format!(
             "ask {label} was withdrawn when a wait of its run fired first"
         )),
+        Some("task-ended") => Some(format!("ask {label} was withdrawn when task {task} ended")),
         Some("moved-on") => Some(format!(
             "ask {label} was withdrawn when a later run of task {task} called another tool"
         )),

@@ -320,6 +320,7 @@ fn asks_query() -> String {
      asks.withdrawn_reason, asks.withdrawn_at,
      CASE asks.withdrawn_reason WHEN 'sibling-fired' THEN 'a wait of its run fired first'
        WHEN 'moved-on' THEN 'a later run called another tool'
+       WHEN 'task-ended' THEN 'its task ended'
        WHEN 'revived' THEN 'its task was revived'
        WHEN 'predecessor-revived' THEN 'the task it waits on was revived'
        WHEN 'dismissed' THEN 'dismissed' || coalesce(' by session ' || CASE WHEN asks.answered_by LIKE 'session:%'
