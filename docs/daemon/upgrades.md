@@ -55,7 +55,7 @@ daemon restarted with it: nothing shows yet that a daemon starts with it.
 
 The transcript can lag behind a call by a moment. A tool call the agent makes while the daemon is
 down waits up to 30 seconds, as in an upgrade by hand. A call in flight at the stop is answered first,
-within 20 seconds of it.
+after the phase of the tick in progress ([home.md](home.md#socket-spool-and-lock)).
 
 ## The rehearsal
 

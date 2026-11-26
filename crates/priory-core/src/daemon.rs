@@ -430,12 +430,17 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut catching_up = true;
     // Passes that hold work are one tick for the watchdog, which the first other pass ends.
     let mut holding = false;
+    // A runner applies no line of the socket until it has read the whole log, nor does its stop.
+    let mut holds_lines = trace.runner.is_some();
     loop {
         if runtime::stopping() {
             let trace = live.trace(&trace);
-            return listening.stop(|line| {
-                let counter = counting.get(&home);
-                apply(&mut db, line, &trace, counter, kit.current(), &searching)
+            return listening.stop(|line| match holds_lines {
+                true => not_applied(line),
+                false => {
+                    let counter = counting.get(&home);
+                    apply(&mut db, line, &trace, counter, kit.current(), &searching)
+                }
             });
         }
         let tick = Instant::now();
@@ -464,6 +469,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         });
         // What a runner says follows from the whole log, so it says nothing before it read it.
         let behind = matches!(drained, Some(Ok(false)));
+        holds_lines = behind && trace.runner.is_some();
         if let Some(me) = &trace.runner
             && !behind
         {
@@ -510,6 +516,10 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             holding = true;
             continue;
         }
+        // A stop starts after the phase in progress, not after the whole tick.
+        if runtime::stopping() {
+            continue;
+        }
         ticks::phase("commands");
         // After the socket's lines, so an answer a person sent before this tick comes first.
         let head = |worktree: &Path, branch: &str| runtime::kept_head(&home, worktree, branch);
@@ -520,11 +530,20 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         if crate::recipe::tick(&mut db, &trace, &home, &mut recipes)? {
             swept = None;
         }
+        if runtime::stopping() {
+            continue;
+        }
         ticks::phase("evidence");
         crate::evidence::tick(&mut db, factory, &home, &mut records)?;
+        if runtime::stopping() {
+            continue;
+        }
         ticks::phase("kit");
         kit.tick(&db)?;
         let fetched = kit.current();
+        if runtime::stopping() {
+            continue;
+        }
         ticks::phase("runs");
         tend(
             &mut db,
@@ -545,6 +564,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         // Committed first, so a crash before the kill leaves an ended run, not a lost one.
         for tmux in tools::over_budget_in_turn(&mut db, &trace, &mut peeked, &watched)? {
             runtime::kill(&tmux);
+        }
+        if runtime::stopping() {
+            continue;
         }
         ticks::phase("background work");
         compact_idle(&db, &trace, &home, &scope, fetched)?;
@@ -580,6 +602,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             held = Some(Instant::now());
             crate::held::tick(&mut db, &trace, intake::now()?)?;
         }
+        if runtime::stopping() {
+            continue;
+        }
         ticks::phase("sweep");
         let due = swept.is_none_or(|at| at.elapsed() >= every) || sweeping.asked();
         if due && sweeping.start(&db, factory, &home)? {
@@ -595,6 +620,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         if ended {
             sweep::measure(&home);
         }
+        if runtime::stopping() {
+            continue;
+        }
         ticks::phase("reclaim");
         let under = || {
             room::measure(&home)
@@ -604,6 +632,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         // A retirement costs a worktree, so it waits for what the reclaim frees.
         if reclaiming.retires() {
             sweeping.retire(&db)?;
+        }
+        if runtime::stopping() {
+            continue;
         }
         ticks::phase("upgrade");
         let working = !(commands.is_empty()
@@ -1168,6 +1199,14 @@ struct VersionLine {
 /// This daemon's version, as its reply to a `VersionLine`.
 fn version(_: &VersionLine) -> Result<String, String> {
     Ok(env!("CARGO_PKG_VERSION").to_owned())
+}
+
+/// Answers a line a stop does not apply, so its client sends it to the next daemon.
+fn not_applied(line: Line) -> Result<(), Error> {
+    let reply = serde_json::to_string(&Err::<String, _>(runtime::NOT_APPLIED))
+        .map_err(|error| error.to_string())?;
+    let _ = line.applied.send(reply);
+    Ok(())
 }
 
 /// Answers a line while the upgrade holds the daemon, with its version alone.

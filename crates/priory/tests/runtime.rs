@@ -17642,14 +17642,16 @@ fn a_holder_killed_before_the_daemon_takes_the_command_leaves_no_command_running
 }
 
 #[test]
-fn without_a_daemon_the_command_fails_after_its_wait_and_never_runs() {
+fn without_a_daemon_the_command_fails_fast_and_never_runs() {
     let setup = Setup::new("gate-no-daemon");
+    let start = Instant::now();
 
     let done = acquire(&setup, "1", "echo ran > ran")
         .wait_with_output()
         .unwrap();
 
     assert_eq!(done.status.code(), Some(125));
+    assert!(start.elapsed() < Duration::from_secs(2));
     let stderr = String::from_utf8_lossy(&done.stderr);
     assert!(
         stderr.contains("no priory daemon listens") && stderr.contains("the command did not run"),
@@ -17783,7 +17785,7 @@ fn an_acquire_that_loses_the_give_up_reply_gives_up_at_the_next_poll_and_sends_n
 }
 
 #[test]
-fn a_stale_socket_fails_the_command_after_its_wait_and_it_never_runs() {
+fn a_stale_socket_fails_the_command_fast_and_it_never_runs() {
     let setup = Setup::new("gate-stale-socket");
     fs::create_dir_all(setup.socket().parent().unwrap()).unwrap();
     drop(std::os::unix::net::UnixListener::bind(setup.socket()).unwrap());
@@ -17794,8 +17796,38 @@ fn a_stale_socket_fails_the_command_after_its_wait_and_it_never_runs() {
         .unwrap();
 
     assert_eq!(done.status.code(), Some(125));
-    // It waited for a daemon that could be restarting, and no longer.
-    assert!((30..40).contains(&start.elapsed().as_secs()));
+    assert!(start.elapsed() < Duration::from_secs(10));
+    assert!(!setup.dir.join("fake/ran").exists());
+}
+
+#[test]
+fn an_acquire_waits_for_a_restarting_daemon_no_longer_than_its_timeout() {
+    let setup = Setup::new("gate-restart-timeout");
+    fs::create_dir_all(setup.socket().parent().unwrap()).unwrap();
+    drop(std::os::unix::net::UnixListener::bind(setup.socket()).unwrap());
+    // What a daemon's stop leaves beside its socket.
+    fs::write(setup.socket().with_extension("stopping"), "").unwrap();
+    let start = Instant::now();
+
+    let done = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args(["memory", "acquire", "--gb", "1", "--timeout", "2s", "--"])
+        .args(["sh", "-c", "echo ran > ran"])
+        .current_dir(setup.dir.join("fake"))
+        .output()
+        .unwrap();
+
+    assert_eq!(done.status.code(), Some(125));
+    assert!(
+        (2..5).contains(&start.elapsed().as_secs()),
+        "{:?}",
+        start.elapsed()
+    );
+    let stderr = String::from_utf8_lossy(&done.stderr);
+    assert!(
+        stderr.contains("the daemon is restarting: waiting up to 2 s"),
+        "{stderr}"
+    );
     assert!(!setup.dir.join("fake/ran").exists());
 }
 
@@ -19549,13 +19581,79 @@ fn a_tool_call_in_flight_when_the_daemon_stops_is_answered() {
 }
 
 #[test]
+fn a_second_sigterm_ends_a_stopping_daemon_at_once() {
+    use std::io::Write;
+    use std::os::unix::process::ExitStatusExt;
+    let mut setup = Setup::new("stop-twice");
+    setup.start();
+    listening(&setup);
+    let mut daemon = setup.daemon.take().unwrap();
+    // A line never ended holds the stop for 2 seconds.
+    let mut unended = std::os::unix::net::UnixStream::connect(setup.socket()).unwrap();
+    unended.write_all(b"{").unwrap();
+    send_signal(daemon.id(), "TERM");
+    let stopping = setup.socket().with_extension("stopping");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !stopping.exists() {
+        assert!(Instant::now() < deadline, "the daemon never stopped");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let second = Instant::now();
+
+    send_signal(daemon.id(), "TERM");
+
+    assert_eq!(daemon.wait().unwrap().signal(), Some(15));
+    assert!(
+        second.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        second.elapsed()
+    );
+}
+
+#[test]
+fn a_stop_while_a_runner_reads_the_log_applies_no_line_and_its_client_waits_for_the_next_daemon() {
+    use std::os::unix::process::ExitStatusExt;
+    let mut a = runner("stop-catch-up", "a", None);
+    let bus = a.bus();
+    for n in 0..6000 {
+        let noise = Message::new("test.noise", json!({ "n": n }));
+        bus.publish(OUTPUT, &noise).unwrap();
+    }
+    a.start();
+    listening(&a);
+    let mut daemon = a.daemon.take().unwrap();
+    send_signal(daemon.id(), "STOP");
+    let mut todo = a
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args(["todo", "add", "Through the stop."])
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+    send_signal(daemon.id(), "TERM");
+    send_signal(daemon.id(), "CONT");
+
+    assert_eq!(daemon.wait().unwrap().signal(), Some(15));
+    let listed = a.priory(&["todo", "list", "--json"]);
+    assert_eq!(String::from_utf8_lossy(&listed.stdout).trim(), "[]");
+    // It sends the line again to the next daemon.
+    assert!(todo.try_wait().unwrap().is_none());
+    todo.kill().unwrap();
+    let said = todo.wait_with_output().unwrap();
+    let said = String::from_utf8_lossy(&said.stderr);
+    assert!(said.contains("the daemon is restarting"), "{said}");
+}
+
+#[test]
 fn a_verb_run_while_the_daemon_restarts_waits_for_it() {
     let mut setup = Setup::new("verb-restart");
     setup.calls(&[]);
     setup.publish(&requested(42));
     setup.start();
     live_session(&setup, "1");
-    setup.crash();
+    let mut daemon = setup.daemon.take().unwrap();
+    send_signal(daemon.id(), "TERM");
+    daemon.wait().unwrap();
     let mut say = setup
         .command(env!("CARGO_BIN_EXE_priory"))
         .args(["say", "1", "Through the restart."])
