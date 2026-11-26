@@ -2441,8 +2441,16 @@ pub fn exists() -> bool {
     path().is_ok_and(|path| path.exists())
 }
 
+/// The state file `PRIORY_DB` at once, unless it is missing, held by an upgrade or of another schema.
+pub fn current() -> Option<Connection> {
+    (exists() && older() == Ok(false))
+        .then(open)
+        .and_then(Result::ok)
+}
+
 /// Whether `PRIORY_DB` is a state file that waits for a migration.
 pub fn older() -> Result<bool, String> {
+    priory_runtime::upgrade::barrier()?;
     let path = path()?;
     if !path.exists() {
         return Ok(false);
@@ -2451,23 +2459,32 @@ pub fn older() -> Result<bool, String> {
     Ok(found.version != 0 && found.version < VERSION)
 }
 
-/// How long `open` waits for the daemon to migrate a file, as after an install.
+/// How long a process waits for the daemon to migrate a file, as after an install.
 const MIGRATES_WITHIN: Duration = Duration::from_secs(30);
+
+/// When this process stops waiting for a migration: set by its first wait, for every open after it.
+static MIGRATED_BY: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
 /// Opens the state file `path`, as `open` does.
 pub fn open_at(path: &std::path::Path) -> Result<Connection, String> {
     let at = |error: rusqlite::Error| format!("{}: {error}", path.display());
     let mut db = connect(path)?;
-    let deadline = std::time::Instant::now() + MIGRATES_WITHIN;
     loop {
         let found = schema(&db).map_err(at)?;
         match found.version {
             0 => apply(&mut db, true).map_err(|error| format!("{}: {error}", path.display()))?,
             version if version < VERSION => {
-                if std::time::Instant::now() >= deadline {
-                    let path = path.display();
+                let older = format!(
+                    "{}: the state is at schema {version} and this priory uses {VERSION}",
+                    path.display()
+                );
+                let by = *MIGRATED_BY.get_or_init(|| {
+                    eprintln!("priory: {older}: waiting up to 30 s for the daemon to migrate it");
+                    std::time::Instant::now() + MIGRATES_WITHIN
+                });
+                if std::time::Instant::now() >= by {
                     return Err(format!(
-                        "{path}: the state is at schema {version} and this priory uses {VERSION}: restart the daemon on this binary"
+                        "{older}: restart the daemon on this binary, or run `priory daemon --once` when no daemon runs"
                     ));
                 }
                 std::thread::sleep(Duration::from_millis(200));
@@ -2622,9 +2639,16 @@ pub fn read_only() -> Result<Connection, String> {
         .map_err(at)?;
     db.busy_timeout(Duration::from_secs(5)).map_err(at)?;
     let found = schema(&db).map_err(at)?;
+    if found.version > VERSION && !found.opens(VERSION) {
+        return Err(format!(
+            "{}: {}: run the newer priory",
+            path.display(),
+            found.newer()
+        ));
+    }
     if !found.opens(VERSION) {
         return Err(format!(
-            "{}: state schema {}, but this priory reads {VERSION}: start `priory daemon` once to create or migrate it",
+            "{}: state schema {}, but this priory reads {VERSION}: start or restart `priory daemon` on this binary to create or migrate it",
             path.display(),
             found.version
         ));

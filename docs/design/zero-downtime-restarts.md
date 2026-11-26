@@ -163,9 +163,12 @@ showed. Now only the daemon does, as it starts:
 
 - The daemon takes its lock before it opens the state, so a second daemon cannot migrate under the
   first.
-- Every other process creates the schema of an empty file, and waits up to 30 seconds for the daemon to
-  migrate an older one, as after an install. Then it refuses with `the state is at schema N and this
-  priory uses M: restart the daemon on this binary`. Nothing migrates under a running old daemon.
+- Every other process creates the schema of an empty file. A process that writes the state waits up to
+  30 seconds for the daemon to migrate an older one, as after an install, once: it prints a line when it
+  starts waiting, and later opens refuse at once with `the state is at schema N and this priory uses M`.
+  A read-only open refuses at once. An act on another runner goes unchecked without waiting. Nothing
+  migrates under a running old daemon.
+- The lock is per `PRIORY_HOME`, not per state file, so two homes must not share one database.
 - The file's `application_id` holds its floor: the oldest schema whose binaries may open it. A binary
   opens a newer file when its own schema is at least the floor. 0 lets in that schema alone.
 - A standalone `priory serve` keeps connections open, as the daemon does. `priory upgrade` restarts
