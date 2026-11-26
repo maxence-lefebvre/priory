@@ -160,6 +160,7 @@ const TodoDone = memo(function TodoDone({ id, place = "row", prefix = "" }) {
 const pilot = store({ window: null, sending: false, untold: null, notice: null });
 
 async function turnOff(window) {
+  const focused = document.activeElement?.id === "autopilot-off";
   pilot.set({ ...pilot.get(), sending: true, notice: null });
   let reply;
   try {
@@ -174,7 +175,9 @@ async function turnOff(window) {
   }
   pilot.set(status === 200 ? { window, sending: false, untold: body.untold ?? null, notice: null }
     : { ...pilot.get(), sending: false, notice: writeRefusal(status, body) });
-  refresh();
+  await refresh();
+  // The banner goes with the window: hand focus to the Desk's heading rather than the page body.
+  if (focused && !document.getElementById("autopilot-off")) document.querySelector('[aria-label="Desk"] h1')?.focus();
 }
 
 const Autopilot = memo(function Autopilot({ autopilot }) {
@@ -459,7 +462,7 @@ const DeskPhone = memo(function DeskPhone({ read, preview }) {
   return (
     <>
       <div className="top"><span className="fac">{factory}</span><Connection /></div>
-      <div className="panel" role="region" aria-label="Desk"><h1 className="sr">Desk</h1><div className={`scroll ${preview ? "" : "desk-end"}`} ref={scroll}>
+      <div className="panel" role="region" aria-label="Desk"><h1 className="sr" tabIndex={-1}>Desk</h1><div className={`scroll ${preview ? "" : "desk-end"}`} ref={scroll}>
         <div className={`count ${countHead(model.open.length).n ? "" : "quiet"}`}><Head model={model} /></div>
         <NextCard model={model} data={read.data} />{views}{banner}{rows}</div>{preview ? null : <Capsule model={model} current={current} />}</div>
     </>
@@ -480,7 +483,7 @@ const DeskListBody = memo(function DeskListBody({ read }) {
   useKeptFocus(part);
   const { model } = read;
   return (
-    <div className="list" role="region" aria-label="Desk" ref={part}><div className="lhead"><h1>Desk</h1>
+    <div className="list" role="region" aria-label="Desk" ref={part}><div className="lhead"><h1 tabIndex={-1}>Desk</h1>
       <span className="cnt"><Head model={model} /></span></div>
       <NextCard model={model} data={read.data} />{body.views}{body.banner}<div className="scroll" ref={scroll}>{body.rows}</div>{wide ? <KeyHints /> : null}</div>
   );

@@ -46,7 +46,7 @@ function draw(t, Part, { size = "wide", search = "", desk = DESK } = {}) {
 
 test("a wide Desk draws a table whose keys link their task or batch, and each action again in its fold", (t) => {
   const html = draw(t, DeskList);
-  assert.match(html, /^<div class="list" role="region" aria-label="Desk"><div class="lhead"><h1>Desk<\/h1><span class="cnt"><span class="n num">1<\/span><span class="w">ask needs you<span>/);
+  assert.match(html, /^<div class="list" role="region" aria-label="Desk"><div class="lhead"><h1 tabindex="-1">Desk<\/h1><span class="cnt"><span class="n num">1<\/span><span class="w">ask needs you<span>/);
   assert.match(html, /<tr data-href="\/asks\/3" aria-current="false">/);
   assert.match(html, /<td class="mono"><a href="\/tasks\/7" title="task 7">ENG-7<\/a><\/td>/);
   assert.match(html, /<td class="mono"><a href="\/batches\/2">batch:2026-11-25-1<\/a><\/td>/);
@@ -61,7 +61,7 @@ test("a wide Desk draws a table whose keys link their task or batch, and each ac
 
 test("a phone's Desk lists its rows and ends with the Answer capsule beside Add", (t) => {
   const html = draw(t, DeskPage, { size: "compact" });
-  assert.match(html, /^<div class="flat"><div class="top"><span class="fac">shop<\/span><span class="conn ">live<\/span><\/div><div class="panel" role="region" aria-label="Desk"><h1 class="sr">Desk<\/h1><div class="scroll desk-end">/);
+  assert.match(html, /^<div class="flat"><div class="top"><span class="fac">shop<\/span><span class="conn ">live<\/span><\/div><div class="panel" role="region" aria-label="Desk"><h1 class="sr" tabindex="-1">Desk<\/h1><div class="scroll desk-end">/);
   assert.match(html, /<div class="sec">Asks<span>oldest first<\/span><\/div><a class="row " href="\/asks\/3" aria-current="false">/);
   assert.match(html, /<a class="mono" href="\/tasks\/7" title="task 7">ENG-7<\/a>/);
   assert.match(html, /<a class="capsule " href="\/asks\/3"><svg[^>]*>.*<\/svg>Answer 1 ask<\/a><button type="button" class="fab" data-action="add-open"/);

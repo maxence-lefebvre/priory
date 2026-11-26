@@ -114,6 +114,7 @@ a.facet[aria-current="true"] { background: var(--action-soft); color: var(--acti
 .banner .ico { color: var(--warn-text); }
 .banner.pilot .ico { color: var(--text); }
 .banner.pilot .btn { margin-top: 10px; }
+.banner.pilot .btn[aria-disabled="true"] { color: var(--text-3); }
 
 /* Rows */
 .sec { display: flex; justify-content: space-between; align-items: baseline; padding: 16px var(--gutter) 6px; font: 600 var(--type-caption) var(--font-ui); color: var(--text-2); }
