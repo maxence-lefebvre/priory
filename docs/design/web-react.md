@@ -199,7 +199,6 @@ No port deletes these files:
 | `desk.js` | Desk is ported: Settings' theme previews draw the legacy Desk until then. Asks and Queue use its model |
 | `asks.js` | Desk is ported: it draws ask rows |
 | `batch.js` | Asks is ported: a go ask draws the plan's lanes |
-| `tasks.js` | Queue is ported: its Held and Last day views draw task rows |
 | `add.js` | Desk and Inbox are ported, and the Add sheet is in React |
 
 Such a port deletes only what no other file imports.
@@ -328,6 +327,6 @@ The person approved it on 2026-11-24: https://claude.ai/artifact/DJzXheB2nzY27bS
 
 ## Later slices
 
-1. The page ports of section 4, one pull request each. Costs, Flows and Reports are in React.
+1. The page ports of section 4, one pull request each. Costs, Flows, Reports, Tasks, Runs and Queue are in React.
 2. The GitHub extension in the workspace.
 3. Deleting the legacy slot and the legacy drawing.
