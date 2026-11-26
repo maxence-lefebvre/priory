@@ -62,9 +62,8 @@ test("each page's legacy parts read the listings they show and no other", () => 
   assert.deepEqual(reads("/queue"), ["queue", "tasks"]);
   assert.deepEqual(reads("/inbox"), ["tasks"]);
   assert.deepEqual(reads("/terminal", { size: "compact" }), ["tasks"]);
-  assert.deepEqual(reads("/reports"), ["report", "reports", "tasks"]);
   assert.deepEqual(reads("/batches/2"), ["tasks"]);
-  for (const href of ["/costs", "/workflow", "/more", "/memories", "/settings/notifications"]) assert.deepEqual(reads(href), [], href);
+  for (const href of ["/costs", "/workflow", "/reports", "/more", "/memories", "/settings/notifications"]) assert.deepEqual(reads(href), [], href);
   assert.deepEqual(reads("/settings/appearance"), ["asks", "queue", "tasks"], "the theme previews draw the Desk");
   assert.deepEqual(reads("/tasks/7"), [], "a React part reads its own");
   assert.deepEqual(reads("/asks/4"), ["asks", "queue", "tasks"]);
@@ -78,7 +77,7 @@ const SLOT = '<div class="legacy"></div>';
 test("a list and its drawer each draw in their own element", () => {
   assert.equal(draw("/"), SLOT + SLOT);
   assert.equal(draw("/tasks"), SLOT);
-  assert.equal(draw("/costs"), SLOT);
+  assert.equal(draw("/memories"), SLOT);
   assert.equal(draw("/asks/4", { size: "compact" }), SLOT);
 });
 

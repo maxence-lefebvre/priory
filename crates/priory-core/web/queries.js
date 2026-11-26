@@ -132,7 +132,7 @@ export function oldestRead(cache) {
   return times.length ? Math.min(...times) : null;
 }
 
-const kept = (query) => LISTINGS.includes(query.queryKey[0]) || query.queryKey[0] === "spend" || Boolean(query.meta?.kept);
+const kept = (query) => LISTINGS.includes(query.queryKey[0]) || Boolean(query.meta?.kept);
 
 /** Puts `data` in the cache under a read's own key and meta, which setQueryData drops. */
 export const hold = (cache, { queryKey, meta }, data, options) => cache.getQueryCache().build(cache, cache.defaultQueryOptions({ queryKey, meta })).setData(data, { ...options, manual: true });
@@ -174,11 +174,11 @@ function earlier({ data, updated }) {
 /** Puts a kept snapshot in the cache, marked stale so a live page reads it again. */
 export function restore(cache, kept) {
   const reads = kept?.reads ?? (kept?.data ? earlier(kept) : []);
-  // The Costs panel keeps one value of two reads until it is in React.
+  // The legacy Costs panel kept one value of two reads.
   const spend = reads.find(([[name]]) => name === "spend");
   const split = spend?.[1] ? [[["costs", spend[1].costs.by], spend[1].costs, spend[2]], [["attention"], spend[1].attention, spend[2]]] : [];
   const missing = split.filter(([[name]]) => !reads.some(([key]) => key[0] === name));
-  for (const [[name, part], data, updatedAt] of [...reads, ...missing]) {
+  for (const [[name, part], data, updatedAt] of [...reads.filter(([[name]]) => name !== "spend"), ...missing]) {
     // A page opens on its listings' newest rows, and on the newest report.
     const key = part === true ? [name, false] : name === "report" ? ["report", null] : part === undefined ? [name] : [name, part];
     hold(cache, { queryKey: key, meta: { kept: true } }, withoutRevision(data), { updatedAt });

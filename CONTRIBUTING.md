@@ -60,7 +60,8 @@ the one CI uses.
   folder `DIR`: it seeds a scratch state and serves it on 127.0.0.1:7391 for 15 minutes. The seed
   holds the states a design review needs to reach: a live run, a command ask, a snoozed ask, a
   stalled queue's banner, a skipped check, a task with a brief and a plan, and that task's
-  answered asks, one answered by auto. In another
+  answered asks, one answered by auto. It also holds two reports: the newest has an open, an agreed
+  and an applied pick, and a thread. In another
   shell, run `PLAYWRIGHT=<path to playwright-core/index.mjs> node scripts/demo/shoot.mjs docs/images`.
   Keep each PNG under 400 KB.
 

@@ -329,6 +329,6 @@ The person approved it on 2026-11-24: https://claude.ai/artifact/DJzXheB2nzY27bS
 
 ## Later slices
 
-1. The page ports of section 4, one pull request each.
+1. The page ports of section 4, one pull request each. Costs, Flows and Reports are in React.
 2. The GitHub extension in the workspace.
 3. Deleting the legacy slot and the legacy drawing.

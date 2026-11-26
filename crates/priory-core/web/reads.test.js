@@ -49,11 +49,23 @@ test("a kept read is read again once a page shows it, and its own read answers",
   assert.deepEqual(paths, ["/api/flows"]);
 });
 
-test("the spend a legacy Costs panel kept fills both of its reads", () => {
+test("the spend a legacy Costs panel kept fills both of its reads, and the next snapshot keeps them alone", () => {
   const cache = client({ api: async () => ({}) });
   restore(cache, { reads: [[["spend"], { costs: { by: "workflow" }, attention: { acts: 2 }, updated: 5 }, 5]] });
   assert.deepEqual(cache.getQueryData(costs("workflow").queryKey), { by: "workflow" });
   assert.deepEqual(cache.getQueryData(attention().queryKey), { acts: 2 });
+  assert.deepEqual(snapshot(cache).reads.map(([key]) => key[0]).sort(), ["attention", "costs"]);
+});
+
+test("a kept split of the costs reads nothing until the page shows it, then its own path", async () => {
+  const paths = [];
+  const cache = client({ api: async (path) => (paths.push(path), { by: "band", live: true }) });
+  restore(cache, { reads: [[["costs", "band"], { by: "band" }, 5]] });
+  await moved(cache);
+  assert.deepEqual(paths, []);
+  new QueryObserver(cache, costs("band")).subscribe(() => {});
+  await new Promise((done) => setTimeout(done, 10));
+  assert.deepEqual([paths, cache.getQueryData(costs("band").queryKey)], [["/api/costs?by=band"], { by: "band", live: true }]);
 });
 
 test("the newest read of a listing answers, whichever rows it asked for", () => {
