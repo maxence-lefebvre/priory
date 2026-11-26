@@ -7,7 +7,7 @@ use priory_factory::factory::{EventLog, Factory};
 use priory_factory::filters::{self, Labels};
 use priory_intake::intake::{
     self, ASK_ANSWERED as ANSWERED, ASK_APPLIED as APPLIED, ASK_DISMISSED as DISMISSED,
-    ASK_POSTED as POSTED, OUTPUT, RUNNER_ALIVE as ALIVE, TASK_ACTED as ACTED,
+    ASK_POSTED as POSTED, DIOCESE_ALIVE, OUTPUT, RUNNER_ALIVE as ALIVE, TASK_ACTED as ACTED,
     TASK_APPLIED as ACT_APPLIED, TASK_CLAIMED as CLAIMED, TASK_DROPPED as DROPPED,
     TASK_HELD as HELD,
 };
@@ -19,6 +19,10 @@ use uuid::Uuid;
 
 /// How long a runner's lease lasts past its last alive message.
 pub(crate) const LEASE: SignedDuration = SignedDuration::from_mins(30);
+/// A longer pause between two diocese heartbeats means the log was down.
+const GAP: SignedDuration = SignedDuration::from_mins(3);
+/// A diocese silent this long while runners reach the log is gone, and leases run as without one.
+const GONE: SignedDuration = SignedDuration::from_hours(1);
 const IDS: Uuid = Uuid::from_u128(0x7b1f_c2d4_9e3a_4c55_8a10_3f6e_2d9b_41c7);
 
 type Error = Box<dyn std::error::Error>;
@@ -140,6 +144,7 @@ pub(crate) fn handle(
     let mut kill = Vec::new();
     let outcome = match kind {
         ALIVE => {
+            silence(tx, message.time)?;
             renew(tx, text("runner"), message.time)?;
             match trace.runner.as_deref() {
                 // A view-only machine has no alive message of its own, and takes nothing.
@@ -150,6 +155,10 @@ pub(crate) fn handle(
                 }
                 Some(_) => {}
             }
+            "noted"
+        }
+        DIOCESE_ALIVE => {
+            beat(tx, message.time)?;
             "noted"
         }
         HELD => {
@@ -939,6 +948,7 @@ fn claimed(
         from: data["from"].as_str(),
         given,
         fresh,
+        diocese: diocese(tx)?,
         time: message.time,
     };
     let held = current.as_ref().map(|current| Owner {
@@ -1088,10 +1098,13 @@ fn take_over(
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    let diocese = diocese(tx)?;
     for (key, from, request, renewed, data) in lapsed_keys {
         let renewed = renewed.and_then(|second| Timestamp::from_second(second).ok());
         let labels = labels(&serde_json::from_str(&data).unwrap_or_default());
-        if !lapsed(renewed, alive.time) || refusal(factory, me, &labels, alive.time).is_some() {
+        if !lapsed(renewed, diocese, alive.time)
+            || refusal(factory, me, &labels, alive.time).is_some()
+        {
             continue;
         }
         let claim = json!({ "key": key, "runner": me, "request": request, "from": from });
@@ -1115,6 +1128,65 @@ fn renew(tx: &Transaction, runner: &str, time: Timestamp) -> rusqlite::Result<()
         ],
     )?;
     Ok(())
+}
+
+/// Notes a diocese heartbeat at `time`: one after a pause longer than `GAP` starts the log's uptime.
+/// The first one ever read changes no lease, so runners that started reading at different times agree.
+fn beat(tx: &Transaction, time: Timestamp) -> rusqlite::Result<()> {
+    tx.execute(
+        "INSERT INTO diocese (id, last, back) VALUES (1, ?1, 0)
+         ON CONFLICT (id) DO UPDATE SET
+           back = CASE WHEN excluded.last - last > ?2 THEN excluded.last ELSE back END,
+           last = max(last, excluded.last),
+           silent = NULL",
+        params![time.as_second(), GAP.as_secs()],
+    )?;
+    Ok(())
+}
+
+/// Notes a runner's alive message at `time` that the log took while the diocese was silent: from
+/// the first, the log is up without it, and the diocese counts as gone `GONE` later.
+fn silence(tx: &Transaction, time: Timestamp) -> rusqlite::Result<()> {
+    tx.execute(
+        "UPDATE diocese SET silent = ?1 WHERE silent IS NULL AND ?1 - last > ?2",
+        params![time.as_second(), GAP.as_secs()],
+    )?;
+    Ok(())
+}
+
+/// The diocese's heartbeats as read from the log so far, if any.
+fn diocese(db: &Connection) -> rusqlite::Result<Option<Diocese>> {
+    let row = db
+        .query_row("SELECT last, back, silent FROM diocese", [], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+            ))
+        })
+        .optional()?;
+    Ok(row.and_then(|(last, back, silent)| {
+        Some(Diocese {
+            last: Timestamp::from_second(last).ok()?,
+            back: Timestamp::from_second(back).ok()?,
+            silent: silent.and_then(|silent| Timestamp::from_second(silent).ok()),
+        })
+    }))
+}
+
+/// Publishes the diocese's heartbeat once a minute. A failed one is not retried: it leaves the gap
+/// that tells the runners the log was down.
+pub(crate) fn heartbeat(log: &dyn Log, me: &str, now: Timestamp, said: &mut Option<i64>) {
+    let minute = now.as_second().div_euclid(60);
+    if *said == Some(minute) {
+        return;
+    }
+    *said = Some(minute);
+    let name = format!("diocese/{me}/{minute}");
+    let beat = stamped(DIOCESE_ALIVE, json!({ "diocese": me }), &name).subject(me);
+    if let Err(error) = log.publish(OUTPUT, &beat.time(now)) {
+        eprintln!("priory: the diocese heartbeat did not reach the log: {error}");
+    }
 }
 
 fn lease(tx: &Transaction, runner: &str) -> rusqlite::Result<Option<Timestamp>> {
@@ -1924,10 +1996,19 @@ pub fn give(
         .map_err(|error| error.to_string())?
         .and_then(|second| Timestamp::from_second(second).ok());
     let now = intake::now()?;
-    if let Some(alive) = alive.filter(|alive| !force && !lapsed(Some(*alive), now)) {
+    let diocese = diocese(db).map_err(|error| error.to_string())?;
+    if let Some(alive) = alive.filter(|alive| !force && !lapsed(Some(*alive), diocese, now)) {
+        let diocese = diocese.filter(|diocese| diocese.counts(now));
+        if let Some(diocese) = diocese.filter(|diocese| diocese.frozen(now)) {
+            return Err(format!(
+                "runner {from}'s lease is frozen: no diocese heartbeat since {}, so the log may have been down. Pass --force to give {key} now",
+                diocese.last
+            ));
+        }
+        let start = diocese.map_or(alive, |diocese| alive.max(diocese.back));
         return Err(format!(
             "runner {from}'s lease lasts until {}, and {from} may still run {key}: give it then, or pass --force",
-            alive + LEASE
+            start + LEASE
         ));
     }
     let claim =
@@ -2041,7 +2122,33 @@ pub(crate) struct Claim<'a> {
     pub(crate) given: bool,
     /// No claim of its request won a key before, so it is not a late copy of one that did.
     pub(crate) fresh: bool,
+    /// The diocese's heartbeats read before the claim.
+    pub(crate) diocese: Option<Diocese>,
     pub(crate) time: Timestamp,
+}
+
+/// The diocese's heartbeats as a machine read them from the log.
+#[derive(Clone, Copy)]
+pub(crate) struct Diocese {
+    pub(crate) last: Timestamp,
+    /// The first heartbeat after the latest gap: the log has been up since then.
+    pub(crate) back: Timestamp,
+    /// The first runner alive message read since the last heartbeat and more than `GAP` after it.
+    pub(crate) silent: Option<Timestamp>,
+}
+
+impl Diocese {
+    /// Whether the diocese still decides leases at `at`: not once silent for `GONE` while runners
+    /// reached the log.
+    fn counts(&self, at: Timestamp) -> bool {
+        self.silent
+            .is_none_or(|silent| at.duration_since(silent) < GONE)
+    }
+
+    /// Whether no lease runs at `at`, since the last heartbeat is more than `GAP` old.
+    fn frozen(&self, at: Timestamp) -> bool {
+        at.duration_since(self.last) > GAP
+    }
 }
 
 /// Whether `claim` takes its key from `owner`.
@@ -2055,21 +2162,26 @@ pub(crate) fn wins(claim: &Claim, owner: Option<&Owner>) -> bool {
     match owner.hold {
         Hold::Ended => false,
         _ if claim.given => true,
-        Hold::Waiting => lapsed(owner.alive, claim.time),
+        Hold::Waiting => lapsed(owner.alive, claim.diocese, claim.time),
         Hold::Kept => false,
     }
 }
 
-/// Whether a lease last renewed at `alive` is over at `at`.
-pub(crate) fn lapsed(alive: Option<Timestamp>, at: Timestamp) -> bool {
-    alive.is_none_or(|alive| at.duration_since(alive) >= LEASE)
+/// Whether a lease last renewed at `alive` is over at `at`. With a diocese, the lease runs only
+/// while its heartbeats go on, and starts again when they come back after a gap.
+pub(crate) fn lapsed(alive: Option<Timestamp>, diocese: Option<Diocese>, at: Timestamp) -> bool {
+    let Some(diocese) = diocese.filter(|diocese| diocese.counts(at)) else {
+        return alive.is_none_or(|alive| at.duration_since(alive) >= LEASE);
+    };
+    !diocese.frozen(at)
+        && alive.is_none_or(|alive| at.duration_since(alive.max(diocese.back)) >= LEASE)
 }
 
 /// `message` at the log's own time when the log gives one, so leases compare one clock rather than
 /// each runner's. Only the runners' messages take it: routing reads the others' event times.
 pub(crate) fn clocked(mut message: Message, logged: Option<Timestamp>) -> Message {
     if let Some(logged) = logged
-        && [ALIVE, CLAIMED, HELD].contains(&message.kind.as_str())
+        && [ALIVE, DIOCESE_ALIVE, CLAIMED, HELD].contains(&message.kind.as_str())
     {
         message.time = logged;
     }
@@ -2185,6 +2297,7 @@ mod tests {
             from,
             given,
             fresh: true,
+            diocese: None,
             time: at(minutes),
         }
     }
@@ -2250,9 +2363,9 @@ mod tests {
 
     #[test]
     fn a_runner_never_seen_alive_holds_no_lease() {
-        assert!(lapsed(None, at(0)));
-        assert!(!lapsed(Some(at(0)), at(29)));
-        assert!(lapsed(Some(at(0)), at(30)));
+        assert!(lapsed(None, None, at(0)));
+        assert!(!lapsed(Some(at(0)), None, at(29)));
+        assert!(lapsed(Some(at(0)), None, at(30)));
     }
 
     #[test]
@@ -2291,6 +2404,264 @@ mod tests {
                 .query_row("SELECT count(*) FROM sends", [], |row| row.get(0))
                 .unwrap();
             assert_eq!(sends, sent, "{case}");
+        }
+    }
+
+    #[test]
+    fn the_diocese_publishes_one_heartbeat_a_minute_named_by_its_host() {
+        let log = Published::default();
+        let mut said = None;
+        let seconds = |second| at(0) + SignedDuration::from_secs(second);
+        for second in [0, 30, 59, 60] {
+            heartbeat(&log, "d", seconds(second), &mut said);
+        }
+        let published = log.0.into_inner();
+        let beats: Vec<_> = published
+            .iter()
+            .map(|beat| (beat.kind.as_str(), beat.data["diocese"].clone(), beat.time))
+            .collect();
+        assert_eq!(
+            beats,
+            [
+                (DIOCESE_ALIVE, json!("d"), at(0)),
+                (DIOCESE_ALIVE, json!("d"), at(1))
+            ]
+        );
+    }
+
+    fn diocese_at(last: i64, back: i64) -> Option<Diocese> {
+        Some(Diocese {
+            last: at(last),
+            back: at(back),
+            silent: None,
+        })
+    }
+
+    #[test]
+    fn a_lease_runs_only_while_the_diocese_was_heard_within_three_minutes() {
+        assert!(lapsed(Some(at(0)), diocese_at(57, 0), at(60)));
+        assert!(!lapsed(Some(at(0)), diocese_at(56, 0), at(60)));
+    }
+
+    #[test]
+    fn a_lease_starts_again_when_the_diocese_comes_back_after_a_gap() {
+        assert!(!lapsed(Some(at(0)), diocese_at(69, 40), at(69)));
+        assert!(lapsed(Some(at(0)), diocese_at(70, 40), at(70)));
+        assert!(lapsed(None, diocese_at(70, 40), at(70)));
+    }
+
+    #[test]
+    fn a_diocese_silent_an_hour_while_runners_reach_the_log_is_gone() {
+        let silent = Some(Diocese {
+            silent: Some(at(10)),
+            ..diocese_at(0, 0).unwrap()
+        });
+        assert!(!lapsed(Some(at(0)), silent, at(69)));
+        assert!(lapsed(Some(at(0)), silent, at(70)));
+    }
+
+    /// Runner `b` of a factory of `a` and `b`, reading the log.
+    struct Reader {
+        db: Connection,
+        factory: Factory,
+        dir: std::path::PathBuf,
+    }
+
+    impl Reader {
+        /// `b`, holding none of `a`'s `keys` waiting tasks yet.
+        fn new(keys: usize) -> Reader {
+            let dir = std::env::temp_dir().join(format!("priory-leases-{}", Uuid::new_v4()));
+            for (path, text) in [
+                ("factory.toml", "name = \"leases\"\n"),
+                ("runners/a.toml", "platform = { os = \"linux\" }\n"),
+                ("runners/b.toml", "platform = { os = \"linux\" }\n"),
+            ] {
+                let file = dir.join(path);
+                std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+                std::fs::write(file, text).unwrap();
+            }
+            let factory = priory_factory::factory::load(&dir).0;
+            let db = crate::state::memory();
+            for key in 0..keys {
+                db.execute(
+                    "INSERT INTO claims (key, runner, request, hold) VALUES (?1, 'a', ?1, 'waiting')",
+                    [format!("cli:{key}")],
+                )
+                .unwrap();
+            }
+            Reader { db, factory, dir }
+        }
+
+        fn read(&mut self, kind: &str, data: Value, time: Timestamp) {
+            let trace = Trace {
+                factory: &self.factory,
+                revision: None,
+                machine: None,
+                runner: Some("b".to_owned()),
+                usage: |_, _| None,
+            };
+            let tx = self.db.transaction().unwrap();
+            let message = Message::new(kind, data).time(time);
+            handle(&tx, &message, "b", &trace, None).unwrap();
+            tx.commit().unwrap();
+        }
+
+        fn alive(&mut self, runner: &str, minute: i64) {
+            self.read(ALIVE, json!({ "runner": runner }), at(minute));
+        }
+
+        fn beat(&mut self, minute: i64) {
+            self.read(DIOCESE_ALIVE, json!({ "diocese": "d" }), at(minute));
+        }
+
+        /// How many of `a`'s keys `b` claimed.
+        fn taken(&self) -> usize {
+            self.db
+                .query_row(
+                    "SELECT count(DISTINCT json_extract(message, '$.subject')) FROM sends
+                     WHERE json_extract(message, '$.type') = ?1",
+                    [CLAIMED],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap() as usize
+        }
+    }
+
+    impl Drop for Reader {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    #[test]
+    fn a_heartbeat_after_a_pause_over_three_minutes_marks_the_log_back() {
+        let mut b = Reader::new(0);
+        b.beat(0);
+        b.beat(3);
+        assert_eq!(diocese(&b.db).unwrap().unwrap().back, Timestamp::UNIX_EPOCH);
+        let late = at(6) + SignedDuration::from_secs(1);
+        b.read(DIOCESE_ALIVE, json!({ "diocese": "d" }), late);
+        let read = diocese(&b.db).unwrap().unwrap();
+        assert_eq!((read.last, read.back), (late, late));
+    }
+
+    #[test]
+    fn a_log_outage_over_a_day_still_moves_no_waiting_task() {
+        let mut b = Reader::new(2);
+        for minute in 0..10 {
+            b.beat(minute);
+            b.alive("a", minute);
+            b.alive("b", minute);
+        }
+        b.alive("b", 24 * 60 + 10);
+        assert_eq!(b.taken(), 0);
+    }
+
+    #[test]
+    fn a_diocese_that_stops_while_runners_reach_the_log_counts_as_gone_an_hour_later() {
+        let mut b = Reader::new(2);
+        for minute in 0..10 {
+            b.beat(minute);
+            b.alive("a", minute);
+        }
+        // The first alive message more than 3 minutes after the last heartbeat, at 9, is at 13.
+        for minute in 0..73 {
+            b.alive("b", minute);
+        }
+        assert_eq!(b.taken(), 0);
+        b.alive("b", 73);
+        assert_eq!(b.taken(), 2);
+    }
+
+    #[test]
+    fn a_runner_that_first_reads_heartbeats_late_ends_a_lease_as_one_that_read_none() {
+        let mut b = Reader::new(2);
+        b.alive("a", 0);
+        for minute in 0..30 {
+            if minute >= 20 {
+                b.beat(minute);
+            }
+            b.alive("b", minute);
+        }
+        assert_eq!(b.taken(), 0);
+        b.beat(30);
+        b.alive("b", 30);
+        assert_eq!(b.taken(), 2);
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        // Each case migrates a state file, so few cases keep the debug build to seconds.
+        #![proptest_config(ProptestConfig::with_cases(12))]
+
+        /// The log ran `up` minutes with the diocese beating, `a` last alive `quiet` minutes before
+        /// it went down for `gap` minutes. `b` comes back first.
+        #[test]
+        fn after_a_log_gap_the_first_runner_back_claims_none_of_the_others_waiting_tasks(
+            up in 1i64..30,
+            quiet in 0i64..30,
+            gap in 31i64..=600,
+            beat_first: bool,
+            keys in 1usize..4,
+        ) {
+            let mut b = Reader::new(keys);
+            for minute in 0..up {
+                b.beat(minute);
+                if minute <= (up - 1 - quiet).max(0) {
+                    b.alive("a", minute);
+                }
+                b.alive("b", minute);
+            }
+            prop_assert_eq!(b.taken(), 0);
+            let back = up - 1 + gap;
+            if beat_first {
+                b.beat(back);
+            }
+            b.alive("b", back);
+            prop_assert_eq!(b.taken(), 0);
+        }
+
+        /// The diocese beats on while `a` sleeps `asleep` minutes from minute `up`.
+        #[test]
+        fn with_heartbeats_going_on_a_runner_asleep_for_its_lease_loses_its_waiting_tasks(
+            up in 0i64..10,
+            asleep in 30i64..40,
+            keys in 1usize..4,
+        ) {
+            let mut b = Reader::new(keys);
+            for minute in 0..=up + asleep {
+                b.beat(minute);
+                if minute <= up {
+                    b.alive("a", minute);
+                }
+                b.alive("b", minute);
+            }
+            prop_assert_eq!(b.taken(), keys);
+        }
+
+        /// With no diocese, `b` takes `a`'s keys exactly when today's rule says so.
+        #[test]
+        fn with_no_heartbeat_leases_end_as_they_did_before_the_diocese(
+            a in proptest::collection::btree_set(0i64..120, 0..10),
+            b_alive in proptest::collection::btree_set(0i64..120, 1..10),
+        ) {
+            let mut b = Reader::new(2);
+            let mut last = None;
+            let mut expected = 0;
+            for minute in 0..120 {
+                if a.contains(&minute) {
+                    b.alive("a", minute);
+                    last = Some(minute);
+                }
+                if b_alive.contains(&minute) {
+                    b.alive("b", minute);
+                    if last.is_none_or(|last| minute - last >= 30) {
+                        expected = 2;
+                    }
+                }
+            }
+            prop_assert_eq!(b.taken(), expected);
         }
     }
 }

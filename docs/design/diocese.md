@@ -380,6 +380,11 @@ Each slice ships alone and leaves the factory working.
   Its runner file, such as `runners/key-drum.toml`, already exists. Remove the reverse ssh tunnel.
 - **Code.** The diocese heartbeat, `priory.diocese.alive`, and a lease that does not run across a gap in
   it, as Failure modes says, so a diocese outage moves no task.
+- **Built.** `priory daemon --view-only --diocese` publishes the heartbeat, and a gap of more than
+  3 minutes stops every lease until the heartbeats are back, when each lease runs 30 minutes again.
+  A diocese silent for an hour while runners reach the log counts as gone, and the first heartbeat
+  a runner reads changes no lease. `scripts/second-machine.sh cut local|remote` cuts one runner's
+  link, and `diocese-up` starts the heartbeat. See [runners.md](../daemon/runners.md#a-log-outage-with-a-diocese).
 - **Tests.** `scripts/second-machine.sh` with the log on the VM, its `tunnel-down` replaced by
   cutting one runner's tailnet link. A property test: after a log gap longer than 30 minutes, the
   first runner back claims none of the other's `waiting` tasks, and with the heartbeats going on, a
