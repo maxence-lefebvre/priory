@@ -403,8 +403,18 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Server, String> {
             }
         }
     };
-    let workers = http::serve(listener, token, origins, hooks, public, lane, wait, make)
-        .map_err(|error| format!("start the server threads: {error}"))?;
+    let workers = http::serve(
+        listener,
+        token,
+        origins,
+        hooks,
+        http::BODY,
+        public,
+        lane,
+        wait,
+        make,
+    )
+    .map_err(|error| format!("start the server threads: {error}"))?;
     eprintln!("priory: serving on http://{bound}");
     Ok(Server {
         workers,
@@ -1292,7 +1302,7 @@ fn type_in(db: &Connection, home: &Path, request: &Request, run: &str, typing: T
 }
 
 /// 128 random bits as hex, from the kernel.
-fn new_secret() -> Result<String, String> {
+pub(crate) fn new_secret() -> Result<String, String> {
     use std::io::Read;
     let mut bytes = [0u8; 16];
     std::fs::File::open("/dev/urandom")

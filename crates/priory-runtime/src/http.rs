@@ -16,8 +16,9 @@ const HEADERS: usize = 32;
 const TIMEOUT: Duration = Duration::from_secs(5);
 /// How long a client may take to send the first byte of its head, so silent ones free a worker soon.
 const FIRST_BYTE: Duration = Duration::from_secs(1);
-/// The largest body a hook path reads; a longer one gets 413 before any of it is read.
-const BODY: usize = 1024 * 1024;
+/// The largest body a hook path of `priory serve` reads; a longer one gets 413 before any of it is
+/// read.
+pub const BODY: usize = 1024 * 1024;
 /// The largest body a `POST` with the token reads.
 const WRITE: usize = 16 * 1024;
 
@@ -106,7 +107,8 @@ impl<'a> Request<'a> {
 /// the reply, each within its deadline, and a fixed pool of workers per `lane` runs the handlers. So
 /// a slow client holds only its own connection's thread, never a worker. `wait` handles `Lane::Wait`
 /// on that thread. Each worker calls `make` once for its own handler, which gets each request that carries `token`, and each `POST` to one of
-/// `hooks` with its body and no token: the handler authenticates those itself. A request to a
+/// `hooks` with its body of at most `hook_body` bytes and no token: the handler authenticates those
+/// itself. A request to a
 /// `public` path needs no token either. A `POST` from a page of another origin gets 403, unless
 /// that origin is one of `origins`, exactly.
 #[allow(clippy::too_many_arguments)]
@@ -115,6 +117,7 @@ pub fn serve<M, H, W>(
     token: String,
     origins: Vec<String>,
     hooks: &'static [&'static str],
+    hook_body: usize,
     public: fn(&str) -> bool,
     lane: fn(&Request) -> Lane,
     wait: W,
@@ -129,6 +132,7 @@ where
         token,
         origins,
         hooks,
+        hook_body,
         public,
     });
     let make = Arc::new(make);
@@ -264,6 +268,7 @@ struct Gate {
     token: String,
     origins: Vec<String>,
     hooks: &'static [&'static str],
+    hook_body: usize,
     public: fn(&str) -> bool,
 }
 
@@ -515,7 +520,7 @@ fn respond(
         };
     }
     if method == "POST" && gate.hooks.contains(&bare) {
-        return match read_body(stream, deadline, &request, &read[end..], BODY) {
+        return match read_body(stream, deadline, &request, &read[end..], gate.hook_body) {
             Ok(body) => handle(&Request {
                 body: &body,
                 ..request
@@ -611,6 +616,7 @@ mod tests {
             "t".to_owned(),
             Vec::new(),
             &[],
+            BODY,
             |_| false,
             |_| Lane::Read,
             |_| Reply::error(404, "nothing waits"),
@@ -644,6 +650,7 @@ mod tests {
             "t".to_owned(),
             Vec::new(),
             &[],
+            BODY,
             |_| false,
             |request| match request.path {
                 "/slow-listing" => Lane::Listing,
@@ -704,6 +711,7 @@ mod tests {
             "t".to_owned(),
             Vec::new(),
             &["/hook"],
+            BODY,
             |_| false,
             |_| Lane::Read,
             |_| Reply::error(404, "nothing waits"),

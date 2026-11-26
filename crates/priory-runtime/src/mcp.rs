@@ -118,7 +118,7 @@ fn position() -> Value {
 }
 
 /// A tool call's result, or the JSON-RPC error message of a call to a tool the server lacks.
-pub(crate) type Call<'a> = dyn Fn(&Value) -> Result<Value, String> + 'a;
+pub type Call<'a> = dyn Fn(&Value) -> Result<Value, String> + 'a;
 
 /// Serves `tools` over MCP on stdin and stdout, answering each `tools/call` with `call`.
 pub(crate) fn serve_with(tools: &Value, instructions: &str, call: &Call) -> Result<(), String> {
@@ -140,7 +140,7 @@ pub(crate) fn serve_with(tools: &Value, instructions: &str, call: &Call) -> Resu
 }
 
 /// The reply to one JSON-RPC message, or `None` for a notification.
-fn respond(line: &str, tools: &Value, instructions: &str, call: &Call) -> Option<Value> {
+pub fn respond(line: &str, tools: &Value, instructions: &str, call: &Call) -> Option<Value> {
     let Ok(request) = serde_json::from_str::<Value>(line) else {
         return Some(error(Value::Null, -32700, "parse error"));
     };

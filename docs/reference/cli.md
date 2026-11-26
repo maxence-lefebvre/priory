@@ -47,8 +47,32 @@ does and the page that describes it.
   with its `search_path` on the log's schema. Running it again changes nothing. It sets no
   password: set one with `ALTER ROLE ROLE PASSWORD`. `ROLE` is lowercase letters, digits and
   underscores, at most 49 bytes, so the policy names stay under Postgres's 63. See [factory.md](factory.md#the-intakes-role).
+- `priory log gateway-role ROLE`: prints the SQL that creates the diocese gateway's Postgres role,
+  `ROLE`, as `priory log intake-role` does. The role reads every message, publishes only
+  `priory.run.called`, and moves only the `priory.gateway` cursor. Set `PRIORY_LOG_RESTRICTED=1`
+  for the gateway that connects as it. See
+  [the diocese](../design/diocese.md#database-roles).
+- `priory gateway grant [DIR] --for DURATION`: makes a run grant that lasts `DURATION`, such as
+  `30m`, from when the log takes it. It publishes `priory.run.granted` with the token's SHA-256, and
+  prints `{ "grant", "token" }`. The token is printed once and reaches nothing else.
+- `priory gateway revoke [DIR] GRANT`: publishes `priory.run.revoked`. The gateway refuses the
+  grant from its next read of the log, within a second.
 
 ## The processes
+
+- `priory gateway [DIR] [--listen ADDR]`: serves the diocese's MCP endpoint at `POST /mcp`, on
+  `127.0.0.1:7429` unless `--listen` names another loopback address; it refuses any other. A TLS
+  proxy or `tailscale funnel` fronts it. Each request carries a run grant's token as
+  `Authorization: Bearer`, and a missing, unknown, expired or revoked one gets `401`. A grant may
+  make 60 calls a minute, and all requests together 10 refused ones, past which they get `429`. A
+  method other than `POST` gets `405`, and a body over 64 KiB gets `413` before it is read. It
+  serves one tool, `whoami`, which names the grant and acts on nothing. It reads grants from the
+  log as the consumer `priory.gateway` into `$PRIORY_HOME/diocese-gateway.db`, each second, and
+  answers `503` to every request while its last full read is over 10 seconds old. It skips a grant
+  message it cannot record, such as one whose hash another grant has. It appends one JSON line per
+  call, refusal and skipped message to `$PRIORY_HOME/diocese-gateway.audit.jsonl`, without the
+  token or the arguments, and one line in all for the refusals past the limit in a minute. See
+  [the diocese](../design/diocese.md#sign-in-and-tokens).
 
 - `priory intake [DIR] [--once]`: polls the sources and publishes events. `--once` polls once and
   exits. See [the intake](../intake/README.md).
