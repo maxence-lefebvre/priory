@@ -2,7 +2,7 @@
 // by saved view. A wide Desk draws a table; a phone's ends with the Answer capsule.
 import { memo, useEffect, useRef } from "react";
 import { askHeading, routedMark, runnerOf } from "../asks.js";
-import { cache, deskReadAt, refresh } from "../data.js";
+import { asked, cache, deskReadAt, refresh } from "../data.js";
 import { actionNote, batchParts, capsuleWords, countHead, countWords, deskModel, dueParts, mergeSince, nextLink, onRoom, plural, rowAction, sinceGroups, taskRepo } from "../desk.js";
 import { DESK_VIEWS } from "../frame.js";
 import { role } from "../icons.js";
@@ -12,6 +12,7 @@ import { prStack } from "../stack.js";
 import { store } from "../store.js";
 import { taskLabel, workStep } from "../tasks.js";
 import { age, ago, clock, date, today } from "../times.js";
+import { openAdd } from "../components/AddSheet.jsx";
 import { Connection } from "../components/Frame.jsx";
 import { Icon, StateWord, Tile } from "../components/Icon.jsx";
 import { NotReady } from "../components/NotReady.jsx";
@@ -23,7 +24,6 @@ import { useKeptFocus } from "../hooks/useKeptFocus.js";
 import { useKeptScroll } from "../hooks/useKeptScroll.js";
 import { useOlder } from "../hooks/useOlder.js";
 import { useMinute } from "../hooks/useScreen.js";
-import { asked } from "../legacy/data.js";
 import { AskRow, AskTableRow, Fold, KeyHints, OlderRow, RunnerTag, SentLine, useListSearch } from "./Asks.jsx";
 import { usePlace } from "./place.js";
 
@@ -406,7 +406,7 @@ const Capsule = memo(function Capsule({ model, current }) {
   const words = capsuleWords(n, Boolean(useStore(session).failed));
   return (
     <><div className="fade" /><div className="dock">{n && current === "needs" ? <a className={`capsule ${words.off ? "off" : ""}`} href={`/asks/${model.first.id}`}><Icon name={words.icon} size="s20" />{words.text}</a> : null}
-      <button type="button" className="fab" data-action="add-open" aria-label="Add a task" aria-keyshortcuts="N" aria-haspopup="dialog"><Icon name="plus" size="s20" /></button></div></>
+      <button type="button" className="fab" data-action="add-open" aria-label="Add a task" aria-keyshortcuts="N" aria-haspopup="dialog" onClick={openAdd}><Icon name="plus" size="s20" /></button></div></>
   );
 });
 

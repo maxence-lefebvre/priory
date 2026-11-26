@@ -49,7 +49,6 @@ crates/priory-core/web/
   *.js, *.test.js          # view models and their tests: unchanged, same place
   registry.js, entries/<page>.js   # each page's entry: what fills its slots, and its events
   reads/<read>.js          # the keys and reads beside the listings, each with its hook in hooks/
-  app.js, legacy/<page>.js # the legacy drawing, one file per page, inside a legacy slot
   app.css, sw.js, boot.js  # served as files, as before
 ```
 
@@ -78,8 +77,8 @@ at `/app.js`. CI rebuilds it and fails on any difference.
 
 - esbuild writes one minified file with no code splitting, so no new served path appears.
 - `build.mjs --check` builds in memory, compares with `dist/app.js`, and fails with "run corepack
-  pnpm web:build" on a stale bundle. It also fails past a 720 KB budget, which holds the legacy and
-  the React pages while both exist. The last port lowers it.
+  pnpm web:build" on a stale bundle. It also fails past a 635 KiB budget: the bundle was 590,978
+  bytes when the port ended, and the budget is that size plus 10%.
 - `web:check` then runs oxlint, where a warning fails too, and `test.mjs`. CI's `node --test` line
   names only the tests beside `app.js`, so the tests in folders run here and no workflow changes.
 - pnpm comes through corepack, which ships with Node 22 and 24. The exact `packageManager` pin keeps
@@ -127,7 +126,7 @@ Rejected:
 - React Router: the person chose TanStack Router on 2026-11-25. The first plan rejected both, since
   `pages.js` and the History API already routed.
 - TanStack Router's scroll restoration: it carries an element's scroll to the next page, so an unread
-  ask opened past its question. `state.scrolls` keeps a legacy page's scroll and `useScroll` a task's.
+  ask opened past its question. `useKeptScroll` keeps a list's scroll and `useScroll` a task's.
 - ESLint: the person chose oxlint.
 - Preact: smaller, but the person asked for React.
 - Tailwind or CSS-in-JS: `DESIGN.md` tokens and the CSP (`style-src 'self'`) keep plain CSS files.
@@ -148,19 +147,18 @@ Rejected:
      opened from. A history entry keeps that list, so Back restores it.
    - `queries.js` holds the cache rules of section 7, and `hooks/useData.js` one hook per listing and
      per detail. The frame reads `/api/views`, `/api/links` and `/api/desk`. A page reads its own.
-   - `PageGrid` draws one slot per panel and one for the drawer. A slot holds a React part or a legacy
-     one, as the page's entry says. A legacy slot draws with `innerHTML` in an element with `display: contents`, inside the React
-     frame. Its listings land together, once none of them is being read, so a legacy draw never mixes
-     two reads. A draw that throws is reported and leaves the page as it was.
+   - `PageGrid` draws one slot per panel and one for the drawer. A slot holds the part the page's
+     entry names, and an address with no part draws Page not found.
    - The frame, the sign-in and the task page are React.
 4. Then one pull request per page: Asks with the answer sheet, Desk, Tasks, Runs, Queue, Inbox,
-   Costs, Reports, Flows, Batch, Terminal, Settings, the Add sheet. Each port deletes that page's
-   file under `legacy/`.
-5. **Last:** delete the legacy slot, `html`, `raw`, `render()` and its restore code, and the document
-   event delegation. Lower the bundle budget.
+   Costs, Reports, Flows, Batch, Terminal, Settings. Each port deleted that page's legacy drawing.
+5. **Last, done:** the Add sheet, the task page's terminal pane with its keyboard sheet, and a list
+   that only has a page are in React. The legacy slot, `html`, `raw`, `render()` and its restore code,
+   and the document event delegation are deleted, and the bundle budget is lower.
 
-There are no islands and no `[data-island]` event contract. Inside a legacy slot the legacy handlers
-keep working as they do today, on `document`. Controls React draws use React handlers.
+There are no islands and no `[data-island]` event contract. Every control uses a React handler. Two
+listeners stay on `document`: the router's for plain links, and the shortcuts'. The terminal pane
+hears Escape on its own element first, so Escape closes its menu or Say line before a shortcut runs.
 
 ### How to port one page
 
@@ -188,17 +186,6 @@ is. `registry.js` says what an entry holds.
 6. Run `corepack pnpm web:build`, `web:check` and `scripts/demo/refresh.mjs`. With
    `WEB=crates/priory-core/web` the last one needs no Rust build.
 
-No port deletes these files:
-
-| File under `legacy/` | Until |
-|---|---|
-| `state.js`, `shared.js`, `data.js`, `frame.js` | the last port: every legacy part draws with them |
-| `terminal.js` | the Terminal and the task page's pane are both in React |
-| `taskacts.js` | the task actions' event handlers and `remoteGeneration` are in React |
-| `add.js` | the Add sheet is in React |
-
-Such a port deletes only what no other file imports.
-
 When `dist/app.js` conflicts, merge `main`, run `corepack pnpm web:build` and commit.
 
 Rules for every port:
@@ -223,7 +210,9 @@ Rules for every port:
   Slice 1 renames the shell cache to `priory-shell-2`, and `activate` deletes the older
   `priory-shell`, so an offline start never mixes the old `app.js`, which imported modules, with the
   bundle. `install` caches the whole list with `addAll`, which fails whole, so a broken install
-  keeps the old worker.
+  keeps the old worker. The last slice renames it `priory-shell-3`, and an offline read takes only
+  that shell's copy, never one an older shell keeps until `activate`. So the index of the shell
+  that drew half its pages with HTML strings never pairs with this bundle.
 - The CSP. The bundle is a same-origin script.
 - `DESIGN.md` rules and tokens, `app.css`, the 390 px phone layout, the themes, `boot.js`'s first paint.
 - The four Verify commands. A fifth joins them, and runs before the Node tests, which import
@@ -281,7 +270,7 @@ Tests:
   (`/asks/1`: Brief, Inbox, Trace), and on a task page drawing "Loading task" or its Say field
   losing its element, focus, text or selection. It counts what each page reads once the revision
   moves, and what a hidden tab reads. It also checks Back and forward, that a superseded refresh never
-  draws, and that a legacy draw that throws keeps the page. Its `hooked` checks make a request fail,
+  draws. Its `hooked` checks make a request fail,
   come late or be refused, and cover an ask's first scroll and bar, a rotation, a failing and a stuck
   read, keys and actions on a cold page, and malformed addresses. It drives Chromium over the DevTools
   protocol with Node's own WebSocket, so it needs no package, only the `sqlite3` command. CI has no
@@ -314,17 +303,14 @@ The person approved it on 2026-11-24: https://claude.ai/artifact/DJzXheB2nzY27bS
 
 ## Risks
 
-1. Legacy and React handlers both acting on one click: legacy delegation listens on `document`,
-   so each port removes its page's cases, with a test per page.
+1. Legacy and React handlers both acting on one click: each port removed its page's cases, and the
+   last slice deleted the delegation on `document`.
 2. Offline start after the upgrade: the cache rename and cleanup, tested in `sw.test.js`.
-3. Bundle size over plain HTTP: minifying the legacy code offsets part of React. The budget fails
-   the build past 720 KB.
+3. Bundle size over plain HTTP: the budget fails the build past 635 KiB.
 4. A stale or hand-merged bundle: `web:check` in CI.
 
 ## Later slices
 
-1. The page ports of section 4, one pull request each. Desk, Asks with the answer sheet, Batch,
-   Inbox, the Terminal panel, Settings, More, Memories, Costs, Flows, Reports, Tasks, Runs and
-   Queue are in React.
+1. The page ports of section 4, one pull request each, and the last slice, which deleted the legacy
+   slot and the legacy drawing. All are on `main`.
 2. The GitHub extension in the workspace.
-3. Deleting the legacy slot and the legacy drawing.

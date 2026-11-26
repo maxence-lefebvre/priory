@@ -5,7 +5,7 @@ import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ARM_MS, ASK_VIEWS, answeredBy, askBody, askGroups, askHeading, dismissable, optionKey, planCut, planUnread, planWait, plansFirst, press, routedMark, routedNote, runnerOf, runsCommand, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, submitted, writeNote, writeShown } from "../asks.js";
-import { cache, refresh } from "../data.js";
+import { acceptAsk, asked, cache, loadOlder, refresh } from "../data.js";
 import { deskModel, plural, sectionInView } from "../desk.js";
 import { searchOf, where } from "../frame.js";
 import { emptyDetail } from "../inbox.js";
@@ -27,8 +27,6 @@ import { useBatch } from "../hooks/useBatch.js";
 import { useKeptScroll } from "../hooks/useKeptScroll.js";
 import { useOlder } from "../hooks/useOlder.js";
 import { useMinute } from "../hooks/useScreen.js";
-import { acceptAsk, asked } from "../legacy/data.js";
-import { loadOlder } from "../legacy/shared.js";
 import { useKeptFocus } from "../hooks/useKeptFocus.js";
 import { Closes, LaneGraph, LaneKey, PlanNote, Splits, closePlanEdit, splitsOf } from "./Batch.jsx";
 import { usePlace } from "./place.js";
@@ -559,8 +557,9 @@ const Nav = ({ to, label, name }) => (to
 // The answer sheet (DESIGN.md, Answer while reading): every option of the ask on screen, opened by the bar's "N options".
 const sheet = () => document.getElementById("answer");
 const AnswerSheet = memo(function AnswerSheet({ ask, task, locked, bound }) {
-  const { sheet: open, pending } = useStore(answers);
+  const { sheet: open, pending, notices } = useStore(answers);
   const shown = open && ask.state === "open" && !pending;
+  const sent = useRef(false);
   useEffect(() => {
     const dialog = sheet();
     const closed = () => set({ sheet: false });
@@ -577,8 +576,17 @@ const AnswerSheet = memo(function AnswerSheet({ ask, task, locked, bound }) {
   useLayoutEffect(() => {
     const dialog = sheet();
     if (shown && !dialog.open) dialog.showModal();
-    if (!shown && dialog.open) dialog.close();
-  }, [shown]);
+    if (!shown && dialog.open) {
+      sent.current = Boolean(pending);
+      dialog.close();
+    }
+    // A refused answer leaves the ask open, and focus goes back to the bar's options button, which
+    // the bar draws again after this effect.
+    if (!pending && sent.current) {
+      sent.current = false;
+      if (notices.has(ask.id)) setTimeout(() => document.querySelector(".abar .btn.secondary")?.focus());
+    }
+  }, [shown, pending, notices, ask.id]);
   if (!shown) return null;
   return createPortal(
     <>
