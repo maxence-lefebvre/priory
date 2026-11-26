@@ -285,7 +285,7 @@ pub(crate) fn dispatch(
     }
     let tx = db.transaction()?;
     tx.execute(
-        "UPDATE runs SET cloud_head = ?2 WHERE id = ?1",
+        "INSERT OR REPLACE INTO cloud_heads (run, head) VALUES (?1, ?2)",
         params![run, start.head],
     )?;
     let entry = entry(&tx, task, step)?;
@@ -561,7 +561,7 @@ pub(crate) fn tick(
     let live: Vec<Live> = db
         .prepare(
             "SELECT runs.id, runs.task, runs.session, runs.thread, coalesce(tasks.worktree, ''),
-             coalesce(tasks.branch, ''), coalesce(runs.cloud_head, ''), tasks.workflow, runs.step,
+             coalesce(tasks.branch, ''), coalesce((SELECT head FROM cloud_heads WHERE run = runs.id), ''), tasks.workflow, runs.step,
              unixepoch('now') - unixepoch(runs.started)
              FROM runs JOIN tasks ON tasks.id = runs.task
              WHERE runs.ended IS NULL AND runs.harness = 'claude-cloud' ORDER BY runs.id",

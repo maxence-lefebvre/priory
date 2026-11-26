@@ -100,7 +100,6 @@ macro_rules! undo_pre {
   ALTER TABLE memory_candidates DROP COLUMN step; ALTER TABLE gates DROP COLUMN lessons; ALTER TABLE gates DROP COLUMN ask; ALTER TABLE gates DROP COLUMN judges;
   ALTER TABLE runs DROP COLUMN session_started; ALTER TABLE runs DROP COLUMN harness;
   ALTER TABLE runs DROP COLUMN resumes; ALTER TABLE runs DROP COLUMN sandbox; ALTER TABLE runs DROP COLUMN direnv; DROP TABLE lapses;
-  ALTER TABLE runs DROP COLUMN cloud_head;
   DROP TRIGGER ask_answered_by; DROP TRIGGER push_a_landed_wrong; DROP TRIGGER push_a_stall; ALTER TABLE push_subscriptions DROP COLUMN kinds; DROP TABLE messages; DROP TABLE pairs; DROP TABLE news; ALTER TABLE outbox DROP COLUMN pair;
   ")
     };
@@ -3179,7 +3178,7 @@ fn a_state_file_at_111_keeps_its_stall_runs_and_takes_scheduled_ones() {
         undo_scheduled_sweeps!(),
         "DROP TRIGGER push_a_landed_wrong; DROP TRIGGER push_a_stall;
          ALTER TABLE push_subscriptions DROP COLUMN kinds;
-         ALTER TABLE runs DROP COLUMN cloud_head; PRAGMA foreign_keys = OFF;
+         PRAGMA foreign_keys = OFF;
          INSERT INTO stalls (id, resource, missing, task, ended)
            VALUES (7, 'disk', '1 GB', 1, '2026-01-01T00:00:00Z');
          INSERT INTO sweeps VALUES (5, 7, 'old', '2026-01-01T00:00:00Z', '2026-01-01T00:00:01Z',

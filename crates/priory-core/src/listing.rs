@@ -1781,8 +1781,8 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
     let lists = [
         (
             "runs",
-            "SELECT id, step, agent, tmux, coalesce(thread, session) AS session, thread, cloud_head,
-               started, ended,
+            "SELECT id, step, agent, tmux, coalesce(thread, session) AS session, thread,
+               (SELECT head FROM cloud_heads WHERE run = runs.id) AS cloud_head, started, ended,
                ended_as AS end, (SELECT outcome FROM results WHERE results.run = runs.id) AS outcome,
                (SELECT json_extract(event, '$.data.tokens') FROM trace
                 WHERE type = 'factory.step.ended'

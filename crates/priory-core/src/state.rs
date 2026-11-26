@@ -2266,9 +2266,13 @@ CREATE INDEX IF NOT EXISTS inbox_by_pull_nocase ON inbox (('github:' || json_ext
 PRAGMA user_version = 127;
 ";
 
-// The commit a cloud run's session started from, which its push must descend from.
+// The commit a cloud run's session started from, which its push must descend from. A table of its
+// own, since SQLite has no ADD COLUMN IF NOT EXISTS and a file set back a version migrates again.
 const SCHEMA_128: &str = "
-ALTER TABLE runs ADD COLUMN cloud_head TEXT;
+CREATE TABLE IF NOT EXISTS cloud_heads (
+  run  INTEGER PRIMARY KEY,
+  head TEXT NOT NULL
+);
 PRAGMA user_version = 128;
 ";
 
@@ -5889,7 +5893,8 @@ mod inbox_lookups {
 
         let found: (i64, Option<String>, i64) = db
             .query_row(
-                "SELECT id, cloud_head, (SELECT user_version FROM pragma_user_version) FROM runs",
+                "SELECT id, (SELECT head FROM cloud_heads WHERE run = runs.id),
+                   (SELECT user_version FROM pragma_user_version) FROM runs",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )

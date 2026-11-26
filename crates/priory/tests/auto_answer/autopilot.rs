@@ -1338,10 +1338,7 @@ fn an_upgrade_keeps_an_off_already_read_against_a_late_on() {
     off(&b);
     pass(&b);
     pass(&b);
-    state(
-        &b,
-        "DROP TABLE autopilot_times; ALTER TABLE runs DROP COLUMN cloud_head; PRAGMA user_version = 123;",
-    );
+    state(&b, "DROP TABLE autopilot_times; PRAGMA user_version = 123;");
     pass(&a);
     logged(&a, "priory.autopilot.set", json!({ "level": "high" }));
 
