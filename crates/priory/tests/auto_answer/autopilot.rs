@@ -1229,6 +1229,28 @@ fn a_view_only_machine_whose_publish_fails_stays_off() {
     );
 }
 
+#[test]
+fn a_view_only_machines_off_through_its_endpoint_says_no_runner_was_told_when_the_log_is_cut() {
+    let a = runner("pilot-web-untold", "a", None);
+    let mut laptop = runner("pilot-web-untold", "laptop", Some(&a));
+    with_serve(&laptop);
+    let address = laptop.start_viewing(T0);
+    // The view keeps its open log; each publish opens it anew, and finds a folder.
+    fs::rename(&laptop.bus, laptop.bus.with_extension("cut")).unwrap();
+    fs::create_dir(&laptop.bus).unwrap();
+
+    let (status, off) = runner_http(&address, "POST", "/api/autopilot/off", "{}");
+
+    assert_eq!(status, 200, "{off}");
+    assert_eq!(off["ok"], "autopilot was not on", "{off}");
+    assert!(off["untold"].is_string(), "{off}");
+    let status = laptop.autopilot(&["status"]);
+    assert_eq!(
+        String::from_utf8_lossy(&status.stdout),
+        "autopilot is off\n"
+    );
+}
+
 /// Runs `sql` on `setup`'s state file.
 fn state(setup: &Setup, sql: &str) {
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();

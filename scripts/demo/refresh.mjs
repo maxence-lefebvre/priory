@@ -82,8 +82,9 @@ await page("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, dev
 await page("Page.addScriptToEvaluateOnNewDocument", { source: `
   localStorage.setItem("priory.token", "demo-token");
   globalThis.reads = []; globalThis.hidden = false; globalThis.landed = 0;
-  // What a check does to the requests: a view's layout, paths that fail, that answer late or at another revision, and the answer of a POST.
-  globalThis.hook = { fails: [], slow: {}, revision: {}, ...JSON.parse(sessionStorage.getItem("hook") || "{}") };
+  // What a check does to the requests: a view's layout, paths that fail, that answer late, at another revision or with a body
+  // of its own (\`answers\`, keyed by the path without its query), and the answer of a POST.
+  globalThis.hook = { fails: [], slow: {}, revision: {}, answers: {}, ...JSON.parse(sessionStorage.getItem("hook") || "{}") };
   if (hook.cold) for (const key of Object.keys(localStorage)) if (key.startsWith("priory.snapshot")) localStorage.removeItem(key);
   globalThis.posts = []; globalThis.polls = 0; globalThis.errors = []; globalThis.kept = 0; globalThis.clocks = new Set();
   addEventListener("error", (event) => errors.push(event.message));
@@ -105,6 +106,8 @@ await page("Page.addScriptToEvaluateOnNewDocument", { source: `
     if (String(path).startsWith("/api/events")) polls++;
     if (hook.slow[path]) await new Promise((done) => setTimeout(done, hook.slow[path]));
     if (hook.fails.includes(path)) return new Response("{}", { status: 500 });
+    const answer = hook.answers[String(path).split("?")[0]];
+    if (answer) return new Response(JSON.stringify(answer));
     const named = hook.revision[path];
     if (named) return read(path, options).then(async (reply) => new Response(JSON.stringify({ ...(await reply.json()), revision: named }))).finally(() => { landed++; });
     const late = hook.late === path && await read(path, options);
@@ -192,6 +195,11 @@ await evaluate("history.back()");
 await until('document.getElementById("say")', "Back to the task");
 report((await evaluate('document.getElementById("say").value')) === "hello", "the Say draft outlives its page");
 
+// The Desk draws autopilot's banner with Turn off, and keeps it through a refresh.
+await check("the Desk keeps autopilot's Turn off", "/", 'document.querySelector("#app nav")',
+  '() => document.getElementById("autopilot-off")?.textContent ?? null',
+  (label) => (label === "Turn off" ? null : `the button reads ${JSON.stringify(label)}`));
+
 // What each page reads once the revision moves.
 // Each page's own file says it, so two ports touch no common line.
 const folder = new URL("./pages/", import.meta.url);
@@ -226,10 +234,9 @@ report(unseen === 0 && seen === TASKS, "a hidden tab reads nothing, and once whe
 async function holds(name, path, ready, script) {
   await open(path, ready);
   await sleep(2000);
-  report((await evaluate(script)) === true, name);
+  const found = await evaluate(script);
+  report(found === true, name, found === true ? "" : JSON.stringify(found));
 }
-const COUNT = `let draws = 0; const inner = Object.getOwnPropertyDescriptor(Element.prototype, "innerHTML");
-  Object.defineProperty(Element.prototype, "innerHTML", { ...inner, set(text) { if (this.className === "legacy") { draws++; if (globalThis.failDraw) { globalThis.failDraw = false; throw new Error("a draw that throws"); } } inner.set.call(this, text); } });`;
 const SETTLE = (ms) => `await new Promise((done) => setTimeout(done, ${ms}));`;
 const ROW = 'document.querySelector(".row")';
 const TITLE = (name) => `document.querySelector("#app h1")?.textContent === "${name}"`;
@@ -239,9 +246,6 @@ await holds("Back and forward draw the page of their address", "/queue", TITLE("
     history.back(); ${SETTLE(500)} const back = ${TITLE("Queue")}; history.forward(); ${SETTLE(500)} return there && back && ${TITLE("Runs")}; })()`);
 await holds("a search string stays as it is written", "/tasks?view=ended&band=now", TITLE("Tasks"),
   'location.href.endsWith("/tasks?view=ended&band=now")');
-// A legacy page draws with innerHTML; this goes with the last one.
-await holds("a legacy draw that throws keeps the page", "/", ROW,
-  `(async () => { ${COUNT} globalThis.failDraw = true; document.querySelector('a[href="/runs"]').click(); ${SETTLE(800)} return globalThis.failDraw === false && document.getElementById("app")?.innerText.length > 100; })()`);
 await holds("a superseded refresh never draws", "/", ROW,
   `(async () => {
     const read = fetch; let hold = true;
@@ -264,8 +268,9 @@ await holds("a superseded refresh never draws", "/", ROW,
 // The list and the drawer draw apart, in one pass.
 await holds("a list keeps its scroll while the drawer's ask changes", "/asks/1", `location.pathname === "/asks/1" && document.querySelector('.drawer [aria-label="Next ask"][href]')`,
   `(async () => { const list = () => document.querySelector(".list .scroll"); const next = () => document.querySelector('.drawer [aria-label="Next ask"]'); const to = next().getAttribute("href");
-    list().scrollTop = 60; document.dispatchEvent(new Event("visibilitychange")); ${SETTLE(1500)} const kept = list().scrollTop === 60; next().click(); ${SETTLE(800)}
-    return kept && location.pathname === to && document.querySelectorAll("#app .legacy").length === 2; })()`);
+    list().scrollTop = 60; const drawn = list(); document.dispatchEvent(new Event("visibilitychange")); ${SETTLE(1500)} const kept = list().scrollTop === 60; next().click(); ${SETTLE(800)}
+    const found = { kept, to, at: location.pathname, same: list() === drawn, scroll: list().scrollTop };
+    return kept && found.at === to && found.same && found.scroll === 60 || found; })()`);
 await holds("the drawer keeps its scroll through a refresh of the list", "/asks/1", 'location.pathname === "/asks/1" && document.querySelector(".drawer #trace")',
   `(async () => { const part = () => document.querySelector(".drawer .scroll"); part().scrollTop = 60; const at = part().scrollTop; document.dispatchEvent(new Event("visibilitychange")); ${SETTLE(1500)} return at > 0 && part().scrollTop === at; })()`);
 
@@ -305,6 +310,21 @@ await hooked("a next ask opens at its question with the bar hidden, and two taps
   })()`);
   return found.shown || found.top || found.later || found.armed || found.posts.length ? found : true;
 });
+await hooked("on a phone, a refused answer from the answer sheet gives the bar's options button the focus", "/asks/1", 'document.querySelector("#app .opts")', { reply: refused }, async () => {
+  await sleep(1500);
+  await evaluate('document.querySelector("#app .scroll").scrollTop = 600');
+  await until('document.querySelector("#app .abar")?.hidden === false', "the answer bar");
+  await evaluate('document.querySelector("#app .abar .btn.secondary").click()');
+  await until('document.querySelector("#answer[open] .opt[aria-disabled=false]")', "the answer sheet");
+  await evaluate('document.querySelector("#answer .opt[aria-disabled=false]").click()');
+  await sleep(300);
+  await evaluate('document.querySelector("#answer .opt[aria-disabled=false]").click()');
+  await until("posts.length", "the answer");
+  const FOCUSED = 'document.activeElement.matches("#app .abar .btn.secondary")';
+  await until(FOCUSED, "the options button's focus").catch(() => {});
+  const found = await evaluate(`({ posts: posts.length, open: document.getElementById("answer").open, focus: ${FOCUSED}, on: document.activeElement.outerHTML.slice(0, 60), bar: document.querySelector("#app .abar")?.hidden })`);
+  return found.posts === 1 && !found.open && found.focus ? true : found;
+});
 await hooked("a rotation keeps the Say field, its focus and caret", "/tasks/1", SAYS, {}, async () => {
   await sleep(1000);
   const seen = [];
@@ -336,7 +356,7 @@ await hooked("a Cancel on a cold task page sends the revision of the task on scr
   const sent = await evaluate("posts");
   return sent.length === 1 && sent[0][0] === "/api/tasks/1/cancel" && sent[0][1].revision === 4242 ? true : sent;
 });
-const DESK_CANCEL = 'document.querySelector("[data-act=cancel]")';
+const DESK_CANCEL = 'document.querySelector(".recw [id$=-cancel]")';
 await open("/", DESK_CANCEL);
 await sleep(2000);
 await hooked("a Cancel on a Desk this device kept waits for the live read, then sends its revision", "/", DESK_CANCEL, { reply: refused, slow: { "/api/desk": 4000 }, revision: { "/api/desk": 4243 } }, async () => {
@@ -380,6 +400,18 @@ await hooked("a queue that cannot be read again says so on its page, and the app
   await evaluate('hook.fails = []; document.querySelector(".stale button").click()');
   await until('!document.querySelector(".stale")', "the note to go");
   return found.conn === "live" && found.said.startsWith("Could not read the queue again: /api/queue answered 500.") && kept ? true : { ...found, kept };
+});
+// A listing that fails keeps its last read and holds no other back: the Desk's Queue view draws the
+// queue's new titles while the tasks list fails.
+await hooked("the Desk's Queue view draws the listing that read while another one fails", "/?view=queue", 'document.querySelector(".list .scroll .row, .list .scroll tr[data-href]")', {}, async () => {
+  await sleep(1500);
+  await evaluate('hook.fails = ["/api/tasks"]');
+  execFileSync("sqlite3", [join(dir, "state.db"), "UPDATE tasks SET tldr = 'Landed beside a failure' WHERE id = 4; UPDATE revision SET value = value + 1;"]);
+  await until('document.querySelector(".stale")', "the note");
+  await sleep(1500);
+  const drawn = await evaluate('document.querySelector(".list .scroll").innerText.includes("Landed beside a failure")');
+  await evaluate('hook.fails = []');
+  return drawn || "the queue's new title is not drawn";
 });
 await hooked("a page whose first read failed says why, and the app stays live", "/queue", 'document.querySelector("#app nav")', { cold: true, fails: ["/api/queue"] }, async () => {
   await until('document.getElementById("app").innerText.includes("Could not load this page: /api/queue answered 500.")', "why the page has nothing");

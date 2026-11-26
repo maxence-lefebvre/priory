@@ -1,4 +1,4 @@
-// Bundles main.jsx, with the React pages, the legacy ones, the view models and the packages, into dist/app.js, the file serve.rs embeds.
+// Bundles main.jsx, with the React pages, the view models and the packages, into dist/app.js, the file serve.rs embeds.
 // With --check, builds into memory and fails when dist/app.js differs or the bundle is too big.
 import { build } from "esbuild";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
@@ -6,7 +6,8 @@ import { fileURLToPath } from "node:url";
 
 const here = (path) => fileURLToPath(new URL(path, import.meta.url));
 const OUT = here("./dist/app.js");
-const BUDGET = 720 * 1024;
+// The bundle once the port ended, 590,978 bytes, plus 10%.
+const BUDGET = 635 * 1024;
 
 const result = await build({
   entryPoints: [here("./main.jsx")],

@@ -2144,6 +2144,10 @@ pub struct Workflow {
     /// `priory request`, the MCP `add` tool, batches and triggers start any workflow.
     #[serde(default = "on")]
     pub requestable: bool,
+    /// Whether its tasks wait for an earlier active task that changes the same files. Its tasks
+    /// can still hold later tasks. `[queue] overlap = false` turns the check off for every workflow.
+    #[serde(default = "on")]
+    pub overlap: bool,
     pub steps: Vec<Step>,
 }
 

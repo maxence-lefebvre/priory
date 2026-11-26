@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { nextLink, onRoom, sinceGroups, mergeSince, progressView, sectionInView, dueText, rowAction, actionNote, batchParts, countWords, memoryNote, memoryTag, capsuleWords, countHead, deskBanners, arrivalAsk, plural, taskRepo } from "./desk.js";
+import { nextLink, onRoom, sinceGroups, mergeSince, progressView, sectionInView, dueText, rowAction, actionNote, batchParts, countWords, memoryNote, memoryTag, capsuleWords, countHead, deskBanners, autopilotView, arrivalAsk, plural, taskRepo } from "./desk.js";
 import { linked } from "./links.js";
 
 const why = "work stopped and waits on a person";
@@ -229,4 +229,60 @@ test("a stopped row's #n links in its task's repository, and a row with no task 
     `checks red on <a class="autolink" href="https://github.com/acme/shop/issues/12" rel="noopener noreferrer" target="_blank">#12</a>`,
   );
   assert.equal(linked("checks red on #12", rule, taskRepo(tasks, 5)), "checks red on #12");
+});
+
+test("the Desk's model sorts its items, and an open ask the asks listing lacks keeps the desk's words", async () => {
+  const { deskModel } = await import("./desk.js");
+  const desk = {
+    items: [
+      { kind: "ask", id: 1, what: "Open it?" }, { kind: "ask", id: 2, what: "Ship it?" }, { kind: "blocked", id: 3, task: 3 },
+      { kind: "command", id: 4 }, { kind: "todo", id: 5 }, { kind: "report", id: 6 }, { kind: "held", id: 7 }, { kind: "queue", id: 8 },
+    ],
+    ranked: [{ kind: "blocked", id: 3 }, { kind: "ask", id: 2 }], next: { kind: "ask", id: 2 },
+    counts: { asleep: 2 }, paused: "paused since 2026-11-25T10:00:00Z", intake: null,
+  };
+  const queue = { asleep: [{ id: 9 }], running: [], waiting: [{ id: 10 }], up_next: [{ kind: "queued" }] };
+  const model = deskModel({ desk, asks: [{ id: 2, question: "Ship it now?", options: ["yes"] }], queue, tasks: [] }, () => "3 min ago");
+  assert.deepEqual(model.open, [{ kind: "ask", id: 1, what: "Open it?", question: "Open it?", options: [] }, { id: 2, question: "Ship it now?", options: ["yes"] }]);
+  assert.equal(model.first.id, 2);
+  assert.deepEqual([model.stopped, model.todos, model.reports, model.other].map((items) => items.map((item) => item.id)), [[3, 4], [5], [6], [7]]);
+  assert.equal(model.needs, 7);
+  assert.deepEqual(model.banners, [{ text: "paused 3 min ago", icon: "pause", intake: false }]);
+  assert.deepEqual([model.asleep, model.asleepTasks, model.queue, model.upNext], [2, queue.asleep, queue.waiting, queue.up_next]);
+});
+
+const PILOT = { window: 4, since: "2026-11-25T22:00:00Z", until: "2026-11-26T08:00:00Z", level: "high", lanes: [], answered: 3, left: 1 };
+const TIMES = { clock: () => "08:00", ago: () => "4 min ago" };
+const IDLE = { window: null, sending: false, untold: null };
+
+test("the autopilot banner says until when, at what level and lanes, and what it did, with Turn off", () => {
+  assert.deepEqual(autopilotView(PILOT, IDLE, null, TIMES), {
+    words: "Autopilot is on until 08:00 (high, every lane). It answered 3 and left 1.", label: "Turn off", busy: false, error: false,
+  });
+  assert.equal(autopilotView({ ...PILOT, lanes: ["core/intake", "web"] }, IDLE, null, TIMES).words,
+    "Autopilot is on until 08:00 (high, core/intake, web). It answered 3 and left 1.");
+  assert.equal(autopilotView(null, IDLE, null, TIMES), null, "no banner while autopilot is off");
+});
+
+test("the autopilot banner waits while its off is in flight, then goes once the runners were told", () => {
+  assert.deepEqual(autopilotView(PILOT, { window: null, sending: true, untold: null }, null, TIMES),
+    { words: "Autopilot is on until 08:00 (high, every lane). It answered 3 and left 1.", label: "Turning off", busy: true, error: false });
+  const told = { window: 4, sending: false, untold: null };
+  assert.equal(autopilotView(PILOT, told, null, TIMES), null, "the window it ended hides before the desk is read again");
+  assert.equal(autopilotView(null, told, null, TIMES), null);
+  assert.equal(autopilotView({ ...PILOT, window: 5 }, told, null, TIMES).label, "Turn off", "a later window shows again");
+});
+
+test("an off that told no other runner keeps the banner, as an error, with Tell them again", () => {
+  const untold = { window: 4, sending: false, untold: "the log is unreachable." };
+  const view = { words: "Autopilot is off here, and no other runner was told: the log is unreachable.", label: "Tell them again", busy: false, error: true };
+  assert.deepEqual(autopilotView(PILOT, untold, null, TIMES), view);
+  assert.deepEqual(autopilotView(null, untold, null, TIMES), view);
+  assert.equal(autopilotView({ ...PILOT, window: 5 }, untold, null, TIMES).label, "Turn off", "a later window replaces the error");
+});
+
+test("offline, the autopilot banner says what the last read showed and how old it is, and cannot turn it off", () => {
+  assert.deepEqual(autopilotView(PILOT, IDLE, "2026-11-26T07:00:00Z", TIMES), {
+    words: "Autopilot was on 4 min ago, until 08:00 (high, every lane).", label: "Turn off", busy: true, error: false,
+  });
 });

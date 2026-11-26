@@ -184,3 +184,63 @@ export function deskBanners(desk, ago) {
     ...(desk.caps ?? []).map((/** @type {string} */ text) => ({ text, icon: "hourglass", intake: false })),
   ].filter((banner) => banner.text);
 }
+
+/**
+ * The autopilot banner's sentence (DESIGN.md, Desk): until when, its level and lanes, and what it
+ * answered and left here. Offline, the last read and how old it is; off here with no other runner
+ * told, why.
+ * @param {any} autopilot the desk's `autopilot` @param {{ untold?: string | null, readAt?: string | null }} state
+ * @param {{ clock: (iso: string) => string, ago: (iso: string) => string }} times
+ */
+export function autopilotWords(autopilot, { untold = null, readAt = null }, { clock, ago }) {
+  if (untold !== null) return `Autopilot is off here, and no other runner was told: ${untold.replace(/\.$/, "")}.`;
+  const scope = `${autopilot.level}, ${autopilot.lanes.length ? autopilot.lanes.join(", ") : "every lane"}`;
+  if (readAt) return `Autopilot was on ${ago(readAt)}, until ${clock(autopilot.until)} (${scope}).`;
+  return `Autopilot is on until ${clock(autopilot.until)} (${scope}). It answered ${autopilot.answered} and left ${autopilot.left}.`;
+}
+
+/**
+ * What the autopilot banner draws, or null for none: its sentence, its button's label, whether the
+ * button waits, and whether the sentence is an error. `off` is the page's last off: the window it
+ * ended, whether it is in flight, and why no other runner was told. That window stays off until a read
+ * shows another, even before the desk is read again.
+ * @param {any} autopilot the desk's `autopilot`
+ * @param {{ window: number | null, sending: boolean, untold: string | null }} off
+ * @param {string | null} offline when the desk was last read, while the page is offline
+ * @param {{ clock: (iso: string) => string, ago: (iso: string) => string }} times
+ */
+export function autopilotView(autopilot, off, offline, times) {
+  const ended = off.window !== null && (!autopilot || autopilot.window === off.window);
+  if (ended ? off.untold === null : !autopilot) return null;
+  const untold = ended ? off.untold : null;
+  return {
+    words: autopilotWords(autopilot, { untold, readAt: offline }, times),
+    label: off.sending ? "Turning off" : untold !== null ? "Tell them again" : "Turn off",
+    busy: off.sending || offline !== null,
+    error: untold !== null,
+  };
+}
+
+const STOPPED = ["blocked", "failed", "prompt", "command"];
+
+/**
+ * What the Desk draws from its four listings: the open asks oldest first, as the asks listing holds
+ * them, the ask the capsule opens, the stopped work, to-dos, reports and every other item, the
+ * banners, and the queue's parts.
+ * @param {{ desk: any, asks: any[], queue: any, tasks: any[] }} data @param {(iso: string) => string} ago
+ */
+export function deskModel({ desk, asks, queue, tasks }, ago) {
+  const byId = new Map(asks.map((ask) => [ask.id, ask]));
+  const items = desk.items.filter((/** @type {any} */ item) => item.kind !== "queue");
+  const open = items.filter((/** @type {any} */ item) => item.kind === "ask").map((/** @type {any} */ item) => byId.get(item.id) || { ...item, question: item.what, options: [] });
+  const of = (/** @type {string[]} */ kinds) => items.filter((/** @type {any} */ item) => kinds.includes(item.kind));
+  // The capsule opens the ask that ranks first, not only the oldest one.
+  const first = desk.ranked?.find((/** @type {any} */ item) => item.kind === "ask");
+  return {
+    next: desk.next, open, first: first ? byId.get(first.id) || open[0] : open[0],
+    stopped: of(STOPPED), todos: of(["todo"]), reports: of(["report"]),
+    other: items.filter((/** @type {any} */ item) => ![...STOPPED, "ask", "report", "todo"].includes(item.kind)),
+    asleep: desk.counts.asleep, asleepTasks: queue.asleep, banners: deskBanners(desk, ago), intake: desk.intake,
+    running: queue.running, queue: queue.waiting, tasks, upNext: queue.up_next, needs: items.length,
+  };
+}

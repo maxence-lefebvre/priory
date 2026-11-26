@@ -18,12 +18,14 @@
     "import/no-self-import": "error",
     // The port keeps the elements and roles the page had before React.
     "jsx-a11y/prefer-tag-over-role": "off",
+    // A push kind's label holds its name three elements down.
+    "jsx-a11y/label-has-associated-control": ["error", { "depth": 3 }],
     "import/named": "error",
     "import/namespace": "error"
   },
   "overrides": [
     // The patterns match a terminal's own escape sequences, which are control characters.
-    { "files": ["legacy/terminal.js", "terminal.js", "terminal.test.js"], "rules": { "eslint/no-control-regex": "off" } },
+    { "files": ["components/TerminalPane.jsx", "terminal.js", "terminal.test.js"], "rules": { "eslint/no-control-regex": "off" } },
     // The one Markdown component writes markdown()'s output, which escapes every character itself.
     { "files": ["components/Text.jsx"], "rules": { "react/no-danger": "off" } },
     { "files": ["*.mjs", "*.test.js", "*.test.jsx"], "env": { "node": true } },

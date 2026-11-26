@@ -1,8 +1,8 @@
 // The service worker: keeps the page's own files for offline starts, and shows Web Push notifications.
 // It never stores /api replies; the page keeps its last listings itself.
 // A new name whenever the served files change shape, so an offline start never mixes generations:
-// the first shell's app.js imported modules the bundle now holds.
-const SHELL = "priory-shell-2";
+// the first shell's app.js imported modules, and the second's drew half its pages without React.
+const SHELL = "priory-shell-3";
 // The page loaded these before the worker controlled it, so it fetches them again for offline starts.
 const FILES = ["/", "/boot.js", "/app.js", "/app.css", "/tokens/structure.css", "/tokens/themes.css", "/favicon.svg", "/icon-192.png"];
 
@@ -33,7 +33,8 @@ self.addEventListener("fetch", (event) => {
         }
         return response;
       })
-      .catch(() => caches.match(key).then((hit) => hit || Response.error())),
+      // Only this shell's copy: an older shell kept until activate would pair its files with this one's.
+      .catch(() => caches.open(SHELL).then((cache) => cache.match(key)).then((hit) => hit || Response.error())),
   );
 });
 

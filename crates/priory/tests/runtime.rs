@@ -87,7 +87,7 @@ macro_rules! undo_scheduled_sweeps {
 /// pending requests.
 macro_rules! undo_pre {
     () => {
-        concat!(undo_labels!(), undo_scheduled_sweeps!(), "ALTER TABLE asks DROP COLUMN confidence; ALTER TABLE asks DROP COLUMN rationale;
+        concat!(undo_labels!(), undo_scheduled_sweeps!(), "DROP TRIGGER IF EXISTS an_ended_task_withdraws_its_asks; ALTER TABLE asks DROP COLUMN confidence; ALTER TABLE asks DROP COLUMN rationale;
   ALTER TABLE tasks DROP COLUMN auto_answer; ALTER TABLE tasks DROP COLUMN added_by; DROP VIEW task_text; CREATE VIEW task_text AS SELECT tasks.id AS task,
     coalesce(json_extract(inbox.data, '$.title'), '') AS title,
     coalesce(json_extract(inbox.data, '$.text'), json_extract(inbox.data, '$.body'),
@@ -2258,6 +2258,35 @@ fn a_signal_the_daemon_dies_holding_is_spooled_for_the_next_daemon() {
 
     let spool = fs::read_to_string(setup.dir.join("home/signals.spool")).unwrap_or_default();
     assert_eq!(spool.lines().count(), 1, "{spool:?}");
+}
+
+#[test]
+fn a_signal_a_stopping_daemon_did_not_apply_is_spooled_for_the_next_daemon() {
+    let setup = Setup::new("stop-not-applied");
+    fs::create_dir_all(setup.dir.join("home")).unwrap();
+    fs::create_dir_all(setup.socket().parent().unwrap()).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(setup.socket()).unwrap();
+    let daemon = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(&stream), &mut line).unwrap();
+        let reply = json!({ "Err": priory_runtime::runtime::NOT_APPLIED });
+        std::io::Write::write_all(&mut stream, format!("{reply}\n").as_bytes()).unwrap();
+        line
+    });
+
+    let mut hook = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args(["hook", "Stop"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::io::Write::write_all(&mut hook.stdin.take().unwrap(), br#"{"session_id":"s1"}"#).unwrap();
+    assert!(hook.wait().unwrap().success());
+    let sent = daemon.join().unwrap();
+
+    let spool = fs::read_to_string(setup.dir.join("home/signals.spool")).unwrap_or_default();
+    assert_eq!(spool, sent);
 }
 
 #[test]
@@ -9886,7 +9915,7 @@ fn an_answer_to_the_ask_of_a_cancelled_task_is_refused() {
     assert!(!answered.status.success());
     assert_eq!(
         String::from_utf8_lossy(&answered.stderr),
-        "priory answer: task 1 is dropped\n"
+        "priory answer: ask 1 was withdrawn when task 1 ended\n"
     );
     assert_eq!(setup.rows("tasks")[0][4], "dropped");
 }
@@ -10344,6 +10373,9 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
     )
     .unwrap();
     drop(db);
+    let factory = setup.dir.join("factory");
+    let migrated = setup.priory(&["upgrade", "probe", factory.to_str().unwrap()]);
+    assert!(migrated.status.success(), "{migrated:?}");
 
     let asks = setup.rows("asks");
 
@@ -11518,6 +11550,138 @@ fn a_say_on_a_done_task_whose_pull_request_another_active_task_owns_is_refused()
     .unwrap();
 
     say_refused(&setup, "task 2 is already active on github:owner/repo#7");
+}
+
+/// Adds the inbox event `id` that reads pull request `number` of `repo` open.
+fn read_open(setup: &Setup, id: &str, repo: &str, number: i64) {
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute(
+            "INSERT INTO inbox (id, type, subject, time, data, links, outcome) VALUES
+               (?1, 'github.pull_request.opened', ?2 || '#' || ?3, '2026-11-17T10:00:00Z',
+                json_object('repo', ?2, 'pull_request', ?3, 'open', json('true')), '[]', 'ignored')",
+            rusqlite::params![id, repo, number],
+        )
+        .unwrap();
+}
+
+/// Runs `sql` on the state database of `setup`.
+fn state_sql(setup: &Setup, sql: &str) {
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute_batch(sql)
+        .unwrap();
+}
+
+#[test]
+fn a_say_on_a_done_task_whose_pull_request_merged_is_refused_though_it_subscribes_to_an_open_one() {
+    let setup = gated("say-merged-held");
+    setup.publish(&closed());
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    state_sql(
+        &setup,
+        "INSERT INTO subscriptions (task, resource) VALUES (1, 'github:owner/repo#9');",
+    );
+    read_open(&setup, "nine", "owner/repo", 9);
+
+    say_refused(
+        &setup,
+        "task 1 is done and its pull request github:owner/repo#7 is merged",
+    );
+}
+
+#[test]
+fn a_say_reopens_no_done_task_through_a_spent_wait_another_repository_or_an_unread_pull_request() {
+    let setup = done_with_open_pull_request("say-stale-holds");
+    let mut close = closed().time(herdr_bus::Timestamp::now());
+    close.data["merged"] = json!(false);
+    setup.publish(&close);
+    setup.until("inbox", |rows| rows.len() == 4);
+    state_sql(
+        &setup,
+        "INSERT INTO waits (id, task, run, kind, resource, fired)
+           VALUES (0, 1, 1, 'pull_request', 'github:owner/repo#9', '2026-11-17T10:00:00Z');
+         INSERT INTO subscriptions (task, resource) VALUES (1, 'github:other/repo#9'),
+           (1, 'github:owner/repo#10');",
+    );
+    read_open(&setup, "nine", "owner/repo", 9);
+    read_open(&setup, "other", "other/repo", 9);
+
+    say_refused(
+        &setup,
+        "task 1 is done and its pull request github:owner/repo#7 is closed",
+    );
+}
+
+#[test]
+fn a_say_on_a_done_task_is_refused_while_another_active_task_holds_a_pull_request_of_its_stack() {
+    let setup = done_with_open_pull_request("say-stack-rival");
+    state_sql(
+        &setup,
+        "INSERT INTO tasks (key, workflow, step, state, band, trigger, source)
+           SELECT 'cli:above', workflow, step, 'blocked', band, trigger, source FROM tasks WHERE id = 1;
+         INSERT INTO subscriptions (task, resource) VALUES (2, 'github:owner/repo#7'),
+           (1, 'github:owner/repo#8');",
+    );
+    read_open(&setup, "eight", "owner/repo", 8);
+
+    say_refused(&setup, "task 2 is already active on github:owner/repo#7");
+}
+
+#[test]
+fn a_say_through_the_api_reopens_a_done_task_on_the_pull_request_it_names() {
+    let setup = done_with_open_pull_request("say-names-pr");
+    state_sql(
+        &setup,
+        "INSERT INTO subscriptions (task, resource) VALUES (1, 'github:owner/repo#9');",
+    );
+    read_open(&setup, "nine", "owner/repo", 9);
+    let (mut server, address) = served(&setup);
+    let say = |pull_request: &str| {
+        post(
+            &address,
+            "/api/tasks/1/say",
+            json!({ "text": "Fix the empty case.", "pull_request": pull_request }),
+        )
+    };
+
+    let foreign = say("github:owner/repo#11");
+    let said = say("github:owner/repo#9");
+
+    server.kill().unwrap();
+    server.wait().unwrap();
+    assert!(
+        foreign
+            .1
+            .to_string()
+            .contains("task 1 is done and does not hold github:owner/repo#11"),
+        "{foreign:?}"
+    );
+    assert_eq!(said.0, 200, "{said:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    assert!(
+        typed[2].contains("generation 2: github:owner/repo#9 is still open."),
+        "{typed:?}"
+    );
+    let reopened: Vec<_> = setup
+        .trace()
+        .into_iter()
+        .filter(|record| record["type"] == "factory.task.reopened")
+        .map(|record| record["data"]["pull_request"].clone())
+        .collect();
+    assert_eq!(reopened, [json!("github:owner/repo#9")]);
+}
+
+#[test]
+fn a_say_on_a_task_done_at_a_step_no_agent_runs_is_refused_and_names_the_reopen_key() {
+    let setup = done_with_open_pull_request("say-code-step");
+    state_sql(&setup, "UPDATE tasks SET step = 'gate' WHERE id = 1;");
+
+    say_refused(
+        &setup,
+        "task 1 is done and would reopen at step gate, which no agent runs: name the step it goes back to in its workflow's `reopen`",
+    );
 }
 
 #[test]
@@ -15279,9 +15443,9 @@ fn an_answer_to_the_ask_of_an_earlier_generation_is_refused() {
     assert!(!answered.status.success());
     assert_eq!(
         String::from_utf8_lossy(&answered.stderr),
-        "priory answer: ask 1 was withdrawn when task 1 was revived\n"
+        "priory answer: ask 1 was withdrawn when task 1 ended\n"
     );
-    assert_eq!(withdrawn_reasons(&setup, "asks"), ["revived"]);
+    assert_eq!(withdrawn_reasons(&setup, "asks"), ["task-ended"]);
     assert!(setup.rows("asks").is_empty());
     assert_eq!(setup.rows("tasks")[0][4], "running");
 }
@@ -17796,12 +17960,14 @@ fn a_holder_killed_before_the_daemon_takes_the_command_leaves_no_command_running
 #[test]
 fn without_a_daemon_the_command_fails_fast_and_never_runs() {
     let setup = Setup::new("gate-no-daemon");
+    let start = Instant::now();
 
     let done = acquire(&setup, "1", "echo ran > ran")
         .wait_with_output()
         .unwrap();
 
     assert_eq!(done.status.code(), Some(125));
+    assert!(start.elapsed() < Duration::from_secs(2));
     let stderr = String::from_utf8_lossy(&done.stderr);
     assert!(
         stderr.contains("no priory daemon listens") && stderr.contains("the command did not run"),
@@ -17947,6 +18113,37 @@ fn a_stale_socket_fails_the_command_fast_and_it_never_runs() {
 
     assert_eq!(done.status.code(), Some(125));
     assert!(start.elapsed() < Duration::from_secs(10));
+    assert!(!setup.dir.join("fake/ran").exists());
+}
+
+#[test]
+fn an_acquire_waits_for_a_restarting_daemon_no_longer_than_its_timeout() {
+    let setup = Setup::new("gate-restart-timeout");
+    fs::create_dir_all(setup.socket().parent().unwrap()).unwrap();
+    drop(std::os::unix::net::UnixListener::bind(setup.socket()).unwrap());
+    // What a daemon's stop leaves beside its socket.
+    fs::write(setup.socket().with_extension("stopping"), "").unwrap();
+    let start = Instant::now();
+
+    let done = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args(["memory", "acquire", "--gb", "1", "--timeout", "2s", "--"])
+        .args(["sh", "-c", "echo ran > ran"])
+        .current_dir(setup.dir.join("fake"))
+        .output()
+        .unwrap();
+
+    assert_eq!(done.status.code(), Some(125));
+    assert!(
+        (2..5).contains(&start.elapsed().as_secs()),
+        "{:?}",
+        start.elapsed()
+    );
+    let stderr = String::from_utf8_lossy(&done.stderr);
+    assert!(
+        stderr.contains("the daemon is restarting: waiting up to 2 s"),
+        "{stderr}"
+    );
     assert!(!setup.dir.join("fake/ran").exists());
 }
 
@@ -19668,6 +19865,215 @@ fn a_tool_call_made_while_the_daemon_restarts_succeeds_once_it_is_back() {
     assert!(!error, "{text}\ndaemon: {log}");
 }
 
+/// Sends `signal` to the process `pid`.
+fn send_signal(pid: u32, signal: &str) {
+    let sent = harness::command("kill")
+        .args([&format!("-{signal}"), &pid.to_string()])
+        .status();
+    assert!(sent.unwrap().success());
+}
+
+#[test]
+fn a_tool_call_in_flight_when_the_daemon_stops_is_answered() {
+    use std::os::unix::process::ExitStatusExt;
+    let mut setup = Setup::new("stop-in-flight");
+    setup.calls(&[]);
+    setup.publish(&requested(42));
+    setup.start();
+    let session = live_session(&setup, "1");
+    let mut kept = Kept::new(&setup, &session);
+    let mut daemon = setup.daemon.take().unwrap();
+    send_signal(daemon.id(), "STOP");
+    let call = std::thread::spawn(move || kept.call("tldr", json!({ "text": "At the stop." })));
+    std::thread::sleep(Duration::from_secs(1));
+    send_signal(daemon.id(), "TERM");
+    send_signal(daemon.id(), "CONT");
+
+    let (text, error) = call.join().unwrap();
+
+    assert!(!error, "{text}");
+    // systemd and an upgrade's helper read this as a stop, not as a failure.
+    assert_eq!(daemon.wait().unwrap().signal(), Some(15));
+}
+
+#[test]
+fn a_second_sigterm_ends_a_stopping_daemon_at_once() {
+    use std::io::Write;
+    use std::os::unix::process::ExitStatusExt;
+    let mut setup = Setup::new("stop-twice");
+    setup.start();
+    listening(&setup);
+    let mut daemon = setup.daemon.take().unwrap();
+    // A line never ended holds the stop for 2 seconds.
+    let mut unended = std::os::unix::net::UnixStream::connect(setup.socket()).unwrap();
+    unended.write_all(b"{").unwrap();
+    send_signal(daemon.id(), "TERM");
+    let stopping = setup.socket().with_extension("stopping");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !stopping.exists() {
+        assert!(Instant::now() < deadline, "the daemon never stopped");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let second = Instant::now();
+
+    send_signal(daemon.id(), "TERM");
+
+    assert_eq!(daemon.wait().unwrap().signal(), Some(15));
+    assert!(
+        second.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        second.elapsed()
+    );
+}
+
+/// Sends `line` on the daemon's socket once a daemon other than a crashed one takes it, and
+/// returns the connection, whose reply is the daemon's.
+fn taken(setup: &Setup, line: &serde_json::Value) -> std::os::unix::net::UnixStream {
+    use std::io::Write;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(setup.socket()) {
+            stream.write_all(format!("{line}\n").as_bytes()).unwrap();
+            return stream;
+        }
+        assert!(Instant::now() < deadline, "the daemon never listened");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn reply_of(stream: &std::os::unix::net::UnixStream) -> String {
+    use std::io::BufRead;
+    let mut reply = String::new();
+    std::io::BufReader::new(stream)
+        .read_line(&mut reply)
+        .unwrap();
+    reply
+}
+
+#[test]
+fn a_stop_during_a_hung_tmux_call_skips_the_rest_of_the_tick() {
+    use std::os::unix::process::ExitStatusExt;
+    // Two live runs, as `Setup::running` makes one: each costs `tend` a `list-panes`.
+    let mut setup = Setup::new("stop-mid-tick");
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    setup.crash();
+    for session in ["=priory-1:", "=priory-2:"] {
+        setup.tmux_out(&["respawn-pane", "-k", "-t", session, "sleep 600"]);
+    }
+    setup.start();
+    listening(&setup);
+    std::thread::sleep(Duration::from_secs(2));
+    // Each later `list-panes` hangs 60 seconds, so each one the tick reaches costs that.
+    fs::write(setup.dir.join("fake/tmux-hang-panes"), "").unwrap();
+    std::thread::sleep(Duration::from_secs(3));
+    let mut daemon = setup.daemon.take().unwrap();
+    let stop = Instant::now();
+
+    send_signal(daemon.id(), "TERM");
+
+    assert_eq!(daemon.wait().unwrap().signal(), Some(15));
+    assert!(
+        stop.elapsed() < Duration::from_secs(80),
+        "{:?}",
+        stop.elapsed()
+    );
+    fs::remove_file(setup.dir.join("fake/tmux-hang-panes")).unwrap();
+}
+
+#[test]
+fn a_stop_before_a_runners_first_tick_applies_no_line_it_took() {
+    use std::os::unix::process::ExitStatusExt;
+    let mut setup = Setup::running("stop-first-tick");
+    for (path, content) in [
+        ("factory/runners/a.toml", "platform = { os = \"linux\" }\n"),
+        ("factory/runners/b.toml", "platform = { os = \"linux\" }\n"),
+        ("proc/sys/kernel/hostname", "a\n"),
+        // The start checks the live run's pane before its first tick, and hangs there.
+        ("fake/tmux-hang-panes", ""),
+    ] {
+        let file = setup.dir.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, content).unwrap();
+    }
+    setup.start();
+    let todo = json!({ "todo": { "add": { "text": "Before the first tick." } } });
+    let stream = taken(&setup, &todo);
+    let mut daemon = setup.daemon.take().unwrap();
+
+    send_signal(daemon.id(), "TERM");
+
+    let reply = reply_of(&stream);
+    assert!(
+        reply.contains(priory_runtime::runtime::NOT_APPLIED),
+        "{reply}"
+    );
+    assert_eq!(daemon.wait().unwrap().signal(), Some(15));
+    fs::remove_file(setup.dir.join("fake/tmux-hang-panes")).unwrap();
+    let listed = setup.priory(&["todo", "list", "--json"]);
+    assert_eq!(String::from_utf8_lossy(&listed.stdout).trim(), "[]");
+}
+
+#[test]
+fn a_stop_while_a_runner_reads_the_log_applies_no_line_it_took() {
+    use std::io::{BufRead, Write};
+    use std::os::unix::process::ExitStatusExt;
+    let mut a = runner("stop-catch-up", "a", None);
+    let bus = a.bus();
+    for n in 0..6000 {
+        let noise = Message::new("test.noise", json!({ "n": n }));
+        bus.publish(OUTPUT, &noise).unwrap();
+    }
+    a.start();
+    listening(&a);
+    let mut daemon = a.daemon.take().unwrap();
+    send_signal(daemon.id(), "STOP");
+    // Connected and sent before the stop, so the daemon takes it.
+    let mut taken = std::os::unix::net::UnixStream::connect(a.socket()).unwrap();
+    let todo = json!({ "todo": { "add": { "text": "Through the stop." } } });
+    taken.write_all(format!("{todo}\n").as_bytes()).unwrap();
+    send_signal(daemon.id(), "TERM");
+    send_signal(daemon.id(), "CONT");
+
+    let mut reply = String::new();
+    std::io::BufReader::new(&taken)
+        .read_line(&mut reply)
+        .unwrap();
+
+    assert!(
+        reply.contains(priory_runtime::runtime::NOT_APPLIED),
+        "{reply}"
+    );
+    assert_eq!(daemon.wait().unwrap().signal(), Some(15));
+    let listed = a.priory(&["todo", "list", "--json"]);
+    assert_eq!(String::from_utf8_lossy(&listed.stdout).trim(), "[]");
+}
+
+#[test]
+fn a_verb_run_while_the_daemon_restarts_waits_for_it() {
+    let mut setup = Setup::new("verb-restart");
+    setup.calls(&[]);
+    setup.publish(&requested(42));
+    setup.start();
+    live_session(&setup, "1");
+    let mut daemon = setup.daemon.take().unwrap();
+    send_signal(daemon.id(), "TERM");
+    daemon.wait().unwrap();
+    let mut say = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args(["say", "1", "Through the restart."])
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(say.try_wait().unwrap().is_none());
+    setup.start();
+
+    assert!(say.wait().unwrap().success());
+}
+
 #[test]
 fn a_tool_call_is_answered_while_a_search_waits_on_its_embedder() {
     let mut setup = Setup::new("mcp-slow-search");
@@ -20482,6 +20888,25 @@ fn a_removed_review_request_drops_its_running_task_and_ends_its_run() {
     assert_eq!(tasks[0][7], "review request removed");
     assert_eq!(setup.rows("runs")[0][7], "cancelled");
     setup.gone("priory-1");
+}
+
+#[test]
+fn a_removed_review_request_withdraws_its_tasks_open_agent_ask() {
+    let mut setup = reviews("review-withdrawn-ask");
+    setup.calls(&[ask()]);
+    setup.publish_all(&review_request(1));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+
+    setup.publish(&review_event(
+        "github.pull_request.review_request_removed",
+        2,
+    ));
+
+    setup.until("tasks", |rows| rows[0][4] == "dropped");
+    assert_eq!(withdrawn_reasons(&setup, "asks"), ["task-ended"]);
 }
 
 #[test]
@@ -25857,7 +26282,18 @@ fn overlapping_as(
     first: impl Fn(&Setup),
     work: impl Fn(&Setup),
 ) -> Setup {
-    let mut setup = Setup::with_workflow(name, TWO_MODEL_STEPS);
+    overlapping_in(name, TWO_MODEL_STEPS, request, factory, first, work)
+}
+
+fn overlapping_in(
+    name: &str,
+    workflow: &str,
+    request: &Message,
+    factory: &str,
+    first: impl Fn(&Setup),
+    work: impl Fn(&Setup),
+) -> Setup {
+    let mut setup = Setup::with_workflow(name, workflow);
     fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
     setup.publish(&requested(42));
     setup.start();
@@ -25928,6 +26364,27 @@ fn a_factory_with_overlap_off_holds_no_task() {
 
     setup.until("tasks", |rows| {
         rows.iter().any(|row| row[0] == "2" && row[4] == "running")
+    });
+
+    assert_eq!(state_of(&setup, "2").0, "running");
+}
+
+#[test]
+fn a_task_whose_workflow_turns_overlap_off_is_not_held() {
+    let setup = overlapping_in(
+        "overlap-workflow-off",
+        &format!("overlap = false\n{TWO_MODEL_STEPS}"),
+        &requested(43),
+        "name = \"demo\"",
+        |_| {},
+        |setup| {
+            setup.commit(2, "shared.txt");
+        },
+    );
+
+    setup.until("tasks", |rows| {
+        rows.iter()
+            .any(|row| row[0] == "2" && row[3] == "check" && row[4] != "ready")
     });
 
     assert_eq!(state_of(&setup, "2").0, "running");
@@ -30183,6 +30640,27 @@ fn an_answer_sent_to_another_runners_ask_is_accepted_applied_by_its_runner_and_i
     assert_eq!(closed["answer"], "approved", "{closed}");
     assert_eq!(closed["submissions"][0]["submission"], submission.as_str());
     a.until("tasks", |rows| rows[0][4] == "done");
+}
+
+#[test]
+fn a_resent_answer_to_another_runners_ask_gets_its_first_reply_after_the_runner_applied_it() {
+    let (a, _b, ask, address) = asked_on_a("remote-resend");
+    let id = format!("a:{ask}");
+    until_ask(&address, &id, |ask| ask["state"] == "open");
+    let body =
+        r#"{"option": "approved", "revision": 1, "call": "0a1b2c3d-0000-4000-8000-000000000002"}"#;
+    let path = format!("/api/asks/{id}/answer");
+
+    let (status, first) = runner_http(&address, "POST", &path, body);
+    assert_eq!(status, 202, "{first}");
+    until_ask(&address, &id, |ask| {
+        ask["state"] == "answered" && ask["submissions"][0]["outcome"] == "answered"
+    });
+    let (status, again) = runner_http(&address, "POST", &path, body);
+
+    assert_eq!(status, 202, "{again}");
+    assert_eq!(again["submission"], first["submission"]);
+    assert_eq!(on_log(&a, "priory.ask.answered").len(), 1);
 }
 
 #[test]

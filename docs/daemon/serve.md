@@ -69,7 +69,19 @@ read-only. Without a daemon, the visit gets `503` and the desk shows the same ev
 A write carries the revision of the ask the client showed, as `priory answer --revision` does. The
 first answer to that revision stands. When the daemon refuses, the server reads the ask again: a
 revision that moved, or an ask that closed, gets `409` with the ask, so a view can redraw it and
-keep the person's draft. A cancel may carry the state's revision the client showed, as `priory
+keep the person's draft. An applied answer or dismiss comes back with the stored ask.
+
+An answer or a dismiss may carry a `call`, an id the client makes once per press and sends again
+with each resend. The daemon stores it in the transaction that applies the write, and answers a
+resend with the first reply for 7 days, so a lost reply never answers twice.
+
+The daemon applies a person's answers, dismisses and desk actions (cancel, hold, release, resume,
+revive and say) between two phases of a tick, between two messages of the log and between two task
+starts, in the order they arrived and ahead of the other lines on its socket. So a cancel sent before
+an answer still applies first. A single step, such as a `git fetch`, is not cut. A runner applies
+none while it reads the log, since a task may have moved.
+
+A cancel may carry the state's revision the client showed, as `priory
 cancel --expected` does: a newer state gets `409`, and nothing is dropped.
 
 `priory serve` without a daemon has no socket to send to: its writes get `503`, and its reads keep
@@ -125,9 +137,17 @@ Each read costs what the listings hold, so `/api/asks`, `/api/tasks` and `/api/r
 open rows and those closed in the last 7 days, and say how many they left out. The web view asks for every row
 with `?all=1` only once the person scrolls to the older ones, or opens an older ask by its URL.
 
-The server holds at most 4 such requests at once, half its 8 workers, so waiting clients leave 4
-workers to the other requests. A fifth request that would wait gets `503` with `Retry-After: 1`; one
-whose answer is ready gets it at once.
+The server holds at most 128 such requests at once, each on its connection's own thread, so they
+hold no worker. One more that would wait gets `503` with `Retry-After: 1`; one whose answer is ready
+gets it at once.
+
+Clients share the listing reads. Requests for one path wait for the same computation, and a request
+takes a body that was computed after it arrived, or one at the current revision that is at most 2
+seconds old. So a disk or clock change that moves no revision shows within 2 seconds.
+
+A listing carries an `ETag` of its content without the revision, and the revision in
+`Priory-Revision`. A client that sends the tag back in `If-None-Match` gets `304` with no body when
+only other rows changed, and takes the new revision from the header.
 
 The revision changes with what is stored, and the daemon raises it for two changes the clock makes:
 a snoozed item coming back at its `snoozed_until`, and an ended task leaving the queue's `ended`
@@ -149,14 +169,18 @@ kept a revision from a replaced state file does not hang.
 | Time to send the whole request, head and body | 5 seconds | `408` |
 | Time for the whole reply to go out | 5 seconds | The connection closes |
 | Connections read or written at once | 256 | The connection closes unanswered |
-| Requests handled at once | 8 | Others wait for a worker, with their connection open |
-| `/api/events` requests held at once | 4 | `503` |
+| Writes handled at once | 8 | Others wait for a worker, with their connection open |
+| Listings computed at once | 2 | The same |
+| Other requests handled at once | 6 | The same |
+| Time a request waits for a worker | 10 seconds | `503` with `Retry-After: 1` |
+| `/api/events` requests held at once | 128 | `503` |
 | Run screens read at once | 2 | `503` |
 | Time for tmux to show a run screen | 2 seconds | `404` |
 
 Each connection carries one request and closes after the reply. One thread accepts connections,
 and each connection reads its request and writes its reply on a thread of its own. Only a request
-read in full reaches one of the 8 workers that run the handlers. So a client that sends slowly, or
+read in full reaches a worker. Writes, listings and the other requests each have their own workers,
+so an answer never waits for a read. So a client that sends slowly, or
 reads its reply slowly, holds its own connection for at most 5 seconds each way and never a worker.
 Without the token, past those 256 connections a flood still shuts out other clients until its
 connections time out: the limit bounds memory, not a determined attacker.
@@ -268,7 +292,7 @@ and icons, all built into the binary. They carry no state, so they need no token
 for the token once, keeps it in the browser's local storage, and sends it on every `/api` request;
 a `401` brings the sign-in back. A strict Content-Security-Policy lets the page load only its own
 files, and the page shows agent text as text. The view's layout comes from the factory's
-[views](../reference/views.md). Its Add control reads the defaults from `GET /api/request` and queues the task through `POST /api/request`, as `priory add` does. Its Reports panel reads `GET /api/reports/latest`, or the report its older and newer arrows reached through `GET /api/reports` and `GET /api/reports/{task}`, and picks and comments through the [report writes](../reference/serve.md#writes), as the `priory report` verbs do. Its Flows panel reads `GET /api/flows` and draws each workflow top to bottom, with each edge styled by who decides it and the paths `priory check --explain` lists marked. Its Costs panel reads `GET /api/costs` and `GET /api/attention` each time the state changes while it is open. A task's page shows the terminal of its live run under its runs: it reads [`GET /api/runs/{id}/screen`](#a-runs-screen) every second while the pane is on screen and the page is shown, every 3 seconds after 10 unchanged screens, and at once when the state changes. It keeps one read in flight, stops when the page hides, and keeps the screen in memory only. The pane draws the screen's cursor, and a new screen rewrites only the rows that changed, so a person's selection in the others stays. Its Load earlier reads 500 more rows of scrollback a tap, up to 2,000, and its Type opens a line that says to the agent through [`POST /api/tasks/{id}/say`](../reference/serve.md#writes), as `priory say` does: typed once the run is idle, never as a slash command. Under `[serve] terminal = "type"`, the pane's menu offers "Take the keyboard", which confirms in a sheet, then shows a bar that pastes text without Enter and sends one key a tap through the [keyboard endpoints](../reference/serve.md#keyboard), until the person gives it back or the grant ends. The page keeps the grant's secret in memory only. The Terminal panel lists the running tasks, each linking to its page. With `web = false`, every path outside `/api` gets `404`.
+[views](../reference/views.md). Its Add control reads the defaults from `GET /api/request` and queues the task through `POST /api/request`, as `priory add` does. Its Reports panel reads `GET /api/reports/latest`, or the report its older and newer arrows reached through `GET /api/reports` and `GET /api/reports/{task}`, and picks and comments through the [report writes](../reference/serve.md#writes), as the `priory report` verbs do. Its Flows panel reads `GET /api/flows` and draws each workflow top to bottom, with each edge styled by who decides it and the paths `priory check --explain` lists marked. Its Costs panel reads `GET /api/costs` and `GET /api/attention` each time the state changes while it is open. A task's page shows the terminal of its live run under its runs: it reads [`GET /api/runs/{id}/screen`](#a-runs-screen) every second while the pane is on screen and the page is shown, every 3 seconds after 10 unchanged screens, and at once when the state changes. It keeps one read in flight, stops when the page hides, and keeps the screen in memory only. The pane draws the screen's cursor. A new screen keeps the element of each row whose text and colours did not change, so a person's selection in those rows stays. Its Load earlier reads 500 more rows of scrollback a tap, up to 2,000, and its Type opens a line that says to the agent through [`POST /api/tasks/{id}/say`](../reference/serve.md#writes), as `priory say` does: typed once the run is idle, never as a slash command. Under `[serve] terminal = "type"`, the pane's menu offers "Take the keyboard", which confirms in a sheet, then shows a bar that pastes text without Enter and sends one key a tap through the [keyboard endpoints](../reference/serve.md#keyboard), until the person gives it back or the grant ends. The page keeps the grant's secret in memory only. The Terminal panel lists the running tasks, each linking to its page. With `web = false`, every path outside `/api` gets `404`.
 
 The view is installable as an app. `manifest.webmanifest` names it and its icons, and the service
 worker `/sw.js` keeps a copy of the page's own files, so the view starts with no connection. The

@@ -29,8 +29,20 @@ fn priory(dir: &Path, args: &[&str]) -> Output {
     output
 }
 
+/// Migrates the state file, as the daemon of a newer release does.
+fn migrate(dir: &Path) {
+    std::fs::create_dir_all(dir.join("factory")).unwrap();
+    std::fs::write(dir.join("factory/factory.toml"), "name = \"demo\"").unwrap();
+    priory(
+        dir,
+        &["upgrade", "probe", dir.join("factory").to_str().unwrap()],
+    );
+}
+
 /// Sets the state file back to version 57: `withdrawn` holds the reason as a sentinel.
 fn as_version_57(db: &rusqlite::Connection) {
+    db.execute_batch("DROP TRIGGER an_ended_task_withdraws_its_asks;")
+        .unwrap();
     let added: bool = db
         .query_row(
             "SELECT count(*) FROM pragma_table_info('asks') WHERE name = 'withdrawn_reason'",
@@ -102,6 +114,7 @@ fn an_upgrade_names_the_reason_each_sentinel_meant() {
     )
     .unwrap();
     drop(db);
+    migrate(&dir);
 
     let task: Value =
         serde_json::from_slice(&priory(&dir, &["task", "1", "--json"]).stdout).unwrap();
@@ -178,6 +191,7 @@ fn an_upgrade_names_the_answer_dismiss_or_stack_ask_that_withdrew_an_old_wait() 
     )
     .unwrap();
     drop(db);
+    migrate(&dir);
 
     let task: Value =
         serde_json::from_slice(&priory(&dir, &["task", "1", "--json"]).stdout).unwrap();
@@ -197,5 +211,70 @@ fn an_upgrade_names_the_answer_dismiss_or_stack_ask_that_withdrew_an_old_wait() 
             Value::Null,
             Value::from("asked"),
         ]
+    );
+}
+
+/// The `withdrawn_reason` of the first ask of each task in `tasks`.
+fn ask_reasons(dir: &Path, tasks: &[&str]) -> Value {
+    tasks
+        .iter()
+        .map(|task| {
+            let task: Value =
+                serde_json::from_slice(&priory(dir, &["task", task, "--json"]).stdout).unwrap();
+            task["asks"][0]["withdrawn_reason"].clone()
+        })
+        .collect()
+}
+
+const FOUR_TASKS_WITH_OPEN_ASKS: &str = "
+INSERT INTO tasks (id, key, workflow, step, state, lane, trigger, source) VALUES
+  (1, 'issue-1', 'implement', 'work', 'dropped', 'lane', 'cli', 'cli-1'),
+  (2, 'issue-2', 'implement', 'work', 'done', 'lane', 'cli', 'cli-2'),
+  (3, 'issue-3', 'implement', 'work', 'failed', 'lane', 'cli', 'cli-3'),
+  (4, 'issue-4', 'implement', 'work', 'running', 'lane', 'cli', 'cli-4');
+INSERT INTO asks (task, step, kind, question, options) VALUES
+  (1, 'work', 'agent', 'A?', '[]'), (2, 'work', 'agent', 'B?', '[]'),
+  (3, 'work', 'agent', 'C?', '[]'), (4, 'work', 'agent', 'D?', '[]');";
+
+#[test]
+fn an_upgrade_withdraws_the_open_asks_of_ended_tasks_only() {
+    let dir = scratch("ended");
+    priory(&dir, &["tasks"]);
+    let db = rusqlite::Connection::open(dir.join("priory.db")).unwrap();
+    db.execute_batch("DROP TRIGGER an_ended_task_withdraws_its_asks;")
+        .unwrap();
+    db.execute_batch(FOUR_TASKS_WITH_OPEN_ASKS).unwrap();
+    db.execute_batch("ALTER TABLE runs DROP COLUMN cloud_head; PRAGMA user_version = 125;")
+        .unwrap();
+    drop(db);
+    migrate(&dir);
+
+    assert_eq!(
+        ask_reasons(&dir, &["1", "2", "3", "4"]),
+        serde_json::json!(["task-ended", "task-ended", "task-ended", null])
+    );
+}
+
+#[test]
+fn a_task_that_ends_done_or_failed_withdraws_its_open_ask() {
+    let dir = scratch("ends");
+    priory(&dir, &["tasks"]);
+    let db = rusqlite::Connection::open(dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        &FOUR_TASKS_WITH_OPEN_ASKS
+            .replace("'done'", "'running'")
+            .replace("'failed'", "'running'"),
+    )
+    .unwrap();
+    db.execute_batch(
+        "UPDATE tasks SET state = 'done' WHERE id = 2;
+         UPDATE tasks SET state = 'failed' WHERE id = 3;",
+    )
+    .unwrap();
+    drop(db);
+
+    assert_eq!(
+        ask_reasons(&dir, &["2", "3", "4"]),
+        serde_json::json!(["task-ended", "task-ended", null])
     );
 }

@@ -255,6 +255,7 @@ export class Document extends Node {
   get isConnected() {
     return true;
   }
+  addEventListener() {}
 }
 
 /** A document of `html`, with an <html> and a <body> when the markup has none. */

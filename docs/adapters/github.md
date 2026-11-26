@@ -53,8 +53,13 @@ answers. A `401` from the daemon signs you out too.
 ## What it shows
 
 - **The strip**: the owning task, its state and step, and a pill when asks wait on you. On a pull
-  request no active task holds, it says so, with Add a task…. When the daemon is out of reach, it
-  says how old the last read is.
+  request no active task holds, it shows the newest done task that `say` reopens on it, with Say
+  on. Else it says no task holds it, with Add a task…. When Say to a listed done task is refused,
+  for example because no agent runs the step it would reopen at, the strip shows the reason and no
+  Add a task…. It says no task holds the pull request only after the daemon answered so: until
+  then it shows Reading Priory…. When the daemon is out of reach, busy or slow to answer, it says
+  Cannot reach Priory. Retrying…, with how old the last read is, and reads again after 2 s,
+  doubling the wait up to 30 s.
 - **Ask**: the open asks of the task, oldest first, with the web view's order: context, question,
   recommendation, options, Write an answer, Dismiss and Snooze. Every open ask shows
   Write an answer; a step's ask and a hold's ask need an answer, so they show no Dismiss. Which asks
@@ -72,7 +77,10 @@ answers. A `401` from the daemon signs you out too.
   it, and say why not otherwise. Update branch and Resolve conflicts stay off unless the task owns
   the pull request's branch, by its key or its stack. Update branch merges the base, so nothing
   needs a force push.
-- **Guide**: the review guide from the description, and its quiz.
+- **Guide**: the review guide from the description, and its quiz. When the description has no
+  guide and a task holds the pull request, Generate guide asks the task's agent with `say` to write
+  [the review guide block](#the-review-guide-block) into the description. It is on when Say is.
+  Open the tab again once the agent edited the description to read the new guide.
 
 When a write loses its connection, the daemon may have applied it. The panel keeps the draft, says
 so, and clears the warning once a read shows the answer, or when you send again.

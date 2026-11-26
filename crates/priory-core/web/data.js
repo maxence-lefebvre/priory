@@ -1,6 +1,7 @@
 // The app's QueryClient, its copy on this device, and its refreshes.
-import { client, heldRevision, moved, refreshMounted, restore, snapshot } from "./queries.js";
+import { client, heldRevision, moved, params, refreshMounted, restore, snapshot } from "./queries.js";
 import { EARLIER_SNAPSHOT, SNAPSHOT, api, failureWords, onSignOut, refuse, session, setFailed } from "./session.js";
+import { store } from "./store.js";
 
 // When the first live read of the desk began, so an event between that read and the visit still shows next time.
 let opened = null;
@@ -53,3 +54,26 @@ onSignOut(() => cache.clear());
 export const revision = () => (session.get().token ? heldRevision(cache) : undefined);
 export const refresh = async () => Boolean(session.get().token) && refreshMounted(cache);
 export const reread = async () => Boolean(session.get().token) && moved(cache);
+
+// Which rows and which report the page asks the server for.
+export const asked = store(params());
+export const askFor = (part) => asked.set({ ...asked.get(), ...part });
+onSignOut(() => asked.set(params()));
+
+export function loadOlder(listing) {
+  // A render may call this: the page reads the older rows once it has drawn.
+  setTimeout(() => askFor({ all: { ...asked.get().all, [listing]: true } }));
+}
+
+// The ask a refused write answered with, in every listing that holds it, as old as the listing it joins.
+export async function acceptAsk(fresh) {
+  // A read that began before the refusal would bring the older ask back.
+  await cache.cancelQueries({ queryKey: ["asks"] });
+  const patched = (body) => ({ ...body, asks: body.asks.map((ask) => (ask.id === fresh.id ? fresh : ask)) });
+  for (const [queryKey, body] of cache.getQueriesData({ queryKey: ["asks"] })) {
+    if (!body) continue;
+    const { dataUpdatedAt: updatedAt, isInvalidated } = cache.getQueryState(queryKey);
+    cache.setQueryData(queryKey, patched(body), { updatedAt });
+    if (isInvalidated) cache.invalidateQueries({ queryKey, exact: true, refetchType: "none" });
+  }
+}

@@ -150,6 +150,10 @@ that reverses each answer. A done task with no open pull request has none, and t
 revive's step still exists when `PRIORY_FACTORY`, or the current folder, holds the factory.
 When a window ends, the daemon posts one report line to the desk.
 
+While a window is on, the web view's Desk shows it in a banner with Turn off, which sends
+[`POST /api/autopilot/off`](../reference/serve.md#writes). Off takes effect on that machine first.
+When the other runners cannot be told, the banner says so and offers Tell them again.
+
 ## Waits
 
 A wait ends with the first event that fires it. To hear every event on a resource without ending
@@ -245,7 +249,8 @@ from their withdrawal log, and left it null for older waits, which have none. Th
 | `answered-elsewhere` | wait | A person answered the ask of the wait's run |
 | `sibling-fired` | ask, wait | Another wait of the same run fired first, or another gate of the stack fired |
 | `moved-on` | ask, wait | A later run of the task called another tool |
-| `revived` | ask, wait | A person revived the task, or feedback reopened it, as its next generation |
+| `task-ended` | ask | The task was dropped, done or failed. Schema 126 also withdraws the open asks of tasks that ended before it |
+| `revived` | ask, wait | A person revived the task, or feedback reopened it, as its next generation. Since schema 126 only waits get it: an ask closes as `task-ended` when its task ends |
 | `predecessor-revived` | ask | A person revived the task that a batch entry's condition waits on, so the condition waits again |
 | `asked` | wait | The daemon asked a person about the task's stack, or about a fix that failed the same way, which ends its gates |
 

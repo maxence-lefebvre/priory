@@ -1469,6 +1469,7 @@ fn the_upgrade_marks_read_the_alarms_of_merges_whose_only_red_checks_were_cancel
              ALTER TABLE inbox DROP COLUMN reason; ALTER TABLE runs DROP COLUMN cloud_head; PRAGMA user_version = 115;",
         )
         .unwrap();
+    succeeded(&setup.priory(&["upgrade", "probe", &setup.factory()]));
 
     assert_eq!(
         setup.alarms(),

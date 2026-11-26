@@ -79,9 +79,17 @@ const active = (cache) => cache.getQueryCache().findAll({ type: "active" });
 const errored = (cache) => active(cache).filter((query) => query.state.status === "error");
 const moving = (query) => !once(query) || query.state.status === "error" || query.state.data === undefined;
 
-// Marks every read stale and reads the mounted ones again. True when none of them failed.
+// A page's own read, from a file under reads/, rather than a listing or a task.
+const own = (query) => Boolean(query.meta?.read);
+
+// Marks every read stale and reads the mounted ones again. True when none of them failed. A page's own
+// read follows the others, and waits while what an answer depends on failed or is read by a later
+// refresh: that refresh reads it once it lands.
 async function reread(cache, options, predicate = moving) {
-  await cache.invalidateQueries({ predicate }, options);
+  await cache.invalidateQueries({ predicate: (query) => predicate(query) && !own(query) }, options);
+  const unsure = active(cache).some((query) => locks(query) && (query.state.status === "error" || query.state.fetchStatus === "fetching"));
+  const refetchType = unsure ? "none" : "active";
+  await cache.invalidateQueries({ predicate: (query) => predicate(query) && own(query), refetchType }, options);
   return errored(cache).length === 0;
 }
 
@@ -132,7 +140,7 @@ export function oldestRead(cache) {
   return times.length ? Math.min(...times) : null;
 }
 
-const kept = (query) => LISTINGS.includes(query.queryKey[0]) || query.queryKey[0] === "spend" || Boolean(query.meta?.kept);
+const kept = (query) => LISTINGS.includes(query.queryKey[0]) || Boolean(query.meta?.kept);
 
 /** Puts `data` in the cache under a read's own key and meta, which setQueryData drops. */
 export const hold = (cache, { queryKey, meta }, data, options) => cache.getQueryCache().build(cache, cache.defaultQueryOptions({ queryKey, meta })).setData(data, { ...options, manual: true });
@@ -174,11 +182,11 @@ function earlier({ data, updated }) {
 /** Puts a kept snapshot in the cache, marked stale so a live page reads it again. */
 export function restore(cache, kept) {
   const reads = kept?.reads ?? (kept?.data ? earlier(kept) : []);
-  // The Costs panel keeps one value of two reads until it is in React.
+  // An earlier version's Costs panel kept one value of two reads.
   const spend = reads.find(([[name]]) => name === "spend");
   const split = spend?.[1] ? [[["costs", spend[1].costs.by], spend[1].costs, spend[2]], [["attention"], spend[1].attention, spend[2]]] : [];
   const missing = split.filter(([[name]]) => !reads.some(([key]) => key[0] === name));
-  for (const [[name, part], data, updatedAt] of [...reads, ...missing]) {
+  for (const [[name, part], data, updatedAt] of [...reads.filter(([[name]]) => name !== "spend"), ...missing]) {
     // A page opens on its listings' newest rows, and on the newest report.
     const key = part === true ? [name, false] : name === "report" ? ["report", null] : part === undefined ? [name] : [name, part];
     hold(cache, { queryKey: key, meta: { kept: true } }, withoutRevision(data), { updatedAt });

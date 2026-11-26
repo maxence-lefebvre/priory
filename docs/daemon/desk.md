@@ -315,10 +315,20 @@ prompts.
 - A `done` task whose pull request is open reopens as its next generation, with TEXT as the first
   prompt. Its step, session and branch are those of [feedback that reopens a done
   task](routing.md#feedback-reopens-a-done-task). It replies `task <id> reopened at <step>,
-  generation <n>`. It is refused, with the reason, when the task owns no pull request, when that
-  pull request merged or closed, when another active task holds its key or a resource it owns, or
-  when no agent runs the step it would reopen at. A merge the intake has not published yet does not
-  refuse it. A pick or comment on a done task's report reopens nothing.
+  generation <n>`. Its pull requests are those of its stack, else the one it opened or waited on
+  last, then those of its repository it subscribes to or waits on now. A pull request it only
+  subscribes to or waits on counts once an event read it open. The GitHub extension names the
+  pull request on screen, and the task reopens on that one. Otherwise it reopens on the first
+  open one in that order, the ones it subscribes to or waits on lowest number first. It is
+  refused, with the reason, when:
+
+  - it has no open pull request, or its own merged and none of its stack is open;
+  - the pull request named is not one of its pull requests, or is not open;
+  - another active task holds its key or any resource it owns, a pull request of its stack included;
+  - no agent runs the step it would reopen at. Set the workflow's `reopen` key for a task done at a
+    code or human step.
+
+  A merge the intake has not published yet does not refuse it. A pick or comment on a done task's report reopens nothing.
 
 Otherwise it replies `task <id> will hear it`. It refuses a `failed` or `dropped` task, a
 task at a human or code step with no open ask, and a task that has neither a run nor a queued
@@ -345,8 +355,8 @@ carries that line as `paused`.
 task starts at generation 1. The revive goes to the daemon over its socket and, in one
 transaction:
 
-1. Withdraws every open ask and wait of the task with the reason `revived`, and marks its queued
-   prompts `withdrawn`.
+1. Withdraws every open wait of the task with the reason `revived`, and marks its queued prompts
+   `withdrawn`. Its asks closed when it ended, with the reason `task-ended`.
 2. Raises the task's generation by one.
 3. Enters the step it ended on, or `<step>`, as a move into it would (see Moving on): a model step
    makes the task `ready` with its prompt queued, a human step asks again, and a code step makes it
@@ -368,9 +378,10 @@ and the worktree already holds the earlier generation's work. When the sweep rem
 next run adds it back from the branch (see Priory home). A revive straight into a code step, such as
 `open-pr`, adds it back before the action runs.
 
-A withdrawn ask or wait stays in the state file but counts as closed. An answer to one is refused with
-`ask <id> was withdrawn when task <task> was revived`, or with `ask <id> was withdrawn when a later
-run of task <task> called another tool` (see Routing). [Why an ask or wait was
+A withdrawn ask or wait stays in the state file but counts as closed. An ask whose task is dropped,
+done or failed is withdrawn with it, and an answer to it is refused with `ask <id> was withdrawn when
+task <task> ended`. An answer to an ask that a later run moved past is refused with `ask <id> was
+withdrawn when a later run of task <task> called another tool` (see Routing). [Why an ask or wait was
 withdrawn](waits.md#why-an-ask-or-wait-was-withdrawn) lists every reason. An event for a withdrawn wait
 fires nothing, and the task keeps it like any event that matches no wait, for the next run to read.
 `priory asks`, `priory waits` and the desk leave withdrawn ones out. A new run never takes over a
