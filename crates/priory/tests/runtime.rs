@@ -10236,6 +10236,10 @@ fn the_mcp_server_lists_its_tools() {
         "{instructions}"
     );
     assert!(!instructions.contains("75"), "{instructions}");
+    assert!(
+        instructions.contains("short paragraphs of one idea each"),
+        "an agent learns how to write an ask: {instructions}"
+    );
     assert_eq!(
         replies[1]["result"]["tools"][0]["inputSchema"]["properties"]["feedback"]["type"],
         "object"
