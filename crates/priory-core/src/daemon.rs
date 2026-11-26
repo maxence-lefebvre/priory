@@ -10,7 +10,7 @@ use crate::route;
 use crate::runners;
 use crate::snooze::{self, Snooze};
 use crate::state::{self, Admission, NewRun, Signal};
-use crate::tools::{self, Act, Answer, Call, Dismiss, Done, Repair};
+use crate::tools::{self, Act, Answer, Call, Called, Dismiss, Done, Repair};
 use crate::trace::Trace;
 use crate::upgrade::Upgrader;
 use crate::{
@@ -26,9 +26,9 @@ use priory_runtime::{room, slice, ticks, transcript, upgrade};
 use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::cell::OnceCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
-use std::sync::mpsc::{RecvTimeoutError, Sender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 // shortcut: polls the bus file; switch to herdr-bus-client's notify with the systemd service.
@@ -423,6 +423,10 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut catching_up = true;
     // Passes that hold work are one tick for the watchdog, which the first other pass ends.
     let mut holding = false;
+    let mut lines = Lines {
+        socket: &listening.lines,
+        waiting: VecDeque::new(),
+    };
     loop {
         let tick = Instant::now();
         if !std::mem::take(&mut holding) {
@@ -446,7 +450,20 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         // and before it publishes what it queued meanwhile.
         let drained = link.due().then(|| {
             let counter = counting.get(&home);
-            drain_some(&*bus, &consumer, &mut db, &trace, counter, true)
+            // A runner answers no ask before it read the whole log: a task may have moved.
+            let mut people = |db: &mut Connection| match trace.runner {
+                None => lines.people(db, &trace),
+                Some(_) => Ok(()),
+            };
+            drain_some(
+                &*bus,
+                &consumer,
+                &mut db,
+                &trace,
+                counter,
+                true,
+                &mut people,
+            )
         });
         // What a runner says follows from the whole log, so it says nothing before it read it.
         let behind = matches!(drained, Some(Ok(false)));
@@ -481,7 +498,8 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             continue;
         }
         ticks::phase("signals");
-        while let Ok(line) = listening.lines.try_recv() {
+        lines.people(&mut db, &trace)?;
+        while let Some(line) = lines.waiting.pop_front() {
             apply(
                 &mut db,
                 line,
@@ -490,6 +508,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
                 kit.current(),
                 &searching,
             )?;
+            lines.people(&mut db, &trace)?;
         }
         if behind && catching_up {
             ticks::record(tick.elapsed());
@@ -506,11 +525,13 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         if crate::recipe::tick(&mut db, &trace, &home, &mut recipes)? {
             swept = None;
         }
+        lines.people(&mut db, &trace)?;
         ticks::phase("evidence");
         crate::evidence::tick(&mut db, factory, &home, &mut records)?;
         ticks::phase("kit");
         kit.tick(&db)?;
         let fetched = kit.current();
+        lines.people(&mut db, &trace)?;
         ticks::phase("runs");
         tend(
             &mut db,
@@ -527,11 +548,13 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             &mut attaching,
             &mut starting,
             &mut sweeping,
+            &mut lines,
         )?;
         // Committed first, so a crash before the kill leaves an ended run, not a lost one.
         for tmux in tools::over_budget_in_turn(&mut db, &trace, &mut peeked, &watched)? {
             runtime::kill(&tmux);
         }
+        lines.people(&mut db, &trace)?;
         ticks::phase("background work");
         compact_idle(&db, &trace, &home, &scope, fetched)?;
         handle_stalls(&mut db, &trace, &home, &mut stalls)?;
@@ -540,12 +563,14 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         if let Some(export) = &mut export {
             send_spans(&db, &trace, &home, export)?;
         }
+        lines.people(&mut db, &trace)?;
         deliver::tick(&db, factory, &home, &mut deliveries)?;
         crate::attach::tick(&mut db, &trace, &mut attaching)?;
         push::tick(&db, &home, &mut pushing)?;
         if let Some(desktop) = &mut desktop {
             notify::tick(&db, desktop)?;
         }
+        lines.people(&mut db, &trace)?;
         snooze::tick(&mut db, &trace)?;
         state::age_queue(&db, &mut aged)?;
         read_states(&mut db, &mut reads)?;
@@ -553,6 +578,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         for tmux in crate::gates::tick(&mut db, &trace, &home, &mut grading, &head)? {
             runtime::kill(&tmux);
         }
+        lines.people(&mut db, &trace)?;
         if sweep_scripts(&db, factory, &home, &mut scripts)? {
             swept = None;
         }
@@ -566,6 +592,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             held = Some(Instant::now());
             crate::held::tick(&mut db, &trace, intake::now()?)?;
         }
+        lines.people(&mut db, &trace)?;
         ticks::phase("sweep");
         let due = swept.is_none_or(|at| at.elapsed() >= every) || sweeping.asked();
         if due && sweeping.start(&db, factory, &home)? {
@@ -581,6 +608,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         if ended {
             sweep::measure(&home);
         }
+        lines.people(&mut db, &trace)?;
         ticks::phase("reclaim");
         let under = || {
             room::measure(&home)
@@ -591,6 +619,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         if reclaiming.retires() {
             sweeping.retire(&db)?;
         }
+        lines.people(&mut db, &trace)?;
         ticks::phase("upgrade");
         let working = !(commands.is_empty()
             && recipes.is_empty()
@@ -606,7 +635,11 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             true => Duration::ZERO,
             false => entering.due().map_or(EVERY, |due| due.min(EVERY)),
         };
-        match listening.lines.recv_timeout(wait) {
+        let line = match lines.waiting.pop_front() {
+            Some(line) => Ok(line),
+            None => listening.lines.recv_timeout(wait),
+        };
+        match line {
             Ok(line) => {
                 ticks::begin();
                 ticks::phase("signals");
@@ -1101,6 +1134,65 @@ fn apply(
     Ok(())
 }
 
+/// A person's answer, dismiss or desk action, which waits for no tick. Desk actions share the path,
+/// so a cancel or a hold sent before an answer still applies first.
+enum Person {
+    Answer(Called<Answer>),
+    Dismiss(Called<Dismiss>),
+    Act(Act),
+}
+
+impl Person {
+    /// The person's write that `line` holds, if it holds one.
+    fn of(line: &str) -> Option<Person> {
+        match serde_json::from_str(line).ok()? {
+            Input::Answer(answer) => Some(Person::Answer(answer)),
+            Input::Dismiss(dismiss) => Some(Person::Dismiss(dismiss)),
+            Input::Act(act) => Some(Person::Act(act)),
+            _ => None,
+        }
+    }
+
+    /// The reply, and a tmux session to kill.
+    fn apply(
+        &self,
+        db: &mut Connection,
+        trace: &Trace,
+    ) -> Result<(Result<String, String>, Option<String>), Error> {
+        let head =
+            |worktree: &Path, branch: &str| runtime::kept_head(&runtime::home(), worktree, branch);
+        Ok(match self {
+            Person::Answer(answer) => (tools::answer(db, answer, trace, &head)?, None),
+            Person::Dismiss(dismiss) => (tools::dismiss(db, dismiss, trace.factory)?, None),
+            Person::Act(act) => tools::act(db, act, trace)?,
+        })
+    }
+}
+
+/// The socket's lines: a person's are applied between two steps of a tick, the others keep their
+/// order for its `signals` phase.
+struct Lines<'a> {
+    socket: &'a Receiver<Line>,
+    waiting: VecDeque<Line>,
+}
+
+impl Lines<'_> {
+    /// Applies the answers, dismisses and desk actions that arrived, in order.
+    fn people(&mut self, db: &mut Connection, trace: &Trace) -> Result<(), Error> {
+        while let Ok(line) = self.socket.try_recv() {
+            let Some(person) = Person::of(&line.text) else {
+                self.waiting.push_back(line);
+                continue;
+            };
+            let (reply, kill) = person.apply(db, trace)?;
+            let reply = serde_json::to_string(&reply).expect("a result serializes");
+            let _ = line.applied.send(reply);
+            kill.inspect(|tmux| runtime::kill(tmux));
+        }
+        Ok(())
+    }
+}
+
 /// What arrives on the socket: a hook's signal, a run's tool call, a person's answer, desk action
 /// or snooze, a pick or a comment on a report, a task's progress, a memory gate message, a quick
 /// request, a browser that turns notifications on or off, a visit to the desk, or a report read.
@@ -1123,8 +1215,8 @@ enum Input {
     Outside(crate::outside::Line),
     Signal(Signal),
     Call(Call),
-    Answer(Answer),
-    Dismiss(Dismiss),
+    Answer(Called<Answer>),
+    Dismiss(Called<Dismiss>),
     Act(Act),
     Snooze(Snooze),
     Choice(sections::Choice),
@@ -1236,7 +1328,7 @@ fn take_in(
     trace: &Trace,
     counter: Option<&embed::Counter>,
 ) -> Result<(), Error> {
-    match drain_some(bus, consumer, db, trace, counter, false)? {
+    match drain_some(bus, consumer, db, trace, counter, false, &mut |_| Ok(()))? {
         true => runners::flush(db, bus),
         false => Ok(()),
     }
@@ -1496,17 +1588,16 @@ fn take(
             )?),
             None,
         )),
-        Ok(Input::Answer(answer)) => Ok((
-            replied(tools::answer(db, &answer, trace, &|worktree, branch| {
-                runtime::kept_head(&runtime::home(), worktree, branch)
-            })?),
-            None,
-        )),
+        Ok(Input::Answer(answer)) => {
+            let (reply, kill) = Person::Answer(answer).apply(db, trace)?;
+            Ok((replied(reply), kill))
+        }
         Ok(Input::Dismiss(dismiss)) => {
-            Ok((replied(tools::dismiss(db, &dismiss, trace.factory)?), None))
+            let (reply, kill) = Person::Dismiss(dismiss).apply(db, trace)?;
+            Ok((replied(reply), kill))
         }
         Ok(Input::Act(act)) => {
-            let (reply, kill) = tools::act(db, &act, trace)?;
+            let (reply, kill) = Person::Act(act).apply(db, trace)?;
             Ok((replied(reply), kill))
         }
         Ok(Input::Snooze(snooze)) => Ok((replied(snooze::snooze(db, &snooze, trace)?), None)),
@@ -1561,6 +1652,7 @@ fn tend(
     attaching: &mut Vec<crate::attach::Attaching>,
     starting: &mut HashMap<i64, Option<slice::Cpu>>,
     sweeping: &mut sweep::Sweeping,
+    lines: &mut Lines,
 ) -> Result<(), Error> {
     let factory = trace.factory;
     let live = state::live(db)?;
@@ -1707,6 +1799,7 @@ fn tend(
     tools::enter_queued(db, factory)?;
     state::disk_due(db, || room::measure(home).ok().map(|room| room.disk_free))?;
     memory::reclaim(db)?;
+    lines.people(db, trace)?;
     perform(db, trace, home, commands)?;
     crate::keyboard::sweep(db, trace)?;
     let now: String = db.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
@@ -1725,6 +1818,8 @@ fn tend(
     // The last measurement of this tick, for the metrics.
     let mut last = None;
     let (promised, waiting) = loop {
+        // Each pass reads the queue again, so an answer between two starts is one it sees.
+        lines.people(db, trace)?;
         // Measured again after each start, since its clone and worktree take disk.
         let measured = OnceCell::new();
         let room = || measured.get_or_init(|| room::measure(home));
@@ -3385,12 +3480,13 @@ fn drain(
     trace: &Trace,
     counter: Option<&embed::Counter>,
 ) -> Result<(), Error> {
-    while !drain_some(bus, consumer, db, trace, counter, false)? {}
+    while !drain_some(bus, consumer, db, trace, counter, false, &mut |_| Ok(()))? {}
     Ok(())
 }
 
 /// Handles the oldest messages past `consumer`'s cursor, up to the bounds of one tick, and returns
 /// whether none is left. With `probe`, times the first read as the tick's probe of the log.
+/// `between` runs before each message.
 fn drain_some(
     bus: &dyn Log,
     consumer: &str,
@@ -3398,8 +3494,10 @@ fn drain_some(
     trace: &Trace,
     counter: Option<&embed::Counter>,
     probe: bool,
+    between: &mut dyn FnMut(&mut Connection) -> Result<(), Error>,
 ) -> Result<bool, Error> {
     some(bus, consumer, probe, &mut |delivery| {
+        between(db)?;
         let mut message = runners::clocked(delivery.message.clone(), delivery.logged);
         crate::decision::triage(db, trace, &mut message)?;
         let ended = state::handle(db, &message, trace, counter)?;
@@ -3629,6 +3727,71 @@ mod tests {
 
         drained.unwrap();
         assert_eq!(handled, 3);
+    }
+
+    #[test]
+    fn a_persons_writes_apply_in_order_between_two_messages_of_the_drain_and_the_other_lines_keep_theirs()
+     {
+        let dir = std::env::temp_dir().join(format!("priory-between-{}", std::process::id()));
+        fs::create_dir_all(dir.join("workflows")).unwrap();
+        fs::write(dir.join("factory.toml"), "name = \"t\"\n").unwrap();
+        fs::write(dir.join("workflows/w.toml"), workflow(&["a"])).unwrap();
+        let factory = priory_factory::rules::validated(&dir).unwrap();
+        let trace = Trace {
+            factory: &factory,
+            revision: None,
+            machine: None,
+            runner: None,
+            usage: |_, _| None,
+        };
+        let mut db = state::memory();
+        db.execute_batch(
+            "INSERT INTO asks (id, kind, name, question, options)
+             VALUES (1, 'outside', 'o', 'q', '[\"yes\"]')",
+        )
+        .unwrap();
+        let bus = backlog("between", 3);
+        let (sender, socket) = std::sync::mpsc::channel();
+        let (applied, reply) = std::sync::mpsc::channel();
+        let send = |text: &str| {
+            let applied = applied.clone();
+            let text = text.to_owned();
+            sender.send(Line { text, applied }).unwrap();
+        };
+        let mut lines = Lines {
+            socket: &socket,
+            waiting: VecDeque::new(),
+        };
+        let mut passes = 0;
+
+        let drained = drain_some(&bus, "c", &mut db, &trace, None, false, &mut |db| {
+            passes += 1;
+            if passes == 2 {
+                send(r#"{"version":true}"#);
+                send(r#"{"act":"cancel","task":7}"#);
+                send(r#"{"ask":1,"text":"yes","revision":1,"by":"serve"}"#);
+                send(r#"{"dismiss":1,"revision":1}"#);
+                send(r#"{"read":9}"#);
+            }
+            lines.people(db, &trace)?;
+            if passes == 2 {
+                let cancelled = reply.try_recv().expect("the cancel waited for the drain");
+                assert!(
+                    cancelled.contains("Err") && cancelled.contains('7'),
+                    "{cancelled}"
+                );
+                let replied = reply.try_recv().expect("the answer waited for the drain");
+                assert_eq!(replied, r#"{"Ok":"ask o answered"}"#);
+                assert!(reply.try_recv().unwrap().contains("Err"));
+            }
+            Ok(())
+        });
+
+        assert!(drained.unwrap());
+        assert_eq!(passes, 3);
+        let waiting: Vec<_> = lines.waiting.iter().map(|line| &line.text).collect();
+        assert_eq!(waiting, [r#"{"version":true}"#, r#"{"read":9}"#]);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

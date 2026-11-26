@@ -5,8 +5,12 @@ import { plural } from "../desk.js";
 import { backTo } from "../pages.js";
 import { taskLabel } from "../tasks.js";
 import { api, refresh } from "./data.js";
-import { age, ago, autolinked, focusId, html, icon, layout, place, post, role, state, tile, timeTag, track, writeRefusal } from "./shared.js";
+import { age, ago, autolinked, focusId, html, icon, layout, place, post, role, routeKey, tile, timeTag, track, writeRefusal } from "./shared.js";
+import { state } from "./state.js";
 
+// The batch the page or the go ask shows, and the go ask's plan edits: the entry whose menu is open,
+// the drop armed by its first tap, whether an edit is in flight, and what the last one said.
+Object.assign(state, { batch: null, planEdit: { at: null, batch: null, open: null, armed: null, busy: false, note: null } });
 
 // A batch as /api/batches/{id} serves it: by id on its page, by its planning task's key in a go ask.
 // `version` is the go ask's revision: a plan read for another revision is never drawn beside it, so a
@@ -152,6 +156,13 @@ export async function editPlan(target) {
   if (state.batch) state.batch.stale = true;
   render();
   refresh();
+}
+
+// Leaving the page closes an entry's menu and disarms its Drop.
+export const closePlanEdit = () => { Object.assign(state.planEdit, { open: null, armed: null }); };
+
+export function batchBefore() {
+  if (state.renderedKey && state.renderedKey !== routeKey()) closePlanEdit();
 }
 
 export function batchClick(action, target) {

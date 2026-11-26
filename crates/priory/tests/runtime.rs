@@ -12017,6 +12017,160 @@ fn a_green_check_counting_a_failure_wakes_the_agent_with_the_failed_check() {
     );
 }
 
+/// The run `id` of the check `gate` as an intake that counted each suite apart stored it.
+fn stored_gate(id: u64, conclusion: &str) -> Message {
+    let mut gate = check(id, 0);
+    gate.data["name"] = json!("gate");
+    gate.data["app"] = json!("github-actions");
+    gate.data["conclusion"] = json!(conclusion);
+    gate.data["failing"] = json!(6);
+    gate
+}
+
+/// As `gated`, with `checks` stored before the result.
+fn gated_after(mut setup: Setup, checks: &[Message]) -> Setup {
+    setup.calls(&[
+        wait(on_pull_7("review")),
+        passed_at(ABC),
+        json!({ "name": "result", "arguments": { "outcome": "quiet", "summary": "all quiet" } }),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.hold("hold-submit");
+    setup.publish(&reviewed());
+    setup.until("outbox", |rows| with(rows, 3, "attempted") == 1);
+    for check in checks {
+        setup.publish(check);
+    }
+    setup.until("inbox", |rows| rows.len() == 2 + checks.len());
+    setup.release("hold-submit");
+    setup.until("runs", |rows| rows.len() >= 2 && rows[1][7] == "asleep");
+    setup
+}
+
+fn superseded_gate() -> [Message; 3] {
+    [
+        stored_gate(1, "failure"),
+        stored_gate(2, "failure"),
+        stored_gate(3, "success"),
+    ]
+}
+
+#[test]
+fn a_red_check_a_later_run_of_it_superseded_wakes_no_agent_and_a_later_real_one_does() {
+    let setup = gated_after(Setup::new("gate-superseded"), &superseded_gate());
+    stays_asleep_after(&setup, 2);
+
+    setup.publish(&red_at(9, "lint", ABC));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    assert!(
+        typed[2].starts_with(&format!(
+            "wait 2 fired: check lint at {ABC} concluded failure\n"
+        )),
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn a_superseded_red_check_lets_the_merge_enter_the_step_after_it() {
+    let setup = gated_after(
+        Setup::with_workflow("after-merge-superseded", AFTER_MERGE),
+        &superseded_gate(),
+    );
+    stays_asleep_after(&setup, 2);
+
+    setup.publish(&closed());
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    let runs = setup.rows("runs");
+    assert_eq!(runs.len(), 3, "{runs:?}");
+    assert_eq!(runs[2][2], "watch");
+}
+
+#[test]
+fn a_red_check_of_one_workflow_fires_though_another_workflow_has_a_later_green_job_of_its_name() {
+    let of = |id: u64, conclusion: &str, workflow: u64| {
+        let mut check = stored_gate(id, conclusion);
+        check.data["origin"] = json!(format!("workflow:{workflow}:pull_request"));
+        check.data["failing"] = json!(1);
+        check
+    };
+    let checks = [of(1, "failure", 12), of(2, "success", 13)];
+    let setup = gated_after(Setup::new("gate-two-workflows"), &checks);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    assert!(
+        typed[2].starts_with(&format!(
+            "wait 2 fired: check gate at {ABC} concluded failure\n"
+        )),
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn a_red_check_stored_without_an_origin_fires_though_a_later_check_of_its_name_has_one() {
+    let mut green = stored_gate(2, "success");
+    green.data["origin"] = json!("workflow:13:pull_request");
+    green.data["failing"] = json!(1);
+    let checks = [stored_gate(1, "failure"), green];
+    let setup = gated_after(Setup::new("gate-no-origin"), &checks);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    assert!(
+        typed[2].starts_with(&format!(
+            "wait 2 fired: check gate at {ABC} concluded failure\n"
+        )),
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn a_red_check_a_later_run_skipped_fires() {
+    let of = |id: u64, conclusion: &str| {
+        let mut check = stored_gate(id, conclusion);
+        check.data["origin"] = json!("workflow:12:pull_request");
+        check.data["failing"] = json!(1);
+        check
+    };
+    let checks = [of(1, "failure"), of(2, "skipped")];
+    let setup = gated_after(Setup::new("gate-skipped"), &checks);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+}
+
+#[test]
+fn a_fix_that_fails_the_same_check_stops_the_loop_though_one_commit_has_a_superseded_red() {
+    let setup = gated("breaker-superseded");
+    setup.calls(&[passed_at(DEF), passed_at(FED)]);
+    setup.publish(&red_at(1, "test", ABC));
+    setup.until("runs", |rows| rows.len() == 3 && rows[2][7] == "asleep");
+    setup.publish(&red_at(2, "lint", DEF));
+    setup.until("runs", |rows| rows.len() == 4 && rows[3][7] == "asleep");
+    let of_unit = |id: u64, conclusion: &str| {
+        let mut check = red_at(id, "unit", FED);
+        check.data["conclusion"] = json!(conclusion);
+        check.data["failing"] = json!(0);
+        check.data["pending"] = json!(1);
+        check
+    };
+    // The green rerun is stored first, so the older red is superseded when its event comes.
+    setup.publish(&of_unit(4, "success"));
+    setup.publish(&of_unit(3, "failure"));
+
+    setup.publish(&red_at(5, "lint", FED));
+
+    setup.until("asks", |rows| rows.len() == 1);
+    assert_eq!(
+        open_asks(&setup)[0]["title"],
+        "ci-fix-exhausted: lint (failure)"
+    );
+}
+
 #[test]
 fn green_checks_at_the_result_commit_do_not_finish_the_task_when_the_head_moved_before_it() {
     let mut setup = Setup::new("gate-moved-before");
@@ -21656,7 +21810,7 @@ impl Setup {
         let answers = [
             (
                 "open",
-                json!([{ "data": { "repository": { "pullRequests": { "nodes": pulls } } } }]),
+                json!({ "data": { "repository": { "pullRequests": { "nodes": pulls } } } }),
             ),
             ("named", json!({ "data": { "repository": named } })),
             ("issues", json!(issues)),
@@ -21671,7 +21825,7 @@ impl Setup {
         let fake = self.dir.join("fake");
         let script = format!(
             "#!/bin/sh\necho \"$*\" >> '{0}/gh-api.log'\ncase \"$*\" in\n  \
-             \"api graphql --paginate\"*) cat '{0}/gh-open.json' ;;\n  \
+             \"api graphql -F\"*) cat '{0}/gh-open.json' ;;\n  \
              \"api graphql\"*) cat '{0}/gh-named.json' ;;\n  \
              \"api repos/owner/repo/issues?\"*) cat '{0}/gh-issues.json' ;;\n  *) echo '[]' ;;\nesac\n",
             fake.display()
@@ -24083,6 +24237,29 @@ fn a_comment_on_a_merged_pull_request_of_an_open_stack_wakes_the_task() {
         "{outbox:?}"
     );
     setup.until("runs", |rows| rows.len() == 2);
+}
+
+#[test]
+fn a_superseded_red_check_fires_no_gate_of_a_stack() {
+    let setup = opened_stack("stack-superseded");
+    let gate = |id: u64, conclusion: &str| {
+        on_stack(
+            7,
+            "github.check_run.completed",
+            json!({ "name": "gate", "app": "github-actions", "conclusion": conclusion,
+                    "github_id": id, "pending": 0, "failing": 6 }),
+        )
+    };
+    setup.until("waits", |rows| rows.len() == 3);
+
+    // The cancelled duplicate's job ends after the rerun of the other run passed.
+    setup.publish(&gate(3, "success"));
+    setup.publish(&gate(1, "failure"));
+    setup.publish(&gate(2, "failure"));
+
+    setup.until("inbox", |rows| rows.len() == 4);
+    stays_asleep_after(&setup, 1);
+    assert_eq!(setup.rows("waits").len(), 3);
 }
 
 #[test]
@@ -30008,6 +30185,27 @@ fn an_answer_sent_to_another_runners_ask_is_accepted_applied_by_its_runner_and_i
     assert_eq!(closed["answer"], "approved", "{closed}");
     assert_eq!(closed["submissions"][0]["submission"], submission.as_str());
     a.until("tasks", |rows| rows[0][4] == "done");
+}
+
+#[test]
+fn a_resent_answer_to_another_runners_ask_gets_its_first_reply_after_the_runner_applied_it() {
+    let (a, _b, ask, address) = asked_on_a("remote-resend");
+    let id = format!("a:{ask}");
+    until_ask(&address, &id, |ask| ask["state"] == "open");
+    let body =
+        r#"{"option": "approved", "revision": 1, "call": "0a1b2c3d-0000-4000-8000-000000000002"}"#;
+    let path = format!("/api/asks/{id}/answer");
+
+    let (status, first) = runner_http(&address, "POST", &path, body);
+    assert_eq!(status, 202, "{first}");
+    until_ask(&address, &id, |ask| {
+        ask["state"] == "answered" && ask["submissions"][0]["outcome"] == "answered"
+    });
+    let (status, again) = runner_http(&address, "POST", &path, body);
+
+    assert_eq!(status, 202, "{again}");
+    assert_eq!(again["submission"], first["submission"]);
+    assert_eq!(on_log(&a, "priory.ask.answered").len(), 1);
 }
 
 #[test]

@@ -2,8 +2,9 @@
 import { memo, useEffect, useMemo, useRef } from "react";
 import { Outlet, useRouterState } from "@tanstack/react-router";
 import { Frame, StaleStrip } from "../components/Frame.jsx";
-import { needs, parts, pathOf, shellOf, where } from "../frame.js";
+import { parts, pathOf, shellOf, where } from "../frame.js";
 import { useDesk, useKeptTask, useKeptTasks, useLinks, useStore, useViews } from "../hooks/useData.js";
+import { useShortcuts } from "../hooks/useShortcuts.js";
 import { useSize } from "../hooks/useScreen.js";
 import { pageTitle } from "../pages.js";
 import { placeAt, replace } from "../router.js";
@@ -64,6 +65,7 @@ const Signed = memo(function Signed() {
   const task = useKeptTask(at.task);
   const tasks = useKeptTasks();
   useAnnounce(desk);
+  useShortcuts(at, place.trail.listUrl);
   useEffect(() => {
     if (place.replace) replace(place.replace);
   }, [place]);
@@ -73,8 +75,8 @@ const Signed = memo(function Signed() {
   const layout = views?.views.default.layout;
   const list = place.trail.list;
   const shell = useMemo(() => layout && shellOf(at, { size, list, layout }), [at, size, list, layout]);
-  const settings = parts(place.href)[1];
-  const value = useMemo(() => shell && { href: place.href, entry: place.entry, trail: place.trail, at, size, shell, names: needs(at, shell, settings) }, [place, at, size, shell, settings]);
+  const section = parts(place.href)[1];
+  const value = useMemo(() => shell && { href: place.href, entry: place.entry, trail: place.trail, at, size, shell, section, layout }, [place, at, size, shell, section, layout]);
   if (!views || !desk) return <Loading failed={failed} />;
   const open = desk.items.filter((item) => item.kind === "ask").length;
   return <Place.Provider value={value}><Frame shell={shell} size={size} views={views} open={open} onRetry={refresh}><Outlet /></Frame></Place.Provider>;
