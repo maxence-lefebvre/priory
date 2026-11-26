@@ -389,6 +389,8 @@ impl Setup {
              cat \"{dir}/checks-$sha.json\" 2>/dev/null || \
              echo '{{\"total_count\":0,\"check_runs\":[]}}' ;;\n  repos/owner/repo/compare/*)\n    \
              cat \"{dir}/compare.json\" 2>/dev/null || echo '{{\"status\":\"diverged\"}}' ;;\n  \
+             repos/owner/repo/actions/runs\\?head_sha=*)\n    \
+             cat \"{dir}/runs.json\" 2>/dev/null || echo '{{\"workflow_runs\":[]}}' ;;\n  \
              repos/owner/repo/actions/runs/*)\n    \
              [ -f \"{dir}/403-run-${{2##*/}}\" ] && {{ echo 'gh: Resource not accessible by personal access token (HTTP 403)' >&2; exit 1; }}\n    \
              cat \"{dir}/workflow-${{2##*/}}.json\" 2>/dev/null || \
@@ -608,6 +610,231 @@ fn a_merge_commit_is_read_until_every_check_completed_then_not_again() {
         "the poll that saw them all complete was the last"
     );
     assert_eq!(setup.red_after_merge(), 1);
+}
+
+/// A merge of task 1 at `m10` with three runs of `ci` in suites 10, 20 and 20, only the last green,
+/// where suites 10 and 20 are runs of the workflows `workflows`.
+fn rerun_at_merge(name: &str, workflows: [u64; 2]) -> Setup {
+    let setup = Setup::new(name);
+    setup.polled_repo();
+    setup.task(1, "green");
+    setup.handle(&[merged_on(10, 1, "aaa", "m10", "2026-11-20T10:00:00Z")]);
+    let runs = [(1, 10, "failure"), (2, 20, "failure"), (3, 20, "success")].map(
+        |(id, suite, conclusion)| {
+            json!({ "id": id, "name": "ci", "status": "completed", "conclusion": conclusion,
+                    "completed_at": "2026-11-20T10:05:00Z", "check_suite": { "id": suite },
+                    "html_url": format!("https://github.com/owner/repo/actions/runs/{suite}/job/{id}"),
+                    "app": { "slug": "github-actions" } })
+        },
+    );
+    let checks = json!({ "total_count": 3, "check_runs": runs });
+    fs::write(setup.dir.join("checks-m10.json"), checks.to_string()).unwrap();
+    let runs = [(10, workflows[0]), (20, workflows[1])].map(|(suite, workflow)| {
+        json!({ "check_suite_id": suite, "workflow_id": workflow, "event": "push",
+                "head_branch": "main" })
+    });
+    let runs = json!({ "workflow_runs": runs });
+    fs::write(setup.dir.join("runs.json"), runs.to_string()).unwrap();
+    setup
+}
+
+#[test]
+fn a_superseded_run_on_a_merge_commit_is_not_red() {
+    let setup = rerun_at_merge("merge-superseded", [12, 12]);
+
+    setup.poll();
+
+    assert_eq!(setup.red_after_merge(), 0);
+    let checks = setup.completed_checks();
+    assert_eq!(checks.len(), 1, "{checks:?}");
+    assert_eq!(checks[0]["origin"], "workflow:12:push:main");
+    assert_eq!(
+        (&checks[0]["pending"], &checks[0]["failing"]),
+        (&json!(0), &json!(0))
+    );
+}
+
+#[test]
+fn a_red_run_on_a_merge_commit_stays_red_when_another_workflow_passed() {
+    let setup = rerun_at_merge("merge-two-workflows", [12, 13]);
+
+    setup.poll();
+
+    assert_eq!(setup.red_after_merge(), 1);
+    assert_eq!(setup.completed_checks().len(), 2);
+}
+
+/// The check runs of `ci` in `runs`, each an id, a conclusion and its own suite, at `sha`.
+fn suites_at(setup: &Setup, sha: &str, at: &str, runs: &[(u64, &str)]) {
+    let runs: Vec<Value> = runs
+        .iter()
+        .map(|(id, conclusion)| {
+            json!({ "id": id, "name": "ci", "head_sha": sha, "status": "completed",
+                    "conclusion": conclusion, "completed_at": "2026-11-20T10:05:00Z",
+                    "check_suite": { "id": id * 10 },
+                    "html_url": format!("https://github.com/owner/repo/actions/runs/{id}/job/{id}"),
+                    "app": { "slug": "github-actions" } })
+        })
+        .collect();
+    let answer = json!({ "total_count": runs.len(), "check_runs": runs });
+    fs::write(
+        setup.dir.join(format!("checks-{at}.json")),
+        answer.to_string(),
+    )
+    .unwrap();
+}
+
+/// Makes each of `suites` a push run of workflow 1 on its branch.
+fn pushed(setup: &Setup, suites: &[(u64, &str)]) {
+    let runs: Vec<Value> = suites
+        .iter()
+        .map(|(suite, branch)| {
+            json!({ "check_suite_id": suite, "workflow_id": 1, "event": "push", "head_branch": branch })
+        })
+        .collect();
+    let runs = json!({ "workflow_runs": runs });
+    fs::write(setup.dir.join("runs.json"), runs.to_string()).unwrap();
+}
+
+/// A merge of task 1 at `m10`.
+fn merged_task(name: &str) -> Setup {
+    let setup = Setup::new(name);
+    setup.polled_repo();
+    setup.task(1, "green");
+    setup.handle(&[merged_on(10, 1, "aaa", "m10", "2026-11-20T10:00:00Z")]);
+    setup
+}
+
+#[test]
+fn a_run_of_the_same_workflow_on_a_tag_at_the_merge_commit_supersedes_no_red() {
+    for conclusion in ["skipped", "success"] {
+        let setup = merged_task(&format!("merge-tag-{conclusion}"));
+        suites_at(&setup, "m10", "m10", &[(1, "failure"), (2, conclusion)]);
+        pushed(&setup, &[(10, "main"), (20, "v1")]);
+
+        setup.poll();
+
+        assert_eq!(setup.red_after_merge(), 1, "{conclusion}");
+    }
+}
+
+#[test]
+fn a_second_run_of_a_workflow_no_push_started_supersedes_no_red_on_a_merge_commit() {
+    for event in [
+        "workflow_run",
+        "issue_comment",
+        "workflow_dispatch",
+        "repository_dispatch",
+        "schedule",
+    ] {
+        let setup = merged_task(&format!("merge-{event}"));
+        suites_at(&setup, "m10", "m10", &[(1, "failure"), (2, "success")]);
+        let runs = [10, 20].map(|suite| {
+            json!({ "check_suite_id": suite, "workflow_id": 1, "event": event, "head_branch": "main" })
+        });
+        let runs = json!({ "workflow_runs": runs });
+        fs::write(setup.dir.join("runs.json"), runs.to_string()).unwrap();
+
+        setup.poll();
+
+        assert_eq!(setup.red_after_merge(), 1, "{event}");
+        let checks = setup.completed_checks();
+        let mut origins: Vec<_> = checks
+            .iter()
+            .map(|check| check["origin"].as_str().unwrap())
+            .collect();
+        origins.sort_unstable();
+        assert_eq!(origins, ["suite:10", "suite:20"], "{event}");
+    }
+}
+
+#[test]
+fn a_red_run_on_a_merge_commit_keeps_one_origin_when_a_second_run_appears() {
+    let setup = merged_task("merge-one-origin");
+    pushed(&setup, &[(10, "main"), (20, "main")]);
+    suites_at(&setup, "m10", "m10", &[(1, "failure")]);
+    setup.poll();
+    suites_at(&setup, "m10", "m10", &[(1, "failure"), (2, "success")]);
+    setup.poll();
+
+    let checks = setup.completed_checks();
+    assert!(
+        checks
+            .iter()
+            .all(|check| check["origin"] == "workflow:1:push:main"),
+        "{checks:?}"
+    );
+}
+
+#[test]
+fn a_cancelled_rerun_of_a_failed_run_stays_red_though_the_tip_passed() {
+    let setup = merged_task("merge-failed-cancelled");
+    suites_at(&setup, "m10", "m10", &[(1, "failure"), (2, "cancelled")]);
+    pushed(&setup, &[(10, "main"), (20, "main")]);
+    setup.tip_run("ci", "m11", "completed", "success", "ahead");
+
+    setup.poll();
+
+    assert_eq!(setup.red_after_merge(), 1);
+}
+
+#[test]
+fn a_tip_whose_red_run_was_rerun_clears_the_alarm_and_a_tags_pass_there_does_not() {
+    for (name, second, red) in [("rerun", "main", false), ("tag", "v1", true)] {
+        let setup = red_at_merge(&format!("red-tip-{name}"));
+        fs::write(setup.dir.join("compare.json"), r#"{"status":"ahead"}"#).unwrap();
+        pushed(&setup, &[(20, "main"), (30, second)]);
+        suites_at(
+            &setup,
+            "m11",
+            "heads-main",
+            &[(2, "failure"), (3, "success")],
+        );
+
+        setup.poll();
+
+        assert_eq!(still_red(&setup), red, "{name}");
+    }
+}
+
+/// The check `name` at the merge commit of pull request `pull`, as the intake publishes it.
+fn check_at(pull: u64, sha: &str, name: &str, id: u64, conclusion: &str, pending: u64) -> Message {
+    on_pull(
+        "github.check_run.completed",
+        pull,
+        1,
+        sha,
+        json!({ "conclusion": conclusion, "name": name, "app": "github-actions", "github_id": id,
+                "origin": "workflow:1:push:main", "base_branch": "main", "pending": pending,
+                "failing": u64::from(pending == 0 || conclusion == "failure"),
+                "url": format!("https://github.com/owner/repo/actions/runs/{id}/job/{id}") }),
+    )
+}
+
+#[test]
+fn a_superseded_red_stands_for_no_failing_event_a_crash_left_out() {
+    // `unit` failed and passed on its rerun; the crash came before the red `ci`.
+    let partial = |pull, sha| {
+        [
+            check_at(pull, sha, "unit", 21, "failure", 1),
+            check_at(pull, sha, "unit", 22, "success", 0),
+        ]
+    };
+    let setup = merged_task("crash-superseded");
+    setup.handle(&partial(10, "m10"));
+    setup.checks_at("m10", &[(23, "completed", "failure")]);
+    setup.poll();
+    assert_eq!(setup.reads_of("m10"), 1);
+
+    let setup = red_at_merge("crash-superseded-pass");
+    setup.task(2, "green");
+    setup.handle(&[merged_on(11, 2, "bbb", "m11", "2026-11-20T11:00:00Z")]);
+    setup.handle(&partial(11, "m11"));
+    setup.handle(&[check_at(11, "m11", "ci", 24, "success", 1)]);
+    setup.tip_run("ci", "m12", "in_progress", "", "ahead");
+    setup.checks_at("m11", &[(24, "in_progress", "")]);
+    setup.poll();
+    assert!(still_red(&setup));
 }
 
 /// A merge of task 1 at `m10` whose `ci` run was cancelled.

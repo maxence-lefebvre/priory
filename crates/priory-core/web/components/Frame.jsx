@@ -1,10 +1,10 @@
 // The frame around a page: the stale strip, the top bar, the navigation and the grid the page sits in.
-import { memo } from "react";
+import { memo, useCallback, useSyncExternalStore } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { leaves } from "../frame.js";
 import { PANELS } from "../pages.js";
-import { oldestRead } from "../queries.js";
-import { session } from "../session.js";
+import { oldestRead, unread } from "../queries.js";
+import { failureWords, session } from "../session.js";
 import { ago } from "../times.js";
 import { useStore } from "../hooks/useData.js";
 import { useMinute } from "../hooks/useScreen.js";
@@ -15,14 +15,29 @@ export const Connection = memo(function Connection() {
   return <span className={`conn ${off ? "off" : ""}`}>{off ? "reconnecting" : "live"}</span>;
 });
 
+// What a page says when one of its listings could not be read again, while answers still go.
+function useUnread(cache) {
+  const watch = useCallback((changed) => cache.getQueryCache().subscribe(changed), [cache]);
+  const words = () => {
+    const found = unread(cache);
+    if (!found) return null;
+    const why = failureWords(found.error);
+    return found.held ? `Could not read the ${found.name} again: ${why}. This is its last read.` : `Could not read the ${found.name}: ${why}.`;
+  };
+  return useSyncExternalStore(watch, words, words);
+}
+
 export const StaleStrip = memo(function StaleStrip({ onRetry }) {
   const { failed } = useStore(session);
   const cache = useQueryClient();
+  const page = useUnread(cache);
   useMinute();
-  if (!failed) return null;
+  if (!failed && !page) return null;
+  const retry = <button type="button" className="ghost" data-retry onClick={onRetry}>Retry</button>;
+  if (!failed) return <div className="stale" role="status"><Icon name="unplug" size="s15" /><span>{page}</span>{retry}</div>;
   const read = oldestRead(cache);
   const since = read ? `Last update ${ago(new Date(read).toISOString())}.` : "";
-  return <div className="stale" role="status"><Icon name="unplug" size="s15" /><span>{`Reconnecting: ${failed}. ${since}`}</span><button type="button" className="ghost" data-retry onClick={onRetry}>Retry</button></div>;
+  return <div className="stale" role="status"><Icon name="unplug" size="s15" /><span>{`Reconnecting: ${failed}. ${since}`}</span>{retry}</div>;
 });
 
 const TopBar = memo(function TopBar({ factory }) {

@@ -114,11 +114,14 @@ started elsewhere does not change it. A command you run yourself must see the sa
 `no priory daemon listens on <path>`. The path is in that error. The daemon reads one connection at a time, and drops one that sends no
 full line within 2 seconds, so a silent client cannot stop the others.
 
-On `SIGTERM` the daemon finishes the phase of its tick in progress, then takes no more connections,
-answers those it has within 20 seconds, and ends by that signal. A phase can take as long as its
-slowest step, so the stop takes that plus 20 seconds. systemd kills the daemon after `TimeoutStopSec`,
-90 seconds by default: raise it when a factory's steps can take longer than about 60 seconds. A second
-`SIGTERM` ends the daemon at once.
+On `SIGTERM` the daemon finishes the step of its tick in progress, then takes no more connections,
+answers those it has within 20 seconds, and ends by that signal. It checks for the stop between the
+phases of a tick, and between the live runs it tends, and starts no run after it. A step can take as
+long as its command's timeout, such as a tmux call that hangs, so the stop takes that plus 20 seconds.
+systemd kills the daemon after `TimeoutStopSec`, 90 seconds by default: raise it when a factory's
+command timeout is longer than about 60 seconds. The daemon does not cut a command short at a stop,
+since it reads a tmux call that timed out as a run that ended. A second `SIGTERM` ends the daemon at
+once.
 
 The stop writes `<socket>.stopping` beside the socket, and the next daemon removes it. While that file
 is under 50 seconds old, a command that writes and `priory memory` wait up to 30 seconds for the next

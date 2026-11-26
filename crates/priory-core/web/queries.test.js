@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { QueriesObserver, QueryObserver } from "@tanstack/react-query";
-import { client, heldRevision, keyOf, moved, oldestRead, params, refreshMounted, restore, snapshot, staleAll, stuck } from "./queries.js";
+import { client, heldRevision, keyOf, moved, oldestRead, params, refreshMounted, restore, snapshot, staleAll, stuck, unread } from "./queries.js";
 
 // A server whose listings the test changes, which records each path read.
 function server() {
@@ -159,12 +159,26 @@ test("a failed re-read keeps the last data, says why, and a later read says it i
 
 test("one listing that lands does not say another's failure is over", async (t) => {
   const { cache, failing, heard } = start(t);
-  await mount(t, cache, [["desk"], keyOf("runs")]);
-  failing.set("runs", 500);
+  await mount(t, cache, [["desk"], keyOf("asks")]);
+  failing.set("asks", 500);
   await moved(cache);
   heard.failed.length = 0;
   await moved(cache);
-  assert.deepEqual(heard.failed, ["/api/runs answered 500"]);
+  assert.deepEqual(heard.failed, ["/api/asks answered 500"]);
+});
+
+test("only the listings an answer depends on are heard, and a page's own listing says it was not read", async (t) => {
+  for (const name of ["queue", "tasks", "runs", "report", "reports"]) {
+    const { cache, failing, heard } = start(t);
+    await mount(t, cache, [["desk"], keyOf("asks"), keyOf(name)]);
+    assert.equal(unread(cache), null);
+    failing.set(name === "report" ? "reports/latest" : name, 500);
+    assert.equal(await moved(cache), false);
+    assert.deepEqual([heard.failed.filter(Boolean), unread(cache).name], [[], name]);
+    failing.clear();
+    await moved(cache);
+    assert.equal(unread(cache), null);
+  }
 });
 
 test("a detail that fails is its page's to say", async (t) => {
@@ -269,24 +283,14 @@ test("no snapshot, and one that is not ours, restore nothing", (t) => {
   assert.deepEqual(cache.getQueryCache().getAll(), []);
 });
 
-test("a detail that cannot be read again fails the refresh, shows the sign, and holds no poll back", async (t) => {
+test("a detail that cannot be read again fails the refresh, locks nothing, and holds no poll back", async (t) => {
   const { cache, body, failing, heard } = start(t);
   await mount(t, cache, [["desk"], ["task", 7]]);
   failing.set("tasks/7", 500);
   body.desk.revision = 2;
   assert.equal(await moved(cache), false);
-  assert.equal(heard.failed.at(-1), "/api/tasks/7 answered 500");
+  assert.deepEqual(heard.failed.filter(Boolean), []);
   assert.equal(heldRevision(cache), 2);
-});
-
-test("a detail that lands last says the failure is over", async (t) => {
-  const { cache, failing, heard } = start(t);
-  await mount(t, cache, [["desk"], ["task", 7]]);
-  failing.set("tasks/7", 500);
-  await moved(cache);
-  failing.clear();
-  await cache.refetchQueries({ queryKey: ["task", 7] });
-  assert.equal(heard.failed.at(-1), null);
 });
 
 test("a detail never read keeps a listing's recovery heard", async (t) => {
@@ -304,9 +308,9 @@ test("a detail never read keeps a listing's recovery heard", async (t) => {
 test("leaving the page whose read failed says the failure is over", async (t) => {
   const { cache, failing, heard } = start(t);
   await mount(t, cache, [["desk"]]);
-  failing.set("runs", 500);
-  const page = await mount(t, cache, [keyOf("runs")]);
-  assert.equal(heard.failed.at(-1), "/api/runs answered 500");
+  failing.set("asks", 500);
+  const page = await mount(t, cache, [keyOf("asks")]);
+  assert.equal(heard.failed.at(-1), "/api/asks answered 500");
   page.leave();
   assert.equal(heard.failed.at(-1), null);
 });

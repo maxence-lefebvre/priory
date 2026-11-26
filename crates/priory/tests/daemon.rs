@@ -859,11 +859,12 @@ fn a_process_waits_for_a_migration_once_then_refuses_at_once() {
 #[test]
 fn a_migration_replaces_the_floor_it_found() {
     let (setup, schema) = older("floor-cleared");
+    // From before 124, which rebuilds: no binary before it may open the file after it.
+    header(&setup, "user_version", 123);
     header(&setup, "application_id", 5);
     succeeded(&in_home(&setup, &["daemon", "--once"]).output().unwrap());
     assert_eq!(version(&setup), schema);
-    // The last migration declares no kind, so only this schema's binaries open the file.
-    assert_eq!(header(&setup, "application_id", 0), schema);
+    assert_eq!(header(&setup, "application_id", 0), 124);
 }
 
 #[test]
@@ -939,4 +940,26 @@ fn a_newer_state_opens_only_from_its_floor_on() {
         assert_eq!(setup.daemon().status.success(), opens, "{floor} daemon");
         assert_eq!(version(&setup), schema + 5);
     }
+}
+
+#[test]
+fn a_reader_of_a_newer_state_is_told_to_run_the_newer_priory() {
+    let setup = Setup::new("read-newer");
+    succeeded(&setup.priory(&["tasks"]));
+    let schema = version(&setup);
+    header(&setup, "user_version", schema + 1);
+    header(&setup, "application_id", 0);
+
+    let refused = in_home(&setup, &["memories"]).output().unwrap();
+
+    let error = String::from_utf8_lossy(&refused.stderr);
+    assert!(!refused.status.success());
+    assert!(
+        error.contains(&format!(
+            "state schema {} is newer than this priory knows",
+            schema + 1
+        )),
+        "{error}"
+    );
+    assert!(error.contains("run the newer priory"), "{error}");
 }
