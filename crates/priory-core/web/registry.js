@@ -9,7 +9,7 @@
  *   `Drawer` the `panels` beside it.
  * - Legacy, the same four in lower case, each a function that answers the HTML: `list(wide)`,
  *   `page(size)`, `detail(id)`, `drawer(id, wide, panels)`. `needs` are the listings `list` and `page`
- *   draw from, also in a `preview()`, the page as a theme preview shows it; `detailNeeds` those of `detail` and `drawer`, read by nobody once a part is in React.
+ *   draw from; `detailNeeds` those of `detail` and `drawer`, read by nobody once a part is in React.
  * - Document events: `click(action, target, event)`, `submit(action, form)`, `input(target)`,
  *   `change(target)`, `key(event)`, and `keyFirst(event)`, which also runs inside a field. True: acted.
  * - Legacy draws: `fields` are the ids of text fields that keep their caret, `kept` the cached reads

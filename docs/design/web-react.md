@@ -177,8 +177,8 @@ is. `registry.js` says what an entry holds.
    `usePlace()` gives the size.
    Return one tree for every size, with `listClass(size, "list page")` on the list: on a phone `.flat`
    gives it no box, so a rotation keeps the page's fields, focus and caret. `components/` holds the
-   saved views' chips (`SavedViews`) and a phone's top and panel (`PhonePage`). A theme preview is
-   `LegacyPreview` of `PageGrid.jsx`, which brings the listings the Desk needs.
+   saved views' chips (`SavedViews`), a phone's top and panel (`PhonePage`), and what a part says
+   while its listings are not read (`NotReady`). A theme preview draws `DeskPreview` of `Desk.jsx`.
 3. In the page's entry, put the components in place of the legacy `list`, `page`, `detail` or `drawer`.
    Delete the `needs`, `fields`, `kept`, `older` and events those served.
 4. Delete `legacy/<page>.js`, unless the list below keeps it. Its part of `state` goes with it.
@@ -194,12 +194,8 @@ No port deletes these files:
 |---|---|
 | `state.js`, `shared.js`, `data.js`, `frame.js` | the last port: every legacy part draws with them |
 | `terminal.js` | the Terminal and the task page's pane are both in React |
-| `sections.js` | Asks is ported: its drawer draws a task's sections |
-| `taskacts.js` | Desk, Tasks and Inbox are ported |
-| `desk.js` | Desk is ported: Settings' theme previews draw the legacy Desk until then. Asks and Queue use its model |
-| `asks.js` | Desk is ported: it draws ask rows |
-| `batch.js` | Asks is ported: a go ask draws the plan's lanes |
-| `add.js` | Desk and Inbox are ported, and the Add sheet is in React |
+| `taskacts.js` | the task actions' event handlers and `remoteGeneration` are in React |
+| `add.js` | the Add sheet is in React |
 
 Such a port deletes only what no other file imports.
 
@@ -327,6 +323,8 @@ The person approved it on 2026-11-24: https://claude.ai/artifact/DJzXheB2nzY27bS
 
 ## Later slices
 
-1. The page ports of section 4, one pull request each. Costs, Flows, Reports, Tasks, Runs and Queue are in React.
+1. The page ports of section 4, one pull request each. Desk, Asks with the answer sheet, Batch,
+   Inbox, the Terminal panel, Settings, More, Memories, Costs, Flows, Reports, Tasks, Runs and
+   Queue are in React.
 2. The GitHub extension in the workspace.
 3. Deleting the legacy slot and the legacy drawing.

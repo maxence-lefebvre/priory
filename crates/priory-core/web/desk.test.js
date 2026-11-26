@@ -230,3 +230,23 @@ test("a stopped row's #n links in its task's repository, and a row with no task 
   );
   assert.equal(linked("checks red on #12", rule, taskRepo(tasks, 5)), "checks red on #12");
 });
+
+test("the Desk's model sorts its items, and an open ask the asks listing lacks keeps the desk's words", async () => {
+  const { deskModel } = await import("./desk.js");
+  const desk = {
+    items: [
+      { kind: "ask", id: 1, what: "Open it?" }, { kind: "ask", id: 2, what: "Ship it?" }, { kind: "blocked", id: 3, task: 3 },
+      { kind: "command", id: 4 }, { kind: "todo", id: 5 }, { kind: "report", id: 6 }, { kind: "held", id: 7 }, { kind: "queue", id: 8 },
+    ],
+    ranked: [{ kind: "blocked", id: 3 }, { kind: "ask", id: 2 }], next: { kind: "ask", id: 2 },
+    counts: { asleep: 2 }, paused: "paused since 2026-11-25T10:00:00Z", intake: null,
+  };
+  const queue = { asleep: [{ id: 9 }], running: [], waiting: [{ id: 10 }], up_next: [{ kind: "queued" }] };
+  const model = deskModel({ desk, asks: [{ id: 2, question: "Ship it now?", options: ["yes"] }], queue, tasks: [] }, () => "3 min ago");
+  assert.deepEqual(model.open, [{ kind: "ask", id: 1, what: "Open it?", question: "Open it?", options: [] }, { id: 2, question: "Ship it now?", options: ["yes"] }]);
+  assert.equal(model.first.id, 2);
+  assert.deepEqual([model.stopped, model.todos, model.reports, model.other].map((items) => items.map((item) => item.id)), [[3, 4], [5], [6], [7]]);
+  assert.equal(model.needs, 7);
+  assert.deepEqual(model.banners, [{ text: "paused 3 min ago", icon: "pause", intake: false }]);
+  assert.deepEqual([model.asleep, model.asleepTasks, model.queue, model.upNext], [2, queue.asleep, queue.waiting, queue.up_next]);
+});
