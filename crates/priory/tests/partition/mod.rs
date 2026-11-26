@@ -79,7 +79,7 @@ impl Database {
     }
 
     fn log(&self) -> Postgres {
-        Postgres::connect(&self.url(&self.url), Duration::from_secs(10)).unwrap()
+        Postgres::connect(&self.url(&self.url), Duration::from_secs(10), false).unwrap()
     }
 
     fn publish(&self, message: &Message) {

@@ -5,6 +5,14 @@ use priory_factory::factory::{Backend, EventLog};
 
 #[cfg(feature = "postgres")]
 pub mod postgres;
+pub mod sql;
+
+/// The environment variable that, set to `1`, tells a Postgres log client its role may not create
+/// tables, such as the intake's role on the diocese.
+pub const RESTRICTED_ENV: &str = "PRIORY_LOG_RESTRICTED";
+
+/// The counter of the rows a Postgres log's reader skipped, since they do not parse as a message.
+pub const SKIPPED: &str = "priory.log.skipped";
 
 pub type Error = Box<dyn std::error::Error>;
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -86,7 +94,12 @@ fn open_postgres(log: &EventLog) -> Result<Box<dyn Log>> {
     let url = std::env::var(url_env).map_err(|_| {
         format!("[log] backend = \"postgres\" reads its connection string from ${url_env}, which is not set")
     })?;
-    Ok(Box::new(postgres::Postgres::connect(&url, log.timeout())?))
+    let restricted = std::env::var(RESTRICTED_ENV).is_ok_and(|value| value == "1");
+    Ok(Box::new(postgres::Postgres::connect(
+        &url,
+        log.timeout(),
+        restricted,
+    )?))
 }
 
 #[cfg(not(feature = "postgres"))]

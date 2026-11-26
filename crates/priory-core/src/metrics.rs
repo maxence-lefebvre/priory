@@ -673,6 +673,12 @@ impl Exporter {
                 value,
             ));
         }
+        for ((metric, _), count) in ticks::counts() {
+            if metric == priory_intake::log::SKIPPED {
+                let count = Number::Int(count);
+                points.push(point(Kind::Counter, metric, "{message}", Vec::new(), count));
+            }
+        }
         let state = crate::state::read_only()
             .and_then(|db| link_state(&db).map_err(|error| error.to_string()));
         match state {

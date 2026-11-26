@@ -203,7 +203,7 @@ impl Postgres {
 impl Store for Postgres {
     fn open(&self) -> Box<dyn Log> {
         let url = self.url(&self.url);
-        Box::new(priory_intake::log::postgres::Postgres::connect(&url, TIMEOUT).unwrap())
+        Box::new(priory_intake::log::postgres::Postgres::connect(&url, TIMEOUT, false).unwrap())
     }
 }
 
@@ -471,7 +471,8 @@ fn a_postgres_log_opens_the_database_its_url_variable_names() {
     let output = format!("{OUTPUT}.{}", store.schema);
     let log = log::open(&postgres_log("PRIORY_TEST_POSTGRES_URL")).unwrap();
     let seq = log.publish(&output, &event(1)).unwrap();
-    let other = priory_intake::log::postgres::Postgres::connect(&store.url, TIMEOUT).unwrap();
+    let other =
+        priory_intake::log::postgres::Postgres::connect(&store.url, TIMEOUT, false).unwrap();
     let read = other.read("daemon", &output, 100).unwrap();
     let mut client = ::postgres::Client::connect(&store.url, ::postgres::NoTls).unwrap();
     client
@@ -564,7 +565,7 @@ fn postgres_reports_a_cut_link_as_unreachable_and_works_again_once_it_is_back() 
     };
     let proxy = proxy::Proxy::new(&store.url);
     let url = store.url(&proxy.url);
-    let log = priory_intake::log::postgres::Postgres::connect(&url, TIMEOUT).unwrap();
+    let log = priory_intake::log::postgres::Postgres::connect(&url, TIMEOUT, false).unwrap();
     log.publish(OUTPUT, &event(1)).unwrap();
 
     proxy.set(proxy::Link::Cut);
@@ -586,7 +587,7 @@ fn postgres_gives_up_on_a_frozen_link_after_its_timeout_and_waits_on_one_call_at
     };
     let proxy = proxy::Proxy::new(&store.url);
     let url = store.url(&proxy.url);
-    let log = priory_intake::log::postgres::Postgres::connect(&url, TIMEOUT).unwrap();
+    let log = priory_intake::log::postgres::Postgres::connect(&url, TIMEOUT, false).unwrap();
     log.publish(OUTPUT, &event(1)).unwrap();
 
     proxy.set(proxy::Link::Frozen);
@@ -630,7 +631,7 @@ fn postgres_opens_while_its_link_is_cut_and_connects_once_it_is_back() {
     let proxy = proxy::Proxy::new(&store.url);
     proxy.set(proxy::Link::Cut);
     let url = store.url(&proxy.url);
-    let log = priory_intake::log::postgres::Postgres::connect(&url, TIMEOUT).unwrap();
+    let log = priory_intake::log::postgres::Postgres::connect(&url, TIMEOUT, false).unwrap();
     let error = log.publish(OUTPUT, &event(1)).unwrap_err();
     assert!(log::unreachable(&*error), "{error}");
 
@@ -648,8 +649,131 @@ fn postgres_refuses_a_wrong_password_as_an_error_not_a_lost_link() {
     let (credentials, host) = store.url.split_once('@').unwrap();
     let (user, _) = credentials.rsplit_once(':').unwrap();
     let wrong = format!("{user}:wrong@{host}");
-    let error = priory_intake::log::postgres::Postgres::connect(&store.url(&wrong), TIMEOUT)
+    let error = priory_intake::log::postgres::Postgres::connect(&store.url(&wrong), TIMEOUT, false)
         .err()
         .unwrap();
     assert!(!log::unreachable(&*error), "{error}");
+}
+
+/// A Postgres role, dropped with the privileges it holds when dropped: roles span databases.
+#[cfg(feature = "postgres")]
+struct Role {
+    url: String,
+    name: String,
+}
+
+#[cfg(feature = "postgres")]
+impl Drop for Role {
+    fn drop(&mut self) {
+        if let Ok(mut client) = ::postgres::Client::connect(&self.url, ::postgres::NoTls) {
+            let _ = client.batch_execute(&format!(
+                "DROP OWNED BY {name}; DROP ROLE IF EXISTS {name}",
+                name = self.name
+            ));
+        }
+    }
+}
+
+#[cfg(feature = "postgres")]
+impl Postgres {
+    /// Runs the intake role's SQL twice in this test's schema, and returns the role and a URL
+    /// that connects as it.
+    fn intake_role(&self, test: &str) -> (Role, String) {
+        let role = Role {
+            url: self.url.clone(),
+            name: format!("priory_intake_{test}_{}", std::process::id()),
+        };
+        let sql = log::sql::intake_role(&role.name).unwrap();
+        let mut admin =
+            ::postgres::Client::connect(&self.url(&self.url), ::postgres::NoTls).unwrap();
+        admin.batch_execute(&sql).unwrap();
+        admin.batch_execute(&sql).unwrap();
+        admin
+            .batch_execute(&format!("ALTER ROLE {} PASSWORD 'intake'", role.name))
+            .unwrap();
+        let (credentials, host) = self.url.split_once('@').unwrap();
+        let (scheme, _) = credentials.split_once("://").unwrap();
+        let url = self.url(&format!("{scheme}://{}:intake@{host}", role.name));
+        (role, url)
+    }
+}
+
+#[cfg(feature = "postgres")]
+#[test]
+fn postgres_intake_role_publishes_only_the_intakes_types_and_moves_only_its_cursor() {
+    use priory_intake::log::postgres::Postgres as Log;
+    let Some(store) = Postgres::new("intake_role") else {
+        return;
+    };
+    let runner = declared(&store);
+    let (_role, as_role) = store.intake_role("publishes");
+
+    let error = Log::connect(&as_role, TIMEOUT, false).err().unwrap();
+    assert!(!log::unreachable(&*error), "{error}");
+
+    let intake = Log::connect(&as_role, TIMEOUT, true).unwrap();
+    runner.publish(OUTPUT, &event(1)).unwrap();
+    let first = intake.read("priory.intake", OUTPUT, 10).unwrap();
+    assert_eq!(first.len(), 1);
+
+    let labeled = Message::new("github.issues.labeled", serde_json::json!({ "n": 2 }));
+    intake.publish(OUTPUT, &labeled).unwrap();
+    let answer = Message::new("priory.ask.answered", serde_json::json!({ "n": 3 }));
+    // Display says only "db error": Debug carries the server's message.
+    let refused = format!("{:?}", intake.publish(OUTPUT, &answer).unwrap_err());
+    assert!(refused.contains("row-level security"), "{refused}");
+
+    runner.ack("priory.runner", &first[0]).unwrap();
+    let moved = format!("{:?}", intake.ack("priory.runner", &first[0]).unwrap_err());
+    assert!(moved.contains("row-level security"), "{moved}");
+    intake.ack("priory.intake", &first[0]).unwrap();
+    let second = intake.read("priory.intake", OUTPUT, 10).unwrap();
+    assert_eq!(second.len(), 1);
+    intake.ack("priory.intake", &second[0]).unwrap();
+    assert!(intake.read("priory.intake", OUTPUT, 10).unwrap().is_empty());
+
+    runner.publish(OUTPUT, &answer).unwrap();
+    runner.ack("priory.runner", &second[0]).unwrap();
+    assert_eq!(numbers(&*runner, "priory.runner"), [3]);
+}
+
+#[cfg(feature = "postgres")]
+#[test]
+fn postgres_readers_skip_rows_a_restricted_role_wrote_that_do_not_parse() {
+    let Some(store) = Postgres::new("poison") else {
+        return;
+    };
+    let runner = declared(&store);
+    let (_role, as_role) = store.intake_role("poison");
+    runner.publish(OUTPUT, &event(1)).unwrap();
+    let mut intake = ::postgres::Client::connect(&as_role, ::postgres::NoTls).unwrap();
+    for (id, message) in [
+        (
+            "duplicate",
+            r#"{"type":"priory.ask.answered","type":"github.issues.labeled","data":{}}"#,
+        ),
+        ("no-data", r#"{"type":"github.issues.labeled"}"#),
+    ] {
+        intake
+            .execute(
+                "INSERT INTO priory_log_messages (output, id, published, message)
+                 VALUES ($1, $2, now(), $3)",
+                &[&OUTPUT, &id, &message],
+            )
+            .unwrap();
+    }
+    runner.publish(OUTPUT, &event(4)).unwrap();
+
+    let first = runner.read("priory.runner", OUTPUT, 100).unwrap();
+    assert_eq!(first.len(), 1);
+    runner.ack("priory.runner", &first[0]).unwrap();
+    assert_eq!(numbers(&*runner, "priory.runner"), [4]);
+
+    let one = runner.read("priory.one", OUTPUT, 1).unwrap();
+    runner.ack("priory.one", &one[0]).unwrap();
+    let next = runner.read("priory.one", OUTPUT, 1).unwrap();
+    assert_eq!(next[0].message.data["n"], 4);
+
+    let newest = runner.messages(OUTPUT, None, 10).unwrap();
+    assert_eq!(newest.len(), 2);
 }

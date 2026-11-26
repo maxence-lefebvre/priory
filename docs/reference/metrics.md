@@ -55,6 +55,7 @@ Every request carries these attributes on its resource.
 | `priory.log.queued` | gauge | `{message}` | | the messages that wait to publish |
 | `priory.runner.lease.age` | gauge | `s` | `priory.lease.runner` | in log time: the newest alive time among the runners' leases, less this runner's. Absent in a factory of one runner |
 | `priory.log.connection.wait` | histogram | `s` | | Postgres only: how long each call waited for the log's one connection |
+| `priory.log.skipped` | counter | `{message}` | | Postgres only: the messages a read skipped because they do not parse, such as one a restricted role wrote with a duplicate `type`. The reader prints each one and moves its cursor past it |
 
 A consumer on herdr-bus is named as it reads, such as `priory.a`, when it reads on this machine,
 and as `<name>@<machine id>` when it reads on another.
