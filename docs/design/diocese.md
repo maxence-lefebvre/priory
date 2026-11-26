@@ -1,7 +1,8 @@
-# A hosted hub
+# The diocese
 
-This note designs a hub: a small rented VM that is always on and holds what every runner shares.
-It holds the log, the intake, the trace store and a public MCP gateway that cloud runs reach through
+This note designs the diocese: a small rented VM that is always on and holds what every runner
+shares. A diocese oversees many priories, as this VM serves the Priory daemon on every runner. It
+holds the log, the intake, the trace store and a public MCP gateway that cloud runs reach through
 a claude.ai connector. Two runners, the desktop and a second machine, keep running the agents. The
 note builds nothing. It holds what exists, the target, its security and failure modes, the VM's
 size and cost, the open questions with a recommendation each, and six slices that each ship alone.
@@ -61,7 +62,7 @@ size and cost, the open questions with a recommendation each, and six slices tha
 
 ### What runs where
 
-| Part | The hub VM | Each runner |
+| Part | The diocese VM | Each runner |
 | ---- | ---------- | ----------- |
 | The log | Postgres, on the private network address only | a client, through `PRIORY_LOG_URL` |
 | The intake | `priory intake`, with read-only GitHub, Linear and Slack tokens, and the Slack shortcut's tokens | none |
@@ -72,7 +73,7 @@ size and cost, the open questions with a recommendation each, and six slices tha
 | GitHub writes: push, comment, pull request, merge | none | `gh`, signed in on the runner |
 | Harness logins: `claude`, `codex` | none | as today |
 
-The hub runs no agent. Each runner keeps its daemon, tmux server, worktrees and state file, so a
+The diocese runs no agent. Each runner keeps its daemon, tmux server, worktrees and state file, so a
 task's runs, sessions and terminal stay where they are today.
 
 ### The network
@@ -81,10 +82,10 @@ The three machines join one Tailscale tailnet. The Runner concept already names 
 Tailscale hostname, and `tailscale serve` already carries the web view to a phone. Plain WireGuard
 works too, with the peers' keys kept by hand.
 
-- Postgres listens on the hub's tailnet address only, and its `pg_hba.conf` accepts that range only.
+- Postgres listens on the diocese's tailnet address only, and its `pg_hba.conf` accepts that range only.
   The runners reach it directly, and the reverse ssh tunnel goes away.
-- The tailnet's access rules let each runner reach the hub's Postgres, OTLP and web view ports, and
-  let the hub reach no runner. A runner opens every connection.
+- The tailnet's access rules let each runner reach the diocese's Postgres, OTLP and web view ports, and
+  let the diocese reach no runner. A runner opens every connection.
 - The VM's provider firewall opens port 443 only, for the gateway. ssh is reachable on the tailnet
   only.
 
@@ -176,7 +177,7 @@ client registration optional, and prefers a pre-registered client or a Client ID
 - A run grant lasts until its run ends or its step's `timeout`, whichever comes first. The runner
   publishes `priory.run.revoked` when the run ends.
 
-### Secrets on the hub
+### Secrets on the diocese
 
 | Secret | Its power |
 | ------ | --------- |
@@ -187,13 +188,13 @@ client registration optional, and prefers a pre-registered client or a Client ID
 | A read-only GitHub token, fine-grained, for the factory's repositories | reads issues, pull requests, checks and contents |
 | Linear and Slack read tokens | reads what the triggers watch |
 | The Slack shortcut's tokens, `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` | opens a Socket Mode connection with `connections:write`, opens the form with `views.open`, posts to the shortcut's `response_url` ([slack.md](../intake/slack.md#message-shortcut)) |
-| Webhook secrets, once webhooks move to the hub | accepts a forged delivery |
+| Webhook secrets, once webhooks move to the diocese | accepts a forged delivery |
 | The GitHub OAuth app's secret and the gateway's signing key | signs in an allowed account, issues tokens |
 
-The intake reads GitHub through `gh api`. On the hub, the read-only token reaches `gh` as
+The intake reads GitHub through `gh api`. On the diocese, the read-only token reaches `gh` as
 `GH_TOKEN` in the intake's service environment, so `gh` is never signed in there. Every GitHub
 write stays on the runners: pushes, comments, pull requests and merges use each runner's own `gh`.
-The Slack shortcut is the hub's one write to a source: a form and an ephemeral reply.
+The Slack shortcut is the diocese's one write to a source: a form and an ephemeral reply.
 
 Each service runs as its own Unix user, with its own environment file, so the gateway cannot read
 the intake's tokens or the view daemon's database password.
@@ -219,10 +220,10 @@ the intake's role, and slice 5 adds the gateway's and the view daemon's.
 
 ### What an attacker with the VM gets
 
-Root on the hub reads and writes the log. So it can answer any ask on any runner, request tasks,
+Root on the diocese reads and writes the log. So it can answer any ask on any runner, request tasks,
 and give tasks away. Through those, it steers what agents do on the runners with their permissions.
 It also reads the intake's tokens, the traces and the audit log. It cannot push to GitHub, open
-a shell on a runner, or read a runner's state file, since the hub reaches no runner.
+a shell on a runner, or read a runner's state file, since the diocese reaches no runner.
 
 Code execution in the gateway, through a bug in its HTTP or OAuth handling, gets the gateway's Unix
 user and its database role. It can then:
@@ -236,7 +237,7 @@ It cannot answer an ask, claim, give or approve, and it cannot read the intake's
 that a cloud run ends still leads to the human step before `open-pr`, so a forged `result` cannot
 merge code.
 
-This is the same power the log's password grants today. The hub moves it from a desktop to a VM on
+This is the same power the log's password grants today. The diocese moves it from a desktop to a VM on
 the internet, so the VM runs nothing else: unattended security updates, ssh on the tailnet with
 keys only, no password login, and the one public port. Signed answers, which a runner checks
 against a person's key, would take approval power away from the log. They are a later design.
@@ -254,7 +255,7 @@ against a person's key, would take approval power away from the log. They are a 
   MCP endpoint, 60 calls a minute. Request bodies up to 64 KB, and at most 128 calls waiting on a
   reply at once, as `serve` holds at most 128 waiting requests.
 - **Audit log.** Each sign-in, refusal, registration, token issued or revoked, and each MCP call is
-  one JSON line on the hub, with the account, the grant, the tool and the outcome, and one span in
+  one JSON line on the diocese, with the account, the grant, the tool and the outcome, and one span in
   OpenObserve. A call's arguments are not logged, since they travel on the log already.
 
 ## Failure modes
@@ -262,7 +263,7 @@ against a person's key, would take approval power away from the log. They are a 
 | Failure | What keeps working | What stops | Back to normal |
 | ------- | ------------------ | ---------- | -------------- |
 | The VM is down | Each runner's started tasks, local asks answered on that machine, local runs' tools | New events, new claims, `waiting` tasks, cross-runner answers and gives, the gateway, the tailnet view | Runners publish their queues in order when it is back; the intake polls from its last cursor |
-| One runner's link to the hub is down | The same, on that runner; everything on the other | That runner's claims and starts | As today's tunnel cut: it reads the log before any run |
+| One runner's link to the diocese is down | The same, on that runner; everything on the other | That runner's claims and starts | As today's tunnel cut: it reads the log before any run |
 | A runner is away past its 30-minute lease | Its `kept` tasks wait for it | Its `waiting` tasks move to the other runner | Its tasks that moved are dropped with `moved to runner <name>` |
 | The gateway is down | Cloud runs still push their branch | Cloud runs' `ask`, `wait` and `result` | The session retries; the call id applies a retry once |
 | Clock skew | Leases use Postgres's clock | Token expiry is wrong by the VM's skew | chrony on the VM |
@@ -277,25 +278,25 @@ Notes on each:
   runner to publish an alive message sees the other's last alive message 30 minutes old, and claims
   its `waiting` tasks before the other's queued alive message lands. No task runs twice, since only
   never-started tasks move, but tasks shuffle for no reason. The same happens today when the
-  desktop holding the log sleeps. Slice 3 fixes it with a hub heartbeat: the hub's view daemon
+  desktop holding the log sleeps. Slice 3 fixes it with a diocese heartbeat: the diocese's view daemon
   publishes `priory.diocese.alive` once a minute. A lease does not run across a gap in the heartbeats,
-  which means the log was down. When both runners sleep and the hub stays up, the heartbeats go on,
+  which means the log was down. When both runners sleep and the diocese stays up, the heartbeats go on,
   so the runners' leases end as they do today, and a runner that wakes first takes the other's
   `waiting` tasks.
 - **A runner away.** A cloud run owned by that runner keeps working in its session, but its calls
   get "runner away" after 40 seconds. Its branch push waits on GitHub until the runner polls again.
 - **Clock skew.** Postgres stamps alive, claim and held messages, so the runners' clocks never decide
-  a lease. The hub's clock decides token lifetimes, grant deadlines and TLS, so it runs chrony. Run
+  a lease. The diocese's clock decides token lifetimes, grant deadlines and TLS, so it runs chrony. Run
   grant deadlines travel as durations and take the log's time when stored.
 - **Latency.** A publish takes the log's advisory lock and inserts in one transaction: three round
   trips, about 100 ms at a 30 ms round trip. A runner publishes about one message a minute and
-  reads once a second, so two runners and the hub make a few queries a second. A claim is first in
-  the log, so the runner nearer the hub wins a race slightly more often. With the hub between them,
+  reads once a second, so two runners and the diocese make a few queries a second. A claim is first in
+  the log, so the runner nearer the diocese wins a race slightly more often. With the diocese between them,
   neither runner is favored by being next to the log, as the desktop is today.
 
 ## Sizing and cost
 
-What the hub's parts need, estimated, to be measured in slice 1:
+What the diocese's parts need, estimated, to be measured in slice 1:
 
 | Part | Memory | Disk |
 | ---- | ------ | ---- |
@@ -348,7 +349,7 @@ before slice 5 writes code.
    runners sleep. Serving it publicly behind the gateway's GitHub sign-in can come after slice 5
    proves that sign-in.
 5. **Tailscale or plain WireGuard?** Recommendation: Tailscale. Runners are already named by their
-   Tailscale hostnames, its access rules keep the hub from reaching the runners, and its traffic
+   Tailscale hostnames, its access rules keep the diocese from reaching the runners, and its traffic
    needs no open port. Plain WireGuard removes the coordination service, at the cost of keys and
    rules kept by hand.
 
@@ -386,8 +387,8 @@ Each slice ships alone and leaves the factory working.
 
 - **Operations.** The second machine joins the tailnet, and its `PRIORY_LOG_URL` points at the VM.
   Its runner file, such as `runners/key-drum.toml`, already exists. Remove the reverse ssh tunnel.
-- **Code.** The diocese heartbeat, `priory.diocese.alive`, and a lease that does not run across a
-  gap in it, as Failure modes says, so a diocese outage moves no task.
+- **Code.** The diocese heartbeat, `priory.diocese.alive`, and a lease that does not run across a gap in
+  it, as Failure modes says, so a diocese outage moves no task.
 - **Built.** `priory daemon --view-only --diocese` publishes the heartbeat, and a gap of more than
   3 minutes stops every lease until the heartbeats are back, when each lease runs 30 minutes again.
   A diocese silent for 24 hours counts as gone. `scripts/second-machine.sh cut local|remote` cuts
@@ -401,14 +402,14 @@ Each slice ships alone and leaves the factory working.
 
 ### 4. Views from any runner (R8.5)
 
-- **Operations.** The hub's view daemon serves the web view on the tailnet through `tailscale
+- **Operations.** The diocese's view daemon serves the web view on the tailnet through `tailscale
   serve`.
 - **Code.** A task's detail and runs from another runner, the later slice 4 of
   [views-from-any-machine.md](views-from-any-machine.md#later-slices), only if a link to the owner's
   view proves too thin.
 - **Tests.** The view-only tests already on `main`. By hand: answer an ask from a phone while the
   desktop sleeps, and see it applied when the desktop wakes.
-- **Rollback.** Stop the hub's view daemon. Each runner still serves its own view.
+- **Rollback.** Stop the diocese's view daemon. Each runner still serves its own view.
 
 ### 5. The OAuth MCP gateway with GitHub sign-in
 
