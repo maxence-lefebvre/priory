@@ -5917,9 +5917,32 @@ mod inbox_lookups {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        assert_eq!(found, (7, None, 128));
+        assert_eq!(found, (7, None, 129));
         db.prepare("SELECT 1 FROM inbox INDEXED BY inbox_by_task WHERE task = 1")
             .unwrap();
+    }
+
+    #[test]
+    fn an_upgrade_from_128_takes_each_reports_revision_as_its_last_write() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.execute_batch(&MIGRATIONS[..128].concat()).unwrap();
+        db.execute_batch(
+            "INSERT INTO tasks (id, key, workflow, step, state, trigger, source)
+               VALUES (1, 'k', 'w', 's', 'running', 't', 'e');
+             INSERT INTO reports (task, revision, report, put) VALUES (1, 4, '{}', 'now');",
+        )
+        .unwrap();
+
+        apply(&mut db, false).unwrap();
+
+        let written: i64 = db
+            .query_row(
+                "SELECT revision FROM report_writes WHERE task = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(written, 4);
     }
 
     #[test]
