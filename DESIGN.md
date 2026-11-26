@@ -1221,16 +1221,16 @@ sits under More.
   "Recommends Take". A tap turns the option solid `--emph`
   with a `check`, and the caption under the control says `Picking "Take"` with a ghost Undo for
   4 s. Nothing is sent before the 4 s end. Each row's pick has its own caption and Undo, so the
-  other rows stay open to pick meanwhile.
+  other rows stay open to pick meanwhile. An agreed pick folds to one line:
+  a `check` in `--ok-text`, "Picked Take." and what the workflow did with it. Until the workflow
+  applies it, a ghost Change button ends the line: it reopens the control with the choice solid,
+  "Pick another option to change it." and Keep Take, and a new option goes through the same Undo.
 - **Section chips**: a section with a pick has a row of chips under its title, styled as saved
   views: All, Open and Picked with their counts, then "Recommends" in `--text-3` and one chip per
   recommended option, None last. A pressed chip is solid `--emph`. The row ends with a primary
   "Pick all recommended" button and its count, disabled at 0 or while the section's batch waits.
   While it waits, a `--raised` strip under the chips says `Picking the recommended option on 9 rows
-  in Sentry` with a secondary "Undo all 9"; each row in it says "With the batch" under its control. An agreed pick folds to one line:
-  a `check` in `--ok-text`, "Picked Take." and what the workflow did with it. Until the workflow
-  applies it, a ghost Change button ends the line: it reopens the control with the choice solid,
-  "Pick another option to change it." and Keep Take, and a new option goes through the same Undo.
+  in Sentry` with a secondary "Undo all 9"; each row in it says "With the batch" under its control.
 - **Threads** follow the Bonjour rules, with Reply and Resolve as ghost buttons in the card. A row
   with an id ends with a Comment ghost button, on the newest report only: an older one takes replies. It opens the comment field under the row, with
   Cancel and Comment. Reply opens the same field, with "Replying in thread 3" above it.
