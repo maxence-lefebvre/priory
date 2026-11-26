@@ -194,9 +194,14 @@ const DESK: &str = concat!(
                  coalesce(reason, 'failed') || '; revive: priory revive ' || id
                FROM tasks WHERE state = 'failed'
                UNION ALL
-               SELECT 0, outbox.attempted, 'prompt', outbox.id, outbox.task, tasks.lane, outbox.text
+               SELECT 0, outbox.attempted, 'prompt', outbox.id, outbox.task, tasks.lane,
+                 'a prompt was typed but never confirmed: ' || outbox.text
                FROM outbox JOIN tasks ON tasks.id = outbox.task
+               LEFT JOIN runs ON runs.id = outbox.run
                WHERE outbox.state = 'uncertain' AND tasks.state NOT IN ('done', 'failed', 'dropped')
+                 AND NOT (runs.ended IS NOT NULL AND (tasks.step IS NOT runs.step
+                   OR EXISTS (SELECT 1 FROM outbox AS later WHERE later.task = outbox.task
+                     AND later.id > outbox.id AND later.state = 'confirmed')))
                UNION ALL
                SELECT 0, actions.ended, 'command', actions.id, actions.task, tasks.lane,
                  'Priory stopped while answer ' || json_quote(asks.answer) || ' to ask ' || asks.id
@@ -2072,6 +2077,52 @@ pub fn print(columns: &[&str], rows: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_uncertain_prompt_leaves_the_desk_once_its_run_ended_and_the_task_moved_on() {
+        let db = state::memory();
+        db.execute_batch(
+            "INSERT INTO tasks (key, workflow, step, state, trigger, source)
+               VALUES ('k', 'w', 'build', 'running', 't', 'e');
+             INSERT INTO runs (task, step, tmux, session) VALUES (1, 'build', 't', 's');
+             INSERT INTO outbox (task, run, text, state, attempted)
+               VALUES (1, 1, 'Your last turn ended in text only.', 'uncertain', '2026-01-01T00:00:00Z');",
+        )
+        .unwrap();
+        let prompts = || -> Vec<String> {
+            rows(&db, &desk_items(), [])
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|item| item["kind"] == "prompt")
+                .map(|item| item["what"].as_str().unwrap().to_owned())
+                .collect()
+        };
+
+        assert_eq!(
+            prompts(),
+            ["a prompt was typed but never confirmed: Your last turn ended in text only."]
+        );
+        db.execute_batch("UPDATE runs SET ended = '2026-01-01T00:05:00Z' WHERE id = 1")
+            .unwrap();
+        assert_eq!(prompts().len(), 1, "nothing later was confirmed");
+
+        db.execute_batch(
+            "INSERT INTO runs (task, step, tmux, session) VALUES (1, 'build', 't', 's2');
+             INSERT INTO outbox (task, run, text, state) VALUES (1, 2, 'Go on.', 'confirmed');",
+        )
+        .unwrap();
+        assert_eq!(prompts(), Vec::<String>::new());
+        assert_eq!(alarm(&db, "prompt", 1).unwrap(), None);
+
+        db.execute_batch("UPDATE outbox SET state = 'queued' WHERE id = 2")
+            .unwrap();
+        assert_eq!(prompts().len(), 1);
+        db.execute_batch("UPDATE tasks SET step = 'review'")
+            .unwrap();
+        assert_eq!(prompts(), Vec::<String>::new());
+    }
 
     #[test]
     fn unrouted_events_look_up_the_tasks_by_source() {

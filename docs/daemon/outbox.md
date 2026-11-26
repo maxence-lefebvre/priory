@@ -92,7 +92,11 @@ gets no Enter while it is open, so Priory never submits what the person typed, a
 [A run's keyboard](serve.md#a-runs-keyboard).
 
 A `UserPromptSubmit` with the same words confirms an `uncertain` prompt of its run, even one the
-daemon reads after a restart. Otherwise the prompt stays `uncertain` on the desk.
+daemon reads after a restart. Otherwise the prompt stays `uncertain` on the desk, while it can
+still matter: while its run is live, or after the run ended while no later prompt of the task was
+confirmed and the task is still at the run's step. Once a later prompt is confirmed, or the task
+has left that step, the desk drops it. Its row says `a prompt was typed but never confirmed`,
+then its text.
 
 The schema upgrade that brought this rule hands an unconfirmed prompt on a `moved` run to the live
 run that carries on its process, when no run ended any other way in between.

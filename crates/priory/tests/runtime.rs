@@ -9701,7 +9701,10 @@ fn the_desk_lists_an_uncertain_prompt_a_blocked_task_and_an_open_ask_oldest_firs
     );
     assert_eq!(
         desk[0][5],
-        prompted("Plan the change.", "hopeless, ready, unsure").replace('\n', "\\n")
+        format!(
+            "a prompt was typed but never confirmed: {}",
+            prompted("Plan the change.", "hopeless, ready, unsure").replace('\n', "\\n")
+        )
     );
     assert_eq!(
         desk[1][5],
