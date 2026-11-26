@@ -784,20 +784,52 @@ pub fn recent_runs(db: &Connection, since: Option<&str>) -> rusqlite::Result<Val
            json_extract(event, '$.data.model') AS model, json_extract(event, '$.data.tokens') AS tokens
            FROM trace WHERE type = 'factory.step.ended' AND (?1 IS NULL OR time >= ?1) GROUP BY 1)
          SELECT runs.id AS run, runs.task, tasks.key, runs.step, runs.agent, runs.started,
-           runs.ended, runs.ended_as AS end, results.outcome, ended.model, ended.tokens
+           runs.ended, runs.ended_as AS end, results.outcome, ended.model, ended.tokens,
+           json_object('cpu_usec', usage.cpu_usec, 'user_usec', usage.user_usec,
+             'system_usec', usage.system_usec, 'memory_peak', usage.memory_peak,
+             'io_read', usage.io_read, 'io_write', usage.io_write, 'disk', usage.disk) AS usage
          FROM runs JOIN tasks ON tasks.id = runs.task
          LEFT JOIN results ON results.run = runs.id
+         LEFT JOIN run_usage AS usage ON usage.run = runs.id
          LEFT JOIN ended ON ended.run = CAST(runs.id AS TEXT)
          WHERE ?1 IS NULL OR runs.ended IS NULL OR runs.started >= ?1
          ORDER BY runs.id DESC",
         [since],
     )?;
     for run in runs.as_array_mut().expect("rows are an array") {
-        if let Some(tokens) = run["tokens"].as_str() {
-            run["tokens"] = serde_json::from_str(tokens).unwrap_or(Value::Null);
-        }
+        parse_run(run);
     }
     Ok(json!({ "runs": runs, "older": older }))
+}
+
+/// Turns a run's `tokens` and `usage` from their JSON text into values.
+fn parse_run(run: &mut Value) {
+    for key in ["tokens", "usage"] {
+        if let Some(text) = run[key].as_str() {
+            run[key] = serde_json::from_str(text).unwrap_or(Value::Null);
+        }
+    }
+}
+
+/// What a task's runs used in all: CPU and IO summed, the highest memory peak, and the disk of the
+/// last run that measured it, since every run of a task shares its worktree. A value no run
+/// measured is null.
+fn usage_total(runs: &Value) -> Value {
+    let runs = runs.as_array().map(Vec::as_slice).unwrap_or_default();
+    let values = |key: &'static str| {
+        runs.iter()
+            .filter_map(move |run| run["usage"][key].as_u64())
+    };
+    let sum = |key: &'static str| values(key).reduce(u64::saturating_add);
+    json!({
+        "cpu_usec": sum("cpu_usec"),
+        "user_usec": sum("user_usec"),
+        "system_usec": sum("system_usec"),
+        "memory_peak": values("memory_peak").max(),
+        "io_read": sum("io_read"),
+        "io_write": sum("io_write"),
+        "disk": values("disk").next_back(),
+    })
 }
 
 fn tasks_since(
@@ -1792,8 +1824,12 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
                (SELECT json_extract(event, '$.data.tokens') FROM trace
                 WHERE type = 'factory.step.ended'
                   AND json_extract(event, '$.data.run') = CAST(runs.id AS TEXT)
-                ORDER BY seq DESC LIMIT 1) AS tokens
-             FROM runs WHERE task = ?1 ORDER BY id",
+                ORDER BY seq DESC LIMIT 1) AS tokens,
+               json_object('cpu_usec', usage.cpu_usec, 'user_usec', usage.user_usec,
+               'system_usec', usage.system_usec, 'memory_peak', usage.memory_peak,
+               'io_read', usage.io_read, 'io_write', usage.io_write, 'disk', usage.disk) AS usage
+             FROM runs LEFT JOIN run_usage AS usage ON usage.run = runs.id
+             WHERE task = ?1 ORDER BY id",
         ),
         (
             "steps",
@@ -1874,10 +1910,9 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
     task["stack"] = crate::stack::json(db, id)?;
     task["relations"] = crate::relate::json(db, id)?;
     for run in task["runs"].as_array_mut().expect("rows are an array") {
-        if let Some(tokens) = run["tokens"].as_str() {
-            run["tokens"] = serde_json::from_str(tokens).unwrap_or(Value::Null);
-        }
+        parse_run(run);
     }
+    task["usage"] = usage_total(&task["runs"]);
     let parse = |merge_risk: &mut Value| {
         if let Some(text) = merge_risk.as_str() {
             *merge_risk = serde_json::from_str(text).unwrap_or(Value::Null);
@@ -2078,6 +2113,45 @@ pub fn print(columns: &[&str], rows: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runs_show_what_they_used_and_a_task_its_total_with_null_for_unmeasured() {
+        let db = state::memory();
+        db.execute_batch(
+            "INSERT INTO tasks (key, workflow, step, state, trigger, source)
+               VALUES ('k', 'w', 'review', 'running', 't', 'e');
+             INSERT INTO runs (task, step, tmux, session, ended)
+               VALUES (1, 'plan', 't', 's', '2026-11-26T10:00:00Z'),
+                      (1, 'build', 't', 's', '2026-11-26T11:00:00Z'),
+                      (1, 'review', 't', 's', NULL);
+             INSERT INTO run_usage (run, cpu_usec, user_usec, system_usec, memory_peak, disk)
+               VALUES (1, 100, 60, 40, 500, 7000), (2, 300, 200, 100, 900, 9000);",
+        )
+        .unwrap();
+
+        let task = task(&db, 1).unwrap().unwrap();
+        let runs = recent_runs(&db, None).unwrap();
+
+        assert_eq!(
+            task["runs"][1]["usage"],
+            json!({ "cpu_usec": 300, "user_usec": 200, "system_usec": 100, "memory_peak": 900,
+                    "io_read": null, "io_write": null, "disk": 9000 })
+        );
+        // The live run outside a scope has no row: every value is null, never 0.
+        assert!(
+            task["runs"][2]["usage"]
+                .as_object()
+                .unwrap()
+                .values()
+                .all(Value::is_null)
+        );
+        assert_eq!(
+            task["usage"],
+            json!({ "cpu_usec": 400, "user_usec": 260, "system_usec": 140, "memory_peak": 900,
+                    "io_read": null, "io_write": null, "disk": 9000 })
+        );
+        assert_eq!(runs["runs"][1]["usage"], task["runs"][1]["usage"]);
+    }
 
     #[test]
     fn an_uncertain_prompt_leaves_the_desk_once_its_run_ended_and_the_task_moved_on() {

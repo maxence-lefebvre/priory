@@ -4999,3 +4999,42 @@ fn a_task_whose_trigger_was_renamed_follows_its_milestone() {
 
     assert_eq!(setup.queue(), ["ENG-2", "ENG-1"]);
 }
+
+#[test]
+fn log_intake_role_prints_the_roles_sql_and_refuses_a_name_that_is_no_identifier() {
+    let printed = harness::priory()
+        .args(["log", "intake-role", "priory_intake"])
+        .output()
+        .unwrap();
+    assert!(printed.status.success());
+    let sql = String::from_utf8(printed.stdout).unwrap();
+    assert_eq!(
+        sql.trim_end(),
+        priory_intake::log::sql::intake_role("priory_intake")
+            .unwrap()
+            .trim_end()
+    );
+    assert!(sql.contains("CREATE ROLE priory_intake LOGIN"));
+
+    let refused = harness::priory()
+        .args(["log", "intake-role", "x; DROP TABLE y"])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("is no role name"));
+}
+
+#[test]
+fn log_intake_role_refuses_a_name_whose_policy_names_postgres_would_cut() {
+    let refused = harness::priory()
+        .args(["log", "intake-role", &"r".repeat(50)])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("longer than 49 bytes"));
+    let longest = harness::priory()
+        .args(["log", "intake-role", &"r".repeat(49)])
+        .output()
+        .unwrap();
+    assert!(longest.status.success());
+}

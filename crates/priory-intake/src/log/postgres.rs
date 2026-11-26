@@ -8,34 +8,18 @@ use herdr_bus::{Message, Output, Seq, Stored, Timestamp};
 use postgres::{Client, Config, Row};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
+use super::sql::SCHEMA;
 use super::{Delivery, Log, NO_ANSWER, Result, Unreachable};
 
 /// The Postgres client, for the tests that set up the database a log lives in.
 pub use postgres as client;
 
-/// Creates the tables once per database, whichever process connects first.
-const SCHEMA: &str = "
-    SELECT pg_advisory_xact_lock(hashtext('priory_log_schema'));
-    CREATE TABLE IF NOT EXISTS priory_log_messages (
-        seq BIGSERIAL PRIMARY KEY,
-        output TEXT NOT NULL,
-        id TEXT NOT NULL,
-        published TIMESTAMPTZ NOT NULL,
-        message TEXT NOT NULL,
-        UNIQUE (output, id)
-    );
-    CREATE TABLE IF NOT EXISTS priory_log_cursors (
-        consumer TEXT NOT NULL,
-        output TEXT NOT NULL,
-        seq BIGINT NOT NULL,
-        PRIMARY KEY (consumer, output)
-    );
-";
-
 /// A connection to the database that holds the log, made again when the server drops it.
 pub struct Postgres {
     config: Config,
     timeout: Duration,
+    /// Connected as a role that may not create tables, so it skips creating them.
+    restricted: bool,
     client: Mutex<Option<Client>>,
     /// Set while a call runs, and left set by one that outlived its timeout until it ends.
     busy: Arc<AtomicBool>,
@@ -46,9 +30,10 @@ type Failure = Box<dyn std::error::Error + Send + Sync>;
 
 impl Postgres {
     /// Connects to `url`, a libpq connection string or URL, over TLS when the server offers it,
-    /// and creates the log's tables when they are missing. Each call waits on the database at most
-    /// `timeout`. A database it cannot reach yet is no error: a later call connects.
-    pub fn connect(url: &str, timeout: Duration) -> Result<Self> {
+    /// and creates the log's tables when they are missing, unless `restricted`. Each call waits on
+    /// the database at most `timeout`. A database it cannot reach yet is no error: a later call
+    /// connects.
+    pub fn connect(url: &str, timeout: Duration, restricted: bool) -> Result<Self> {
         let mut config: Config = url.parse()?;
         let options = format!(
             "{} -c statement_timeout={}",
@@ -66,6 +51,7 @@ impl Postgres {
         let log = Postgres {
             config,
             timeout,
+            restricted,
             client: Mutex::new(None),
             busy: Arc::new(AtomicBool::new(false)),
         };
@@ -97,9 +83,10 @@ impl Postgres {
             ))));
         }
         let (client, config, busy) = (slot.take(), self.config.clone(), Arc::clone(&self.busy));
+        let restricted = self.restricted;
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
-            let outcome = call(client, &config, &operation);
+            let outcome = call(client, &config, restricted, &operation);
             busy.store(false, Ordering::SeqCst);
             let _ = sender.send(outcome);
         });
@@ -122,11 +109,12 @@ const KEEPALIVE: Duration = Duration::from_secs(10);
 fn call<T>(
     client: Option<Client>,
     config: &Config,
+    restricted: bool,
     operation: &impl Fn(&mut Client) -> Result<T, Failure>,
 ) -> (Option<Client>, Result<T, Failure>) {
     let open = |client: Option<Client>| match client.filter(|client| !client.is_closed()) {
         Some(client) => Ok(client),
-        None => connected(config),
+        None => connected(config, restricted),
     };
     let mut client = match open(client) {
         Ok(client) => client,
@@ -178,7 +166,7 @@ fn lost(error: Failure) -> Failure {
     Box::new(Unreachable(detail))
 }
 
-fn connected(config: &Config) -> Result<Client, Failure> {
+fn connected(config: &Config, restricted: bool) -> Result<Client, Failure> {
     // No native roots, such as in a bare container: plain connections still work.
     let tls = MakeRustlsConnect::with_native_certs().map_or_else(
         |_| {
@@ -191,6 +179,9 @@ fn connected(config: &Config) -> Result<Client, Failure> {
         |(tls, _)| tls,
     );
     let mut client = config.connect(tls)?;
+    if restricted {
+        return Ok(client);
+    }
     let mut tx = client.transaction()?;
     tx.batch_execute(SCHEMA)?;
     tx.commit()?;
@@ -260,45 +251,57 @@ impl Log for Postgres {
                 &[&output, &before.map(|seq| seq.0), &limit],
             )?)
         })?;
-        rows.iter().map(stored).collect()
+        // `read` reports a row that does not parse; a listing only leaves it out.
+        Ok(rows.iter().filter_map(|row| stored(row).ok()).collect())
     }
 
+    /// Skips a row that does not parse as a message, such as one a restricted role wrote with a
+    /// duplicate `type`: it reports the row once and moves `consumer`'s cursor past it, so one bad
+    /// row never stops a reader.
     fn read(&self, consumer: &str, output: &str, limit: usize) -> Result<Vec<Delivery>> {
-        let (consumer, output) = (consumer.to_owned(), output.to_owned());
-        let limit = i64::try_from(limit)?;
-        let rows = self.run(move |client| {
-            Ok(client.query(
-                "SELECT * FROM priory_log_messages WHERE output = $1 AND seq > COALESCE(
-                    (SELECT seq FROM priory_log_cursors WHERE consumer = $2 AND output = $1), 0)
-                 ORDER BY seq LIMIT $3",
-                &[&output, &consumer, &limit],
-            )?)
-        })?;
-        rows.iter()
-            .map(|row| {
-                let stored = stored(row)?;
-                Ok(Delivery {
-                    output: stored.output,
-                    seq: stored.seq,
-                    message: stored.message,
-                    logged: Some(stored.published),
-                })
-            })
-            .collect()
+        loop {
+            let (owned_consumer, owned_output) = (consumer.to_owned(), output.to_owned());
+            let query_limit = i64::try_from(limit)?;
+            let rows = self.run(move |client| {
+                Ok(client.query(
+                    "SELECT * FROM priory_log_messages WHERE output = $1 AND seq > COALESCE(
+                        (SELECT seq FROM priory_log_cursors WHERE consumer = $2 AND output = $1), 0)
+                     ORDER BY seq LIMIT $3",
+                    &[&owned_output, &owned_consumer, &query_limit],
+                )?)
+            })?;
+            let mut deliveries = Vec::new();
+            let mut skipped = None;
+            for row in &rows {
+                match stored(row) {
+                    Ok(stored) => deliveries.push(Delivery {
+                        output: stored.output,
+                        seq: stored.seq,
+                        message: stored.message,
+                        logged: Some(stored.published),
+                    }),
+                    // The next read meets it first, and skips it then.
+                    Err(_) if !deliveries.is_empty() => break,
+                    Err(error) => {
+                        let seq: i64 = row.get("seq");
+                        eprintln!("the log skips message {seq} of {output}: {error}");
+                        priory_runtime::ticks::count(super::SKIPPED, &[]);
+                        skipped = Some(seq);
+                    }
+                }
+            }
+            let Some(seq) = skipped else {
+                return Ok(deliveries);
+            };
+            self.advance(consumer, output, seq)?;
+            if !deliveries.is_empty() || rows.len() < limit {
+                return Ok(deliveries);
+            }
+        }
     }
 
     fn ack(&self, consumer: &str, delivery: &Delivery) -> Result<()> {
-        let (consumer, output, seq) =
-            (consumer.to_owned(), delivery.output.clone(), delivery.seq.0);
-        self.run(move |client| {
-            client.execute(
-                "INSERT INTO priory_log_cursors (consumer, output, seq) VALUES ($1, $2, $3)
-                 ON CONFLICT (consumer, output)
-                 DO UPDATE SET seq = GREATEST(priory_log_cursors.seq, EXCLUDED.seq)",
-                &[&consumer, &output, &seq],
-            )?;
-            Ok(())
-        })
+        self.advance(consumer, &delivery.output, delivery.seq.0)
     }
 
     fn backlog(&self, output: &str) -> Result<Vec<(String, u64)>> {
@@ -318,5 +321,21 @@ impl Log for Postgres {
                 (row.get("consumer"), u64::try_from(past).unwrap_or_default())
             })
             .collect())
+    }
+}
+
+impl Postgres {
+    /// Moves `consumer`'s cursor on `output` to `seq`, unless it is past it already.
+    fn advance(&self, consumer: &str, output: &str, seq: i64) -> Result<()> {
+        let (consumer, output) = (consumer.to_owned(), output.to_owned());
+        self.run(move |client| {
+            client.execute(
+                "INSERT INTO priory_log_cursors (consumer, output, seq) VALUES ($1, $2, $3)
+                 ON CONFLICT (consumer, output)
+                 DO UPDATE SET seq = GREATEST(priory_log_cursors.seq, EXCLUDED.seq)",
+                &[&consumer, &output, &seq],
+            )?;
+            Ok(())
+        })
     }
 }

@@ -144,3 +144,22 @@ fn the_committed_schemas_match_the_code() {
          `PRIORY_UPDATE_SCHEMAS=1 cargo test -p priory --test schemas` and commit the result"
     );
 }
+
+#[test]
+fn the_intakes_role_may_publish_every_source_type_and_cli_requests_but_no_runner_message() {
+    let mut expected: Vec<String> = generated()
+        .into_iter()
+        .filter_map(|(path, _)| {
+            Some(
+                path.strip_prefix("events/")?
+                    .strip_suffix(".json")?
+                    .to_owned(),
+            )
+        })
+        .filter(|kind| !kind.starts_with("priory.") || kind == "priory.task.requested.cli")
+        .collect();
+    expected.sort();
+    let mut allowed: Vec<&str> = priory_intake::log::sql::INTAKE_TYPES.to_vec();
+    allowed.sort_unstable();
+    assert_eq!(allowed, expected);
+}

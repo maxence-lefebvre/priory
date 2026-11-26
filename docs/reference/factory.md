@@ -211,6 +211,23 @@ Priory creates the tables `priory_log_messages` and `priory_log_cursors` on firs
 TLS when the server offers it and the machine's root certificates trust it; add `sslmode=require`
 to the URL to refuse a plain connection.
 
+A client whose environment sets `PRIORY_LOG_RESTRICTED=1` skips creating the tables, since a
+restricted role may not create them. Set it for a process that connects as the intake's role.
+
+### The intake's role
+
+`priory log intake-role ROLE` prints the SQL that gives the intake a role of its own, such as on
+the diocese, where the intake runs apart from the runners.
+
+| The role may | What it allows |
+| ------------ | -------------- |
+| Read | every message and cursor |
+| Publish | the source events, `factory.*` messages and `priory.task.requested.cli`. Never an answer, claim, give, hold, alive message or other `priory.*` message |
+| Move the cursor of | `priory.intake` only |
+
+The SQL turns on row security on both tables, adds a policy that leaves every other role's access
+as it was, and adds restrictive policies for `ROLE`. The tables' owner skips row security.
+
 On Postgres, `timeout` bounds the connect, sets the server's `statement_timeout`, and sets
 `tcp_user_timeout` on the socket. TCP keepalives probe a quiet connection after 10 seconds, every
 10 seconds, 3 times. A call that gets no answer within `timeout`, such as over an ssh tunnel that
