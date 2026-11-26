@@ -96,6 +96,7 @@ The Warp column comes from Warp's public page and is blank where that page says 
 | Label      | A `key=value` pair a trigger or a request sets on a task                  |              |                  |
 | Runner filter | A runner's rule on labels, with optional days and hours, for the tasks it takes |       |                  |
 | Diocese    | The always-on VM that holds the log, intake and traces every runner shares |              |                  |
+| Journal    | The entries and documents one trigger keeps between its runs, on the log |              |                  |
 
 ## Configuration
 
