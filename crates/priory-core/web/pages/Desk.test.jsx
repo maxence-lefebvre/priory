@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClientProvider } from "@tanstack/react-query";
 
-// The legacy files touch the page as they load.
+// The data modules read the device's storage and the page as they load.
 const sheet = { addEventListener() {}, open: false };
 Object.assign(globalThis, {
   localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
@@ -31,11 +31,11 @@ const ASKS = [{ id: 3, task: 3, key: "ENG-3", step: "implement", state: "open", 
 const QUEUE = { running: [], waiting: [], asleep: [], up_next: [{ kind: "queued", task: 8, key: "ENG-8", why: "first in the queue", at: "2026-11-25T10:00:00Z" }] };
 const TASKS = [{ id: 7, key: "ENG-7", state: "blocked", repo: "acme/shop" }];
 
-function draw(t, Part, { size = "wide", search = "" } = {}) {
+function draw(t, Part, { size = "wide", search = "", desk = DESK } = {}) {
   const cache = client({ api: async () => ({}) });
   cache.setQueryData(keyOf("links"), LINKS);
   cache.setQueryData(keyOf("views"), { factory: "shop", views: { default: { layout: { tabs: [] } } } });
-  cache.setQueryData(keyOf("desk"), DESK);
+  cache.setQueryData(keyOf("desk"), desk);
   cache.setQueryData(keyOf("asks"), { asks: ASKS, bands: [], older: { answered: 0, withdrawn: 0 } });
   cache.setQueryData(keyOf("queue"), QUEUE);
   cache.setQueryData(keyOf("tasks"), { tasks: TASKS, older: 0 });
@@ -46,7 +46,7 @@ function draw(t, Part, { size = "wide", search = "" } = {}) {
 
 test("a wide Desk draws a table whose keys link their task or batch, and each action again in its fold", (t) => {
   const html = draw(t, DeskList);
-  assert.match(html, /^<div class="list" role="region" aria-label="Desk"><div class="lhead"><h1>Desk<\/h1><span class="cnt"><span class="n num">1<\/span><span class="w">ask needs you<span>/);
+  assert.match(html, /^<div class="list" role="region" aria-label="Desk"><div class="lhead"><h1 tabindex="-1">Desk<\/h1><span class="cnt"><span class="n num">1<\/span><span class="w">ask needs you<span>/);
   assert.match(html, /<tr data-href="\/asks\/3" aria-current="false">/);
   assert.match(html, /<td class="mono"><a href="\/tasks\/7" title="task 7">ENG-7<\/a><\/td>/);
   assert.match(html, /<td class="mono"><a href="\/batches\/2">batch:2026-11-25-1<\/a><\/td>/);
@@ -61,7 +61,7 @@ test("a wide Desk draws a table whose keys link their task or batch, and each ac
 
 test("a phone's Desk lists its rows and ends with the Answer capsule beside Add", (t) => {
   const html = draw(t, DeskPage, { size: "compact" });
-  assert.match(html, /^<div class="flat"><div class="top"><span class="fac">shop<\/span><span class="conn ">live<\/span><\/div><div class="panel" role="region" aria-label="Desk"><h1 class="sr">Desk<\/h1><div class="scroll desk-end">/);
+  assert.match(html, /^<div class="flat"><div class="top"><span class="fac">shop<\/span><span class="conn ">live<\/span><\/div><div class="panel" role="region" aria-label="Desk"><h1 class="sr" tabindex="-1">Desk<\/h1><div class="scroll desk-end">/);
   assert.match(html, /<div class="sec">Asks<span>oldest first<\/span><\/div><a class="row " href="\/asks\/3" aria-current="false">/);
   assert.match(html, /<a class="mono" href="\/tasks\/7" title="task 7">ENG-7<\/a>/);
   assert.match(html, /<a class="capsule " href="\/asks\/3"><svg[^>]*>.*<\/svg>Answer 1 ask<\/a><button type="button" class="fab" data-action="add-open"/);
@@ -72,4 +72,11 @@ test("a saved view draws its own rows, and a preview has no capsule", (t) => {
   const preview = draw(t, DeskPreview);
   assert.match(preview, /^<div><div class="top">/);
   assert.doesNotMatch(preview, /capsule/);
+});
+
+test("a Desk with autopilot on draws its banner above the others, with Turn off", (t) => {
+  const autopilot = { window: 4, since: "2026-11-25T22:00:00Z", until: "2026-11-26T08:00:00Z", level: "high", lanes: [], answered: 3, left: 1 };
+  const html = draw(t, DeskPage, { size: "phone", desk: { ...DESK, autopilot, paused: "paused since 2026-11-25T09:00:00Z: deploy" } });
+  assert.match(html, /<div class="banner pilot" role="status"><svg[^>]*>.*?<\/svg><div><span>Autopilot is on until \d\d:\d\d \(high, every lane\)\. It answered 3 and left 1\.<\/span><br\/><button type="button" id="autopilot-off" class="btn secondary" aria-disabled="false">Turn off<\/button><\/div><\/div><div class="banner" role="status">/);
+  assert.doesNotMatch(draw(t, DeskPage, { size: "phone" }), /autopilot-off/, "no banner while autopilot is off");
 });

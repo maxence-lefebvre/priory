@@ -6,7 +6,7 @@ import { RouterProvider } from "@tanstack/react-router";
 import { cache, refresh, reread, revision } from "./data.js";
 import "./entries/index.js";
 import { follow, recover } from "./events.js";
-import { watch } from "./legacy/terminal.js";
+import { watch } from "./components/TerminalPane.jsx";
 import { staleAll, stuck } from "./queries.js";
 import { followLink } from "./router.js";
 import { makeRouter } from "./routes.jsx";

@@ -9,7 +9,7 @@ use std::sync::Mutex;
 /// Records the files each task's branch changed at the end of its latest run, then holds each
 /// queued or ready task that changes files an earlier, unfinished task changes, until that task's
 /// pull request merges or, with none, the task ends. A task that already has work on an open pull
-/// request is never held. A person's release of the hold stays final for that earlier task. Tasks in
+/// request, or whose workflow sets `overlap = false`, is never held. A person's release of the hold stays final for that earlier task. Tasks in
 /// other repositories never overlap, a task never waits on one that waits on it, and a stacked batch
 /// entry never waits on a task it is stacked on.
 pub(crate) fn tick(db: &mut Connection, factory: &Factory, home: &Path) -> rusqlite::Result<()> {
@@ -19,7 +19,7 @@ pub(crate) fn tick(db: &mut Connection, factory: &Factory, home: &Path) -> rusql
     record(db, home)?;
     forget_closed(db)?;
     let mut fresh = BTreeSet::new();
-    for (task, _) in overlaps(db)? {
+    for (task, _) in overlaps(db, factory)? {
         // Unknown is not a no: a wrong hold is never judged again, so git is asked on the next tick.
         if works_on_open(db, home, task)? == Some(false) {
             fresh.insert(task);
@@ -30,7 +30,7 @@ pub(crate) fn tick(db: &mut Connection, factory: &Factory, home: &Path) -> rusql
     }
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     // Read again: the state may have moved while git ran.
-    for (task, held) in overlaps(&tx)? {
+    for (task, held) in overlaps(&tx, factory)? {
         if fresh.contains(&task) {
             hold::hold(&tx, task, &held, factory)?
                 .map(drop)
@@ -40,19 +40,33 @@ pub(crate) fn tick(db: &mut Connection, factory: &Factory, home: &Path) -> rusql
     tx.commit()
 }
 
-/// The hold each queued or ready task with no pull request of its own would get, by task. A hold
-/// only targets a lower id, so placing one changes no other.
-fn overlaps(db: &Connection) -> rusqlite::Result<Vec<(i64, Hold)>> {
+/// The hold each queued or ready task with no pull request of its own, in a workflow that keeps
+/// the check, would get, by task. A hold only targets a lower id, so placing one changes no other.
+fn overlaps(db: &Connection, factory: &Factory) -> rusqlite::Result<Vec<(i64, Hold)>> {
     let waiting: Vec<(i64, Vec<String>)> = db
         .prepare(
-            "SELECT id, files FROM tasks WHERE state IN ('queued', 'ready')
+            "SELECT id, files, workflow FROM tasks WHERE state IN ('queued', 'ready')
              AND json_array_length(files) > 0
              AND NOT EXISTS (SELECT 1 FROM pull_requests WHERE state = 'open'
                AND (task = tasks.id OR tasks.key IN (resource, 'cli:' || resource)))
              ORDER BY id",
         )?
-        .query_map([], |row| Ok((row.get(0)?, row.get::<_, String>(1)?)))?
-        .map(|row| row.map(|(id, files)| (id, files_of(&files))))
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .filter(|row| {
+            row.as_ref().map_or(true, |(_, _, workflow)| {
+                factory
+                    .workflows
+                    .get(workflow)
+                    .is_none_or(|loaded| loaded.value.overlap)
+            })
+        })
+        .map(|row| row.map(|(id, files, _)| (id, files_of(&files))))
         .collect::<rusqlite::Result<_>>()?;
     let mut holds = Vec::new();
     for (task, files) in waiting {
@@ -60,8 +74,9 @@ fn overlaps(db: &Connection) -> rusqlite::Result<Vec<(i64, Hold)>> {
             .prepare(
                 "SELECT id, files FROM tasks WHERE id < ?1 AND json_array_length(files) > 0
                  AND state NOT IN ('failed', 'dropped')
-                 AND replace(worktree, '/' || id, '') = replace(
-                   (SELECT worktree FROM tasks WHERE id = ?1), '/' || ?1, '')
+                 -- The same repository: the worktrees' folders match up to their last `/`.
+                 AND rtrim(worktree, replace(worktree, '/', '')) = (SELECT
+                   rtrim(worktree, replace(worktree, '/', '')) FROM tasks WHERE id = ?1)
                  AND NOT EXISTS (SELECT 1 FROM holds WHERE holds.task = tasks.id
                    AND holds.target = ?1 AND holds.released IS NULL)
                  -- A stacked entry's branch starts with the files of every task it is stacked on.
@@ -254,4 +269,53 @@ fn record(db: &Connection, home: &Path) -> rusqlite::Result<()> {
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn task(db: &Connection, id: i64, state: &str, worktree: &str) {
+        db.execute(
+            "INSERT INTO tasks (id, key, workflow, step, state, trigger, source, worktree, files)
+             VALUES (?1, 'k' || ?1, 'implement', 'check', ?2, 't', 's', ?3, '[\"shared.txt\"]')",
+            params![id, state, worktree],
+        )
+        .unwrap();
+    }
+
+    fn held(worktrees: [&str; 3]) -> Vec<(i64, String)> {
+        let db = crate::state::memory();
+        task(&db, 1, "running", worktrees[0]);
+        task(&db, 2, "running", worktrees[1]);
+        task(&db, 3, "ready", worktrees[2]);
+        overlaps(&db, &Factory::default())
+            .unwrap()
+            .into_iter()
+            .map(|(task, hold)| (task, hold.reason))
+            .collect()
+    }
+
+    #[test]
+    fn a_task_waits_on_the_earlier_task_of_its_repository_wherever_the_worktrees_live() {
+        // `/1` and `/2` also appear in the folders above the worktrees.
+        let found = held([
+            "/srv/1310/2/worktrees/owner/other/1",
+            "/srv/1310/2/worktrees/owner/repo/2",
+            "/srv/1310/2/worktrees/owner/repo/3",
+        ]);
+
+        assert_eq!(found, [(3, "overlaps task 2 on shared.txt".to_owned())]);
+    }
+
+    #[test]
+    fn a_runners_task_waits_on_the_earlier_task_of_its_repository() {
+        let found = held([
+            "/home/worktrees/owner/other/a-1",
+            "/home/worktrees/owner/repo/a-2",
+            "/home/worktrees/owner/repo/a-3",
+        ]);
+
+        assert_eq!(found, [(3, "overlaps task 2 on shared.txt".to_owned())]);
+    }
 }

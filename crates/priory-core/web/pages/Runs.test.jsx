@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClientProvider } from "@tanstack/react-query";
 
-// The legacy modules these pages import touch the page as they load.
+// The data modules these pages import read the device's storage and the page as they load.
 const sheet = { addEventListener() {}, open: false };
 Object.assign(globalThis, {
   localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
@@ -34,7 +34,7 @@ const RUNS = {
   ],
 };
 
-test("Runs draws its table and list rows as the legacy page did", (t) => {
+test("Runs draws its table and list rows as before React", (t) => {
   const html = draw(t, RunsList, { href: "/runs", data: { [K("runs")]: RUNS } });
   assert.match(html, /<a href="\/runs\?view=recent" aria-current="true">Recent<span class="num">4<\/span><\/a><a href="\/runs\?view=live" aria-current="false">Live<span class="num">1<\/span><\/a>/);
   assert.match(html, /<table class="tbl runs"><thead><tr><th>State<\/th><th class="r">Run<\/th><th>Task<\/th><th>Step<\/th><th>Agent and model<\/th><th>Outcome<\/th><th class="r">Duration<\/th><th class="r">Tokens<\/th><th class="r">Started<\/th><\/tr><\/thead>/);

@@ -18,7 +18,7 @@ node --test adapters/github/test/*.test.js
 
 The tests cover the request builder, the pull request and guide parsers, the ask state machine,
 the say routing, the store and the vendored files. They also run `content.js` on fixture pages and
-the side panel's sign-in in `frame.js`, on the small DOM in `test/dom.js`. They need no browser.
+the side panel's sign-in, the strip's and panel's reads and Generate guide in `frame.js`, on the small DOM in `test/dom.js`. They need no browser.
 
 ## Files
 

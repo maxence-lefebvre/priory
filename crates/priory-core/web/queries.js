@@ -84,7 +84,7 @@ const own = (query) => Boolean(query.meta?.read);
 
 // Marks every read stale and reads the mounted ones again. True when none of them failed. A page's own
 // read follows the others, and waits while what an answer depends on failed or is read by a later
-// refresh, as the legacy loaders did: that refresh reads it once it lands.
+// refresh: that refresh reads it once it lands.
 async function reread(cache, options, predicate = moving) {
   await cache.invalidateQueries({ predicate: (query) => predicate(query) && !own(query) }, options);
   const unsure = active(cache).some((query) => locks(query) && (query.state.status === "error" || query.state.fetchStatus === "fetching"));
@@ -182,7 +182,7 @@ function earlier({ data, updated }) {
 /** Puts a kept snapshot in the cache, marked stale so a live page reads it again. */
 export function restore(cache, kept) {
   const reads = kept?.reads ?? (kept?.data ? earlier(kept) : []);
-  // The legacy Costs panel kept one value of two reads.
+  // An earlier version's Costs panel kept one value of two reads.
   const spend = reads.find(([[name]]) => name === "spend");
   const split = spend?.[1] ? [[["costs", spend[1].costs.by], spend[1].costs, spend[2]], [["attention"], spend[1].attention, spend[2]]] : [];
   const missing = split.filter(([[name]]) => !reads.some(([key]) => key[0] === name));

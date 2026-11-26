@@ -5,7 +5,7 @@ import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ARM_MS, ASK_VIEWS, answeredBy, askBody, askGroups, askHeading, dismissable, optionKey, planCut, planUnread, planWait, plansFirst, press, routedMark, routedNote, runnerOf, runsCommand, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, submitted, writeNote, writeShown } from "../asks.js";
-import { cache, refresh } from "../data.js";
+import { acceptAsk, asked, cache, loadOlder, refresh } from "../data.js";
 import { deskModel, plural, sectionInView } from "../desk.js";
 import { searchOf, where } from "../frame.js";
 import { emptyDetail } from "../inbox.js";
@@ -27,8 +27,6 @@ import { useBatch } from "../hooks/useBatch.js";
 import { useKeptScroll } from "../hooks/useKeptScroll.js";
 import { useOlder } from "../hooks/useOlder.js";
 import { useMinute } from "../hooks/useScreen.js";
-import { acceptAsk, asked } from "../legacy/data.js";
-import { loadOlder } from "../legacy/shared.js";
 import { useKeptFocus } from "../hooks/useKeptFocus.js";
 import { Closes, LaneGraph, LaneKey, PlanNote, Splits, closePlanEdit, splitsOf } from "./Batch.jsx";
 import { usePlace } from "./place.js";
@@ -249,6 +247,7 @@ function answer(ask, text, written, run = false) {
   if (answers.get().pending) return;
   const notices = new Map(answers.get().notices);
   notices.delete(ask.id);
+  // An open answer sheet stays while the answer sends, and after a refusal, so both show where the person pressed.
   set({ pending: { id: ask.id, text }, notices });
   send(ask, text, written, run);
 }
@@ -276,7 +275,8 @@ async function send(ask, text, written, run) {
   const body = { [written ? "text" : "option"]: text, revision: ask.revision, call: calls.get(key) };
   if (run) body.run = true;
   const sent = await write(ask, `/api/asks/${encodeURIComponent(ask.id)}/answer`, body, text);
-  set({ pending: null, sheet: false });
+  // A refused or lost answer keeps an open answer sheet, which shows its note.
+  set(sent ? { pending: null, sheet: false } : { pending: null });
   if (!sent) return;
   calls.delete(key);
   // The reply holds the stored ask, so the next ask opens without reading the lists again.
@@ -329,7 +329,8 @@ async function write(ask, path, body, draft) {
 function next(ask) {
   const before = listedNow().map((candidate) => candidate.id);
   const { listUrl } = onScreen;
-  refresh();
+  // A failed read says so in the strip; nothing waits on it here.
+  refresh().catch(() => {});
   if (shownId() !== String(ask.id)) return;
   const left = listedNow().filter((candidate) => candidate.id !== ask.id);
   const following = left.find((candidate) => before.indexOf(candidate.id) > before.indexOf(ask.id)) || left[0];
@@ -573,9 +574,11 @@ const Nav = ({ to, label, name }) => (to
 // The answer sheet (DESIGN.md, Answer while reading): every option of the ask on screen, opened by the bar's "N options".
 const sheet = () => document.getElementById("answer");
 const AnswerSheet = memo(function AnswerSheet({ ask, task, locked, bound }) {
-  const { sheet: open, pending } = useStore(answers);
-  // The sheet stays while its answer is sending, so the pressed option shows it.
+  const { sheet: open, pending, notices } = useStore(answers);
+  // The sheet stays while its answer is sending, so the pressed option shows it, and after a
+  // refusal, so its note shows where the person pressed.
   const shown = open && ask.state === "open" && (!pending || pending.id === ask.id);
+  const notice = notices.get(ask.id);
   useEffect(() => {
     const dialog = sheet();
     const closed = () => set({ sheet: false });
@@ -585,6 +588,8 @@ const AnswerSheet = memo(function AnswerSheet({ ask, task, locked, bound }) {
     return () => {
       dialog.removeEventListener("close", closed);
       dialog.removeEventListener("click", outside);
+      // The close listener is gone, so clear the store here, or the next ask opens the sheet unasked.
+      set({ sheet: false });
       if (dialog.open) dialog.close();
     };
   }, []);
@@ -598,6 +603,7 @@ const AnswerSheet = memo(function AnswerSheet({ ask, task, locked, bound }) {
   return createPortal(
     <>
       <div className="shead"><h2 id="answer-title">{`Answer ask #${ask.id}`}<small>{`revision ${ask.revision}`}</small></h2><button type="button" className="iconbtn" aria-label="Close" onClick={() => sheet().close()}><Icon name="x" size="s20" /></button></div>
+      {notice ? <p className="warnline" role="status">{notice}</p> : null}
       <div className="opts" role="group" aria-label="Options"><OptionList ask={ask} wide={false} locked={locked} bound={bound} /></div><CutNote ask={ask} task={task} />
     </>,
     sheet(),
@@ -724,8 +730,9 @@ const AskBody = memo(function AskBody({ ask, id, wide, compact, list, listUrl, l
   const barArmed = armed !== null && armed.text === recommended;
   const runs = runsCommand(ask, recommended);
   const barSending = pending?.text === recommended;
+  // A refused or lost answer's note shows in the bar too, since the ask's own copy has scrolled away.
   const bar = (!pending || barSending) && ask.state === "open" && options.length ? (
-    <div className="abar" hidden>{barArmed && runs ? <CommandBlock ask={ask} note={bound} /> : null}<button type="button" className="btn secondary" aria-disabled={pending ? "true" : undefined} onClick={acting(Boolean(pending), () => set({ sheet: true }))}><Icon name="chevron-up" size="s15" />{plural(options.length, "option")}</button>
+    <div className="abar" hidden>{notice ? <p className="warnline" role="status">{notice}</p> : null}{barArmed && runs ? <CommandBlock ask={ask} note={bound} /> : null}<button type="button" className="btn secondary" aria-disabled={pending ? "true" : undefined} onClick={acting(Boolean(pending), () => set({ sheet: true }))}><Icon name="chevron-up" size="s15" />{plural(options.length, "option")}</button>
       <button type="button" id="bar-answer" className={`btn primary ${barArmed ? "armed" : ""}`} data-answer={options.indexOf(recommended)} aria-disabled={locked || pending ? "true" : "false"} aria-busy={barSending ? "true" : undefined} onClick={() => pressOption(ask, options.indexOf(recommended), Boolean(locked))}>{barSending
         ? <><Busy /><span>{recommended}</span><small>Sending…</small></>
         : barArmed

@@ -1,9 +1,3 @@
-import { DeskList, DeskPage, deskViewOf } from "../pages/Desk.jsx";
-import { current, listSearch } from "../legacy/shared.js";
+import { DeskList, DeskPage } from "../pages/Desk.jsx";
 
-export const desk = {
-  name: "desk",
-  List: DeskList,
-  Page: DeskPage,
-  older: { tasks: () => current() === "desk" && deskViewOf(listSearch()) === "all" },
-};
+export const desk = { name: "desk", List: DeskList, Page: DeskPage };

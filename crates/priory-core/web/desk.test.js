@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { nextLink, onRoom, sinceGroups, mergeSince, progressView, sectionInView, dueText, rowAction, actionNote, batchParts, countWords, memoryNote, memoryTag, capsuleWords, countHead, deskBanners, arrivalAsk, plural, taskRepo } from "./desk.js";
+import { nextLink, onRoom, sinceGroups, mergeSince, progressView, sectionInView, dueText, rowAction, actionNote, batchParts, countWords, memoryNote, memoryTag, capsuleWords, countHead, deskBanners, autopilotView, arrivalAsk, plural, taskRepo } from "./desk.js";
 import { linked } from "./links.js";
 
 const why = "work stopped and waits on a person";
@@ -249,4 +249,40 @@ test("the Desk's model sorts its items, and an open ask the asks listing lacks k
   assert.equal(model.needs, 7);
   assert.deepEqual(model.banners, [{ text: "paused 3 min ago", icon: "pause", intake: false }]);
   assert.deepEqual([model.asleep, model.asleepTasks, model.queue, model.upNext], [2, queue.asleep, queue.waiting, queue.up_next]);
+});
+
+const PILOT = { window: 4, since: "2026-11-25T22:00:00Z", until: "2026-11-26T08:00:00Z", level: "high", lanes: [], answered: 3, left: 1 };
+const TIMES = { clock: () => "08:00", ago: () => "4 min ago" };
+const IDLE = { window: null, sending: false, untold: null };
+
+test("the autopilot banner says until when, at what level and lanes, and what it did, with Turn off", () => {
+  assert.deepEqual(autopilotView(PILOT, IDLE, null, TIMES), {
+    words: "Autopilot is on until 08:00 (high, every lane). It answered 3 and left 1.", label: "Turn off", busy: false, error: false,
+  });
+  assert.equal(autopilotView({ ...PILOT, lanes: ["core/intake", "web"] }, IDLE, null, TIMES).words,
+    "Autopilot is on until 08:00 (high, core/intake, web). It answered 3 and left 1.");
+  assert.equal(autopilotView(null, IDLE, null, TIMES), null, "no banner while autopilot is off");
+});
+
+test("the autopilot banner waits while its off is in flight, then goes once the runners were told", () => {
+  assert.deepEqual(autopilotView(PILOT, { window: null, sending: true, untold: null }, null, TIMES),
+    { words: "Autopilot is on until 08:00 (high, every lane). It answered 3 and left 1.", label: "Turning off", busy: true, error: false });
+  const told = { window: 4, sending: false, untold: null };
+  assert.equal(autopilotView(PILOT, told, null, TIMES), null, "the window it ended hides before the desk is read again");
+  assert.equal(autopilotView(null, told, null, TIMES), null);
+  assert.equal(autopilotView({ ...PILOT, window: 5 }, told, null, TIMES).label, "Turn off", "a later window shows again");
+});
+
+test("an off that told no other runner keeps the banner, as an error, with Tell them again", () => {
+  const untold = { window: 4, sending: false, untold: "the log is unreachable." };
+  const view = { words: "Autopilot is off here, and no other runner was told: the log is unreachable.", label: "Tell them again", busy: false, error: true };
+  assert.deepEqual(autopilotView(PILOT, untold, null, TIMES), view);
+  assert.deepEqual(autopilotView(null, untold, null, TIMES), view);
+  assert.equal(autopilotView({ ...PILOT, window: 5 }, untold, null, TIMES).label, "Turn off", "a later window replaces the error");
+});
+
+test("offline, the autopilot banner says what the last read showed and how old it is, and cannot turn it off", () => {
+  assert.deepEqual(autopilotView(PILOT, IDLE, "2026-11-26T07:00:00Z", TIMES), {
+    words: "Autopilot was on 4 min ago, until 08:00 (high, every lane).", label: "Turn off", busy: true, error: false,
+  });
 });

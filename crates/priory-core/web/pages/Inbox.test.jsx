@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClientProvider } from "@tanstack/react-query";
 
-// The legacy Add sheet touches the page as it loads.
+// The Add sheet's draft is read from the device's storage as it loads.
 const sheet = { addEventListener() {}, open: false };
 Object.assign(globalThis, {
   localStorage: { getItem: () => null, setItem() {}, removeItem() {} },

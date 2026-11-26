@@ -7,18 +7,20 @@ const SOURCE = readFileSync(new URL("./sw.js", import.meta.url), "utf8");
 
 // Loads sw.js as a browser would, with stand-ins for the worker's globals: one Cache Storage, a
 // registration that records notifications and subscriptions, and a fetch that records requests.
-function worker({ token = null, refuseKinds = false, subscribeStatus = 200 } = {}) {
+// A cache matches a request by its path. `offline` fails every fetch of the page's own files.
+function worker({ token = null, refuseKinds = false, subscribeStatus = 200, offline = false } = {}) {
   const stores = new Map();
+  const id = (key) => (typeof key === "string" ? key : new URL(key.url).pathname);
   const caches = {
     async open(name) {
       if (!stores.has(name)) stores.set(name, new Map());
       const store = stores.get(name);
       return {
         async match(key) {
-          return store.has(key) ? new Response(store.get(key)) : undefined;
+          return store.has(id(key)) ? new Response(store.get(id(key))) : undefined;
         },
         async put(key, response) {
-          store.set(key, await response.text());
+          store.set(id(key), await response.text());
         },
         async delete(key) {
           return store.delete(key);
@@ -28,7 +30,11 @@ function worker({ token = null, refuseKinds = false, subscribeStatus = 200 } = {
         },
       };
     },
-    async match() {},
+    // As a browser does, the first cache that holds the key answers, whichever shell it is.
+    async match(key) {
+      const store = [...stores.values()].find((each) => each.has(id(key)));
+      return store ? new Response(store.get(id(key))) : undefined;
+    },
     async keys() {
       return [...stores.keys()];
     },
@@ -59,6 +65,7 @@ function worker({ token = null, refuseKinds = false, subscribeStatus = 200 } = {
     clients: { claim: async () => {} },
   };
   const fetch = async (path, init = {}) => {
+    if (offline && typeof path !== "string") throw new TypeError("Failed to fetch");
     requests.push({ path, method: init.method || "GET", auth: init.headers?.Authorization, body: init.body ? JSON.parse(init.body) : null });
     if (path === "/api/push/key") return new Response(JSON.stringify({ key: "AQID" }));
     if (refuseKinds && requests.at(-1).body?.kinds) return new Response("{}", { status: 400 });
@@ -75,15 +82,34 @@ function worker({ token = null, refuseKinds = false, subscribeStatus = 200 } = {
   return { fire, shown, requests, subscribed, ready, stores };
 }
 
-test("an install caches the shell under its new name, and an upgrade drops the older shell", async () => {
+test("an install caches the shell under its new name, and an upgrade drops the older shells", async () => {
   const { fire, stores } = worker();
   await fire("install", {});
-  assert.deepEqual([...stores.get("priory-shell-2").keys()].filter((path) => path.endsWith(".js")), ["/boot.js", "/app.js"]);
+  assert.deepEqual([...stores.get("priory-shell-3").keys()].filter((path) => path.endsWith(".js")), ["/boot.js", "/app.js"]);
 
   stores.set("priory-shell", new Map([["/asks.js", "old"]]));
+  stores.set("priory-shell-2", new Map([["/app.js", "old"]]));
   stores.set("priory-push", new Map([["/api/worker/token", "t"]]));
   await fire("activate", {});
-  assert.deepEqual([...stores.keys()].sort(), ["priory-push", "priory-shell-2"]);
+  assert.deepEqual([...stores.keys()].sort(), ["priory-push", "priory-shell-3"]);
+});
+
+test("an offline start before the older shell is dropped reads every file from the new shell, never from the old one", async () => {
+  const { fire, stores } = worker({ offline: true });
+  stores.set("priory-shell-2", new Map([["/", "old index"], ["/app.js", "old bundle"], ["/app.css", "old style"]]));
+  await fire("install", {});
+  const shell = stores.get("priory-shell-3");
+  shell.set("/", "new index");
+  shell.set("/app.js", "new bundle");
+  shell.delete("/app.css");
+  const served = [];
+  for (const [path, mode] of [["/asks/4", "navigate"], ["/app.js", "no-cors"], ["/app.css", "no-cors"]]) {
+    let reply;
+    await fire("fetch", { request: { url: `https://priory.test${path}`, method: "GET", mode }, respondWith: (promise) => (reply = promise) });
+    const response = await reply;
+    served.push(response.type === "error" ? "nothing" : await response.text());
+  }
+  assert.deepEqual(served, ["new index", "new bundle", "nothing"]);
 });
 
 const push = (notice) => ({ data: { json: () => notice } });

@@ -1,7 +1,7 @@
 import { useEffect } from "react";
-import { askFor, asked } from "../legacy/data.js";
+import { askFor, asked } from "../data.js";
 
-/** Reads `listing` without its older rows again once the part on screen no longer shows them, as a legacy page's open does. */
+/** Reads `listing` without its older rows again once the part on screen no longer shows them. */
 export function useOlder(listing, wanted) {
   useEffect(() => {
     const { all } = asked.get();

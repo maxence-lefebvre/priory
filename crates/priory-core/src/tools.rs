@@ -4805,6 +4805,7 @@ fn open_ask(
         Some("sibling-fired") => Some(format!(
             "ask {label} was withdrawn when a wait of its run fired first"
         )),
+        Some("task-ended") => Some(format!("ask {label} was withdrawn when task {task} ended")),
         Some("moved-on") => Some(format!(
             "ask {label} was withdrawn when a later run of task {task} called another tool"
         )),
@@ -4918,6 +4919,9 @@ pub struct Act {
     /// What `say` tells the task's agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// The pull request `say` reopens a done task on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pull_request: Option<String>,
     /// The state revision a person's `hold`, `release` or `cancel` was made on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected: Option<i64>,
@@ -5013,7 +5017,7 @@ pub(crate) fn act_in_tx(
             // A fixed first line keeps a text starting with `/` from running as a slash command.
             let text = format!("{SAYS}{text}");
             let said = match state.as_str() {
-                "done" => say_reopens(tx, trace, act.task, &text)?,
+                "done" => say_reopens(tx, trace, act.task, &text, act.pull_request.as_deref())?,
                 _ => say_or_hold(tx, act.task, &text, &state, &factory.workflows)?,
             };
             Ok((said, None))
@@ -5088,15 +5092,16 @@ pub(crate) fn say_or_hold(
     say(tx, task, text, state, workflows)
 }
 
-/// Reopens the done `task` with `text` as its first prompt while a pull request of it is open, or
-/// says why not.
+/// Reopens the done `task` with `text` as its first prompt on `wanted`, else its lowest open pull
+/// request, or says why not.
 fn say_reopens(
     tx: &Transaction,
     trace: &Trace,
     task: i64,
     text: &str,
+    wanted: Option<&str>,
 ) -> rusqlite::Result<Result<String, String>> {
-    let resource = match open_pull_request(tx, task)? {
+    let resource = match open_pull_request(tx, task, wanted)? {
         Ok(resource) => resource,
         Err(why) => return Ok(Err(format!("task {task} is done and {why}"))),
     };
@@ -5120,26 +5125,34 @@ fn say_reopens(
     )))
 }
 
-/// Whether a `say` reopens the done `task`, or why not. Without `factory`, its step goes unchecked.
+/// Whether a `say` on `wanted`, else on no pull request in particular, reopens the done `task`, or
+/// why not. Without `factory`, its step goes unchecked.
 pub(crate) fn says_reopens(
-    tx: &Transaction,
+    tx: &Connection,
     task: i64,
     factory: Option<&Factory>,
+    wanted: Option<&str>,
 ) -> rusqlite::Result<Result<(), String>> {
-    let resource = match open_pull_request(tx, task)? {
+    let resource = match open_pull_request(tx, task, wanted)? {
         Ok(resource) => resource,
         Err(why) => return Ok(Err(why)),
     };
     match factory {
         Some(factory) => Ok(reopens_at(tx, &factory.workflows, task, &resource)?.map(drop)),
-        None => Ok(Ok(())),
+        None => {
+            let key: String =
+                tx.query_row("SELECT key FROM tasks WHERE id = ?1", [task], |row| {
+                    row.get(0)
+                })?;
+            Ok(rival(tx, task, &key)?.map_or(Ok(()), Err))
+        }
     }
 }
 
 /// The step the done `task` reopens at for `resource`, or why it cannot: an active task holds its
 /// key or a resource of it, or no agent runs that step.
 fn reopens_at(
-    tx: &Transaction,
+    tx: &Connection,
     workflows: &Workflows,
     task: i64,
     resource: &str,
@@ -5155,20 +5168,22 @@ fn reopens_at(
     let target = reentry(tx, workflows, task, &workflow, &at, resource)?;
     if step(workflows, &workflow, &target).is_none_or(|step| step.decides != Decider::Model) {
         return Ok(Err(format!(
-            "would reopen at step {target}, which no agent runs"
+            "would reopen at step {target}, which no agent runs: name the step it goes back to in its workflow's `reopen`"
         )));
     }
     Ok(Ok(target))
 }
 
-/// The lowest open pull request of `task`, or why it has none: it owns none, or they merged or
-/// closed.
+/// The open pull request `wanted`, else the lowest open one of `task`, or why it has none: it
+/// owns none, they merged or closed, or it does not hold `wanted`. Past its own pull requests, it
+/// holds those of its repository it subscribes to or waits on now, once an event read them open.
 pub(crate) fn open_pull_request(
-    tx: &Transaction,
+    tx: &Connection,
     task: i64,
+    wanted: Option<&str>,
 ) -> rusqlite::Result<Result<String, String>> {
     let stack = crate::stack::of(tx, task)?;
-    let pulls = match stack.is_empty() {
+    let own = match stack.is_empty() {
         true => pull_request(tx, task)?
             .map(|resource| (resource, "open".to_owned()))
             .into_iter()
@@ -5178,11 +5193,49 @@ pub(crate) fn open_pull_request(
             .map(|pull| (pull.resource, pull.state))
             .collect::<Vec<_>>(),
     };
-    let mut why = "owns no pull request".to_owned();
-    for (resource, mut state) in pulls {
-        if state == "open" {
-            state = last_read(tx, &resource)?;
+    let mut pulls = Vec::new();
+    for (resource, state) in own {
+        let state = match state.as_str() {
+            "open" => pull_state(tx, &resource)?.unwrap_or(state),
+            _ => state,
+        };
+        pulls.push((resource, state));
+    }
+    let open = pulls.iter().any(|(_, state)| state == "open");
+    if let Some((merged, _)) = pulls.iter().find(|(_, state)| state == "merged")
+        && !open
+    {
+        return Ok(Err(format!("its pull request {merged} is merged")));
+    }
+    for resource in held(
+        tx,
+        task,
+        pulls.first().map(|(resource, _)| resource.as_str()),
+    )? {
+        if pulls
+            .iter()
+            .any(|(known, _)| known.eq_ignore_ascii_case(&resource))
+        {
+            continue;
         }
+        if let Some(state) = pull_state(tx, &resource)? {
+            pulls.push((resource, state));
+        }
+    }
+    if let Some(wanted) = wanted {
+        return Ok(
+            match pulls
+                .into_iter()
+                .find(|(known, _)| known.eq_ignore_ascii_case(wanted))
+            {
+                Some((resource, state)) if state == "open" => Ok(resource),
+                Some((resource, state)) => Err(format!("its pull request {resource} is {state}")),
+                None => Err(format!("does not hold {wanted}")),
+            },
+        );
+    }
+    let mut why = "owns no pull request".to_owned();
+    for (resource, state) in pulls {
         if state == "open" {
             return Ok(Ok(resource));
         }
@@ -5191,24 +5244,46 @@ pub(crate) fn open_pull_request(
     Ok(Err(why))
 }
 
+/// The pull requests of the repository of `task` it subscribes to or waits on now, by name. Its
+/// repository is the one it was requested in, else that of `own`, its own pull request, or its key.
+fn held(tx: &Connection, task: i64, own: Option<&str>) -> rusqlite::Result<Vec<String>> {
+    let (repo, key): (Option<String>, String) =
+        tx.query_row("SELECT repo, key FROM tasks WHERE id = ?1", [task], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?;
+    let named = own.unwrap_or(&key).strip_prefix("github:");
+    let repo =
+        repo.or_else(|| named.and_then(|name| name.split(['#', ':']).next().map(str::to_owned)));
+    let Some(repo) = repo else {
+        return Ok(Vec::new());
+    };
+    tx.prepare(
+        "SELECT resource FROM (SELECT resource FROM subscriptions WHERE task = ?1
+           UNION SELECT resource FROM waits WHERE task = ?1
+             AND kind IN ('pull_request', 'checks', 'review') AND fired IS NULL AND withdrawn IS NULL)
+         WHERE substr(resource, 1, length(?2) + 8) = 'github:' || ?2 || '#' COLLATE NOCASE
+         ORDER BY CAST(substr(resource, length(?2) + 9) AS INTEGER), resource",
+    )?
+    .query_map(params![task, repo], |row| row.get(0))?
+    .collect()
+}
+
+// The resource repeats the expression of the `inbox_by_pull_nocase` index, so the lookup seeks it.
+const PULL_STATE: &str = "SELECT state FROM (
+   SELECT seq, CASE WHEN type = ?2 AND json_extract(data, '$.merged') = 1 THEN 'merged'
+     WHEN type != ?2 AND json_extract(data, '$.open') = 1 THEN 'open' ELSE 'closed' END AS state
+   FROM inbox
+   WHERE 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request')
+     = ?1 COLLATE NOCASE
+   AND json_extract(data, '$.pull_request') IS NOT NULL
+   AND (type = ?2 OR json_extract(data, '$.open') IS NOT NULL))
+ ORDER BY state = 'merged' DESC, seq DESC LIMIT 1";
+
 /// Whether the newest event that says so read the pull request `resource` `open`, `closed` or
-/// `merged`. A merge stands whatever came after it; `open` when none says.
-fn last_read(tx: &Transaction, resource: &str) -> rusqlite::Result<String> {
-    tx.query_row(
-        "SELECT state FROM (
-           SELECT seq, CASE WHEN type = ?2 AND json_extract(data, '$.merged') = 1 THEN 'merged'
-             WHEN type != ?2 AND json_extract(data, '$.open') = 1 THEN 'open' ELSE 'closed' END AS state
-           FROM inbox
-           WHERE 'github:' || json_extract(data, '$.repo') || '#'
-             || coalesce(json_extract(data, '$.pull_request'), json_extract(data, '$.issue')) = ?1
-           AND json_extract(data, '$.pull_request') IS NOT NULL
-           AND (type = ?2 OR json_extract(data, '$.open') IS NOT NULL))
-         ORDER BY state = 'merged' DESC, seq DESC LIMIT 1",
-        params![resource, CLOSED],
-        |row| row.get(0),
-    )
-    .optional()
-    .map(|state| state.unwrap_or_else(|| "open".to_owned()))
+/// `merged`, if one did. A merge stands whatever came after it.
+fn pull_state(tx: &Connection, resource: &str) -> rusqlite::Result<Option<String>> {
+    tx.query_row(PULL_STATE, params![resource, CLOSED], |row| row.get(0))
+        .optional()
 }
 
 /// Queues `text` as the next prompt of the agent at the task's model step, as an answer
@@ -5431,7 +5506,7 @@ fn revive(
 }
 
 /// The active task that holds the `key` or a resource of the ended `task`, as why it cannot restart.
-pub(crate) fn rival(tx: &Transaction, task: i64, key: &str) -> rusqlite::Result<Option<String>> {
+pub(crate) fn rival(tx: &Connection, task: i64, key: &str) -> rusqlite::Result<Option<String>> {
     let active = tx
         .query_row(
             "SELECT id FROM tasks WHERE key = ?1 AND state NOT IN ('done', 'failed', 'dropped')",
@@ -5626,7 +5701,7 @@ fn reenter(
 
 /// The step a done task reopens at.
 fn reentry(
-    tx: &Transaction,
+    tx: &Connection,
     workflows: &Workflows,
     task: i64,
     workflow: &str,
@@ -6438,5 +6513,62 @@ mod tests {
                 prop_assert_eq!(stored["verdict"].as_str(), Some(outcome.as_str()));
             }
         }
+    }
+
+    /// Task 1, done, in `octo/demo`, subscribed to its pull requests `numbers`, each read open.
+    fn subscribed(numbers: &[u32]) -> Connection {
+        let db = crate::state::memory();
+        db.execute_batch(
+            "INSERT INTO tasks
+               (key, workflow, step, state, band, lane, lane_derived, trigger, source, entered, repo)
+             VALUES ('cli:a', 'build', 'implement', 'done', 'now', 'cli', 0, 'cli', 'a',
+               strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 'octo/demo');",
+        )
+        .unwrap();
+        for number in numbers {
+            db.execute(
+                "INSERT INTO subscriptions (task, resource) VALUES (1, ?1)",
+                [format!("github:octo/demo#{number}")],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO inbox (id, type, time, data, links, outcome)
+                 VALUES (?1, 'github.pull_request.synchronize', '2026-01-01T00:00:00Z', ?2, '[]', 'noted')",
+                params![
+                    format!("e{number}"),
+                    json!({ "repo": "Octo/Demo", "pull_request": number, "open": true }).to_string()
+                ],
+            )
+            .unwrap();
+        }
+        db
+    }
+
+    #[test]
+    fn a_pull_requests_state_is_read_in_any_case_by_a_seek_of_the_inbox() {
+        let db = subscribed(&[7]);
+
+        assert_eq!(
+            pull_state(&db, "github:octo/demo#7").unwrap().as_deref(),
+            Some("open")
+        );
+        let plan = crate::state::query_plan(&db, PULL_STATE);
+        assert!(
+            plan.contains("USING INDEX inbox_by_pull_nocase (<expr>=?)"),
+            "{plan}"
+        );
+        db.execute_batch("DROP INDEX inbox_by_pull_nocase").unwrap();
+        let plan = crate::state::query_plan(&db, PULL_STATE);
+        assert!(plan.contains("SCAN inbox"), "{plan}");
+    }
+
+    #[test]
+    fn say_reopens_a_task_on_its_lowest_numbered_open_pull_request() {
+        let db = subscribed(&[10, 9]);
+
+        assert_eq!(
+            open_pull_request(&db, 1, None).unwrap(),
+            Ok("github:octo/demo#9".to_owned())
+        );
     }
 }

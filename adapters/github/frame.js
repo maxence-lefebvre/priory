@@ -6,7 +6,7 @@ import { parsePr } from "./lib/pr.js";
 import { blank, connectForm as sharedForm } from "./lib/connect.js";
 import { call } from "./lib/request.js";
 import { clear, get, put, remove } from "./lib/store.js";
-import { fixBranch, fixText, sayRoute } from "./lib/task.js";
+import { fixBranch, fixText, guideText, sayBody, sayRoute } from "./lib/task.js";
 
 const params = new URLSearchParams(location.search);
 // command.html is not web-accessible, so no page can embed its Run button.
@@ -22,6 +22,8 @@ const S = {
   task: null,
   flows: null,
   readAt: null,
+  // Whether `holders` comes from a read of this frame, not from the cache of an earlier visit.
+  confirmed: false,
   unreachable: false,
   tab: params.get("tab"),
   draft: null,
@@ -138,29 +140,39 @@ globalThis.document?.addEventListener?.("visibilitychange", () => {
   read(true);
 });
 
+// Only an answer the daemon gave says no task holds the pull request: the cache or a failed read never does.
+const noTask = () => S.confirmed && !S.unreachable && S.holders?.length === 0;
+const lookup = () => (S.unreachable ? "Cannot reach Priory. Retrying…" : "Reading Priory…");
+
+let retryTimer = 0;
+let retryMs = 2000;
+function failed() {
+  S.unreachable = true;
+  clearTimeout(retryTimer);
+  retryTimer = setTimeout(read, retryMs);
+  retryMs = Math.min(retryMs * 2, 30000);
+  render();
+}
+
 // `quiet`, for a revision from the poller: a read that changed nothing leaves the view as it is.
 async function readNow(quiet = false) {
+  clearTimeout(retryTimer);
   if (!S.config || !S.pr) return render();
   const found = await api(`/api/tasks?pr=${encodeURIComponent(S.pr.resource)}`);
   if (found.status === 401) return signedOut();
-  if (found.status !== 200) {
-    S.unreachable = true;
-    return render();
-  }
+  if (found.status !== 200) return failed();
   const holders = found.body.tasks;
   const detail = holders[0] ? await api(`/api/tasks/${holders[0].id}`) : { status: 200, body: null };
   if (!S.flows) {
     const flows = await api("/api/flows");
     S.flows = flows.status === 200 ? flows.body : null;
   }
-  if (detail.status !== 200) {
-    S.unreachable = true;
-    return render();
-  }
+  if (detail.status !== 200) return failed();
+  retryMs = 2000;
   const seen = JSON.stringify([holders, detail.body]);
   S.readAt = Date.now();
   if (seen === S.seen && !S.unreachable) return quiet ? undefined : render();
-  Object.assign(S, { seen, holders, task: detail.body, unreachable: false });
+  Object.assign(S, { seen, holders, task: detail.body, confirmed: true, unreachable: false });
   for (const ask of S.task?.asks ?? []) S.draft = observe(S.draft, ask, Date.now());
   if (S.draft?.phase === "sent" && !S.task?.asks?.some((ask) => ask.id === S.draft.id && ask.state === "open")) S.draft = null;
   put(`last:${S.pr.resource}`, { holders, task: S.task, flows: S.flows, readAt: S.readAt });
@@ -207,6 +219,16 @@ function pick(ask, answer) {
 
 // The strip, a frame of its own, shows the answer sending too.
 const sharing = (text) => S.pr && channel.postMessage({ sending: text === null ? null : { pr: S.pr.resource, text } });
+globalThis.addEventListener?.("pagehide", () => S.draft?.phase === "posting" && sharing(null));
+// A panel closed mid-send may not say it ended, so the strip also forgets it after the call's timeout.
+const SENDING_MS = 20000;
+let sendingTimer = 0;
+function heardSending(sending) {
+  clearTimeout(sendingTimer);
+  S.sending = sending?.pr === S.pr.resource ? sending.text : null;
+  if (S.sending) sendingTimer = setTimeout(() => heardSending(null), SENDING_MS);
+  render();
+}
 
 async function post() {
   clearTimeout(armTimer);
@@ -251,7 +273,7 @@ async function say(text, keep, task = S.task.id) {
   S.sayNotice = null;
   S.sayUnknown = null;
   render();
-  const refused = await write(`/api/tasks/${task}/say`, { text });
+  const refused = await write(`/api/tasks/${task}/say`, sayBody(S.pr, text));
   S.sayBusy = false;
   S.sayNotice = refused?.[1] ?? null;
   if (refused?.[0] === "unknown") S.sayUnknown = { task, text };
@@ -276,13 +298,13 @@ function strip() {
     return h("div", { class: "strip" }, brand, h("span", { class: "t2" }, "Sign in to see the task that owns this pull request."),
       h("button", { class: "btn primary", onclick: () => send("open", { tab: "task" }) }, "Sign in"), h("span", { class: "sp" }), toggle("task"));
   }
-  if (S.holders == null && !S.unreachable) return h("div", { class: "strip" }, brand, h("span", { class: "t3" }, "Reading Priory…"));
   const stale = S.unreachable
-    ? h("span", { class: "warn" }, icon("unplug", "s14"), S.readAt ? `Priory unreachable. Last read ${age(new Date(S.readAt).toISOString(), Date.now())} ago.` : "Priory unreachable.")
+    ? h("span", { class: "warn" }, icon("unplug", "s14"), S.readAt ? `Cannot reach Priory. Retrying… Last read ${age(new Date(S.readAt).toISOString(), Date.now())} ago.` : "Cannot reach Priory. Retrying…")
     : null;
+  if (!S.task && !noTask()) return h("div", { class: "strip" }, brand, stale ?? h("span", { class: "t3" }, "Reading Priory…"), h("span", { class: "sp" }), toggle("task"));
   if (!S.task) {
-    return h("div", { class: "strip" }, brand, stale ?? h("span", { class: "t2" }, "No Priory task owns this pull request."),
-      S.holders?.length === 0 ? h("button", { class: "btn ghost", onclick: () => send("open", { tab: "task" }) }, "Add a task…") : null, h("span", { class: "sp" }), toggle("task"));
+    return h("div", { class: "strip" }, brand, h("span", { class: "t2" }, "No Priory task owns this pull request."),
+      h("button", { class: "btn ghost", onclick: () => send("open", { tab: "task" }) }, "Add a task…"), h("span", { class: "sp" }), toggle("task"));
   }
   const asks = waiting();
   return h("div", { class: "strip" }, brand, tile(S.task, asks.length > 0), h("span", { class: "mono" }, `task ${S.task.id}`),
@@ -295,7 +317,7 @@ function strip() {
 
 function panel() {
   const asks = openAsks();
-  const guideOn = S.guide.state !== "none";
+  const guideOn = S.guide.state !== "none" || Boolean(S.task);
   const tabs = [["ask", "Ask", asks.length], ["task", "Task", 0], ...(guideOn ? [["guide", "Guide", 0]] : [])];
   S.tab = tabs.some(([id]) => id === S.tab) ? S.tab : asks.length ? "ask" : "task";
   const conn = !S.config ? h("span", { class: "conn" }, "signed out")
@@ -307,7 +329,7 @@ function panel() {
   const nav = h("nav", { class: "tabs", role: "tablist" }, tabs.map(([id, label, count]) =>
     h("button", { role: "tab", "aria-selected": String(S.tab === id), onclick: () => { S.tab = id; if (id === "guide") loadGuide(); render(); } }, label, count ? h("span", { class: "badge" }, count) : null)));
   const stale = S.config && S.unreachable
-    ? h("div", { class: "stale" }, icon("unplug", "s14"), S.readAt ? `Priory unreachable. Showing what it said ${age(new Date(S.readAt).toISOString(), Date.now())} ago.` : "Priory unreachable.",
+    ? h("div", { class: "stale" }, icon("unplug", "s14"), S.readAt ? `Cannot reach Priory. Retrying… Showing what it said ${age(new Date(S.readAt).toISOString(), Date.now())} ago.` : "Cannot reach Priory. Retrying…",
       h("button", { class: "btn secondary", onclick: () => read() }, "Retry"))
     : null;
   const body = S.tab === "guide" ? guideTab() : !S.config ? connectForm() : S.tab === "ask" ? askTab(asks) : taskTab();
@@ -319,7 +341,7 @@ function connectForm() {
 }
 
 function askTab(asks) {
-  if (!S.task) return h("div", { class: "read" }, "No Priory task owns this pull request, so nothing asks here.");
+  if (!S.task) return h("div", { class: "read" }, noTask() ? "No Priory task owns this pull request, so nothing asks here." : lookup());
   if (!asks.length) return h("div", { class: "read" }, `No open asks. Task ${S.task.id}'s agent asks here when it needs you.`);
   const ask = asks[Math.min(S.index, asks.length - 1)];
   const draft = S.draft?.id === ask.id ? S.draft : null;
@@ -394,13 +416,12 @@ async function snooze(ask, snoozed) {
 }
 
 function taskTab() {
+  if (!S.task && !noTask()) return [h("div", { class: "read" }, lookup()), signOut()];
   if (!S.task) {
     return [
       h("div", { class: "q" }, "No Priory task owns this pull request"),
-      S.holders?.length === 0
-        ? [h("div", { class: "read" }, "Add a task sends a request with this pull request's address. The factory's [request] defaults pick its workflow."),
-          h("div", { class: "end" }, h("button", { class: "btn primary", disabled: S.sayBusy || S.unreachable, onclick: addTask }, "Add a task for this PR"))]
-        : h("div", { class: "read" }, "Priory could not say who holds it. Retry once it is reachable."),
+      h("div", { class: "read" }, "Add a task sends a request with this pull request's address. The factory's [request] defaults pick its workflow."),
+      h("div", { class: "end" }, h("button", { class: "btn primary", disabled: S.sayBusy, onclick: addTask }, "Add a task for this PR")),
       S.sayNotice ? h("div", { class: "notice", role: "alert" }, S.sayNotice) : null,
       signOut(),
     ];
@@ -477,7 +498,7 @@ async function answerQuiz(id, option) {
 function guideTab() {
   const { state } = S.guide;
   if (state === "loading") return h("div", { class: "t3" }, "Reading the description…");
-  if (state === "none") return h("div", { class: "read" }, "This description has no review guide.");
+  if (state === "none") return [h("div", { class: "read" }, "This description has no review guide."), S.task ? generateGuide() : null];
   if (state === "failed") return [h("div", { class: "notice" }, "Could not read the description from GitHub."), h("div", {}, h("button", { class: "btn secondary", onclick: () => loadGuide() }, "Retry"))];
   if (state === "error") return h("div", { class: "notice" }, `The guide in this description does not parse: ${S.guide.why}.`);
   const { guide, head } = S.guide;
@@ -488,6 +509,17 @@ function guideTab() {
       guide.map.map((line) => h("div", { class: "read" }, line))),
     h("ol", { class: "steps" }, guide.steps.map((step) => h("li", {}, h("span", {}, step.title), h("span", { class: "f" }, step.lines ? `${step.file}:${step.lines}` : step.file)))),
     guide.quiz ? quiz(guide.quiz, head) : null,
+  ];
+}
+
+// The agent writes the block into the description; the tab reads it again when opened.
+function generateGuide() {
+  const route = sayRoute(S.task, S.flows);
+  const can = route.enabled && !S.sayBusy && !S.unreachable && !S.sayUnknown;
+  return [
+    h("div", { class: "end" }, h("button", { class: "btn primary", disabled: !can, onclick: () => say(guideText(S.pr)) }, icon("book", "s14"), "Generate guide")),
+    h("div", { class: "note" }, icon("corner", "s14"), h("span", {}, S.unreachable ? "Reconnect to say." : route.note)),
+    S.sayNotice ? h("div", { class: "notice", role: "alert" }, S.sayNotice) : null,
   ];
 }
 
@@ -593,7 +625,7 @@ async function boot() {
     if (message.signedIn) get("config").then((config) => { S.config = config ?? null; read(); });
     else if (message.signedOut) signedOut(false);
     else if (message.unreachable) { S.unreachable = true; render(); }
-    else if ("sending" in message) { S.sending = message.sending?.pr === S.pr.resource ? message.sending.text : null; render(); }
+    else if ("sending" in message) heardSending(message.sending);
     else read(true);
   });
   if (VIEW === "panel") {

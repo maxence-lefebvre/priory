@@ -47,6 +47,13 @@ beside React Query.
 - The budget is 720 KB while legacy and React pages coexist. The last port lowers it.
 - A page reads only the listings it shows. A refresh used to read all of them on every page.
 
+## Amendment, 2026-11-26
+
+The port ended. No legacy slot remains, and every page, sheet and pane is a React component.
+
+- The budget is 635 KiB: the bundle's 590,978 bytes when the port ended, plus 10%.
+- The shell cache is `priory-shell-3`, and an offline start reads only that shell's copy.
+
 ## Rejected
 
 We rejected a `build.rs` that runs pnpm, since every `cargo build`, clippy run and `cargo install`

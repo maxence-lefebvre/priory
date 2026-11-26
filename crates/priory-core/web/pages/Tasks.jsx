@@ -1,7 +1,7 @@
 // Tasks (DESIGN.md, Tasks panel): every task, by saved view and facets; each row opens its page.
 import { memo, useEffect } from "react";
 import { TASK_VIEWS, filtered, olderPart, remoteId, taskFacets, taskViews } from "../tasks.js";
-import { askFor, asked } from "../legacy/data.js";
+import { askFor, asked } from "../data.js";
 import { Facets, OlderRow, PageLoading, RowsList, RowsPage, facetPicks, facetQuery, listView } from "../components/Lists.jsx";
 import { SavedViews } from "../components/SavedViews.jsx";
 import { TaskListRow, TaskTableRow } from "../components/TaskRows.jsx";

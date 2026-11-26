@@ -32,4 +32,11 @@ export async function check({ hooked, evaluate, until, sleep, change, screen }) 
     await until('document.querySelector("#app .diagram")', "the diagrams once it reconnects");
     return !offline.read && offline.alerts === 1 ? true : offline;
   });
+  // A page whose draw throws says why inside the frame: the top bar and the navigation stay.
+  await hooked("Flows whose draw throws keep the frame and say why", "/workflow", 'document.querySelector("#app [role=alert]")', { cold: true, answers: { "/api/flows": {} } }, async () => {
+    const found = await evaluate('({ top: Boolean(document.querySelector("#app .wtop")), nav: Boolean(document.querySelector("#app nav")), title: document.querySelector("#app .list h1")?.textContent, said: document.querySelector("#app [role=alert]").innerText })');
+    // The broken read stays in this device's snapshot; later checks draw from the server's.
+    await evaluate('for (const key of Object.keys(localStorage)) if (key.startsWith("priory.snapshot")) localStorage.removeItem(key)');
+    return found.top && found.nav && found.title === "Could not draw this page" && found.said.startsWith("The web view failed: ") ? true : found;
+  });
 }

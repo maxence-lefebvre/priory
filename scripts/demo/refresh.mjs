@@ -82,8 +82,9 @@ await page("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, dev
 await page("Page.addScriptToEvaluateOnNewDocument", { source: `
   localStorage.setItem("priory.token", "demo-token");
   globalThis.reads = []; globalThis.hidden = false; globalThis.landed = 0;
-  // What a check does to the requests: a view's layout, paths that fail, that answer late or at another revision, and the answer of a POST.
-  globalThis.hook = { fails: [], slow: {}, revision: {}, ...JSON.parse(sessionStorage.getItem("hook") || "{}") };
+  // What a check does to the requests: a view's layout, paths that fail, that answer late, at another revision or with a body
+  // of its own (\`answers\`, keyed by the path without its query), and the answer of a POST.
+  globalThis.hook = { fails: [], slow: {}, revision: {}, answers: {}, ...JSON.parse(sessionStorage.getItem("hook") || "{}") };
   if (hook.cold) for (const key of Object.keys(localStorage)) if (key.startsWith("priory.snapshot")) localStorage.removeItem(key);
   globalThis.posts = []; globalThis.polls = 0; globalThis.errors = []; globalThis.kept = 0; globalThis.clocks = new Set();
   addEventListener("error", (event) => errors.push(event.message));
@@ -105,6 +106,8 @@ await page("Page.addScriptToEvaluateOnNewDocument", { source: `
     if (String(path).startsWith("/api/events")) polls++;
     if (hook.slow[path]) await new Promise((done) => setTimeout(done, hook.slow[path]));
     if (hook.fails.includes(path)) return new Response("{}", { status: 500 });
+    const answer = hook.answers[String(path).split("?")[0]];
+    if (answer) return new Response(JSON.stringify(answer));
     const named = hook.revision[path];
     if (named) return read(path, options).then(async (reply) => new Response(JSON.stringify({ ...(await reply.json()), revision: named }))).finally(() => { landed++; });
     const late = hook.late === path && await read(path, options);
@@ -191,6 +194,11 @@ await until('document.querySelector("#app h1")?.textContent === "Tasks"', "the T
 await evaluate("history.back()");
 await until('document.getElementById("say")', "Back to the task");
 report((await evaluate('document.getElementById("say").value')) === "hello", "the Say draft outlives its page");
+
+// The Desk draws autopilot's banner with Turn off, and keeps it through a refresh.
+await check("the Desk keeps autopilot's Turn off", "/", 'document.querySelector("#app nav")',
+  '() => document.getElementById("autopilot-off")?.textContent ?? null',
+  (label) => (label === "Turn off" ? null : `the button reads ${JSON.stringify(label)}`));
 
 // What each page reads once the revision moves.
 // Each page's own file says it, so two ports touch no common line.
@@ -378,9 +386,9 @@ await hooked("a queue that cannot be read again says so on its page, and the app
   await until('!document.querySelector(".stale")', "the note to go");
   return found.conn === "live" && found.said.startsWith("Could not read the queue again: /api/queue answered 500.") && kept ? true : { ...found, kept };
 });
-// land() keeps a failed listing's last read and lands the others: a tasks list that fails holds no queue back.
-// The Desk's Queue view draws the queue's titles; the Queue page is React and reads no tasks there.
-await hooked("a legacy page draws the listing that read while another one fails", "/?view=queue", 'document.querySelector(".list .scroll .row, .list .scroll tr[data-href]")', {}, async () => {
+// A listing that fails keeps its last read and holds no other back: the Desk's Queue view draws the
+// queue's new titles while the tasks list fails.
+await hooked("the Desk's Queue view draws the listing that read while another one fails", "/?view=queue", 'document.querySelector(".list .scroll .row, .list .scroll tr[data-href]")', {}, async () => {
   await sleep(1500);
   await evaluate('hook.fails = ["/api/tasks"]');
   execFileSync("sqlite3", [join(dir, "state.db"), "UPDATE tasks SET tldr = 'Landed beside a failure' WHERE id = 4; UPDATE revision SET value = value + 1;"]);
