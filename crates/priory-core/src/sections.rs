@@ -242,6 +242,11 @@ pub fn put(db: &mut Connection, task: i64, mut report: Report) -> Result<String,
             |row| row.get(0),
         )
         .map_err(at)?;
+    tx.execute(
+        "INSERT OR REPLACE INTO report_writes (task, revision) VALUES (?1, ?2)",
+        params![task, revision],
+    )
+    .map_err(at)?;
     tx.commit().map_err(at)?;
     Ok(format!("task {task}'s report is at revision {revision}"))
 }
@@ -357,6 +362,9 @@ pub struct Choice {
     pub expected: i64,
 }
 
+/// How long a task's agent waits after a pick for the next one, so a burst of picks wakes it once.
+const PICKS: &str = "5 seconds";
+
 /// Records a person's choice on the report that holds its pick, which one report at most holds. A
 /// choice changes until the workflow applies it. An option with a request publishes it and fills
 /// `applied`; any other tells the report's agent, as `priory say` does.
@@ -369,8 +377,10 @@ pub(crate) fn pick(
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let found = tx
         .query_row(
-            "SELECT reports.task, reports.revision, reports.report, tasks.state
+            "SELECT reports.task, reports.revision, reports.report, tasks.state,
+               coalesce(report_writes.revision, reports.revision)
              FROM reports JOIN tasks ON tasks.id = reports.task
+             LEFT JOIN report_writes ON report_writes.task = reports.task
              WHERE EXISTS (SELECT 1 FROM json_each(reports.report, '$.sections') AS section,
                json_each(section.value, '$.rows') AS row
                WHERE json_extract(row.value, '$.pick.id') = ?1)
@@ -382,23 +392,31 @@ pub(crate) fn pick(
                     row.get::<_, i64>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
                 ))
             },
         )
         .optional()?;
-    let Some((task, revision, text, state)) = found else {
+    let Some((task, revision, text, state, written)) = found else {
         return Ok(Err(format!("no report has the pick {}", choice.pick)));
     };
-    if choice.expected != revision {
+    let mut report: Report = serde_json::from_str(&text).expect("a stored report parses");
+    let pick = picks(&mut report)
+        .find(|pick| pick.id == choice.pick)
+        .expect("the query found the pick");
+    // Other picks raise the revision too, so a read stays good for an open pick until the agent
+    // writes the report again.
+    let read = if pick.chosen.is_some() {
+        revision
+    } else {
+        written
+    };
+    if !(read..=revision).contains(&choice.expected) {
         return Ok(Err(format!(
             "task {task}'s report is at revision {revision}, not {}",
             choice.expected
         )));
     }
-    let mut report: Report = serde_json::from_str(&text).expect("a stored report parses");
-    let pick = picks(&mut report)
-        .find(|pick| pick.id == choice.pick)
-        .expect("the query found the pick");
     // A choice stands once the workflow applied it; before that a person can change it.
     if let Some(chosen) = pick
         .chosen
@@ -473,6 +491,13 @@ pub(crate) fn pick(
         }
     }
     pick.chosen = Some(choice.option.clone());
+    tx.execute(
+        &format!(
+            "INSERT OR REPLACE INTO pick_windows (task, until)
+             VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+{PICKS}'))"
+        ),
+        [task],
+    )?;
     tx.execute(
         "UPDATE reports SET revision = revision + 1, report = ?2 WHERE task = ?1",
         params![

@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 128;
+const VERSION: i64 = 129;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -2276,6 +2276,21 @@ CREATE TABLE IF NOT EXISTS cloud_heads (
 PRAGMA user_version = 128;
 ";
 
+// The revision of each report its agent wrote last, so a pick refuses only a report rewritten since
+// the person read it, and when each task's last pick lands, so a burst of picks wakes its agent once.
+const SCHEMA_129: &str = "
+CREATE TABLE IF NOT EXISTS report_writes (
+  task     INTEGER PRIMARY KEY,
+  revision INTEGER NOT NULL
+);
+INSERT OR REPLACE INTO report_writes (task, revision) SELECT task, revision FROM reports;
+CREATE TABLE IF NOT EXISTS pick_windows (
+  task  INTEGER PRIMARY KEY,
+  until TEXT NOT NULL
+);
+PRAGMA user_version = 129;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -2293,7 +2308,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
     SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112, SCHEMA_113,
     SCHEMA_114, SCHEMA_115, SCHEMA_116, SCHEMA_117, SCHEMA_118, SCHEMA_119, SCHEMA_120, SCHEMA_121,
-    SCHEMA_122, SCHEMA_123, SCHEMA_124, SCHEMA_125, SCHEMA_126, SCHEMA_127, SCHEMA_128,
+    SCHEMA_122, SCHEMA_123, SCHEMA_124, SCHEMA_125, SCHEMA_126, SCHEMA_127, SCHEMA_128, SCHEMA_129,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -5212,7 +5227,8 @@ const SETTLE: &str = "1 seconds";
 /// transaction, before anything is typed. A task with an attempted or uncertain prompt gets none
 /// while the process it went to may still hold its text: its run is live, as a run carried into the
 /// next step takes over the prompts of the run it continues. A run whose keyboard a person holds
-/// gets none until the grant ends, and a run gets none within `SETTLE` of its `SessionStart`.
+/// gets none until the grant ends, a run gets none within `SETTLE` of its `SessionStart`, and a task
+/// gets none while a person's picks on its report may still come (`sections::PICKS`).
 pub(crate) fn attempt(db: &mut Connection) -> rusqlite::Result<Option<Attempt>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let next = tx
@@ -5223,6 +5239,8 @@ pub(crate) fn attempt(db: &mut Connection) -> rusqlite::Result<Option<Attempt>> 
              AND (runs.session_started IS NULL
                OR julianday(runs.session_started) <= julianday('now', '-{SETTLE}'))
              AND NOT EXISTS (SELECT 1 FROM gates WHERE gates.run = runs.id AND gates.state = 'grading')
+             AND NOT EXISTS (SELECT 1 FROM pick_windows WHERE pick_windows.task = runs.task
+               AND julianday(pick_windows.until) > julianday('now'))
              AND NOT EXISTS (
                SELECT 1 FROM outbox AS open JOIN runs AS typed ON typed.id = open.run
                WHERE open.task = runs.task AND open.state IN ('attempted', 'uncertain')

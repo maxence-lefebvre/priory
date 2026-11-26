@@ -95,13 +95,18 @@ priory report pick PICK OPTION --expected REVISION
 The daemon finds the report that holds the pick and records `OPTION` as its `chosen`. It refuses
 the pick when:
 
-- the report is at another revision than `REVISION`, as an answer to a stale ask is refused;
+- `REVISION` is older than the report's last write by its agent, or newer than the report;
+- the pick already has a choice and the report is at another revision than `REVISION`, since
+  someone may have picked it after the person read it;
 - the pick's choice is already `OPTION`, or the workflow already applied its choice (`applied` is
   set): an applied choice stands;
 - `OPTION` is not one of the pick's options.
 
-A recorded pick raises the report's revision. The daemon tells the report's agent with one line,
-as `priory say` does: the line is its next prompt, and it wakes an asleep task. The pick is refused,
+A recorded pick raises the report's revision. Picks and comments raise it too, so a person can pick
+open rows one after another with the revision they read, until the agent writes the report again.
+The daemon tells the report's agent with one line, as `priory say` does: the line is its next
+prompt, and it wakes an asleep task. The daemon types none of the task's prompts until 5 seconds
+after its last pick, so the lines of picks made in a row reach the agent as one prompt. The pick is refused,
 and nothing is recorded, when `say` would refuse it: the task is done, failed or dropped, its step
 is one no agent runs, or it has no run yet. The line:
 
@@ -131,8 +136,8 @@ the agent writes `applied` for the old choice after a change, the choice stands 
 until the change's line reaches the agent and it writes the report again.
 
 `POST /api/reports/pick` sends the same pick from the web view ([serve endpoints](../reference/serve.md#writes)).
-It answers `409` when the report moved past the revision sent, or the pick already holds that
-choice or an applied one.
+It answers `409` when the pick is refused for a revision, or the pick already holds that choice or
+an applied one.
 
 ## Comment on a row
 

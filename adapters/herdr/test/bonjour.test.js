@@ -282,12 +282,46 @@ test("Change reopens an agreed pick, and a new option goes through the revision-
   // The chosen option shows solid; picking it again changes nothing.
   assert.equal(find(view(), `pick-${row}-1`).calls.selected?.[0], true);
   press(view(), `pick-${row}-1`);
-  assert.equal(panel.pending, null);
+  assert.equal(panel.pending.size, 0);
   press(view(), `pick-${row}-2`);
   herdr.timers.at(-1).fire();
   await settle();
 
   assert.deepEqual(herdr.argv.find((args) => args[1] === "pick"), ["report", "pick", "2026-11-20_agree_priory-schedules", "Later", "--expected", "3"]);
+});
+
+// Two open picks and an agreed one that Change reopens: three rows picked in a row.
+const PICKED = [['["sentry","fnd-2413"]', "1"], ['["agree",1]', "1"], ['["agree",0]', "2"]];
+
+/** Picks on the three rows of PICKED without waiting, and returns the picks `priory` was sent. */
+async function pickThree({ view, press, settle, herdr }, before = () => {}) {
+  for (const [row, key] of PICKED) {
+    if (row === '["agree",0]') press(view(), `change-${row}`);
+    press(view(), `pick-${row}-${key}`);
+  }
+  before();
+  for (const timer of [...herdr.timers]) timer.fire();
+  await settle();
+  return herdr.argv.filter((args) => args[1] === "pick").map((args) => `${args[2]} ${args[3]}`);
+}
+
+test("three picks within the Undo window each wait on their own and are all sent", async () => {
+  const kit = await mounted({ report: reports });
+  assert.equal(kit.find(kit.view(), `undo-${PICKED[0][0]}`) !== null, false);
+
+  const sent = await pickThree(kit, () => {
+    for (const [row] of PICKED) assert.ok(kit.find(kit.view(), `undo-${row}`), row);
+  });
+
+  assert.deepEqual(sent, ["2026-11-20_sentry_fnd-2413 Take", "2026-11-20_agree_priory-compact Apply", "2026-11-20_agree_priory-schedules Later"]);
+});
+
+test("undo of the second of three picks leaves the first and the third to go", async () => {
+  const kit = await mounted({ report: reports });
+
+  const sent = await pickThree(kit, () => kit.press(kit.view(), `undo-${PICKED[1][0]}`));
+
+  assert.deepEqual(sent, ["2026-11-20_sentry_fnd-2413 Take", "2026-11-20_agree_priory-schedules Later"]);
 });
 
 test("a check marks the chosen option only; the recommendation is the note's words", async () => {

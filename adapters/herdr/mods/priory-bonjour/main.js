@@ -102,9 +102,8 @@ export default class PrioryBonjour extends View {
     this.models = new Map();
     /** @type {Set<string>} the sections Show more unfolded */
     this.unfolded = new Set();
-    /** A pick waiting out its Undo, then in flight; nothing else is picked until it ends. */
-    /** @type {Pending | null} */
-    this.pending = null;
+    /** @type {Map<string, Pending>} each row's pick waiting out its Undo, then in flight */
+    this.pending = new Map();
     /** @type {string | null} the row whose agreed pick Change reopened */
     this.changing = null;
     /** @type {Map<string, string>} why a pick on a row was refused */
@@ -189,15 +188,17 @@ export default class PrioryBonjour extends View {
     }
     this.data = read;
     this.empty = !read;
-    const pending = this.pending;
-    if (!pending?.timer) return;
-    const still = read && read.report.task === pending.task
-      && this.rows(dossier(read, { now: Date.now() })).some((row) => row.id === pending.row && row.pick?.id === pending.pick
+    const waiting = [...this.pending.values()].filter((pending) => pending.timer);
+    if (!waiting.length) return;
+    const rows = read ? this.rows(dossier(read, { now: Date.now() })) : [];
+    for (const pending of waiting) {
+      const still = read?.report.task === pending.task && rows.some((row) => row.id === pending.row && row.pick?.id === pending.pick
         && row.pick.state !== "applied" && row.pick.chosen === pending.from);
-    if (still) return;
-    pending.timer.cancel();
-    this.pending = null;
-    this.flash = `${pending.option} was not sent: the report changed before it went.`;
+      if (still) continue;
+      pending.timer?.cancel();
+      this.pending.delete(pending.row);
+      this.flash = `${pending.option} was not sent: the report changed before it went.`;
+    }
   }
 
   /** @param {number} [now] */
@@ -245,7 +246,7 @@ export default class PrioryBonjour extends View {
    */
   folded(model, section) {
     if (model.found != null || this.view === "picks" || this.unfolded.has(section.id)) return section.rows;
-    return section.rows.filter((row, at) => at < FOLD || row.id === this.selected || row.id === this.pending?.row
+    return section.rows.filter((row, at) => at < FOLD || row.id === this.selected || this.pending.has(row.id)
       || this.notices.has(row.id) || row.threads.length > 0);
   }
 
@@ -301,7 +302,7 @@ export default class PrioryBonjour extends View {
   choose(model, row, option, cx) {
     const pick = row.pick;
     const reopened = pick?.state === "agreed" && this.changing === row.id;
-    if (this.pending || this.error || !pick || (pick.state !== "open" && !reopened) || option === pick.chosen) return;
+    if (this.pending.has(row.id) || this.error || !pick || (pick.state !== "open" && !reopened) || option === pick.chosen) return;
     this.selectRow(row.id);
     this.notices.delete(row.id);
     this.flash = null;
@@ -311,16 +312,23 @@ export default class PrioryBonjour extends View {
       pending.timer = null;
       this.send(pending, cx);
     });
-    this.pending = pending;
+    this.pending.set(row.id, pending);
     cx.notify();
   }
 
-  /** @param {import("gpui-kit").Context} cx */
-  undo(cx) {
-    if (!this.pending?.timer) return;
-    this.pending.timer.cancel();
-    this.pending = null;
+  /** @param {string | null} row @param {import("gpui-kit").Context} cx */
+  undo(row, cx) {
+    const pending = row == null ? undefined : this.pending.get(row);
+    if (!pending?.timer) return;
+    pending.timer.cancel();
+    this.pending.delete(pending.row);
     cx.notify();
+  }
+
+  /** Forgets a sent pick, and the Change it answered. @param {Pending} pending */
+  settle(pending) {
+    this.pending.delete(pending.row);
+    if (this.changing === pending.row) this.changing = null;
   }
 
   /** Records the pick with the report's revision; on refusal re-reads the report and says why on the row. */
@@ -345,8 +353,7 @@ export default class PrioryBonjour extends View {
         const model = this.model();
         if (model?.task === pending.task && this.rows(model).some((row) => row.id === pending.row)) this.notices.set(pending.row, notice);
         else this.flash = `${pending.option}: ${notice}`;
-        this.pending = null;
-        this.changing = null;
+        this.settle(pending);
         return cx.notify();
       }
       // Priory took the pick; a failed read here leaves the read loop to show it.
@@ -355,8 +362,7 @@ export default class PrioryBonjour extends View {
       } catch {
         this.flash = `${pending.option} was sent. The report shows it once priory answers again.`;
       }
-      this.pending = null;
-      this.changing = null;
+      this.settle(pending);
       cx.notify();
     });
   }
@@ -417,7 +423,7 @@ export default class PrioryBonjour extends View {
       if (event.key === "escape") this.focus.focus();
       return;
     }
-    if (event.key === "escape") return this.undo(cx);
+    if (event.key === "escape") return this.undo(this.selected, cx);
     // A held key repeats only movement, so holding 1 never picks twice.
     if (event.is_held && !["j", "k", "up", "down"].includes(event.key)) return;
     if (event.modifiers?.control || event.modifiers?.platform || event.modifiers?.alt) return;
@@ -659,15 +665,15 @@ export default class PrioryBonjour extends View {
           .child(div().flex_none().max_w("40%").truncate().font_family(row.key ? this.font.mono : this.font.ui).text_size(S["type-small"][0]).text_color(t["text-2"]).child(row.key ?? markdownText(row.text ?? "")))
           .child(div().flex_none().font_weight(600).child(pick.chosen ?? ""))
           .child(div().flex_1().min_w_0().truncate().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(pick.note ?? ""))
-          .when(pick.state === "agreed" && !this.pending && !this.error, (el) => el.child(this.secondary(`change-${row.id}`, "Change", (cx) => {
+          .when(pick.state === "agreed" && !this.error, (el) => el.child(this.secondary(`change-${row.id}`, "Change", (cx) => {
             this.changing = row.id;
             cx.notify();
           }, t)))
           .when(commentable, (el) => el.child(this.secondary(`comment-${row.id}`, "Comment", (cx) => this.select(model, row.id, cx), t))))
         .when(Boolean(notice), (el) => el.child(this.notice(String(row.id), notice, t)));
     }
-    const pending = this.pending?.row === row.id ? this.pending : null;
-    const busy = Boolean(this.pending) || Boolean(this.error);
+    const pending = this.pending.get(row.id);
+    const busy = Boolean(pending) || Boolean(this.error);
     return v_flex().w_full().p(S["space-3"]).gap(S["space-2"]).rounded(S["radius-md"]).border(1).border_color(selected ? t["action-soft"] : t.line).bg(selected ? t["action-soft"] : t.surface)
       .when(Boolean(row.tile || row.key || row.owner || row.time), (el) => el.child(h_flex().gap(S["space-2"]).items_center()
         .when(Boolean(row.tile), (el) => el.child(this.tile(/** @type {string} */ (row.tile), t)))
@@ -695,7 +701,7 @@ export default class PrioryBonjour extends View {
         .when(reopened && !pending, (el) => el.child(this.secondary("change-cancel", "Keep", (cx) => { this.changing = null; cx.notify(); }, t)))
         .when(Boolean(pending), (el) => el.child(h_flex().flex_1().gap(S["space-2"]).items_center().justify_end().text_size(S["type-small"][0])
           .child(div().child(pending?.timer ? `Picking ${pending.option}` : `Sending ${pending?.option}…`))
-          .when(Boolean(pending?.timer), (el) => el.child(this.secondary("undo", "Undo", (cx) => this.undo(cx), t))))));
+          .when(Boolean(pending?.timer), (el) => el.child(this.secondary(`undo-${row.id}`, "Undo", (cx) => this.undo(row.id, cx), t))))));
   }
 
   /** A row's threads under it, a resolved one folded to one line, then the comment field on the selected row. */
