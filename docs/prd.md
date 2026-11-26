@@ -94,6 +94,7 @@ The Warp column comes from Warp's public page and is blank where that page says 
 | Pattern    | Tasks that stopped at one step for the same reason, kept as one desk item |              |                  |
 | Label      | A `key=value` pair a trigger or a request sets on a task                  |              |                  |
 | Runner filter | A runner's rule on labels, with optional days and hours, for the tasks it takes |       |                  |
+| Abbot      | A named agent with an avatar that works one lane, owns its triggers and talks to a person through `say` and asks |              |                  |
 
 ## Configuration
 
@@ -657,7 +658,8 @@ MIT.
 - Kubernetes.
 - Merging pull requests by default. A factory can allow it per workflow, with a reason.
 - Replacing CI.
-- A chat interface.
+- A general chat assistant. A person talks to an abbot about its factory's work through `say` and
+  asks, and every irreversible step still waits on a person's answer.
 
 ## Open questions
 
