@@ -1889,7 +1889,7 @@ dependencies = [
 
 [[package]]
 name = "priory"
-version = "1.3.9"
+version = "1.3.10"
 dependencies = [
  "aes-gcm",
  "base64ct",
@@ -1917,7 +1917,7 @@ dependencies = [
 
 [[package]]
 name = "priory-core"
-version = "1.3.9"
+version = "1.3.10"
 dependencies = [
  "aes-gcm",
  "base64ct",
@@ -1945,7 +1945,7 @@ dependencies = [
 
 [[package]]
 name = "priory-factory"
-version = "1.3.9"
+version = "1.3.10"
 dependencies = [
  "jiff",
  "priory-runtime",
@@ -1960,7 +1960,7 @@ dependencies = [
 
 [[package]]
 name = "priory-intake"
-version = "1.3.9"
+version = "1.3.10"
 dependencies = [
  "herdr-bus",
  "hmac",
@@ -1981,7 +1981,7 @@ dependencies = [
 
 [[package]]
 name = "priory-runtime"
-version = "1.3.9"
+version = "1.3.10"
 dependencies = [
  "httparse",
  "proptest",
