@@ -9914,7 +9914,7 @@ fn an_answer_to_the_ask_of_a_cancelled_task_is_refused() {
     assert!(!answered.status.success());
     assert_eq!(
         String::from_utf8_lossy(&answered.stderr),
-        "priory answer: task 1 is dropped\n"
+        "priory answer: ask 1 was withdrawn when task 1 ended\n"
     );
     assert_eq!(setup.rows("tasks")[0][4], "dropped");
 }
@@ -15310,9 +15310,9 @@ fn an_answer_to_the_ask_of_an_earlier_generation_is_refused() {
     assert!(!answered.status.success());
     assert_eq!(
         String::from_utf8_lossy(&answered.stderr),
-        "priory answer: ask 1 was withdrawn when task 1 was revived\n"
+        "priory answer: ask 1 was withdrawn when task 1 ended\n"
     );
-    assert_eq!(withdrawn_reasons(&setup, "asks"), ["revived"]);
+    assert_eq!(withdrawn_reasons(&setup, "asks"), ["task-ended"]);
     assert!(setup.rows("asks").is_empty());
     assert_eq!(setup.rows("tasks")[0][4], "running");
 }
@@ -20773,7 +20773,7 @@ fn a_removed_review_request_withdraws_its_tasks_open_agent_ask() {
     ));
 
     setup.until("tasks", |rows| rows[0][4] == "dropped");
-    assert_eq!(withdrawn_reasons(&setup, "asks"), ["moved-on"]);
+    assert_eq!(withdrawn_reasons(&setup, "asks"), ["task-ended"]);
 }
 
 #[test]

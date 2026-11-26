@@ -370,7 +370,9 @@ next run adds it back from the branch (see Priory home). A revive straight into 
 
 A withdrawn ask or wait stays in the state file but counts as closed. An answer to one is refused with
 `ask <id> was withdrawn when task <task> was revived`, or with `ask <id> was withdrawn when a later
-run of task <task> called another tool` (see Routing). [Why an ask or wait was
+run of task <task> called another tool` (see Routing). An ask whose task is dropped, done or failed is
+withdrawn with it, and an answer to it is refused with `ask <id> was withdrawn when task <task>
+ended`. [Why an ask or wait was
 withdrawn](waits.md#why-an-ask-or-wait-was-withdrawn) lists every reason. An event for a withdrawn wait
 fires nothing, and the task keeps it like any event that matches no wait, for the next run to read.
 `priory asks`, `priory waits` and the desk leave withdrawn ones out. A new run never takes over a

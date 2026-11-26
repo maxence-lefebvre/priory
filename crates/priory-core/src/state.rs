@@ -2230,17 +2230,30 @@ CREATE TABLE IF NOT EXISTS calls (
 PRAGMA user_version = 125;
 ";
 
-// A task that ends takes its open asks off the desk, whichever path ended it, and states where a
-// drop left one open heal.
+// A task that ends withdraws its open asks, whichever path ended it, and states where an ended task
+// left one open heal. SQLite cannot widen a CHECK, so the column is swapped for one that takes the
+// new reason.
 const SCHEMA_126: &str = "
-CREATE TRIGGER IF NOT EXISTS an_ended_task_withdraws_its_asks AFTER UPDATE OF state ON tasks
-  WHEN NEW.state IN ('dropped', 'done') AND OLD.state IS NOT NEW.state BEGIN
-  UPDATE asks SET withdrawn = 1, withdrawn_reason = 'moved-on'
+ALTER TABLE asks ADD COLUMN withdrawn_reason_126 TEXT CHECK (withdrawn_reason_126 IN
+  ('revived', 'moved-on', 'sibling-fired', 'answered-elsewhere', 'dismissed', 'asked',
+   'predecessor-revived', 'task-ended'));
+UPDATE asks SET withdrawn_reason_126 = withdrawn_reason;
+DROP TRIGGER ask_withdrawn;
+ALTER TABLE asks DROP COLUMN withdrawn_reason;
+ALTER TABLE asks RENAME COLUMN withdrawn_reason_126 TO withdrawn_reason;
+CREATE TRIGGER ask_withdrawn AFTER UPDATE OF withdrawn ON asks
+  WHEN NEW.withdrawn IS NOT NULL AND NEW.withdrawn IS NOT OLD.withdrawn BEGIN
+  INSERT INTO ask_withdrawals (ask, revision, withdrawn, reason)
+    VALUES (NEW.id, NEW.revision, NEW.withdrawn, NEW.withdrawn_reason);
+END;
+CREATE TRIGGER an_ended_task_withdraws_its_asks AFTER UPDATE OF state ON tasks
+  WHEN NEW.state IN ('done', 'failed', 'dropped') AND OLD.state IS NOT NEW.state BEGIN
+  UPDATE asks SET withdrawn = 1, withdrawn_reason = 'task-ended'
     WHERE task = NEW.id AND answer IS NULL AND withdrawn IS NULL;
 END;
-UPDATE asks SET withdrawn = 1, withdrawn_reason = 'moved-on'
+UPDATE asks SET withdrawn = 1, withdrawn_reason = 'task-ended'
   WHERE answer IS NULL AND withdrawn IS NULL
-  AND task IN (SELECT id FROM tasks WHERE state IN ('dropped', 'done'));
+  AND task IN (SELECT id FROM tasks WHERE state IN ('done', 'failed', 'dropped'));
 PRAGMA user_version = 126;
 ";
 
