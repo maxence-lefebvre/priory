@@ -15,6 +15,7 @@ import { onSignOut, post, refuse, session } from "../session.js";
 import { store } from "../store.js";
 import { filtered, taskLabel } from "../tasks.js";
 import { age, ago, clock, date, today } from "../times.js";
+import { AskOption, Busy } from "../components/AskOption.jsx";
 import { Icon, StateWord, Tile } from "../components/Icon.jsx";
 import { NotReady } from "../components/NotReady.jsx";
 import { PageTop, Panel } from "../components/PhonePage.jsx";
@@ -264,15 +265,25 @@ export function disarm() {
   set({ armed: null });
 }
 
+// The call id of each press: a resend of the same answer to the same revision carries it again,
+// so the daemon stores it once. A stored answer forgets it.
+const calls = new Map();
+
 async function send(ask, text, written, run) {
-  const body = { [written ? "text" : "option"]: text, revision: ask.revision };
+  const key = JSON.stringify([ask.id, ask.revision, written, text]);
+  if (!calls.has(key)) calls.set(key, crypto.randomUUID());
+  const body = { [written ? "text" : "option"]: text, revision: ask.revision, call: calls.get(key) };
   if (run) body.run = true;
   const sent = await write(ask, `/api/asks/${encodeURIComponent(ask.id)}/answer`, body, text);
-  set({ pending: null });
-  if (sent) next(ask);
+  set({ pending: null, sheet: false });
+  if (!sent) return;
+  calls.delete(key);
+  // The reply holds the stored ask, so the next ask opens without reading the lists again.
+  if (sent.ask) await acceptAsk(sent.ask);
+  next(ask);
 }
 
-// True once the daemon applied the write; else the reason shows on the ask and the draft stays.
+// The reply's body once the daemon applied the write, else false: the reason shows on the ask and the draft stays.
 // One write at a time: a second tap on Snooze or Dismiss while the first is in flight sends nothing.
 let inFlight = false;
 async function write(ask, path, body, draft) {
@@ -294,7 +305,7 @@ async function write(ask, path, body, draft) {
     nextWriting.delete(ask.id);
     nextNotices.delete(ask.id);
     set({ drafts: nextDrafts, notices: nextNotices, writing: nextWriting });
-    return true;
+    return answered;
   }
   if (status === 401) {
     refuse();
@@ -312,11 +323,12 @@ async function write(ask, path, body, draft) {
   return false;
 }
 
-// After an answer, the next open ask opens, or the list once none is left.
-async function next(ask) {
+// After an answer, the next open ask opens at once, or the list once none is left; the lists read
+// again behind it.
+function next(ask) {
   const before = listedNow().map((candidate) => candidate.id);
   const { listUrl } = onScreen;
-  await refresh();
+  refresh();
   if (shownId() !== String(ask.id)) return;
   const left = listedNow().filter((candidate) => candidate.id !== ask.id);
   const following = left.find((candidate) => before.indexOf(candidate.id) > before.indexOf(ask.id)) || left[0];
@@ -417,6 +429,8 @@ const CommandBlock = memo(function CommandBlock({ ask, note }) {
 // An armed option: what the second tap does, the option, and the ring that drains over ARM_MS.
 const ArmedLabel = ({ option, runs, at }) => <><span><small>{`Tap again to ${runs ? "run" : "send"}`}</small>{`Confirm: ${option}`}<small>{`Cancels in ${ARM_MS / 1000} s`}</small></span><Drain at={at} /></>;
 
+// The loading state of the pressed option or button, on it, beside its readable label (DESIGN.md, Ask states).
+
 const armedOn = (armed, ask) => (armed?.id === ask.id && armed.revision === ask.revision ? armed : null);
 
 // One button per option, as the detail and the answer sheet draw them. An armed command option also shows its command.
@@ -428,13 +442,8 @@ const OptionList = memo(function OptionList({ ask, wide, locked, bound }) {
     const recommended = option === ask.recommendation;
     const runs = runsCommand(ask, option);
     const chosen = pending?.text === option;
-    const off = locked || (pending && !chosen);
-    const notes = [recommended && "Recommended", runs && "Runs a command"].filter(Boolean).join(". ");
     const on = armed?.text === option;
-    const button = (
-      <button key={i} type="button" className={`opt ${recommended ? "rec-opt" : ""} ${chosen ? "chosen" : ""} ${on ? "armed" : ""}`} data-option={i} data-answer={i} aria-disabled={off || pending ? "true" : "false"} aria-describedby={locked ? "answer-locked" : undefined} onClick={() => pressOption(ask, i, Boolean(locked))}>
-        {chosen ? <Icon name="check" size="s20" /> : null}{on ? <ArmedLabel option={option} runs={runs} at={armed.at} /> : <span>{option}{notes ? <small>{notes}</small> : null}</span>}{wide ? <kbd>{i + 1}</kbd> : null}</button>
-    );
+    const button = <AskOption key={i} option={option} index={i} recommended={recommended} runs={runs} sending={chosen} armed={on} off={Boolean(locked || pending)} label={on ? <ArmedLabel option={option} runs={runs} at={armed.at} /> : undefined} hint={wide ? i + 1 : null} describedBy={locked ? "answer-locked" : undefined} onPress={() => pressOption(ask, i, Boolean(locked))} />;
     return on && runs ? [button, <CommandBlock key={`${i}cmd`} ask={ask} note={bound} />] : button;
   });
 });
@@ -558,7 +567,8 @@ const Nav = ({ to, label, name }) => (to
 const sheet = () => document.getElementById("answer");
 const AnswerSheet = memo(function AnswerSheet({ ask, task, locked, bound }) {
   const { sheet: open, pending, notices } = useStore(answers);
-  const shown = open && ask.state === "open" && !pending;
+  // The sheet stays while its answer is sending, so the pressed option shows it.
+  const shown = open && ask.state === "open" && (!pending || pending.id === ask.id);
   const sent = useRef(false);
   useEffect(() => {
     const dialog = sheet();
@@ -572,7 +582,7 @@ const AnswerSheet = memo(function AnswerSheet({ ask, task, locked, bound }) {
       if (dialog.open) dialog.close();
     };
   }, []);
-  // Closes itself once the ask is answered, or its answer is sending.
+  // Closes itself once the ask is answered.
   useLayoutEffect(() => {
     const dialog = sheet();
     if (shown && !dialog.open) dialog.showModal();
@@ -669,7 +679,7 @@ const AskBody = memo(function AskBody({ ask, id, wide, compact, list, listUrl, l
     if (text && writeShown(answers.get().writing.has(ask.id), lockOf(ask, task, batchRead), Boolean(answers.get().pending)) === "form") answer(ask, text, true);
   };
   const writeForm = shown === "form"
-    ? <form className="writeform" onSubmit={submit}><label className="sr" htmlFor="draft">Your answer</label><textarea id="draft" name="text" rows="3" ref={keepDraft} value={drafts.get(ask.id) || ""} onChange={(event) => typeDraft(ask, event.target.value)} /><button type="submit" className="btn primary" aria-disabled={pending ? "true" : undefined}>Send</button></form>
+    ? <form className="writeform" onSubmit={submit}><label className="sr" htmlFor="draft">Your answer</label><textarea id="draft" name="text" rows="3" ref={keepDraft} value={drafts.get(ask.id) || ""} onChange={(event) => typeDraft(ask, event.target.value)} /><button type="submit" className="btn primary" aria-disabled={pending ? "true" : undefined} aria-busy={pending ? "true" : undefined}>{pending ? <><Busy />Sending…</> : "Send"}</button></form>
     : <button type="button" className="ghost write" aria-disabled={shown === "disabled" ? "true" : "false"} onClick={acting(shown === "disabled", () => startWriting(ask))}><Icon name="pencil" size="s15" />Write an answer</button>;
   const snoozeButtons = !ask.task || owner || locked === "offline" ? null
     : ask.snoozed_until
@@ -712,21 +722,23 @@ const AskBody = memo(function AskBody({ ask, id, wide, compact, list, listUrl, l
       {task ? <TaskSections task={task} tasks={tasks} only={read.map(([key]) => key)} /> : null}<AskHistory ask={ask} /><Command ask={ask} owner={owner} />
     </>
   );
-  const sending = pending ? <div className="sending" role="status"><span>Sending <b>{`"${pending.text}"`}</b></span></div> : null;
-  if (wide) return <><div className="pinned">{header}{top}{sending}</div><div className="scroll" data-sections ref={scroll}>{sections}</div></>;
+  if (wide) return <><div className="pinned">{header}{top}</div><div className="scroll" data-sections ref={scroll}>{sections}</div></>;
   const recommended = options.find((option) => option === ask.recommendation) || options[0];
   const barArmed = armed !== null && armed.text === recommended;
   const runs = runsCommand(ask, recommended);
-  const bar = !pending && ask.state === "open" && options.length ? (
-    <div className="abar" hidden>{barArmed && runs ? <CommandBlock ask={ask} note={bound} /> : null}<button type="button" className="btn secondary" onClick={acting(false, () => set({ sheet: true }))}><Icon name="chevron-up" size="s15" />{plural(options.length, "option")}</button>
-      <button type="button" id="bar-answer" className={`btn primary ${barArmed ? "armed" : ""}`} data-answer={options.indexOf(recommended)} aria-disabled={locked ? "true" : "false"} onClick={() => pressOption(ask, options.indexOf(recommended), Boolean(locked))}>{barArmed
+  const barSending = pending?.text === recommended;
+  const bar = (!pending || barSending) && ask.state === "open" && options.length ? (
+    <div className="abar" hidden>{barArmed && runs ? <CommandBlock ask={ask} note={bound} /> : null}<button type="button" className="btn secondary" aria-disabled={pending ? "true" : undefined} onClick={acting(Boolean(pending), () => set({ sheet: true }))}><Icon name="chevron-up" size="s15" />{plural(options.length, "option")}</button>
+      <button type="button" id="bar-answer" className={`btn primary ${barArmed ? "armed" : ""}`} data-answer={options.indexOf(recommended)} aria-disabled={locked || pending ? "true" : "false"} aria-busy={barSending ? "true" : undefined} onClick={() => pressOption(ask, options.indexOf(recommended), Boolean(locked))}>{barSending
+        ? <><Busy /><span>{recommended}</span><small>Sending…</small></>
+        : barArmed
         ? <ArmedLabel option={recommended} runs={runs} at={armed.at} />
         : <><span>{recommended}</span><small>{[recommended === ask.recommendation ? "Recommended" : "First option", runs && "Runs a command"].filter(Boolean).join(". ")}</small></>}</button>
       <LockedNote ask={ask} task={task} locked={locked} error={planError} /></div>
   ) : null;
   return (
     <>
-      {header}<div className="scroll" data-sections ref={scroll}>{top}{sections}</div>{bar}{sending}
+      {header}<div className="scroll" data-sections ref={scroll}>{top}{sections}</div>{bar}
       <AnswerSheet ask={ask} task={task} locked={locked} bound={bound} />
     </>
   );

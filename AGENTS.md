@@ -11,13 +11,15 @@ Read it before you change behaviour or name a concept, and use its Concepts tabl
 - `crates/priory-intake`: the GitHub and CLI publishers and the message contract.
 - `crates/priory-runtime`: tmux, git worktrees, the hook socket and the MCP bridge. It depends on no Priory crate.
 - `crates/priory-core`: the state database, routing, tools and the daemon. It depends on the three crates above.
-- `crates/priory-core/web`: the web view, the pnpm workspace's one package. `dist/app.js` is its
+- `crates/priory-core/web`: the web view, a package of the pnpm workspace. `dist/app.js` is its
   committed bundle: run `corepack pnpm web:build` after you change its JavaScript.
 - `crates/priory`: `main.rs` only. It builds the `priory` binary, and its CLI tests live in `tests/`.
 - `examples/`: one starter factory per folder. A test runs `priory check` on each folder.
 - `adapters/`: one view host per folder, outside the Cargo workspace. `adapters/herdr/` holds the
   Herdr mods, layout and install script, and their Node.js tests. `adapters/github/` holds the
-  browser extension for GitHub's pull request page, and its Node.js tests. `adapters/claude-plugin/`
+  browser extension for GitHub's pull request page, and its Node.js tests. It is the pnpm workspace's
+  second package. `dist/frame.js` is its committed bundle: run `corepack pnpm github:build` after
+  you change its JavaScript or a web view component it imports. `adapters/claude-plugin/`
   holds the Claude Code plugin for a person's own session, and its Node.js tests.
 - `docs/prd.md`: what Priory does and in which milestone.
 - `docs/daemon/`: how the daemon runs tasks, one file per topic. Its `README.md` says which file to read.
@@ -39,7 +41,7 @@ Before you call a change done, run these from the repository root and fix every 
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-corepack pnpm install --frozen-lockfile && corepack pnpm web:check
+corepack pnpm install --frozen-lockfile && corepack pnpm web:check && corepack pnpm github:check
 node --test adapters/herdr/test/*.test.js adapters/github/test/*.test.js adapters/claude-plugin/test/*.test.js crates/priory-core/web/*.test.js
 ```
 

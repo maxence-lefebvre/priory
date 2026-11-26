@@ -25,6 +25,7 @@ svg.s12 { width: 12px; height: 12px; } svg.s14 { width: 14px; height: 14px; }
 
 .tile { width: 20px; height: 20px; border-radius: var(--radius-sm); display: inline-grid; place-items: center; flex: none; color: var(--on-tile); background: var(--tile-muted); }
 .tile svg { width: 12px; height: 12px; }
+.tile .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
 .tile.wait { background: var(--wait); color: var(--on-wait); } .tile.live { background: var(--tile-live); color: var(--on-tile-live); }
 .tile.ok { background: var(--tile-ok); } .tile.warn { background: var(--tile-warn); } .tile.danger { background: var(--tile-danger); } .tile.hold { background: var(--tile-hold); }
 .livedot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; display: inline-block; }
@@ -60,16 +61,18 @@ svg.s12 { width: 12px; height: 12px; } svg.s14 { width: 14px; height: 14px; }
 .rec .next { display: flex; gap: 6px; }
 .opts { display: grid; gap: 8px; }
 .opt { min-height: var(--pane-option); border-radius: var(--radius-card); padding: 8px 12px; display: flex; align-items: center; gap: 10px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--control-line); font: 600 var(--type-body) var(--font-ui); text-align: left; border: 0; width: 100%; }
-.opt .k { font: 500 11px/1 var(--font-mono); color: var(--text-3); box-shadow: inset 0 0 0 1px var(--line); border-radius: var(--radius-sm); padding: 3px 5px; }
-.opt .sub { display: block; font: 500 12px/16px var(--font-ui); opacity: .85; }
-.opt.recd { background: var(--recommended, var(--action)); color: var(--on-action); box-shadow: none; }
-.opt.recd .k { color: inherit; box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 45%, transparent); }
-.opt.dim { opacity: .45; }
+/* The options are the web view's AskOption: rec-opt, armed, chosen and aria-disabled name the states. */
+.opt kbd { margin-left: auto; font: 500 11px/1 var(--font-mono); color: var(--text-3); box-shadow: inset 0 0 0 1px var(--line); border-radius: var(--radius-sm); padding: 3px 5px; }
+.opt > span { display: flex; flex-direction: column; min-width: 0; overflow-wrap: anywhere; }
+.opt small { display: block; font: 500 12px/16px var(--font-ui); opacity: .85; }
+.opt.rec-opt:not(.armed):not(.chosen) { background: var(--recommended, var(--action)); color: var(--on-action); box-shadow: none; }
+.opt.rec-opt:not(.armed):not(.chosen) kbd { color: inherit; box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 45%, transparent); }
+.opts:has(.armed, .chosen) .opt:not(.armed):not(.chosen) { opacity: .45; }
 .opt.armed { background: var(--emph); color: var(--on-emph); box-shadow: 0 0 0 3px var(--action); }
-.opt.armed .sub { color: var(--on-emph-2); }
+.opt.armed small { color: var(--on-emph-2); }
 .opt.chosen { background: var(--emph); color: var(--on-emph); box-shadow: none; }
 .opt.right { box-shadow: inset 0 0 0 2px var(--ok-text); }
-.opt:disabled { color: var(--text-3); box-shadow: inset 0 0 0 1px var(--line); background: var(--surface); cursor: default; }
+.opts .opt[aria-disabled="true"]:not(.chosen) { color: var(--text-3); box-shadow: inset 0 0 0 1px var(--line); background: var(--surface); cursor: default; }
 .lowrow { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: -4px 0 0 -6px; }
 .cmd { background: var(--raised); border-radius: var(--radius-md); padding: 10px 12px; display: grid; gap: 6px; font: 400 var(--type-caption) var(--font-ui); color: var(--text-2); }
 .argv { display: flex; flex-wrap: wrap; gap: 4px; }
@@ -95,8 +98,10 @@ svg.s12 { width: 12px; height: 12px; } svg.s14 { width: 14px; height: 14px; }
 .box { background: var(--surface); border-radius: var(--radius-md); box-shadow: inset 0 0 0 1px var(--line); padding: 12px; display: grid; gap: 10px; }
 .row { display: flex; align-items: center; gap: 10px; font: 400 var(--type-small) var(--font-ui); }
 .end { display: flex; gap: 8px; justify-content: flex-end; }
-.undo { position: sticky; bottom: 0; margin-top: auto; background: var(--emph); color: var(--on-emph); border-radius: var(--radius-card); padding: 10px 12px; display: flex; align-items: center; gap: 10px; font-weight: 600; }
-.undo .btn { margin-left: auto; color: var(--on-emph); box-shadow: inset 0 0 0 1px var(--on-emph-2); }
+/* The pressed option, or Send, shows its answer sending on itself, its label at full strength. */
+.busy { flex: none; display: inline-block; width: 14px; height: 14px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: busy 0.8s linear infinite; vertical-align: -2px; margin-right: 6px; }
+@keyframes busy { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .busy { animation: none; border-right-color: currentColor; opacity: 0.6; } }
 .steps { display: grid; counter-reset: s; }
 .steps li { list-style: none; display: grid; grid-template-columns: 22px 1fr; gap: 2px 8px; padding: 8px; border-radius: var(--radius-tile); font: 400 var(--type-small) var(--font-ui); }
 .steps li::before { counter-increment: s; content: counter(s); font: 600 12px/19px var(--font-mono); color: var(--text-3); }

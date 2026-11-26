@@ -23,13 +23,26 @@ export function keepTokenForWorker(token) {
     .catch(() => {});
 }
 
+// The last body of each path with its tag: a listing that did not change comes back as 304, with no body.
+const tagged = new Map();
+
 export async function api(path, signal) {
   const { token } = session.get();
-  const response = await fetch(path, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store", signal });
+  const kept = tagged.get(path);
+  const headers = { Authorization: `Bearer ${token}`, ...(kept && { "If-None-Match": kept.tag }) };
+  const response = await fetch(path, { headers, cache: "no-store", signal });
+  if (response.status === 304 && kept) return unchanged(kept.body, response.headers.get("Priory-Revision"));
   if (response.status === 401) throw Object.assign(new Error("the token was refused"), { status: 401, token });
   if (!response.ok) throw Object.assign(new Error(`${path} answered ${response.status}`), { status: response.status });
-  return response.json();
+  const body = await response.json();
+  const tag = response.headers.get("ETag");
+  if (tag) tagged.set(path, { tag, body });
+  else tagged.delete(path);
+  return body;
 }
+
+/** A kept body at the revision a 304 names: only other rows changed. */
+export const unchanged = (body, revision) => (revision == null ? body : { ...body, revision: Number(revision) });
 
 export async function post(path, body) {
   const response = await fetch(path, {
@@ -60,6 +73,7 @@ export const onSignOut = (forget) => leaving.add(forget);
 export function signOut(reason) {
   for (const key of ["priory.token", SNAPSHOT, EARLIER_SNAPSHOT]) localStorage.removeItem(key);
   keepTokenForWorker(null);
+  tagged.clear();
   for (const forget of leaving) forget();
   session.set({ token: null, signInError: reason, failed: null });
 }

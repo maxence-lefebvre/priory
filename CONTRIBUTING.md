@@ -46,7 +46,10 @@ the one CI uses.
 - Start any web view work from a design reviewed by a person before you write code.
 - After you change the web view's JavaScript, run `corepack pnpm install` once, then
   `corepack pnpm web:build`, and commit `crates/priory-core/web/dist/app.js` with your change. CI
-  fails on a stale bundle and on an oxlint warning, through `corepack pnpm web:check`. [ADR 0004](docs/adr/0004-the-web-view-is-a-react-app-whose-built-bundle-is-committed.md)
+  fails on a stale bundle and on an oxlint warning, through `corepack pnpm web:check`. The GitHub
+  extension imports some of the web view's components: after you change one, or the extension's
+  JavaScript, run `corepack pnpm github:build` and commit `adapters/github/dist/frame.js`.
+  `corepack pnpm github:check` fails on its stale bundle. [ADR 0004](docs/adr/0004-the-web-view-is-a-react-app-whose-built-bundle-is-committed.md)
   says why the bundle is committed.
 - Check that a refresh keeps the page drawn: with the demo served, run
   `node scripts/demo/refresh.mjs DIR [CHROMIUM]`. It changes the demo's data while a page is open

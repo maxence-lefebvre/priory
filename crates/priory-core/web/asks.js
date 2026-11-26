@@ -153,7 +153,8 @@ export function writeNote(status, body, ago, ask) {
   }
   if (status === 503 && runnerOf(ask)) return `Could not send: ${body?.error}.`;
   if (status === 503) return "Could not send: no priory daemon runs beside this server. Start priory daemon, then send again.";
-  if (status === 504 || status === 0) return "The daemon may have applied this but did not confirm it. Check the ask's state before you send again.";
+  // The answer carries its call id, so sending the same answer again stores it once.
+  if (status === 504 || status === 0) return "The connection dropped before Priory confirmed this. It may be stored: send it again, and it is stored once.";
   return `Could not send: ${body?.error || `the server answered ${status}`}.`;
 }
 

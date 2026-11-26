@@ -53,6 +53,9 @@ The port ended. No legacy slot remains, and every page, sheet and pane is a Reac
 
 - The budget is 635 KiB: the bundle's 590,978 bytes when the port ended, plus 10%.
 - The shell cache is `priory-shell-3`, and an offline start reads only that shell's copy.
+- The GitHub extension follows the same rule since its React port: `@priory/github`, in
+  `adapters/github/`, is the workspace's second package, and its committed `dist/frame.js` keeps the
+  folder loadable unpacked with no build. `corepack pnpm github:check` fails on a stale bundle.
 
 ## Rejected
 

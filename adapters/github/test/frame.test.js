@@ -5,7 +5,7 @@ import "./idb.js";
 import { DOMParser, Node, parse } from "./dom.js";
 import { clear, put } from "../lib/store.js";
 
-// frame.js as the strip or the docked panel on octo/demo#1, with the daemon behind a stubbed fetch.
+// The React frame, dist/frame.js, as the strip or the docked panel on octo/demo#1, with the daemon behind a stubbed fetch.
 class Channel extends BroadcastChannel {
   constructor(name) {
     super(name);
@@ -31,13 +31,14 @@ const settle = async (check, what) => {
 };
 
 let run = 0;
-/** Boots frame.js as `view` and returns the calls it made. `daemon(url, init)` answers each one. */
+/** Boots the frame as `view` and returns the calls it made. `daemon(url, init)` answers each one. */
 async function boot(view, daemon, cached) {
   await clear();
   await put("config", { origin: "http://127.0.0.1:7340", token: "t" });
   if (cached) await put(`last:${PR}`, cached);
   const calls = [];
   Object.assign(globalThis, {
+    window: globalThis,
     Node,
     DOMParser,
     BroadcastChannel: Channel,
@@ -54,7 +55,7 @@ async function boot(view, daemon, cached) {
       return daemon(url, init);
     },
   });
-  await import(`../frame.js?run=${(run += 1)}`);
+  await import(`../dist/frame.js?run=${(run += 1)}`);
   return calls;
 }
 const text = () => document.body.textContent;
@@ -114,4 +115,29 @@ test("with no task, the Guide tab stays hidden when the description has no guide
   await boot("panel", ok([]));
   await settle(() => /No Priory task owns this pull request/.test(text()), "no task");
   assert.equal([...document.body.querySelectorAll('[role="tab"]')].some((button) => button.textContent === "Guide"), false);
+});
+
+test("an answer pressed twice sends on the pressed option, and the other options take no press meanwhile", async () => {
+  const ask = { id: "a1", task: 7, step: "implement", state: "open", revision: 3, since: "2026-11-26T08:00:00Z", question: "Ship it?", options: ["Merge", "Wait"], recommendation: "Merge" };
+  let stored;
+  const calls = await boot("panel", (url, init) =>
+    init.method === "POST" ? new Promise((resolve) => (stored = resolve)) : url.includes("/api/tasks/7") ? reply(200, { ...TASK, asks: [ask] }) : ok([HOLDER])(url));
+  await settle(() => /task 7/.test(text()), "the task");
+  [...document.body.querySelectorAll('[role="tab"]')].find((tab) => tab.textContent.startsWith("Ask")).click();
+  await settle(() => /Ship it\?/.test(text()), "the ask");
+  const option = (label) => [...document.body.querySelectorAll(".opt")].find((button) => button.textContent.startsWith(label));
+  option("Merge").click();
+  await settle(() => /Press again to send/.test(text()), "the armed option");
+  option("Merge").click();
+  await settle(() => stored, "the answer");
+  assert.equal(option("Merge").getAttribute("aria-busy"), "true");
+  assert.match(option("Merge").textContent, /Sending…/);
+  assert.equal(option("Wait").getAttribute("aria-disabled"), "true");
+  option("Wait").click();
+  assert.equal(calls.filter(([, method]) => method === "POST").length, 1);
+  const [url, , body] = calls.find(([, method]) => method === "POST");
+  assert.equal(url, "http://127.0.0.1:7340/api/asks/a1/answer");
+  assert.equal(body.option, "Merge");
+  assert.equal(body.revision, 3);
+  stored({ status: 200, json: async () => ({}) });
 });

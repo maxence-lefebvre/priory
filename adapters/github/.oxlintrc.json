@@ -1,0 +1,22 @@
+{
+  "plugins": ["eslint", "oxc", "react", "jsx-a11y", "import"],
+  "categories": { "correctness": "error" },
+  "env": { "browser": true, "webextensions": true, "es2024": true },
+  "ignorePatterns": ["dist/**"],
+  "rules": {
+    "eslint/no-undef": "error",
+    "eslint/prefer-const": "error",
+    "eslint/eqeqeq": ["error", "always", { "null": "ignore" }],
+    "react/jsx-key": "error",
+    "react/no-danger": "error",
+    "react/self-closing-comp": "error",
+    "react/button-has-type": "error",
+    "import/no-duplicates": "error",
+    "import/no-self-import": "error",
+    "jsx-a11y/prefer-tag-over-role": "off",
+    "import/named": "error"
+  },
+  "overrides": [
+    { "files": ["*.mjs", "test/*.js"], "env": { "node": true } }
+  ]
+}
