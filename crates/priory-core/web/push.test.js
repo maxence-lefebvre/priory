@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { PUSH_KINDS, confirmPush, kindBoxes, saveKinds } from "./push.js";
+import { confirmPush, saveKinds } from "./push.js";
 
 const DEFAULTS = { ask: true, stopped: true, intake: true, uncertain: true, cap: true, landed: false, stall: false };
 const ASKS = Object.fromEntries(Object.keys(DEFAULTS).map((kind) => [kind, kind === "ask"]));
@@ -34,22 +34,7 @@ function world({ kept = null, refuse = null, drop = null, old = false } = {}) {
     },
   };
 }
-const checked = (markup) => [...markup.matchAll(/data-push-kind="(\w+)" checked/g)].map(([, kind]) => kind);
-
-test("each kind the daemon has draws a named checkbox, checked as it is stored", () => {
-  const markup = kindBoxes(DEFAULTS, false);
-  assert.equal(markup.match(/type="checkbox"/g).length, PUSH_KINDS.length);
-  for (const [, name] of PUSH_KINDS) assert.ok(markup.includes(`<b>${name}</b>`), name);
-  assert.deepEqual(checked(markup), ["ask", "stopped", "intake", "uncertain", "cap"]);
-  assert.ok(!markup.includes("Nothing is chosen"));
-  assert.ok(kindBoxes(DEFAULTS, true).includes('aria-disabled="true"'));
-});
-
-test("no kind chosen says so, and a daemon without kinds draws nothing", () => {
-  const none = Object.fromEntries(Object.keys(DEFAULTS).map((kind) => [kind, false]));
-  assert.ok(kindBoxes(none, false).includes("Nothing is chosen, so this device gets no notification."));
-  assert.equal(kindBoxes(null, false), "");
-});
+const checked = (kinds) => Object.keys(kinds).filter((kind) => kinds[kind]);
 
 test("a save sends the choice, keeps it, and a reload shows it", async () => {
   const { io, sent, device } = world();
@@ -58,7 +43,7 @@ test("a save sends the choice, keeps it, and a reload shows it", async () => {
   assert.deepEqual(device.kept, ASKS);
 
   const reload = await confirmPush(phone, io);
-  assert.deepEqual(checked(kindBoxes(reload.kinds, false)), ["ask"]);
+  assert.deepEqual(checked(reload.kinds), ["ask"]);
   assert.deepEqual(sent[1], phone);
 });
 

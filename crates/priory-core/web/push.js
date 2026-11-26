@@ -1,7 +1,7 @@
 // The Notifications screen's pure parts: the kinds a device chooses, and how a choice reaches the
 // daemon.
 
-/** Each kind, its name and its sentence. Every value is a constant, so the markup needs no escaping. */
+/** Each kind, its name and its sentence. */
 export const PUSH_KINDS = [
   ["ask", "Asks", "An agent asks you something."],
   ["stopped", "Stopped tasks", "A task is blocked or failed."],
@@ -11,18 +11,6 @@ export const PUSH_KINDS = [
   ["landed", "Landed wrong", "A merged change turned red or was reverted."],
   ["stall", "Queue stalls", "No task can start until the machine has room."],
 ];
-
-/**
- * The checkboxes of the kinds the daemon replied with, as markup; nothing for a daemon with none.
- * @param {Record<string, boolean> | null} kinds @param {boolean} busy
- */
-export function kindBoxes(kinds, busy) {
-  if (!kinds) return "";
-  const rows = PUSH_KINDS.filter(([kind]) => kind in kinds);
-  const boxes = rows.map(([kind, name, line]) => `<label class="push-kind"><input type="checkbox" id="push-kind-${kind}" data-push-kind="${kind}"${kinds[kind] ? " checked" : ""} aria-disabled="${busy}"><span><b>${name}</b><span>${line}</span></span></label>`);
-  const none = rows.some(([kind]) => kinds[kind]) ? "" : '<p class="note" role="status">Nothing is chosen, so this device gets no notification.</p>';
-  return `<fieldset class="push-kinds"><legend>Notify this device about</legend>${boxes.join("")}</fieldset>${none}<p class="note">Each device keeps its own choice. A change applies at once.</p>`;
-}
 
 /**
  * @typedef {Record<string, boolean>} Kinds

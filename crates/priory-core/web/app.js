@@ -8,7 +8,6 @@ import { focusKey, place, route, routeKey, shape, state, trail } from "./legacy/
 import { remoteGeneration } from "./legacy/taskacts.js";
 import { each, entries, entryOf, first, needsOf } from "./registry.js";
 import { go } from "./router.js";
-import { signOut } from "./session.js";
 
 // What each legacy element draws, { slot, kind, name, id, panels }, and the page it drew last.
 const slots = new Map();
@@ -145,7 +144,6 @@ document.addEventListener("click", (event) => {
   if (!target) return;
   const action = target.dataset.action;
   if (action === "retry") return refresh();
-  if (action === "sign-out") return signOut(null);
   first("click", action, target, event);
 });
 
