@@ -1,9 +1,12 @@
 // The tasks page's legacy drawing and actions.
 import { render } from "../app.js";
 import { TASK_VIEWS, elsewhere, filtered, olderPart, remoteActs, remoteId, remoteSent, taskFacets, taskLabel, taskViews, workStep } from "../tasks.js";
-import { ago, batchTag, facet, facetPicks, facetQuery, html, icon, listView, olderRow, olderTasks, prsTag, raw, reasonShown, role, savedViews, state, stateWord, tile, timeTag } from "./shared.js";
+import { ago, batchTag, facet, facetPicks, facetQuery, html, icon, listView, olderRow, olderTasks, prsTag, raw, reasonShown, role, savedViews, stateWord, tile, timeTag } from "./shared.js";
+import { state } from "./state.js";
 import { taskActs } from "./taskacts.js";
 
+// The remote task row opened in place, by its id `runner:key`.
+Object.assign(state, { remoteOpen: null });
 
 // Another runner's task (DESIGN.md, Task row and run row): its hold for a state, and no page here.
 // A tap opens its actions in place; the newest action sent to it takes a line of its own.

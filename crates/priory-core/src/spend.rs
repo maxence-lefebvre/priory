@@ -609,8 +609,8 @@ fn hold(tx: &Transaction, task: i64, resume: &str, cap: &Cap, spent: f64) -> rus
     tx.execute(
         "INSERT INTO spend_holds (hold, task, cap, cap_usd, spent_usd) VALUES (?1, ?2, ?3, ?4, ?5)",
         params![id, task, cap.id(), cap.usd, spent],
-    )
-    .map(drop)
+    )?;
+    crate::hold::judge_open(tx, task)
 }
 
 /// Applies a person's answer to the ask of the spend hold `id`, if it is one: `raise` lets the task

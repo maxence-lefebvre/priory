@@ -208,8 +208,9 @@ const DESK: &str = concat!(
                UNION ALL
                SELECT 0, holds.created, 'held', holds.id, holds.task, tasks.lane,
                  CASE tasks.state WHEN 'held' THEN tasks.reason
-                   WHEN 'running' THEN 'holds after this turn: ' || holds.reason
-                   ELSE 'holds once it is ready: ' || holds.reason END
+                   ELSE iif(tasks.state = 'running' AND EXISTS (SELECT 1 FROM runs
+                     WHERE runs.task = tasks.id AND runs.ended IS NULL),
+                     'holds after this turn: ', 'holds once it is ready: ') || holds.reason END
                FROM holds JOIN tasks ON tasks.id = holds.task
                WHERE holds.released IS NULL AND tasks.state NOT IN ('done', 'failed', 'dropped')
                  AND holds.id = (
@@ -1964,13 +1965,10 @@ fn pull_request(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
              'open') AS state,
            (SELECT json_extract(data, '$.state') FROM events
             WHERE type = 'github.pull_request_review.submitted' ORDER BY seq DESC LIMIT 1) AS review,
-           (SELECT json_group_array(json_object('name', name, 'conclusion', conclusion, 'at', time))
-            FROM (SELECT json_extract(data, '$.name') AS name,
-                json_extract(data, '$.conclusion') AS conclusion, time,
-                row_number() OVER (PARTITION BY json_extract(data, '$.name') ORDER BY seq DESC) AS nth
-              FROM events WHERE type = 'github.check_run.completed'
-                AND json_extract(data, '$.head_sha') = known.head_sha)
-            WHERE nth = 1 ORDER BY name) AS checks
+           (SELECT json_group_array(json_array(seq, time, json(data)))
+            FROM (SELECT seq, time, data FROM events WHERE type = 'github.check_run.completed'
+                AND json_extract(data, '$.head_sha') = known.head_sha
+              ORDER BY json_extract(data, '$.name'), seq)) AS checks
          FROM head, known",
         [id],
     )?;
@@ -1978,7 +1976,16 @@ fn pull_request(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
         return Ok(None);
     };
     if let Some(checks) = pull["checks"].as_str() {
-        pull["checks"] = serde_json::from_str(checks).unwrap_or(Value::Null);
+        let checks: Vec<(i64, Value, Value)> = serde_json::from_str(checks).unwrap_or_default();
+        let newest = checks.iter().filter(|(seq, _, data)| {
+            let later = |(other, _, later): &(i64, Value, Value)| {
+                crate::route::supersedes((*other, later), (*seq, data))
+            };
+            !checks.iter().any(later)
+        });
+        pull["checks"] = newest
+            .map(|(_, at, data)| json!({ "name": data["name"], "conclusion": data["conclusion"], "at": at }))
+            .collect();
     }
     Ok(Some(pull))
 }
