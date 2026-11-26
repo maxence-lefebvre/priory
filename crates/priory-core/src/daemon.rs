@@ -107,7 +107,7 @@ fn view(factory: &Factory) -> Result<(), Error> {
     let watch = reload::Watch::new(factory);
     let machine = room::hostname();
     let viewer = runners::viewer(factory, machine.as_deref())?;
-    // The lock keeps a second daemon off this state file, and off its migration.
+    // The lock keeps a second daemon of this `PRIORY_HOME` off the state, and off its migration.
     let lock = runtime::lock(&runtime::home())?;
     let mut db = state::migrate()?;
     let bus = log::open(factory.log())?;

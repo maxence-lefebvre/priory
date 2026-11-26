@@ -174,11 +174,16 @@ them, `priory resume TASK` starts it again.
 To let the daemon do this by itself, follow
 [How to upgrade Priory automatically](upgrading-automatically.md).
 
-The daemon of a newer release migrates the state database forward when it starts. Any other command of
-that release waits up to 30 seconds for this, then refuses with
-`the state is at schema N and this priory uses M: restart the daemon on this binary`. After it, an older
-release refuses the database with `state schema N is newer than this priory knows (M)`. So back up both
-databases before every upgrade, to roll back:
+The daemon of a newer release migrates the state database forward when it starts. A command of that
+release that writes the state, such as `priory tasks` or `priory pause`, prints a line and waits up to
+30 seconds for this, once per process. Then it refuses with `the state is at schema N and this priory
+uses M`, and names the two ways out: restart the daemon on this binary, or run `priory daemon --once`
+when no daemon runs. A
+command that only reads, such as `priory memories` or `priory serve`, refuses at once. `priory
+answer`, `revive` and the other acts on another runner's `RUNNER:ID` go to that runner unchecked,
+as on a machine with no state file. After the migration, an older release refuses the database with
+`state schema N is newer than this priory knows (M)`. So back up both databases before every
+upgrade, to roll back:
 
 ```sh
 systemctl --user stop priory-daemon priory-intake
@@ -199,6 +204,9 @@ running. To roll back, stop both units, install the older binary and copy each b
 database.
 
 ## What a stop does to agents
+
+The daemon's lock is per `PRIORY_HOME`. Give each state database one home: a `priory daemon --once`
+with another home would migrate a database that a daemon of the first home runs on.
 
 The daemon unit sets `KillMode=process`. The default, `control-group`, would also kill the tmux server
 the daemon started on a stop or restart. tmux stays in the unit's cgroup, so every agent dies with it.

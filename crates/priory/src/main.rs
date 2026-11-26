@@ -3428,7 +3428,7 @@ fn answer(mut args: Vec<String>) -> ExitCode {
 }
 
 /// Another runner's ask as this machine's mirror holds it, refused when the mirror shows it closed
-/// or at another revision, for one that `answers` it or dismisses it. An ask the mirror lacks, or a machine without a state file, goes to its
+/// or at another revision, for one that `answers` it or dismisses it. An ask the mirror lacks, or a machine whose state file `state::current` does not open, goes to its
 /// runner unchecked, which checks it again anyway.
 fn remote_ask(
     runner: &str,
@@ -3436,10 +3436,9 @@ fn remote_ask(
     revision: i64,
     answers: bool,
 ) -> Result<Option<serde_json::Value>, String> {
-    if !state::exists() {
+    let Some(db) = state::current() else {
         return Ok(None);
-    }
-    let db = state::open()?;
+    };
     let mirrored = runners::mirrored(&db, runner, ask).map_err(|error| error.to_string())?;
     if let Some(stale) = mirrored
         .as_ref()
@@ -3451,15 +3450,14 @@ fn remote_ask(
 }
 
 /// The generation to send with an action on runner `runner`'s task of `key`: `generation`, checked
-/// against this machine's claims, else the one they hold. A machine without a state file sends the
+/// against this machine's claims, else the one they hold. A machine whose state file `state::current` does not open sends the
 /// one the person named unchecked, which the runner checks again anyway.
 fn remote_generation(runner: &str, key: &str, generation: Option<i64>) -> Result<i64, String> {
-    if !state::exists() {
+    let Some(db) = state::current() else {
         return generation.ok_or_else(|| {
             format!("this machine knows no generation of task {runner}:{key}: pass --generation N")
         });
-    }
-    let db = state::open()?;
+    };
     match runners::task_generation(&db, runner, key, generation) {
         Ok(Ok(generation)) => Ok(generation),
         Ok(Err(runners::Refused::Unknown(why) | runners::Refused::Stale(why))) => Err(why),
@@ -3693,7 +3691,15 @@ fn ask_id(ask: &str) -> Result<i64, String> {
     {
         return Ok(id);
     }
-    tools::ask_named(&state::open()?, ask)
+    // Another runner's `RUNNER:N` goes to it unchecked when this state file does not open at once.
+    let remote = ask
+        .split_once(':')
+        .is_some_and(|(_, id)| id.parse::<i64>().is_ok());
+    let db = match remote {
+        true => state::current().ok_or_else(|| format!("no ask {ask} on this machine"))?,
+        false => state::open()?,
+    };
+    tools::ask_named(&db, ask)
 }
 
 /// Stores or revises an ask from a session Priory did not start, from Fleet's JSON shape.
