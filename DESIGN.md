@@ -1219,8 +1219,9 @@ sits under More.
 - **Pick**: a segmented control on `--raised`. A `check` means chosen, so no option shows one
   before a choice. The recommendation is in words: the pick's note follows in a caption,
   "Recommends Take". A tap turns the option solid `--emph`
-  with a `check` and dims the other picks; a bar at the bottom says `Picking "Take"` with Undo for
-  4 s. Nothing is sent before the 4 s end. An agreed pick folds to one line:
+  with a `check`, and the caption under the control says `Picking "Take"` with a ghost Undo for
+  4 s. Nothing is sent before the 4 s end. Each row's pick has its own caption and Undo, so the
+  other rows stay open to pick meanwhile. An agreed pick folds to one line:
   a `check` in `--ok-text`, "Picked Take." and what the workflow did with it. Until the workflow
   applies it, a ghost Change button ends the line: it reopens the control with the choice solid,
   "Pick another option to change it." and Keep Take, and a new option goes through the same Undo.
@@ -1233,7 +1234,7 @@ sits under More.
 | empty | "No report yet. A workflow writes one with the `report` tool or `priory report put`." |
 | loading | The frame's: the report loads with the desk's listings, so it shows once they do |
 | offline | The stale strip. Picks and comment buttons are disabled, and each open pick says "Reconnect to pick." |
-| picking | The chosen option solid, the Undo bar for 4 s, then the bar without Undo while it sends |
+| picking | The chosen option solid, `Picking "Take"` with Undo under it for 4 s, then `Sending "Take"…` while it sends. Other rows stay pickable |
 | refused pick | The report redraws, and the row says why in `--warn-text`, naming the option: "Take: Already picked Later." or "Take: The report changed to revision 5. Read it and pick again." |
 | refused comment | The row says why in `--warn-text`, and the field keeps its text |
 

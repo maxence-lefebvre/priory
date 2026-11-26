@@ -4,6 +4,7 @@ import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { askFor, asked, cache, refresh } from "../data.js";
 import { sectionInView } from "../desk.js";
 import { keyOf } from "../queries.js";
+import { picking } from "../picking.js";
 import { around, dossier, nextPick, refusal } from "../reports.js";
 import { onSignOut, post, refuse, session, writeRefusal } from "../session.js";
 import { store } from "../store.js";
@@ -15,17 +16,18 @@ import { useReport, useReports, useStore, useTasks } from "../hooks/useData.js";
 import { useMinute } from "../hooks/useScreen.js";
 import { listClass, usePlace } from "./place.js";
 
-// What the page holds beyond the reads, kept from one visit to the next: the pick waiting out its
-// Undo, then in flight; each row's last refusal; the search text, null while it is closed; the row
+// What the page holds beyond the reads, kept from one visit to the next: each row's pick waiting
+// out its Undo, then in flight; each row's last refusal; the search text, null while it is closed; the row
 // whose agreed pick Change reopened; a pick's or a comment's outcome once its row has left the report;
 // the comment field open on a row, with its text; whether a comment verb is in flight; the report's task.
-const FRESH = () => ({ pending: null, notices: new Map(), query: null, changing: null, flash: null, compose: null, remarking: false, task: undefined });
+const FRESH = () => ({ pending: new Map(), notices: new Map(), query: null, changing: null, flash: null, compose: null, remarking: false, task: undefined });
 const page = store(FRESH());
 const set = (part) => page.set({ ...page.get(), ...part });
 // The row Next pick reached last.
 let reached = null;
+const picks = picking({ send: sendPick, changed: (pending) => set({ pending }) });
 onSignOut(() => {
-  clearTimeout(page.get().pending?.timer);
+  picks.cancel();
   page.set(FRESH());
 });
 
@@ -48,55 +50,33 @@ const unnote = (id) => {
   return notices;
 };
 
-// Nothing leaves the page until the Undo time passes: a pick wakes the report's agent.
-const UNDO_MS = 4000;
-
 function pick(rowId, option) {
   const read = drawn();
   const row = rowOf(read, rowId);
-  const { pending, changing } = page.get();
-  const reopened = row?.pick?.state === "agreed" && changing === row.id;
-  if (!row?.pick || (row.pick.state !== "open" && !reopened) || option === row.pick.chosen || pending || offline()) return;
-  const next = { row: row.id, task: read.report.task, pick: row.pick.id, option, from: row.pick.chosen, revision: read.report.revision, sending: false };
-  next.timer = setTimeout(() => sendPick(next), UNDO_MS);
-  set({ pending: next, notices: unnote(row.id), flash: null });
+  const reopened = row?.pick?.state === "agreed" && page.get().changing === row.id;
+  if (!row?.pick || (row.pick.state !== "open" && !reopened) || option === row.pick.chosen || offline()) return;
+  if (picks.start({ row: row.id, task: read.report.task, pick: row.pick.id, option, from: row.pick.chosen, revision: read.report.revision })) {
+    set({ notices: unnote(row.id), flash: null });
+  }
 }
 
-function undoPick() {
-  const { pending } = page.get();
-  if (!pending || pending.sending) return;
-  clearTimeout(pending.timer);
-  set({ pending: null });
-}
-
-// A pick still waiting out its Undo does not go once its page is left.
-function dropPick() {
-  const { pending } = page.get();
-  if (!pending || pending.sending) return;
-  clearTimeout(pending.timer);
-  set({ pending: null });
-}
-
-// A new read cancels a pick still waiting out its Undo once its report no longer offers it. Another
-// task's report drops the notes, which belong to rows of the old one; the comment field waits for
-// its own task's report.
+// A new read cancels each pick still waiting out its Undo once its report no longer offers it.
+// Another task's report drops the notes, which belong to rows of the old one; the comment field
+// waits for its own task's report.
 function accept(read) {
   const task = read?.report.task;
   if (task !== page.get().task) set({ notices: new Map(), flash: null, task });
-  const { pending } = page.get();
-  if (!pending || pending.sending) return;
-  const row = task === pending.task ? rowOf(read, pending.row) : null;
-  if (row?.pick?.id === pending.pick && row.pick.state !== "applied" && row.pick.chosen === pending.from) return;
-  clearTimeout(pending.timer);
-  set({ pending: null });
-  noteRow(pending.row, `${pending.option} was not sent: the report changed before it went.`, pending.task);
+  const offered = (pending) => {
+    const row = task === pending.task ? rowOf(read, pending.row) : null;
+    return row?.pick?.id === pending.pick && row.pick.state !== "applied" && row.pick.chosen === pending.from;
+  };
+  for (const gone of picks.cancel(offered)) noteRow(gone.row, `${gone.option} was not sent: the report changed before it went.`, gone.task);
 }
 
 async function sendPick(pending) {
-  set({ pending: { ...pending, sending: true } });
   const { status, body } = await post("/api/reports/pick", { pick: pending.pick, option: pending.option, revision: pending.revision })
     .catch(() => ({ status: 0, body: { error: "the connection dropped" } }));
-  set({ pending: null, changing: null });
+  if (page.get().changing === pending.row) set({ changing: null });
   if (status === 401) return refuse();
   await refresh();
   if (status === 200) return;
@@ -167,18 +147,18 @@ const unless = (off, act) => () => {
   if (!off) act();
 };
 
-const Pick = memo(function Pick({ row, pending, changing, failed }) {
+const Pick = memo(function Pick({ row, mine, changing, failed }) {
   const { pick: choice } = row;
   const reopened = choice.state === "agreed" && changing === row.id;
   if (choice.state !== "open" && !reopened) {
-    const change = choice.state === "agreed" && !pending && !failed
+    const change = choice.state === "agreed" && !failed
       ? <button type="button" id={focusId("change", row.id)} className="ghost" onClick={() => set({ changing: row.id })}>Change</button> : null;
     return <p className="note rpicked"><Icon name="check" size="s15" /><span><b>{`Picked ${choice.chosen}.`}</b>{` ${choice.note}`}</span>{change}</p>;
   }
-  const mine = pending?.pick === choice.id ? pending : null;
-  const off = Boolean(failed || (pending && !mine));
+  const off = Boolean(failed);
   let note = null;
-  if (failed) note = <p className="note"><Icon name="unplug" size="s15" /><span>Reconnect to pick.</span></p>;
+  if (mine) note = <p className="note rpending" role="status"><span>{mine.sending ? `Sending "${mine.option}"…` : `Picking "${mine.option}"`}</span>{mine.sending ? null : <button type="button" id={focusId("undo", row.id)} className="ghost" onClick={() => picks.undo(row.id)}>Undo</button>}</p>;
+  else if (failed) note = <p className="note"><Icon name="unplug" size="s15" /><span>Reconnect to pick.</span></p>;
   else if (reopened) note = <p className="note"><span>{`Picked ${choice.chosen}. Pick another option to change it.`}</span>{mine ? null : <button type="button" className="ghost" onClick={() => set({ changing: null })}>{`Keep ${choice.chosen}`}</button>}</p>;
   else if (choice.note) note = <p className="note">{choice.note}</p>;
   return (
@@ -232,7 +212,7 @@ const Row = memo(function Row({ row, held, failed, newest, task, reports }) {
     <li className="rrow" id={focusId("row", row.id)}>
       <p className="rl1">{row.tile ? <Tile state={row.tile} size="sm" /> : null}{row.key ? <span className="mono"><Linked text={row.key} /></span> : null}<span className="rtext"><Linked text={row.text} /></span></p>
       {facts.length || row.time ? <p className="rl2">{facts.map((fact) => <span key={fact}>{fact}</span>)}{row.time ? <span>{row.time}</span> : null}</p> : null}
-      {row.pick ? <Pick row={row} pending={held.pending} changing={held.changing} failed={failed} /> : null}
+      {row.pick ? <Pick row={row} mine={held.pending.get(row.id)} changing={held.changing} failed={failed} /> : null}
       {notice ? <p className="warnline" role="status">{notice}</p> : null}
       {row.threads.map((thread) => <Thread key={thread.id} row={row} thread={thread} off={failed || held.remarking} />)}
       <Compose row={row} open={open} newest={newest} failed={failed} remarking={held.remarking} reports={reports} /></li>
@@ -282,7 +262,6 @@ const Report = memo(function Report({ read, reports, tasks }) {
     scroller.current?.scrollTo({ top: 0 });
   }, [model.task]);
   const arrow = (to, glyph, name) => <button type="button" className="iconbtn" aria-label={name} aria-disabled={to == null ? "true" : "false"} onClick={unless(to == null, () => showReport(to, reports))}><Icon name={glyph} size="s20" /></button>;
-  const { pending } = held;
   return (
     <Panel label="Reports" kind="report">
       <div className="rbar">{arrow(older, "chevron-left", "Older report")}<span className="rdate">{model.date}</span>{arrow(newer, "chevron-right", "Newer report")}<span className="sp" />
@@ -305,7 +284,6 @@ const Report = memo(function Report({ read, reports, tasks }) {
                 <h2 className="sh" id={`report-${i}-title`}>{section.title}<span className="meta num">{section.count}</span></h2>
                 <ol className="rrows">{section.rows.map((row) => <Row key={row.id} row={row} held={held} failed={failed} newest={newest} task={model.task} reports={reports} />)}</ol></section>
             ))}</div></div></div>
-      {pending ? <div className="sending" role="status"><span>Picking <b>{`"${pending.option}"`}</b></span>{pending.sending ? null : <button type="button" className="btn secondary" onClick={undoPick}>Undo</button>}</div> : null}
     </Panel>
   );
 });
@@ -318,7 +296,8 @@ export const Reports = memo(function Reports() {
   useEffect(() => {
     if (read !== undefined) accept(read);
   }, [read]);
-  useEffect(() => dropPick, []);
+  // A pick still waiting out its Undo does not go once its page is left.
+  useEffect(() => () => picks.cancel(), []);
   const head = size === "compact" ? <PageTop title="Reports" /> : <div className="lhead"><h1>Reports</h1></div>;
   const body = read
     ? <Report read={read} reports={reports} tasks={tasks} />
