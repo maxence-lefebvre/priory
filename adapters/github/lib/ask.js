@@ -31,7 +31,10 @@ export function choose(draft, ask, { option, text, again = false }, now) {
   if (draft && (BUSY.has(draft.phase) || (draft.phase === "unknown" && !again))) return draft;
   const answer = option === undefined ? { text } : { option };
   const phase = option !== undefined && runsCommand(ask, option) ? "armed" : "waiting";
-  return { id: ask.id, revision: ask.revision, ...answer, phase, at: now };
+  // A resend of the same choice keeps its call, so the daemon stores it once.
+  const same = draft?.id === ask.id && draft.revision === ask.revision && draft.option === answer.option && draft.text === answer.text;
+  const call = same && draft.call ? draft.call : crypto.randomUUID();
+  return { id: ask.id, revision: ask.revision, ...answer, phase, at: now, call };
 }
 
 /** Undo drops a waiting answer; nothing else can be undone. */
@@ -58,6 +61,7 @@ export const answerPath =(id) => `/api/asks/${encodeURIComponent(id)}/answer`;
 export const answerBody = (draft, run = false) => ({
   ...(draft.option === undefined ? { text: draft.text } : { option: draft.option }),
   revision: draft.revision,
+  ...(draft.call ? { call: draft.call } : {}),
   ...(run ? { run: true } : {}),
 });
 

@@ -1,7 +1,7 @@
 // The strip, the docked panel and the side panel: every daemon call and all agent text live here.
 import { ARM_MS, UNDO_MS, age, answerBody, answerPath, choose, due, leftUnsent, observe, optionKey, refusal, reply, runsCommand, dismissable, undo } from "./lib/ask.js";
 import { grade, parseGuide, scoreKey } from "./lib/guide.js";
-import { live } from "./lib/live.js";
+import { hidden, live } from "./lib/live.js";
 import { parsePr } from "./lib/pr.js";
 import { blank, connectForm as sharedForm } from "./lib/connect.js";
 import { call } from "./lib/request.js";
@@ -107,8 +107,39 @@ const openAsks = () => (S.task?.asks ?? []).filter((ask) => ask.state === "open"
 const waiting = () => openAsks().filter((ask) => !(ask.snoozed_until && Date.parse(ask.snoozed_until) > Date.now()));
 const api = (path, body, timeout) => call(fetch, S.config.origin, S.config.token, path, body, timeout);
 
+// One read at a time and at most one queued, so a slow server gets no pile of reads; after a read
+// over 2 s the queued one waits as long. A hidden tab reads nothing until it shows.
+let reading = null;
+let queued = null;
+let stale = false;
+function read(quiet = false) {
+  if (hidden()) {
+    stale = true;
+    return Promise.resolve();
+  }
+  if (reading) {
+    queued = queued === null ? quiet : queued && quiet;
+    return reading;
+  }
+  const started = Date.now();
+  reading = readNow(quiet).finally(() => {
+    reading = null;
+    const took = Date.now() - started;
+    if (queued === null) return;
+    const next = queued;
+    queued = null;
+    setTimeout(() => read(next), took > 2000 ? took : 0);
+  });
+  return reading;
+}
+globalThis.document?.addEventListener?.("visibilitychange", () => {
+  if (hidden() || !stale) return;
+  stale = false;
+  read(true);
+});
+
 // `quiet`, for a revision from the poller: a read that changed nothing leaves the view as it is.
-async function read(quiet = false) {
+async function readNow(quiet = false) {
   if (!S.config || !S.pr) return render();
   const found = await api(`/api/tasks?pr=${encodeURIComponent(S.pr.resource)}`);
   if (found.status === 401) return signedOut();
@@ -174,7 +205,9 @@ async function post() {
   if (!next) return;
   S.draft = next.draft;
   render();
-  const result = await api(next.path, next.body);
+  let result = await api(next.path, next.body);
+  // A server older than call ids refuses the field: the answer goes once more, without it.
+  if (result.status === 400 && /unknown field `call`/.test(result.body.error ?? "")) result = await api(next.path, { ...next.body, call: undefined });
   S.draft = reply(S.draft, result, Date.now());
   if (S.draft.phase === "signin") return signedOut();
   if (S.draft.phase === "sent") S.written = "";

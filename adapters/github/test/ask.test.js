@@ -15,14 +15,14 @@ test("an option waits 4 s with Undo, then sends with the revision the panel show
   assert.deepEqual(due(waiting, NOW + UNDO_MS), {
     draft: { ...waiting, phase: "posting" },
     path: "/api/asks/88/answer",
-    body: { option: "Rename it", revision: 1 },
+    body: { option: "Rename it", revision: 1, call: waiting.call },
   });
 });
 
 test("a written answer sends as text, and a second choice while one waits changes nothing", () => {
   const waiting = choose(null, ASK, { text: "Rename it to flows_payload" }, NOW);
 
-  assert.deepEqual(due(waiting, NOW + UNDO_MS).body, { text: "Rename it to flows_payload", revision: 1 });
+  assert.deepEqual(due(waiting, NOW + UNDO_MS).body, { text: "Rename it to flows_payload", revision: 1, call: waiting.call });
   assert.equal(choose(waiting, ASK, { option: "Keep the name" }, NOW), waiting);
 });
 
@@ -41,6 +41,18 @@ test("an armed command disarms when its 4 s pass or the question moves to a new 
   assert.equal(observe(armed, COMMAND, NOW + ARM_MS - 1), armed);
   assert.equal(observe(armed, COMMAND, NOW + ARM_MS), null);
   assert.equal(observe(armed, { ...COMMAND, revision: 2 }, NOW + 1), null);
+});
+
+test("a resend of the same choice keeps its call id, and another choice or revision gets a new one", () => {
+  const lost = { ...choose(null, ASK, { option: "Rename it" }, NOW), phase: "unknown" };
+  const again = choose(lost, ASK, { option: "Rename it", again: true }, NOW + 1);
+  const other = choose(lost, ASK, { option: "Keep the name", again: true }, NOW + 1);
+  const moved = choose(lost, { ...ASK, revision: 2 }, { option: "Rename it", again: true }, NOW + 1);
+
+  assert.match(lost.call, /^[0-9a-f-]{36}$/);
+  assert.equal(again.call, lost.call);
+  assert.notEqual(other.call, lost.call);
+  assert.notEqual(moved.call, lost.call);
 });
 
 test("a 200 clears the draft", () => {

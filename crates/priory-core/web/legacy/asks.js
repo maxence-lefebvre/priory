@@ -335,12 +335,19 @@ export function disarm() {
   state.armed = null;
 }
 
+// The call id of each press: a resend of the same answer to the same revision carries it again,
+// so the daemon stores it once. A stored answer forgets it.
+const calls = new Map();
+
 async function send(ask, pending, written, run) {
   render();
-  const body = { [written ? "text" : "option"]: pending.text, revision: ask.revision };
+  const key = JSON.stringify([ask.id, ask.revision, written, pending.text]);
+  if (!calls.has(key)) calls.set(key, crypto.randomUUID());
+  const body = { [written ? "text" : "option"]: pending.text, revision: ask.revision, call: calls.get(key) };
   if (run) body.run = true;
   const sent = await write(ask, `/api/asks/${encodeURIComponent(ask.id)}/answer`, body, pending.text);
   state.pending = null;
+  if (sent) calls.delete(key);
   if (sent) return next(ask);
   render();
 }
