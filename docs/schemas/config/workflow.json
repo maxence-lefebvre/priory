@@ -366,6 +366,11 @@
         "null"
       ]
     },
+    "overlap": {
+      "default": true,
+      "description": "Whether its tasks wait for an earlier active task that changes the same files. Its tasks\ncan still hold later tasks. `[queue] overlap = false` turns the check off for every workflow.",
+      "type": "boolean"
+    },
     "reopen": {
       "description": "The model step a done task goes back to when its open pull request gets feedback; by\ndefault, the step that opened the pull request.",
       "type": [

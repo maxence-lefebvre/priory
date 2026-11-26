@@ -558,7 +558,11 @@ task's files (see [batches.md](batches.md)). The pull requests it is stacked on 
 own work, so it can still wait on another task.
 
 Set `[queue] overlap = false` in `factory.toml` to turn this off (see
-[factory.md](../reference/factory.md#queue)).
+[factory.md](../reference/factory.md#queue)). To turn it off for one workflow, set `overlap = false`
+in the workflow's file (see [workflows.md](../reference/workflows.md#top-level-keys)). Its tasks are
+never held for an overlap, but they can still hold later tasks of other workflows. Use it for a task
+that regenerates shared files from the default branch on every run, such as a dependency upgrade
+that rewrites the lockfile: waiting on an unrelated pull request only delays it.
 
 Known limits:
 

@@ -160,27 +160,26 @@ There are no islands and no `[data-island]` event contract. Every control uses a
 listeners stay on `document`: the router's for plain links, and the shortcuts'. The terminal pane
 hears Escape on its own element first, so Escape closes its menu or Say line before a shortcut runs.
 
-### How to port one page
+### How to add one page
 
-Two ports touch no common line but the bundle's: a port edits `entries/<page>.js`,
-`scripts/demo/pages/<page>.mjs` and files of its own. Every other file names no page or stays as it
-is. `registry.js` says what an entry holds.
+A new page edits `entries/<page>.js`, `scripts/demo/pages/<page>.mjs` and files of its own, and adds
+its name to the two lists of every page: `entries/index.js` and `PAGES` in `routes.jsx`. Every other
+file names no page. `registry.js` says what an entry holds.
 
 1. Write `pages/<Page>.jsx` and `pages/<Page>.test.jsx`. Read with a hook of `hooks/`: the listings' in
    `useData.js`, then `useBatch`, `useCosts`, `useFlows`, `useInbox` and `useRequest`. A new read is
    a file of its own in `reads/`: it exports a function that answers the query's key and, in `meta`, its
    `read`, and `kept` or `once`. No list names it. Its failure is the page's to say.
-2. Draw the same elements, classes, ids and ARIA as the legacy file: `List` returns its `.list` beside
+2. Draw with the elements, classes, ids and ARIA that `app.css` and `DESIGN.md` already style: `List` returns its `.list` beside
    other panels, `Page` what stands alone, `Detail` one task or batch, `Drawer` the ask's `.drawer`.
    `usePlace()` gives the size.
    Return one tree for every size, with `listClass(size, "list page")` on the list: on a phone `.flat`
    gives it no box, so a rotation keeps the page's fields, focus and caret. `components/` holds the
    saved views' chips (`SavedViews`), a phone's top and panel (`PhonePage`), and what a part says
    while its listings are not read (`NotReady`). A theme preview draws `DeskPreview` of `Desk.jsx`.
-3. In the page's entry, put the components in place of the legacy `list`, `page`, `detail` or `drawer`.
-   Delete the `needs`, `fields`, `kept`, `older` and events those served.
-4. Delete `legacy/<page>.js`, unless the list below keeps it. Its part of `state` goes with it.
-   Pass an action the revision of the read it is drawn from, and keep it off until there is one.
+3. Export the components from `entries/<page>.js`, and add the entry to `entries/index.js` and the
+   page's name to `PAGES` in `routes.jsx`.
+4. Pass an action the revision of the read it is drawn from, and keep it off until there is one.
 5. Add the page's reads to `scripts/demo/pages/<page>.mjs`, and a `check` there for what it keeps
    through a refresh, and for what can fail, come late or open cold.
 6. Run `corepack pnpm web:build`, `web:check` and `scripts/demo/refresh.mjs`. With
