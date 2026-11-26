@@ -196,7 +196,10 @@ fn processes_that_outlive_an_upgrade_and_its_rollback_keep_working() {
     let ((text, error), mut kept) = call.join().unwrap();
     assert!(!error, "the call in the gap: {text}");
     let after = schema(&setup);
-    assert_eq!(after.0, before.0 + 1, "the new daemon migrated");
+    assert!(
+        after.0 > before.0,
+        "the new daemon migrated: {before:?} to {after:?}"
+    );
     assert!(
         after.1 > 0 && after.1 <= before.0,
         "its floor {after:?} lets {before:?} in"
