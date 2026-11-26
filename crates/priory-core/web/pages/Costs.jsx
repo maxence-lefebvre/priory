@@ -167,7 +167,7 @@ export const Costs = memo(function Costs() {
   } else if (slow) body = <div className="sk" aria-hidden="true"><span /><span /><span /></div>;
   return (
     <div className={listClass(size, "list")}>{head}
-      <Panel label="Costs">
+      <Panel label="Costs" data-costs="">
         {wide ? null : <SavedViews views={[{ key: "costs", label: "Costs", count: null, on: shown === "costs" }, { key: "attention", label: "Attention", count: null, on: shown === "attention" }]} base="/costs" />}
         <div className="scroll">
           {error ? <p className="note warn" role="alert"><Icon name="circle-x" size="s15" /><span>{`Could not load costs: ${failureWords(error)}. Check that the daemon runs on its runner, then retry.`}</span><button type="button" className="ghost" onClick={retry}>Retry</button></p> : null}

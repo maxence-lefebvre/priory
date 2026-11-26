@@ -19,11 +19,13 @@ const { Reports } = await import("./Reports.jsx");
 
 const thread = { id: 5, author: "lead", created: "2026-11-20T08:00:00Z", text: "why later?", resolved: false, replies: [{ id: 6, author: "agent", created: "2026-11-20T08:10:00Z", text: "needs a <b>repro</b>" }] };
 const done = { id: 7, author: "lead", created: "2026-11-20T07:00:00Z", text: "seen", resolved: true, replies: [] };
+// The shared fixture's rows carry tracker-like keys; this page's tests read them as neutral ones.
+const neutral = (read) => JSON.parse(JSON.stringify(read).replaceAll("FND-", "ROW-").replaceAll("fnd-", "row-"));
 const withThreads = (read) => structuredClone({
   ...read,
-  report: { ...read.report, sections: read.report.sections.map((section) => ({ ...section, rows: section.rows.map((row) => (row.id === "fnd-2413" ? { ...row, comments: [thread, done] } : row)) })) },
+  report: { ...read.report, sections: read.report.sections.map((section) => ({ ...section, rows: section.rows.map((row) => (row.id === "row-2413" ? { ...row, comments: [thread, done] } : row)) })) },
 });
-const READ = withThreads(fixture);
+const READ = withThreads(neutral(fixture));
 
 function draw(t, { size = "wide", read = READ, reports = [{ task: 1 }, { task: 0 }], shown = null } = {}) {
   const cache = client({ api: async () => ({}) });
@@ -51,8 +53,8 @@ test("a report draws its bar, its head, its section chips and its rows", (t) => 
 test("a pick is open, agreed with a Change, or applied", (t) => {
   const html = draw(t);
   const id = (...parts) => encodeURIComponent(JSON.stringify(parts)).replace(/[%()]/g, (c) => `\\${c}`);
-  assert.match(html, /<p class="note rpicked"><svg class="ico s15"[^>]*>.*?<\/svg><span><b>Picked Take\.<\/b> requested task cli:FND-2409<\/span><\/p>/);
-  assert.match(html, new RegExp(`<div class="rpick" role="group" aria-label="Pick for FND-2413"><button type="button" id="${id("pick", "2026-11-20_sentry_fnd-2413", "Take")}" class="" aria-pressed="false" aria-disabled="false">Take</button>`));
+  assert.match(html, /<p class="note rpicked"><svg class="ico s15"[^>]*>.*?<\/svg><span><b>Picked Take\.<\/b> requested task cli:ROW-2409<\/span><\/p>/);
+  assert.match(html, new RegExp(`<div class="rpick" role="group" aria-label="Pick for ROW-2413"><button type="button" id="${id("pick", "2026-11-20_sentry_row-2413", "Take")}" class="" aria-pressed="false" aria-disabled="false">Take</button>`));
   assert.match(html, /<\/div><p class="note">Recommends Later<\/p>/);
   assert.match(html, /<span><b>Picked Take\.<\/b> Waiting for the workflow to apply it\.<\/span><button type="button" id="[^"]+" class="ghost">Change<\/button><\/p>/);
 });

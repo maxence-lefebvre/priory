@@ -11,6 +11,17 @@ const ROW = (key) => `[...document.querySelectorAll("#app .rrow")].find((row) =>
 
 export async function check({ hooked, page, evaluate, until, sleep, change, screen }) {
   await screen(1440, 900);
+  await hooked("offline, Reports reads what main read and offers no pick", "/reports", READY, {}, async () => {
+    await sleep(1500);
+    await evaluate('hook.fails = ["/api/desk", "/api/asks", "/api/views", "/api/reports", "/api/reports/latest", "/api/tasks"]; reads.length = 0');
+    change();
+    await until('document.querySelector(".conn").innerText === "reconnecting"', "the session to fail");
+    await sleep(6000);
+    const found = await evaluate('({ reads: [...new Set(reads)].sort().join(" "), note: [...document.querySelectorAll("#app .note")].some((note) => note.innerText === "Reconnect to pick."), alerts: document.querySelectorAll("#app [role=alert]").length })');
+    await evaluate("hook.fails = []");
+    await until('document.querySelector(".conn").innerText === "live"', "the session to reconnect");
+    return found.reads === "/api/desk /api/reports /api/reports/latest /api/tasks" && found.note && !found.alerts ? true : found;
+  });
   const refresh = async () => {
     await evaluate("reads.length = 0");
     change();

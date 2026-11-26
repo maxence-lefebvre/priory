@@ -85,3 +85,22 @@ test("a moved revision reads the mounted inbox again, and never the flows", asyn
   await moved(cache);
   assert.deepEqual(paths, ["/api/inbox?unrouted=1"]);
 });
+
+test("a moved revision reads the costs after the desk, and not while the desk fails", async () => {
+  const paths = [];
+  let down = false;
+  const cache = client({ api: async (path) => {
+    paths.push(path);
+    if (down) throw Object.assign(new Error(`${path} answered 500`), { status: 500 });
+    return { revision: 1 };
+  } });
+  for (const read of [{ queryKey: ["desk"] }, costs("workflow")]) new QueryObserver(cache, read).subscribe(() => {});
+  await new Promise((done) => setTimeout(done, 10));
+  paths.length = 0;
+  await moved(cache);
+  assert.deepEqual(paths, ["/api/desk", "/api/costs?by=workflow"]);
+  paths.length = 0;
+  down = true;
+  await moved(cache);
+  assert.deepEqual(paths, ["/api/desk"]);
+});

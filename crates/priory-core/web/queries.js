@@ -79,9 +79,17 @@ const active = (cache) => cache.getQueryCache().findAll({ type: "active" });
 const errored = (cache) => active(cache).filter((query) => query.state.status === "error");
 const moving = (query) => !once(query) || query.state.status === "error" || query.state.data === undefined;
 
-// Marks every read stale and reads the mounted ones again. True when none of them failed.
+// A page's own read, from a file under reads/, rather than a listing or a task.
+const own = (query) => Boolean(query.meta?.read);
+
+// Marks every read stale and reads the mounted ones again. True when none of them failed. A page's own
+// read follows the others, and waits while what an answer depends on failed or is read by a later
+// refresh, as the legacy loaders did: that refresh reads it once it lands.
 async function reread(cache, options, predicate = moving) {
-  await cache.invalidateQueries({ predicate }, options);
+  await cache.invalidateQueries({ predicate: (query) => predicate(query) && !own(query) }, options);
+  const unsure = active(cache).some((query) => locks(query) && (query.state.status === "error" || query.state.fetchStatus === "fetching"));
+  const refetchType = unsure ? "none" : "active";
+  await cache.invalidateQueries({ predicate: (query) => predicate(query) && own(query), refetchType }, options);
   return errored(cache).length === 0;
 }
 

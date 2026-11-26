@@ -39,7 +39,7 @@ function draw(t, { size = "wide", href = "/costs", costs = COSTS, attention = AT
 
 test("a wide screen shows the spend beside the attention, with no saved views", (t) => {
   const html = draw(t);
-  assert.match(html, /^<div class="list"><div class="lhead"><h1>Costs<\/h1><\/div><div class="panel" role="region" aria-label="Costs"><div class="scroll"><div class="spend"><div><section class="sect" aria-labelledby="costs-week">/);
+  assert.match(html, /^<div class="list"><div class="lhead"><h1>Costs<\/h1><\/div><div class="panel" role="region" aria-label="Costs" data-costs=""><div class="scroll"><div class="spend"><div><section class="sect" aria-labelledby="costs-week">/);
   assert.ok(!html.includes('class="views"'));
   assert.match(html, /<figure class="days"><svg width="100%" height="152" role="img" aria-label="Cost per day, last week then this week\./);
   assert.match(html, /<h2 class="sh" id="costs-split">This week by workflow<label class="by"><span>Split by<\/span><select aria-disabled="false"><option value="workflow" selected="">workflow<\/option>/);
@@ -53,7 +53,7 @@ test("a wide screen shows the spend beside the attention, with no saved views", 
 
 test("a phone shows one of the two by its saved view", (t) => {
   const html = draw(t, { size: "compact", href: "/costs?view=attention" });
-  assert.match(html, /^<div class="flat"><div class="top"><h1>Costs<\/h1><span class="sp"><\/span><span class="conn ">live<\/span><\/div><div class="panel" role="region" aria-label="Costs"><nav class="views" aria-label="Saved views"><a href="\/costs\?view=costs" aria-current="false">Costs<\/a><a href="\/costs\?view=attention" aria-current="true">Attention<\/a><\/nav><div class="scroll"><section class="sect" aria-labelledby="attention-head">/);
+  assert.match(html, /^<div class="flat"><div class="top"><h1>Costs<\/h1><span class="sp"><\/span><span class="conn ">live<\/span><\/div><div class="panel" role="region" aria-label="Costs" data-costs=""><nav class="views" aria-label="Saved views"><a href="\/costs\?view=costs" aria-current="false">Costs<\/a><a href="\/costs\?view=attention" aria-current="true">Attention<\/a><\/nav><div class="scroll"><section class="sect" aria-labelledby="attention-head">/);
   assert.ok(!html.includes("costs-week"));
 });
 
@@ -69,5 +69,5 @@ test("a week with no cost keeps its scores and their Split by", (t) => {
 });
 
 test("nothing read yet draws the panel empty", (t) => {
-  assert.match(draw(t, { costs: null, attention: null }), /<div class="panel" role="region" aria-label="Costs"><div class="scroll"><\/div><\/div><\/div>$/);
+  assert.match(draw(t, { costs: null, attention: null }), /<div class="panel" role="region" aria-label="Costs" data-costs=""><div class="scroll"><\/div><\/div><\/div>$/);
 });
