@@ -182,8 +182,8 @@ test("the Priory bar opens the Task tab for a new request, and not for one left 
 // Three answered asks as `priory task 4 --json` lists them, oldest first, and an open one.
 test("an untitled ask with a 12-line question lists under its task with a short title", () => {
   const question = Array.from({ length: 12 }, (_, line) => `Line ${line + 1} of the plan, which changes apps/admin-api/src/mcp/routes.ts.`).join("\n");
-  const asks = [{ id: 4, state: "open", key: "linear:FND-2434", step: "approve-implementation", title: null, question, since: "2026-11-20T11:30:00Z" }];
-  assert.equal(taskView({ ...task, asks }, { now }).asks[0].text, "FND-2434 asks at approve-implementation");
+  const asks = [{ id: 4, state: "open", key: "linear:ENG-2434", step: "approve-implementation", title: null, question, since: "2026-11-20T11:30:00Z" }];
+  assert.equal(taskView({ ...task, asks }, { now }).asks[0].text, "ENG-2434 asks at approve-implementation");
 });
 
 const answered = [
