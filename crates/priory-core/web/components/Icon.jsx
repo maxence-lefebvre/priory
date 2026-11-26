@@ -11,9 +11,10 @@ function strokesOf(name) {
   return strokes.get(name);
 }
 
-export const Icon = memo(function Icon({ name, size = "", label }) {
+/** `box` places an icon inside another drawing: its x, y, width and height. */
+export const Icon = memo(function Icon({ name, size = "", label, box }) {
   const named = label ? { role: "img", "aria-label": label } : { "aria-hidden": "true" };
-  return <svg className={`ico ${size}`} viewBox="0 0 24 24" {...named}>{strokesOf(name)}</svg>;
+  return <svg className={`ico ${size}`} {...box} viewBox="0 0 24 24" {...named}>{strokesOf(name)}</svg>;
 });
 
 const stateOf = (state) => STATES[state] || ["muted", "circle-help"];

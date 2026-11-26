@@ -219,3 +219,26 @@ INSERT INTO inbox (id,type,subject,time,data,links,outcome) VALUES
 -- a report with a bare URL, as the daemon writes one when a landed change goes red
 INSERT INTO inbox (id,type,subject,time,data,links,outcome) VALUES
 ('landed-1','priory.report','priory',strftime('%Y-%m-%dT%H:%M:%SZ','now','-12 minutes'),'{"line":"landed wrong: acme/shop#198 of task 20 is red on main: deploy cancelled https://github.com/acme/shop/actions/runs/1001"}','[]','stored');
+-- two reports for the Reports page: an older one, and the newest with an open, an agreed and an applied pick and a thread
+INSERT INTO reports (task,revision,report,put) VALUES
+(20,1,json_object('date',date('now','-1 day'),'since',strftime('%Y-%m-%dT%H:%M:%SZ','now','-39 hours'),'greeting','Good morning','sections',json_array(
+  json_object('id','done','title','Done','count',NULL,'rows',json_array(
+    json_object('id',NULL,'key','ENG-201','text','Merged the invoice export','meta','2 checks green','state','done','owner',NULL,'time',NULL,'pick',NULL,'comments',json_array()))))),
+ strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 day')),
+(21,2,json_object('date',date('now'),'since',strftime('%Y-%m-%dT%H:%M:%SZ','now','-15 hours'),'greeting','Good morning','sections',json_array(
+  json_object('id','agree','title','To agree','count',NULL,'rows',json_array(
+    json_object('id','eng-250','key','ENG-250','text','Cache the search index between deploys','meta','asked by the plan of ENG-250','state','asleep','owner',NULL,'time',NULL,
+      'pick',json_object('id','demo_agree_eng-250','options',json_array('Take','Later','Drop'),'recommended','Take','chosen',NULL,'applied',NULL),'comments',json_array()),
+    json_object('id','eng-252','key','ENG-252','text','Split the CSV export into pages','meta',NULL,'state','asleep','owner',NULL,'time',NULL,
+      'pick',json_object('id','demo_agree_eng-252','options',json_array('Take','Later','Drop'),'recommended','Later','chosen','Later','applied',NULL),'comments',json_array()),
+    json_object('id','eng-270','key','ENG-270','text','Groom the onboarding backlog','meta',NULL,'state','done','owner',NULL,'time',NULL,
+      'pick',json_object('id','demo_agree_eng-270','options',json_array('Take','Drop'),'recommended',NULL,'chosen','Take','applied','requested task ENG-270'),'comments',json_array()))),
+  json_object('id','blocked','title','Blocked','count',NULL,'rows',json_array(
+    json_object('id','eng-224','key','ENG-224','text','Rate limit the public API, see https://github.com/acme/shop/pull/224','meta','waits on a review','state','blocked','owner','on the lead','time',strftime('%Y-%m-%dT%H:%M:%SZ','now','-3 hours'),'pick',NULL,'comments',json_array()))),
+  json_object('id','reading','title','Reading','count',NULL,'rows',json_array(
+    json_object('id',NULL,'key',NULL,'text','Notes on cursor pagination under a rebuilding index','meta','8 min','state',NULL,'owner',NULL,'time',NULL,'pick',NULL,'comments',json_array()))))),
+ strftime('%Y-%m-%dT%H:%M:%fZ','now','-20 minutes'));
+INSERT INTO row_comments (task,row,reply_to,author,text,created,resolved) VALUES
+(21,'eng-250',NULL,'lead','Does this hold across a schema change?',strftime('%Y-%m-%dT%H:%M:%SZ','now','-50 minutes'),0),
+(21,'eng-250',1,'agent','Yes: the cache key holds the schema version.',strftime('%Y-%m-%dT%H:%M:%SZ','now','-45 minutes'),0),
+(21,'eng-224',NULL,'lead','Ping the reviewer.',strftime('%Y-%m-%dT%H:%M:%SZ','now','-2 hours'),1);
