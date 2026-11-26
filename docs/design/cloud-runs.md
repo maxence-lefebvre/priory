@@ -95,8 +95,8 @@ On `main` with this note:
 ## Open questions
 
 1. **Does a session keep the branch name?** The prompt names `claude/priory-<task>-<token>`.
-   The first real session used that name in its `git push`, which failed for lack of access. Recommendation: check it again with access, and fall back to a token in the commit message
-   with a poll of `claude/*` branches if sessions rename it.
+   Answered: yes. A real run with access pushed to that name, and to a copy with a suffix, and the
+   daemon took the push.
 2. **In which folder does the setup script run?** The docs do not say. Recommendation: the script
    `priory cloud setup-script` prints embeds each `cloud_setup` script's text, so it does not
    depend on the folder or the clone.

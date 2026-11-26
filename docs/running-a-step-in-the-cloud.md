@@ -83,6 +83,8 @@ Print and paste the script again after the kit or the factory's skills change.
 3. Let Priory trust the folder `claude --cloud` runs in, `cloud/owner/name` under Priory's home,
    since the command shows Claude's trust dialog in a folder it does not trust. Set
    `trust_worktrees = true` in `factory.toml`, and name the repository in a trigger or in `[repos]`.
+   A trusted home folder is not enough: Claude reads the trust flag of the folder itself, and running
+   plain `claude` there does not set it.
 4. Make sure no setup recipe leaves untracked files that the repository does not ignore: a worktree
    with changes starts no session.
 5. Opt the repository in, since a start pushes a branch that a person has not approved:

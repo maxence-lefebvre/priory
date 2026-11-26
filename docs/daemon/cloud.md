@@ -82,6 +82,11 @@ the token is the first 8 characters of the run's harness session id. They tell i
 request, and to write any open question in the last commit message under `Questions:`, since
 nobody answers during the session.
 
+The `claude/priory-<task>-*` branches stay on `origin` after the daemon takes the push, and after
+`open-pr` opens the pull request from `priory/<task>`. A session can push more than one, such as a
+copy with a suffix, and a copy can hold work the daemon did not take. Delete them by hand once the
+pull request merges.
+
 A cloud run never carries into the next step. The next cloud step, or the same step again, is a new
 run with a new session, the whole prompt and a branch of its own.
 

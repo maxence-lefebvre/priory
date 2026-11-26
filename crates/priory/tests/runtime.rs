@@ -38879,6 +38879,13 @@ fn a_cloud_step_starts_one_cloud_session_and_its_pushed_branch_reaches_open_pr()
     let head = git(&worktree).args(["rev-parse", "HEAD"]).output().unwrap();
     let head = String::from_utf8(head.stdout).unwrap().trim().to_owned();
     assert_eq!(result["commit_sha"], head.as_str(), "{task}");
+    let start = git(&worktree)
+        .args(["rev-parse", "HEAD^"])
+        .output()
+        .unwrap();
+    let start = String::from_utf8(start.stdout).unwrap().trim().to_owned();
+    assert_eq!(task["runs"][0]["thread"], "session_01Fake1", "{task}");
+    assert_eq!(task["runs"][0]["cloud_head"], start.as_str(), "{task}");
     assert!(worktree.join("cloud.txt").exists());
     let factory = setup.dir.join("factory");
     let costs = setup.priory(&["costs", factory.to_str().unwrap()]);
