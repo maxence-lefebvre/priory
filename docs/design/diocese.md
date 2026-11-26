@@ -437,4 +437,10 @@ Each slice ships alone and leaves the factory working.
   grant of another task, an ended run and a moved task are refused. An owner away answers "runner
   away" after 40 seconds, and the retry applies once. A pushed commit holding the token fails the
   step. A task given to the other runner gets a new grant, and the old one is refused.
+- **Built.** `[cloud] gateway = true` and `gateway_url` make a grant per cloud run, passed as
+  `claude --mcp-config FILE --cloud`; the gateway serves `ask`, `wait` and `result` through
+  `priory.run.called` and `priory.run.replied`; a `result` ends the step once the daemon looked for
+  the push; a push holding the token fails the step; [ADR 0006](../adr/0006-a-cloud-run-reports-through-the-gateway-and-its-branch-push-carries-its-code.md)
+  records it, and [cloud.md](../daemon/cloud.md#through-the-gateway) explains it. Not yet checked
+  against a real cloud session: whether `claude --cloud` passes `--mcp-config` on to the session.
 - **Rollback.** Set `[cloud] gateway = false`: cloud runs report by branch push only, as today.

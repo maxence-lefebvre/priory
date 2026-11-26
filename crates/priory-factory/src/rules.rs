@@ -264,6 +264,17 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 ));
             }
         }
+        let cloud = &settings.value.cloud;
+        let url = cloud.gateway_url.as_deref();
+        if cloud.gateway
+            && !url.is_some_and(|url| url.starts_with("https://") || url.starts_with("http://"))
+        {
+            problems.push(problem(
+                settings,
+                settings.lines.field("cloud"),
+                "`[cloud] gateway = true` needs `gateway_url`, the gateway's http or https MCP endpoint, which each cloud session connects to".to_owned(),
+            ));
+        }
         if !cfg!(feature = "postgres") && settings.value.log.backend == Backend::Postgres {
             problems.push(problem(
                 settings,
@@ -1676,11 +1687,11 @@ fn cloud_step_problems(factory: &Factory, step: &Step, sandboxed: bool) -> Vec<S
             "agent `{agent}` runs in the cloud, so the workflow cannot have `sandbox`: Priory cannot jail a cloud session"
         ));
     }
-    for outcome in step
-        .next
-        .keys()
-        .filter(|key| !CLOUD_OUTCOMES.contains(&key.as_str()))
-    {
+    // Through the gateway, a cloud session calls `result` with any outcome of its step.
+    let routed = |key: &&String| {
+        factory.cloud_gateway().is_none() && !CLOUD_OUTCOMES.contains(&key.as_str())
+    };
+    for outcome in step.next.keys().filter(routed) {
         problems.push(format!(
             "agent `{agent}` runs in the cloud, so `next` cannot name outcome `{outcome}`: a cloud step ends `pushed` or `failed`"
         ));

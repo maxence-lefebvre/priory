@@ -45,6 +45,10 @@ pub struct Start {
     pub branch: String,
     pub head: String,
     pub prompt: String,
+    /// The MCP servers the session loads, as `--mcp-config` JSON: the gateway with the run grant's
+    /// token. It reaches the CLI through a private file, never its arguments, and the file goes once
+    /// the CLI exits.
+    pub mcp: Option<String>,
 }
 
 /// The folder `claude --cloud` runs in for `repo`: a clone of one branch, made anew per start.
@@ -163,7 +167,41 @@ pub fn start(
         .map_err(NotStarted::Refused)
         .and_then(|()| create(start, &dir, goes_on));
     let _ = fs::remove_dir_all(&dir);
+    let _ = fs::remove_file(servers(start));
     started
+}
+
+/// The file that holds `start`'s MCP servers while the CLI starts.
+fn servers(start: &Start) -> PathBuf {
+    start
+        .home
+        .join("prompts")
+        .join(format!("{}.mcp.json", start.tmux))
+}
+
+/// Sends cloud session `session` the message `text` with `claude -p TEXT --cloud SESSION`, which
+/// starts its next turn.
+pub fn wake(session: &str, text: &str) -> Result<(), String> {
+    let mut command = Command::new("claude");
+    for variable in NESTED {
+        command.env_remove(variable);
+    }
+    command.args(["-p", text, "--cloud", session]);
+    let output = fed_within(&mut command, None, command_timeout())
+        .map_err(|error| format!("claude -p --cloud: {error}"))?
+        .ok_or_else(|| {
+            format!(
+                "claude -p --cloud did not exit within {}s",
+                command_timeout().as_secs()
+            )
+        })?;
+    match output.status.success() {
+        true => Ok(()),
+        false => Err(format!(
+            "claude -p --cloud: {}",
+            one_line(&String::from_utf8_lossy(&output.stderr))
+        )),
+    }
 }
 
 fn isolate(start: &Start, dir: &Path) -> Result<(), String> {
@@ -202,6 +240,13 @@ fn create(
     fs::create_dir_all(file.parent().expect("the file has a parent"))
         .and_then(|()| write_private(&file, start.prompt.as_bytes()))
         .map_err(|error| format!("{}: {error}", file.display()))?;
+    let mut servers_flag: Vec<std::ffi::OsString> = Vec::new();
+    if let Some(mcp) = &start.mcp {
+        let path = servers(start);
+        write_private(&path, mcp.as_bytes())
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        servers_flag = vec!["--mcp-config".into(), path.into_os_string()];
+    }
     let upload = ["CCR_FORCE_BUNDLE", "CCR_ENABLE_BUNDLE"];
     // The prompt, which the CLI may echo, cannot hold this mark.
     let since = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH);
@@ -220,7 +265,9 @@ fn create(
                 .chain(&upload)
                 .flat_map(|variable| ["-u", variable]),
         )
-        .args(["claude", "--cloud"]);
+        .arg("claude")
+        .args(&servers_flag)
+        .arg("--cloud");
     let late = || NotStarted::Uncertain("tmux did not start claude --cloud in time".into());
     goes_on().inspect_err(|_| {
         let _ = fs::remove_file(&file);

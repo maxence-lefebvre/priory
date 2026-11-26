@@ -3208,6 +3208,13 @@ fn start(
                 None => Ok(()),
             }
         };
+        let mcp = {
+            let tx = db.transaction()?;
+            let seconds = crate::cloud::deadline(step).as_secs();
+            let mcp = crate::grant::make(&tx, trace, run, admission.task, seconds)?;
+            tx.commit()?;
+            mcp
+        };
         let start = priory_runtime::cloud::Start {
             tmux: crate::cloud::tmux(admission.task),
             home: home.to_path_buf(),
@@ -3216,6 +3223,7 @@ fn start(
             branch,
             head,
             prompt: factory.prompt(&agent.value),
+            mcp,
         };
         crate::cloud::dispatch(db, step, run, admission.task, &session, start, screen)?;
         return Ok(Ok(()));

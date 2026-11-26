@@ -5,7 +5,9 @@ machines. Its builds and tests take no CPU, memory or disk on the runner, which 
 session and waits for its branch. This page explains how such a run starts, how it ends a step, and
 what it gives up. To set one up, follow [How to run a step in the cloud](../running-a-step-in-the-cloud.md).
 [ADR 0005](../adr/0005-a-cloud-run-reports-by-pushing-a-branch-the-daemon-polls.md) says why it
-reports through a branch.
+reports through a branch, and [ADR 0006](../adr/0006-a-cloud-run-reports-through-the-gateway-and-its-branch-push-carries-its-code.md)
+why, with `[cloud] gateway = true`, it also reaches `ask`, `wait` and `result` through the
+diocese's gateway.
 
 ## What the CLI allows
 
@@ -159,6 +161,40 @@ says so when that look failed or the run ended after it. A daemon that stops dur
 A cancel that the last check before `claude --cloud` sees starts none. The session itself goes on until a
 person archives it, and the branches it pushed stay on `origin`.
 
+## Through the gateway
+
+With `[cloud] gateway = true` in `factory.toml`, a cloud run also reaches `ask`, `wait` and
+`result`, through the [diocese's gateway](../design/diocese.md#an-mcp-call-from-a-cloud-session).
+With it false, the default, everything else on this page holds as written.
+
+- **The grant.** Right after it records the run, the daemon makes a run grant: a random token that
+  lasts the step's `timeout`. It publishes `priory.run.granted` with the token's SHA-256, the
+  task's key, the run and the runner, and keeps only the hash. The token reaches the CLI once, as
+  the `Authorization: Bearer` header of an HTTP MCP server named `priory` at `[cloud] gateway_url`,
+  in a file only the daemon's user reads, passed as `claude --mcp-config FILE --cloud PROMPT`. The
+  file goes once the CLI exits. The token is in no prompt, argument, log line or trace.
+- **The rules.** The prompt still tells the session to push its branch, then to call `result`, and
+  to call `ask` or `wait` and end its turn when it needs a person or an event.
+- **A call.** The gateway publishes `priory.run.called`. The runner that made the grant reads it on
+  its next tick, applies it as a call on its socket from the run's session, and publishes
+  `priory.run.replied` with the tool's text. The gateway answers with it, or that the runner is
+  away after 40 seconds. The same arguments sent again before a reply reached the session make the
+  same call, so a retry applies once.
+- **A wake.** Once an ask is answered, a wait fires or anything else is queued for the task after
+  `ask` or `wait`, the daemon sends it to the session with `claude -p MSG --cloud SESSION`, which
+  starts the session's next turn. A failed wake is logged, and the desk still shows the answer.
+- **The end.** `result` stores nothing yet: the daemon keeps it, looks for the push within 15
+  seconds, and ends the step with that outcome, summary and evidence. It takes the pushed commit
+  as above, or ends the step without one when the branch has no new commit. A step's `next` may
+  name any outcome, and a `result` naming one the step lacks is refused at once.
+- **The token in a push.** Before it takes a push, the daemon hashes every run of 32 hex digits in
+  the pushed commits' changes and messages, and fails the step when one is the grant's token. The
+  summary never holds the token.
+- **The end of a grant.** The daemon publishes `priory.run.revoked` within a second of its run
+  ending: by a result, a failure, a cancel, a move or a give. The gateway also refuses a call once
+  the task's claim names another runner, so a task given away gets a new run with a new grant, and
+  the old session's calls are refused.
+
 ## While the daemon is behind its log
 
 The daemon [holds work until it read the log to its end](README.md) after a start, after a lost log
@@ -185,8 +221,8 @@ holds no cloud run, as it holds no local one.
 The factory's pre-review and a step's gate send a result back to its session, which a cloud session
 cannot act on, so neither reads a cloud push. The ask it leads to names the ones that did not run.
 
-A cloud run cannot ask a person. The session has no way to reach the `ask` tool, and nobody
-answers inside it. A session that needs a decision writes it in its last commit message, which
+Without the gateway, a cloud run cannot ask a person. The session has no way to reach the `ask`
+tool, and nobody answers inside it. A session that needs a decision writes it in its last commit message, which
 becomes the result's evidence, for the human step after it. A session that waits for an answer
 instead pushes nothing, and the deadline ends the step `failed` with the session's link.
 
@@ -217,7 +253,7 @@ local run.
 | Staged triggers | A cloud step's task blocks before its push |
 | Step effects | `none` and `read` are refused by `priory check`: a start pushes the task's branch |
 | Sandbox | Refused by `priory check`, and at the start: Priory cannot jail a session |
-| `ask`, `wait`, `remember`, `progress` and MCP servers | None: the session loads neither the agent's MCP servers nor the account's claude.ai connectors (tested on 2026-11-26). The [diocese's gateway](../design/diocese.md#sign-in-and-tokens) plans an HTTP MCP server in the cloud environment's settings instead |
+| `ask`, `wait`, `remember`, `progress` and MCP servers | `ask`, `wait` and `result` through the gateway with `[cloud] gateway = true`, as [Through the gateway](#through-the-gateway) says. Otherwise none: the session loads neither the agent's MCP servers nor the account's claude.ai connectors (tested on 2026-11-26) |
 | Proofs, gates, `plan_requires`, `budget`, `model` and `effort` | Refused by `priory check` |
 | Trust grants | Apply with `trust_worktrees`, for the folder `claude --cloud` runs in |
 | Tokens and cost | Unknown: see Cost |
@@ -228,7 +264,8 @@ branch name is all that ties a push to its run: anyone who can push to the repos
 
 ## Secrets
 
-Priory passes the session its prompt: no environment variable and no token. It pushes the task's
+Priory passes the session its prompt and no environment variable. With `[cloud] gateway = true`
+it also passes the run grant's token, as [Through the gateway](#through-the-gateway) says. It pushes the task's
 branch to GitHub before the session starts, so the branch's commits are there before a person
 approves `open-pr`. A workflow of the repository with `on: push` runs on that push, with the
 repository's secrets, before that approval too. A repository therefore opts in with `cloud = true`,

@@ -1,0 +1,20 @@
+{
+  "id": "0196c0a4-2b1c-7d3e-9f40-6a7b8c9d0e1f",
+  "type": "priory.run.called",
+  "subject": "0196c0a4-2b1c-7d3e-9f40-6a7b8c9d0e1e",
+  "time": "2026-11-21T10:02:00Z",
+  "data": {
+    "call": "0196c0a4-2b1c-7d3e-9f40-6a7b8c9d0e1e",
+    "grant": "0196c0a2-7f3e-7b41-9a5d-2e6f8c1b4d6f",
+    "run": 12,
+    "runner": "desktop",
+    "tool": "ask",
+    "arguments": {
+      "question": "Ship the widget?",
+      "options": ["yes", "no"],
+      "recommendation": "yes",
+      "tradeoff": "It adds a box."
+    }
+  },
+  "links": []
+}

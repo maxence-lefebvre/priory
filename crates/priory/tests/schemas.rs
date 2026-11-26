@@ -102,6 +102,8 @@ fn generated() -> Vec<(String, Value)> {
         event::<RunnerAlive>("priory.runner.alive"),
         event::<RunGranted>("priory.run.granted"),
         event::<RunRevoked>("priory.run.revoked"),
+        event::<RunCalled>("priory.run.called"),
+        event::<RunReplied>("priory.run.replied"),
         event::<WatchPosted>("priory.watch.posted"),
         event::<DioceseAlive>("priory.diocese.alive"),
         event::<AskAnswered>("priory.ask.answered"),

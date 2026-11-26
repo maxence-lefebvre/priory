@@ -5294,6 +5294,40 @@ fn a_cloud_step_with_a_proof_a_guard_a_plan_field_or_another_outcome_fails_the_c
 }
 
 #[test]
+fn a_cloud_step_routes_any_outcome_only_through_the_gateway() {
+    let agent = ("agents/implementer/agent.md", CLOUD_AGENT);
+    let mut files = with(agent.0, agent.1);
+    files.retain(|(file, _)| !["workflows/implement.toml", "factory.toml"].contains(file));
+    files.push(("workflows/implement.toml", WORKFLOW));
+    let on =
+        "name = \"demo\"\n[cloud]\ngateway = true\ngateway_url = \"https://diocese.example/mcp\"\n";
+    files.push(("factory.toml", on));
+
+    let outcome = check(&factory("cloud-gateway-outcome", &files));
+
+    assert!(
+        !outcome.stderr.contains("cannot name outcome"),
+        "{}",
+        outcome.stderr
+    );
+    assert_eq!(outcome.code, 0, "{}", outcome.stderr);
+
+    files.pop();
+    files.push(("factory.toml", "name = \"demo\"\n[cloud]\ngateway = true\n"));
+
+    let outcome = check(&factory("cloud-gateway-no-url", &files));
+
+    assert_eq!(outcome.code, 1);
+    assert!(
+        outcome
+            .stderr
+            .contains("`[cloud] gateway = true` needs `gateway_url`"),
+        "{}",
+        outcome.stderr
+    );
+}
+
+#[test]
 fn a_cloud_step_that_may_change_nothing_fails_the_check() {
     for effect in ["none", "read"] {
         let workflow = WORKFLOW

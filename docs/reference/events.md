@@ -1913,8 +1913,11 @@ Schema: [`priory.task.dropped.json`](../schemas/events/priory.task.dropped.json)
 
 ## Run grants
 
-`priory gateway grant` and `priory gateway revoke` publish these on `factory.intake`. The diocese's
-gateway reads them as the consumer `priory.gateway`. See
+A runner publishes a grant when a cloud run starts with `[cloud] gateway = true`, and revokes it
+once the run ends. `priory gateway grant` and `priory gateway revoke` publish them by hand. The
+diocese's gateway publishes `priory.run.called`, and the runner that made the grant answers with
+`priory.run.replied`. All go on `factory.intake`, and the gateway reads them as the consumer
+`priory.gateway`. See [cloud.md](../daemon/cloud.md#through-the-gateway) and
 [the diocese design](../design/diocese.md#sign-in-and-tokens).
 
 ### `priory.run.granted`
@@ -1928,6 +1931,9 @@ Schema: [`priory.run.granted.json`](../schemas/events/priory.run.granted.json).
 | `grant` | UUID string | The grant's id |
 | `hash` | string | The token's SHA-256, in lowercase hex |
 | `seconds` | integer | How long the grant lasts, in seconds from when the log took this message |
+| `task` | string, optional | The key of the task whose cloud run the grant signs in |
+| `run` | integer, optional | The cloud run's id on its runner |
+| `runner` | string, optional | The runner that made the grant and applies its calls |
 
 <!-- example: events/priory.run.granted.json -->
 ```json
@@ -1939,7 +1945,10 @@ Schema: [`priory.run.granted.json`](../schemas/events/priory.run.granted.json).
   "data": {
     "grant": "0196c0a2-7f3e-7b41-9a5d-2e6f8c1b4d6f",
     "hash": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
-    "seconds": 1800
+    "seconds": 7200,
+    "task": "github:owner/repo#42",
+    "run": 12,
+    "runner": "desktop"
   },
   "links": []
 }
@@ -1963,6 +1972,73 @@ the grant's id. Schema: [`priory.run.revoked.json`](../schemas/events/priory.run
   "time": "2026-11-21T10:05:00Z",
   "data": {
     "grant": "0196c0a2-7f3e-7b41-9a5d-2e6f8c1b4d6f"
+  },
+  "links": []
+}
+```
+
+### `priory.run.called`
+
+The gateway hands a cloud session's `ask`, `wait` or `result` to the runner its grant names.
+Subject: the call's id. Schema: [`priory.run.called.json`](../schemas/events/priory.run.called.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `call` | UUID string | The call's id. The same arguments, sent again before a reply reached the session, make the same call |
+| `grant` | string | The grant the session signed in with |
+| `run` | integer | The cloud run the grant names |
+| `runner` | string | The runner the grant names |
+| `tool` | string | `ask`, `wait` or `result` |
+| `arguments` | object | The tool's arguments, as the session sent them |
+
+<!-- example: events/priory.run.called.json -->
+```json
+{
+  "id": "0196c0a4-2b1c-7d3e-9f40-6a7b8c9d0e1f",
+  "type": "priory.run.called",
+  "subject": "0196c0a4-2b1c-7d3e-9f40-6a7b8c9d0e1e",
+  "time": "2026-11-21T10:02:00Z",
+  "data": {
+    "call": "0196c0a4-2b1c-7d3e-9f40-6a7b8c9d0e1e",
+    "grant": "0196c0a2-7f3e-7b41-9a5d-2e6f8c1b4d6f",
+    "run": 12,
+    "runner": "desktop",
+    "tool": "ask",
+    "arguments": {
+      "question": "Ship the widget?",
+      "options": ["yes", "no"],
+      "recommendation": "yes",
+      "tradeoff": "It adds a box."
+    }
+  },
+  "links": []
+}
+```
+
+### `priory.run.replied`
+
+The runner applied a call once, and replies with the tool's text. Subject: the call's id. Schema:
+[`priory.run.replied.json`](../schemas/events/priory.run.replied.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `call` | string | The call's id |
+| `grant` | string | The grant the call came with |
+| `text` | string | What the tool said |
+| `error` | boolean | Whether the tool refused the call |
+
+<!-- example: events/priory.run.replied.json -->
+```json
+{
+  "id": "0196c0a4-3c2d-7e4f-8a51-7b8c9d0e1f20",
+  "type": "priory.run.replied",
+  "subject": "0196c0a4-2b1c-7d3e-9f40-6a7b8c9d0e1e",
+  "time": "2026-11-21T10:02:01Z",
+  "data": {
+    "call": "0196c0a4-2b1c-7d3e-9f40-6a7b8c9d0e1e",
+    "grant": "0196c0a2-7f3e-7b41-9a5d-2e6f8c1b4d6f",
+    "text": "ask 7 stored: end your turn now; Priory wakes you with its answer",
+    "error": false
   },
   "links": []
 }
