@@ -32,8 +32,8 @@ size and cost, the open questions with a recommendation each, and six slices tha
   subscriptions and task branches its intake would watch as `priory.watch.posted`, and the intake
   reads them from the log, so it watches every runner's waits. With no posting on the log, it reads
   them from the state file that `PRIORY_DB` names ([watches.md](../intake/watches.md)). Its other
-  reads, such as red merges and its poll health, still need that state file. Webhook deliveries reach the daemon's server instead, and a
-  trigger's `pre` script runs on the machine that took the event ([pre.md](../intake/pre.md#where-it-runs)).
+  reads, such as red merges and its poll health, still need that state file. Webhook deliveries
+  reach the daemon's server instead, and a trigger's `pre` script runs on the machine that took the event ([pre.md](../intake/pre.md#where-it-runs)).
 - **The server listens on loopback.** `priory serve` and the daemon's `[serve]` refuse a
   non-loopback `listen` unless `public = true`, speak plain HTTP and check one bearer token,
   `PRIORY_TOKEN`. A phone reaches one machine through `tailscale serve`
