@@ -55,16 +55,47 @@ test("an open pick offers its options with the recommended one marked, and a cho
     ],
     note: "Recommends Later",
     chosen: null,
+    recommended: "Later",
   });
   assert.equal(picks['["agree",1]'].note, null);
   assert.deepEqual(picks['["agree",0]'], {
     id: "2026-11-20_agree_priory-schedules", state: "agreed", options: picks['["sentry","fnd-2413"]'].options.map((option) => ({ ...option, recommended: option.label === "Take" })),
-    chosen: "Take", note: "Waiting for the workflow to apply it.",
+    chosen: "Take", note: "Waiting for the workflow to apply it.", recommended: "Take",
   });
   assert.deepEqual(picks['["sentry","fnd-2409"]'], {
-    id: "2026-11-20_sentry_fnd-2409", state: "applied", options: [], chosen: "Take", note: "requested task cli:FND-2409",
+    id: "2026-11-20_sentry_fnd-2409", state: "applied", options: [], chosen: "Take", note: "requested task cli:FND-2409", recommended: "Take",
   });
   assert.equal(Object.keys(picks).length, 4);
+});
+
+test("a section's chips count its picks by state and by recommended option, and a section without a pick has none", () => {
+  const sections = Object.fromEntries(dossier(read, { now }).sections.map((section) => [section.id, section]));
+  assert.deepEqual(sections.sentry.chips, {
+    state: [{ id: "all", count: 2 }, { id: "open", count: 1 }, { id: "picked", count: 1 }],
+    recommends: [{ option: "Take", count: 1 }, { option: "Later", count: 1 }],
+  });
+  assert.deepEqual(sections.agree.chips.recommends, [{ option: "Take", count: 1 }, { option: null, count: 1 }]);
+  assert.equal(sections.blocked.chips, null);
+});
+
+test("a section's chips keep its open or picked rows, and the rows that recommend an option", () => {
+  const ids = (filters, id) => dossier(read, { now, filters }).sections.find((section) => section.id === id).rows.map((row) => row.id);
+  assert.deepEqual(ids({ sentry: { state: "open" } }, "sentry"), ['["sentry","fnd-2413"]']);
+  assert.deepEqual(ids({ sentry: { state: "picked" } }, "sentry"), ['["sentry","fnd-2409"]']);
+  assert.deepEqual(ids({ agree: { recommends: [null] } }, "agree"), ['["agree",1]']);
+  assert.deepEqual(ids({ sentry: { recommends: ["Take"] } }, "sentry"), ['["sentry","fnd-2409"]']);
+  // The open chip counts recommendations among open rows only.
+  const open = dossier(read, { now, filters: { sentry: { state: "open" } } }).sections.find((section) => section.id === "sentry");
+  assert.deepEqual(open.chips.recommends, [{ option: "Later", count: 1 }]);
+});
+
+test("pick all recommended takes the open rows a section shows that carry a recommendation", () => {
+  const sections = Object.fromEntries(dossier(read, { now }).sections.map((section) => [section.id, section]));
+  assert.deepEqual(sections.sentry.recommended, [{ row: '["sentry","fnd-2413"]', pick: "2026-11-20_sentry_fnd-2413", option: "Later" }]);
+  // An agreed pick and an open pick without a recommendation stay out.
+  assert.deepEqual(sections.agree.recommended, []);
+  const hidden = dossier(read, { now, filters: { sentry: { state: "picked" } } }).sections.find((section) => section.id === "sentry");
+  assert.deepEqual(hidden.recommended, []);
 });
 
 test("the toolbar and greeting give the date, how many picks are agreed, and both revisions", () => {
@@ -322,6 +353,39 @@ test("undo of the second of three picks leaves the first and the third to go", a
   const sent = await pickThree(kit, () => kit.press(kit.view(), `undo-${PICKED[1][0]}`));
 
   assert.deepEqual(sent, ["2026-11-20_sentry_fnd-2413 Take", "2026-11-20_agree_priory-schedules Later"]);
+});
+
+test("Pick all recommended sends each open recommended row of the section after one Undo", async () => {
+  const { view, press, find, settle, herdr } = await mounted({ report: reports });
+
+  press(view(), "pick-all-sentry");
+  assert.ok(find(view(), "undo-batch-sentry"));
+  assert.equal(find(view(), 'undo-["sentry","fnd-2413"]'), null, "a batch row has no Undo of its own");
+  for (const timer of [...herdr.timers]) timer.fire();
+  await settle();
+
+  assert.deepEqual(herdr.argv.filter((args) => args[1] === "pick").map((args) => args.slice(2, 4)), [["2026-11-20_sentry_fnd-2413", "Later"]]);
+});
+
+test("Undo all takes back the whole batch", async () => {
+  const { view, press, settle, herdr } = await mounted({ report: reports });
+
+  press(view(), "pick-all-sentry");
+  press(view(), "undo-batch-sentry");
+  for (const timer of [...herdr.timers]) timer.fire();
+  await settle();
+
+  assert.equal(herdr.argv.filter((args) => args[1] === "pick").length, 0);
+});
+
+test("a section's Open chip keeps its open rows", async () => {
+  const { view, press, text } = await mounted({ report: reports });
+  assert.match(text(view()), /FND-2409/);
+
+  press(view(), "filter-sentry-open");
+
+  assert.doesNotMatch(text(view()), /FND-2409/);
+  assert.match(text(view()), /Private fonts/);
 });
 
 test("a check marks the chosen option only; the recommendation is the note's words", async () => {

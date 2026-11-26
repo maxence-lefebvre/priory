@@ -18,9 +18,13 @@ function when(text, now) {
 
 /**
  * @typedef {{ label: string, key: string, recommended: boolean }} Option
- * @typedef {{ id: string, state: "open" | "agreed" | "applied", options: Option[], chosen: string | null, note: string | null }} Pick
+ * @typedef {{ id: string, state: "open" | "agreed" | "applied", options: Option[], chosen: string | null, note: string | null, recommended: string | null }} Pick
  * @typedef {ReturnType<typeof row>} Row
- * @typedef {{ id: string, title: string, count: number, rows: Row[] }} Section
+ * @typedef {{ state?: "all" | "open" | "picked", recommends?: (string | null)[] }} Filter a section's chips:
+ *   the picks' state, and the options they recommend, null for none
+ * @typedef {{ state: { id: "all" | "open" | "picked", count: number }[], recommends: { option: string | null, count: number }[] }} Chips
+ * @typedef {{ id: string, title: string, count: number, rows: Row[], chips: Chips | null, filter: Required<Filter>,
+ *   recommended: { row: string, pick: string, option: string }[] }} Section
  */
 
 /**
@@ -41,9 +45,10 @@ function choice(pick) {
       options: pick.applied == null ? options : [],
       chosen: pick.chosen,
       note: pick.applied ?? "Waiting for the workflow to apply it.",
+      recommended: pick.recommended ?? null,
     };
   }
-  return { id: pick.id, state: "open", options, note: pick.recommended == null ? null : `Recommends ${pick.recommended}`, chosen: null };
+  return { id: pick.id, state: "open", options, note: pick.recommended == null ? null : `Recommends ${pick.recommended}`, chosen: null, recommended: pick.recommended ?? null };
 }
 
 /**
@@ -78,10 +83,11 @@ const comment = (entry, now) => ({ id: entry.id, author: entry.author, when: whe
 
 /**
  * @param {{ revision: number, report: any }} read
- * @param {{ now: number, view?: string, links?: { pattern: string, url: string }[], query?: string }} options `view` is "all",
- *   the default, or "picks"; `links` as `priory links` lists them; `query` keeps the rows that hold it
+ * @param {{ now: number, view?: string, links?: { pattern: string, url: string }[], query?: string, filters?: Record<string, Filter> }} options
+ *   `view` is "all", the default, or "picks"; `links` as `priory links` lists them; `query` keeps the rows that hold it;
+ *   `filters` holds each section's chips by its id
  */
-export function dossier(read, { now, view = "all", links = [], query = "" }) {
+export function dossier(read, { now, view = "all", links = [], query = "", filters = {} }) {
   const { report } = read;
   const needle = query.trim().toLowerCase();
   const picks = report.sections.flatMap((/** @type {any} */ section) => section.rows).map((/** @type {any} */ row) => row.pick).filter(Boolean);
@@ -91,14 +97,22 @@ export function dossier(read, { now, view = "all", links = [], query = "" }) {
   const from = sameDay(since, now) ? clock(since) : `${new Date(since).toLocaleDateString("en", { weekday: "short" })} ${clock(since)}`;
   const left = !picks.length ? "" : open ? ` ${open} ${open === 1 ? "pick" : "picks"} to agree.` : " Every pick is agreed.";
   /** @type {Section[]} */
-  const sections = report.sections.map((/** @type {any} */ section) => ({
-    id: section.id,
-    title: section.title,
-    count: section.count ?? section.rows.length,
-    rows: section.rows.map((/** @type {any} */ candidate, /** @type {number} */ index) => row(section, candidate, index, now, links))
-      .filter((/** @type {Row} */ candidate) => view !== "picks" || candidate.pick?.state === "open")
-      .filter((/** @type {Row} */ candidate) => !needle || holds(candidate, needle)),
-  }));
+  const sections = report.sections.map((/** @type {any} */ section) => {
+    const all = section.rows.map((/** @type {any} */ candidate, /** @type {number} */ index) => row(section, candidate, index, now, links))
+      .filter((/** @type {Row} */ candidate) => view !== "picks" || candidate.pick?.state === "open");
+    const filter = { state: filters[section.id]?.state ?? "all", recommends: filters[section.id]?.recommends ?? [] };
+    const rows = all.filter((candidate) => keeps(candidate, filter) && (!needle || holds(candidate, needle)));
+    return {
+      id: section.id,
+      title: section.title,
+      count: section.count ?? section.rows.length,
+      rows,
+      chips: chips(all, filter.state),
+      filter,
+      recommended: rows.flatMap((candidate) => (candidate.pick?.state === "open" && candidate.pick.recommended != null
+        ? [{ row: candidate.id, pick: candidate.pick.id, option: candidate.pick.recommended }] : [])),
+    };
+  });
   const shown = sections.filter((section) => (view !== "picks" && !needle) || section.rows.length);
   return {
     task: report.task,
@@ -112,6 +126,38 @@ export function dossier(read, { now, view = "all", links = [], query = "" }) {
     sections: shown,
     // How many rows a search found; null without one.
     found: needle ? shown.reduce((sum, section) => sum + section.rows.length, 0) : null,
+  };
+}
+
+const picked = (/** @type {Row} */ candidate) => candidate.pick != null && candidate.pick.state !== "open";
+
+/** Whether a section's chips keep `candidate`: a state chip other than all, or a recommends chip, keeps only picks. @param {Row} candidate @param {Required<Filter>} filter */
+function keeps(candidate, { state, recommends }) {
+  if (state !== "all" && (!candidate.pick || picked(candidate) !== (state === "picked"))) return false;
+  return !recommends.length || (candidate.pick != null && recommends.includes(candidate.pick.recommended));
+}
+
+/**
+ * A section's chips with their counts, none for a section without a pick. The recommends chips count
+ * the rows the state chip keeps, in the order their options first show, with None last.
+ * @param {Row[]} rows @param {Required<Filter>["state"]} state @returns {Chips | null}
+ */
+function chips(rows, state) {
+  const picks = rows.filter((candidate) => candidate.pick);
+  if (!picks.length) return null;
+  const open = picks.filter((candidate) => !picked(candidate)).length;
+  /** @type {Map<string | null, number>} */
+  const counts = new Map();
+  for (const candidate of picks.filter((each) => keeps(each, { state, recommends: [] }))) {
+    const option = candidate.pick?.recommended ?? null;
+    counts.set(option, (counts.get(option) ?? 0) + 1);
+  }
+  const none = counts.get(null);
+  counts.delete(null);
+  if (none) counts.set(null, none);
+  return {
+    state: [{ id: "all", count: rows.length }, { id: "open", count: open }, { id: "picked", count: picks.length - open }],
+    recommends: [...counts].map(([option, count]) => ({ option, count })),
   };
 }
 

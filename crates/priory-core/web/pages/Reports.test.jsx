@@ -46,7 +46,9 @@ test("a report draws its bar, its head, its section chips and its rows", (t) => 
   assert.match(html, /<div class="scroll" data-sections=""><header class="rhead"><p class="greet">Bonjour, Max<\/p><p class="meta">Nov 20, <a class="mono" href="\/tasks\/1" title="task 1">[^<]+<\/a>\. Since /);
   assert.match(html, /<p class="prog"><progress max="4" value="2" aria-label="Picks agreed"><\/progress><span class="num">2 of 4 agreed<\/span><\/p><\/header>/);
   assert.match(html, /<nav class="jump" aria-label="Sections"><a href="#report-0" aria-current="true">Reading<span class="num">2<\/span><\/a><a href="#report-1" aria-current="false">/);
-  assert.match(html, /<section class="sect" id="report-2" aria-labelledby="report-2-title"><h2 class="sh" id="report-2-title">Sentry<span class="meta num">3<\/span><\/h2><ol class="rrows">/);
+  assert.match(html, /<section class="sect" id="report-2" aria-labelledby="report-2-title"><h2 class="sh" id="report-2-title">Sentry<span class="meta num">3<\/span><\/h2><div class="rfilter"><div role="group" aria-label="Show in Sentry"><button type="button" aria-pressed="true">All<span class="num">2<\/span><\/button>/);
+  assert.match(html, /<div role="group" aria-label="Recommends in Sentry"><span class="cap">Recommends<\/span><button type="button" aria-pressed="false">Take<span class="num">1<\/span><\/button><button type="button" aria-pressed="false">Later<span class="num">1<\/span><\/button><\/div><button type="button" class="btn primary" aria-disabled="false">Pick all recommended<span class="num">1<\/span><\/button>/);
+  assert.match(html, /<h2 class="sh" id="report-4-title">Blocked<span class="meta num">2<\/span><\/h2><ol class="rrows">/, "a section without a pick has no chips");
   assert.match(html, /<p class="rl1"><span class="rtext">Yesterday: merged the MCP v2 plan review[^<]*&lt;b&gt;not html&lt;\/b&gt;<\/span><\/p>/, "agent text stays text");
 });
 

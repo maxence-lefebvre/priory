@@ -571,6 +571,18 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .rpick button.chosen .ico { color: var(--on-emph); }
 .rpick button[aria-disabled="true"]:not(.chosen) { color: var(--text-3); }
 .rpending { max-width: var(--measure); align-items: center; }
+.rfilter { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.rfilter [role="group"] { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.rfilter [role="group"] + [role="group"] { margin-left: var(--space-2); }
+.rfilter [role="group"] button { height: var(--chip); padding: 0 11px; border-radius: var(--radius-md); display: inline-flex; align-items: center; gap: 6px; font: 600 14px/1 var(--font-ui); color: var(--text-2); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); white-space: nowrap; }
+.rfilter [role="group"] button .num, .rfilter .btn .num { font-weight: 400; color: var(--text-3); }
+.rfilter [role="group"] button[aria-pressed="true"] { background: var(--emph); color: var(--on-emph); box-shadow: none; }
+.rfilter [role="group"] button[aria-pressed="true"] .num, .rfilter .btn.primary .num { color: var(--on-emph-2); }
+.rfilter .cap { font: 400 var(--type-caption) var(--font-ui); color: var(--text-3); }
+.rfilter .btn { margin-left: auto; }
+.rfilter .btn[aria-disabled="true"] { opacity: 0.45; }
+.rbatch { display: flex; align-items: center; gap: var(--space-3); padding: 8px 8px 8px 14px; border-radius: var(--radius-md); background: var(--raised); font: 400 var(--type-small) var(--font-ui); }
+.rbatch .btn { margin-left: auto; }
 .rpicked b { color: var(--text); font-weight: 600; }
 .rpicked .ico { color: var(--ok-text); }
 .rthread { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 10px 12px 4px; display: grid; gap: 4px; max-width: var(--measure); }

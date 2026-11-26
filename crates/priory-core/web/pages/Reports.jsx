@@ -19,8 +19,9 @@ import { listClass, usePlace } from "./place.js";
 // What the page holds beyond the reads, kept from one visit to the next: each row's pick waiting
 // out its Undo, then in flight; each row's last refusal; the search text, null while it is closed; the row
 // whose agreed pick Change reopened; a pick's or a comment's outcome once its row has left the report;
-// the comment field open on a row, with its text; whether a comment verb is in flight; the report's task.
-const FRESH = () => ({ pending: new Map(), notices: new Map(), query: null, changing: null, flash: null, compose: null, remarking: false, task: undefined });
+// the comment field open on a row, with its text; whether a comment verb is in flight; the report's task;
+// each section's filter chips.
+const FRESH = () => ({ filters: {}, pending: new Map(), notices: new Map(), query: null, changing: null, flash: null, compose: null, remarking: false, task: undefined });
 const page = store(FRESH());
 const set = (part) => page.set({ ...page.get(), ...part });
 // The row Next pick reached last.
@@ -59,6 +60,22 @@ function pick(rowId, option) {
     set({ notices: unnote(row.id), flash: null });
   }
 }
+
+// One Undo for every open pick the section shows that has a recommendation.
+function pickAll(sectionId) {
+  const read = drawn();
+  if (!read || offline()) return;
+  const { filters, query } = page.get();
+  const section = dossier(read, { now: Date.now(), filters, query: query ?? "" }).sections.find((each) => each.id === sectionId);
+  const { task, revision } = read.report;
+  const started = picks.batch(sectionId, (section?.recommended ?? []).map((each) => ({ ...each, task, from: null, revision })));
+  if (started) set({ flash: null });
+}
+
+const filter = (sectionId, part) => {
+  const { filters } = page.get();
+  set({ filters: { ...filters, [sectionId]: { ...filters[sectionId], ...part } } });
+};
 
 // A new read cancels each pick still waiting out its Undo once its report no longer offers it.
 // Another task's report drops the notes, which belong to rows of the old one; the comment field
@@ -157,7 +174,8 @@ const Pick = memo(function Pick({ row, mine, changing, failed }) {
   }
   const off = Boolean(failed);
   let note = null;
-  if (mine) note = <p className="note rpending" role="status"><span>{mine.sending ? `Sending "${mine.option}"…` : `Picking "${mine.option}"`}</span>{mine.sending ? null : <button type="button" id={focusId("undo", row.id)} className="ghost" onClick={() => picks.undo(row.id)}>Undo</button>}</p>;
+  if (mine?.batch != null) note = <p className="note rpending" role="status"><span>{mine.sending ? `Sending "${mine.option}"…` : "With the batch"}</span></p>;
+  else if (mine) note = <p className="note rpending" role="status"><span>{mine.sending ? `Sending "${mine.option}"…` : `Picking "${mine.option}"`}</span>{mine.sending ? null : <button type="button" id={focusId("undo", row.id)} className="ghost" onClick={() => picks.undo(row.id)}>Undo</button>}</p>;
   else if (failed) note = <p className="note"><Icon name="unplug" size="s15" /><span>Reconnect to pick.</span></p>;
   else if (reopened) note = <p className="note"><span>{`Picked ${choice.chosen}. Pick another option to change it.`}</span>{mine ? null : <button type="button" className="ghost" onClick={() => set({ changing: null })}>{`Keep ${choice.chosen}`}</button>}</p>;
   else if (choice.note) note = <p className="note">{choice.note}</p>;
@@ -166,6 +184,29 @@ const Pick = memo(function Pick({ row, mine, changing, failed }) {
       const chosen = mine ? mine.option === option.label : option.label === choice.chosen;
       return <button type="button" key={option.label} id={focusId("pick", choice.id, option.label)} className={chosen ? "chosen" : ""} aria-pressed={chosen ? "true" : "false"} aria-disabled={off || mine ? "true" : "false"} onClick={unless(off || mine, () => pick(row.id, option.label))}>{chosen ? <Icon name="check" size="s15" /> : null}{option.label}</button>;
     })}</div>{note}</>
+  );
+});
+
+const STATES = [["all", "All"], ["open", "Open"], ["picked", "Picked"]];
+
+// A section's chips filter its rows; Pick all recommended picks the open rows they show that carry a
+// recommendation, behind one Undo.
+const Filter = memo(function Filter({ section, pending, failed }) {
+  const { chips, filter: on } = section;
+  if (!chips) return null;
+  const batch = [...pending.values()].filter((entry) => entry.batch === section.id);
+  const left = section.recommended.filter((each) => !pending.has(each.row)).length;
+  const label = (option) => option ?? "None";
+  const toggle = (option) => filter(section.id, { recommends: on.recommends.includes(option) ? on.recommends.filter((each) => each !== option) : [...on.recommends, option] });
+  return (
+    <><div className="rfilter"><div role="group" aria-label={`Show in ${section.title}`}>{chips.state.map(({ id, count }) => (
+      <button type="button" key={id} aria-pressed={on.state === id ? "true" : "false"} onClick={() => filter(section.id, { state: id })}>{STATES.find(([each]) => each === id)[1]}<span className="num">{count}</span></button>
+    ))}</div>
+      {chips.recommends.length ? <div role="group" aria-label={`Recommends in ${section.title}`}><span className="cap">Recommends</span>{chips.recommends.map(({ option, count }) => (
+        <button type="button" key={label(option)} aria-pressed={on.recommends.includes(option) ? "true" : "false"} onClick={() => toggle(option)}>{label(option)}<span className="num">{count}</span></button>
+      ))}</div> : null}
+      <button type="button" className="btn primary" aria-disabled={failed || !left || batch.length ? "true" : "false"} onClick={unless(failed || !left || batch.length, () => pickAll(section.id))}>Pick all recommended<span className="num">{left}</span></button></div>
+      {batch.length ? <p className="rbatch" role="status"><Icon name="check" size="s15" /><span>{batch.some((entry) => entry.sending) ? `Sending ${batch.length} picks…` : `Picking the recommended option on ${batch.length} ${batch.length === 1 ? "row" : "rows"} in ${section.title}`}</span>{batch.some((entry) => entry.sending) ? null : <button type="button" className="btn secondary" onClick={() => picks.undo(batch[0].row)}>{`Undo all ${batch.length}`}</button>}</p> : null}</>
   );
 });
 
@@ -228,7 +269,7 @@ const Report = memo(function Report({ read, reports, tasks }) {
   const scroller = useRef(null);
   const strip = useRef(null);
   const [lit, setLit] = useState(0);
-  const model = dossier(read, { now, query: held.query ?? "" });
+  const model = dossier(read, { now, query: held.query ?? "", filters: held.filters });
   const count = model.sections.length;
   // The chip of the section in view.
   useEffect(() => {
@@ -282,6 +323,7 @@ const Report = memo(function Report({ read, reports, tasks }) {
             {model.sections.map((section, i) => (
               <section key={section.id} className="sect" id={`report-${i}`} aria-labelledby={`report-${i}-title`}>
                 <h2 className="sh" id={`report-${i}-title`}>{section.title}<span className="meta num">{section.count}</span></h2>
+                <Filter section={section} pending={held.pending} failed={failed} />
                 <ol className="rrows">{section.rows.map((row) => <Row key={row.id} row={row} held={held} failed={failed} newest={newest} task={model.task} reports={reports} />)}</ol></section>
             ))}</div></div></div>
     </Panel>
