@@ -1,12 +1,10 @@
-import { rowsList, rowsPage } from "../legacy/frame.js";
-import { runsBody } from "../legacy/runs.js";
 import { current, listView } from "../legacy/shared.js";
+import { RunsList, RunsPage } from "../pages/Runs.jsx";
 import { RUN_VIEWS } from "../runs.js";
 
 export const runs = {
   name: "runs",
-  needs: ["runs"],
-  list: (wide) => rowsList("Runs", runsBody(wide)),
-  page: () => rowsPage("Runs", runsBody(false)),
+  List: RunsList,
+  Page: RunsPage,
   older: { runs: () => current() === "runs" && listView(RUN_VIEWS) === "recent" },
 };

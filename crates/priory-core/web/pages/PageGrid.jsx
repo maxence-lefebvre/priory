@@ -1,6 +1,6 @@
 // The page inside the frame: one slot per panel and one for the drawer. A slot holds a React part, or a
 // legacy one in an element of its own, as its page's entry says.
-import { createContext, memo, useCallback, useContext, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useLayoutEffect, useMemo, useRef } from "react";
 import * as legacy from "../app.js";
 import { Icon } from "../components/Icon.jsx";
 import { leaves, partsIn, partsOf, shownTab } from "../frame.js";
@@ -27,26 +27,6 @@ const Slot = memo(function Slot({ slot, kind, name, id, panels }) {
   const Part = reactPart({ kind, name });
   if (!known({ kind, name })) return <NotFound />;
   return Part ? <Part key={id ?? name} id={id} panels={panels} /> : <LegacySlot slot={slot} kind={kind} name={name} id={id} panels={panels} />;
-});
-
-// Adds a preview's part to the page's while it is mounted; the answer takes it away.
-const Previews = createContext(null);
-
-/** A legacy page drawn small in a React one, such as Settings' Desk under each theme, with the listings it needs. */
-export const LegacyPreview = memo(function LegacyPreview({ name }) {
-  const host = useRef(null);
-  const add = useContext(Previews);
-  const slot = useId();
-  useLayoutEffect(() => {
-    const part = { slot, kind: "preview", name };
-    const hide = legacy.show(host.current, part);
-    const drop = add(part);
-    return () => {
-      hide();
-      drop();
-    };
-  }, [add, slot, name]);
-  return <div ref={host} />;
 });
 
 // Lands the listings the legacy slots read, and draws them. It comes after the slots: theirs mount first.
@@ -90,25 +70,21 @@ export const PageGrid = memo(function PageGrid() {
   const { here, ask, task, batch } = at;
   // An ask keeps the list it was opened from; another page names its own.
   const list = ask ? trail.list : here;
-  const [previews, setPreviews] = useState([]);
-  const preview = useCallback((part) => {
-    setPreviews((held) => [...held, part]);
-    return () => setPreviews((held) => held.filter((each) => each !== part));
-  }, []);
-  const { main, drawer, parts, names } = useMemo(() => {
+  const { main, drawer, panels, parts, names } = useMemo(() => {
     const found = partsOf({ here, ask, task, batch }, shell, { size, layout });
-    const all = [...partsIn(found.main, list), ...(found.drawer ? [{ kind: "drawer", name: "asks", id: ask }] : [])];
-    return { ...found, parts: all, names: needsOf([...all, ...previews], section) };
-  }, [previews, here, ask, task, batch, shell, size, layout, list, section]);
+    const panels = partsIn(found.main, list);
+    const all = [...panels, ...(found.drawer ? [{ kind: "drawer", name: "asks", id: ask }] : [])];
+    return { ...found, panels, parts: all, names: needsOf(all, section) };
+  }, [here, ask, task, batch, shell, size, layout, list, section]);
   const legacyParts = parts.filter((part) => known(part) && !reactPart(part));
   // A tree of legacy panels alone says once that it loads.
   const pending = useStore(landing);
-  const loading = pending && !main.kind && legacyParts.length === parts.length;
+  const loading = pending && !main.kind && panels.every((part) => known(part) && !reactPart(part));
   return (
-    <Previews.Provider value={preview}>
+    <>
       {loading ? <LegacySlot slot="main" kind="loading" /> : main.kind ? <Slot slot="main" {...main} /> : <Tree node={main} list={list} />}
       {drawer && !loading ? <Slot slot="drawer" kind="drawer" name="asks" id={ask} panels={shell.panels} /> : null}
-      {legacyParts.length || previews.length ? <LegacyOwner names={names} pending={pending} /> : null}
-    </Previews.Provider>
+      {legacyParts.length ? <LegacyOwner names={names} pending={pending} /> : null}
+    </>
   );
 });

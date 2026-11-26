@@ -4,15 +4,17 @@ export const reads = [
   ["/settings/notifications", "/api/desk"],
 ];
 
-// Every theme's two previews draw the Desk, opened with no copy kept on this device, and draw it
-// again once the revision moves.
+// Every theme's two previews draw the Desk, opened with no copy kept on this device, and keep its
+// elements once the revision moves.
 const DRAWN = `[...document.querySelectorAll(".theme .preview > div")].filter((part) => part.querySelector(".panel .scroll")).length`;
-export async function check({ hooked, evaluate, until, change }) {
+export async function check({ hooked, evaluate, until, sleep, change }) {
   await hooked("each theme previews the Desk, light and dark, cold and through a refresh", "/settings/appearance", 'document.querySelector(".themes")', { cold: true }, async () => {
     await until(`${DRAWN} === 10`, "the theme previews");
-    await evaluate('document.querySelector(".theme .preview > div").innerHTML = ""');
+    await evaluate('globalThis.panels = [...document.querySelectorAll(".theme .preview .panel")]; reads.length = 0');
     change();
-    await until(`${DRAWN} === 10`, "the previews drawn again");
-    return true;
+    await until('reads.includes("/api/asks")', "the previews to read again");
+    await sleep(1000);
+    const kept = await evaluate(`${DRAWN} === 10 && [...document.querySelectorAll(".theme .preview .panel")].every((panel, at) => panel === panels[at])`);
+    return kept || "a preview drawn again";
   });
 }

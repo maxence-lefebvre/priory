@@ -3,7 +3,7 @@
 // Agent text is untrusted: every value goes through `html`, which escapes it.
 import { acts, disarmTask } from "./acts.js";
 import { landing, openPage, ready, refresh } from "./legacy/data.js";
-import { loading, watchSections } from "./legacy/frame.js";
+import { loading, watchOlder } from "./legacy/frame.js";
 import { focusKey, place, route, routeKey, shape, state, trail } from "./legacy/shared.js";
 import { remoteGeneration } from "./legacy/taskacts.js";
 import { each, entries, entryOf, first, needsOf } from "./registry.js";
@@ -88,20 +88,16 @@ export function render() {
   if (typeof state.taskArmed?.task === "string" && remoteGeneration(state.taskArmed.task) !== state.taskArmed.generation) disarmTask();
   // Every part is built before the first one lands: a part that throws leaves them all as they were.
   // The first part that cannot draw says why; the others that cannot stay empty.
-  const owner = shown.find((host) => slots.get(host).kind !== "preview" && !readyFor(slots.get(host)));
+  const owner = shown.find((host) => !readyFor(slots.get(host)));
   const drawn = shown.map((host) => [host, text(slots.get(host), host === owner)]);
-  // The answer bar shows once the options scroll away; a redraw of the same page keeps it shown, so focus on it stays.
-  const samePage = state.renderedKey === routeKey();
   for (const [host, html] of drawn) {
-    const barShown = samePage && host.querySelector(".abar:not([hidden])") !== null;
     host.innerHTML = html;
     slots.get(host).drawn = routeKey();
-    if (barShown) host.querySelector(".abar")?.removeAttribute("hidden");
   }
   state.renderedKey = routeKey();
   state.rendered = Date.now();
   shown.forEach(settle);
-  // The Desk table draws some controls twice and CSS hides one copy: focus goes to the shown one.
+  // A table may draw a control twice and CSS hide one copy: focus goes to the shown one.
   const again = (selector) => shown.flatMap((host) => [...host.querySelectorAll(selector)]);
   if (focused) again(focused).find((element) => !element.closest("[inert]") && element.getClientRects().length)?.focus({ preventScroll: true });
   if (caret) again(`#${caret[0]}`)[0]?.setSelectionRange(caret[1], caret[2], caret[3]);
@@ -116,7 +112,6 @@ function text({ kind, name, id, panels }, speaks) {
   const size = shape.size;
   const entry = entryOf(name);
   if (kind === "drawer") return entry.drawer(id, size === "wide", panels).text;
-  if (kind === "preview") return entry.preview().text;
   if (kind === "detail") return entry.detail(id, size).text;
   return (kind === "list" ? entry.list(size === "wide") : entry.page(size)).text;
 }
@@ -133,7 +128,7 @@ function settle(host) {
   // A link or control inside a row, such as its key, batch or Move menu, acts on its own.
   for (const row of host.querySelectorAll("[data-href]")) row.addEventListener("click", (event) => { if (!event.target.closest("a, button, details")) go(row.dataset.href); });
   host.querySelectorAll("[data-grow]").forEach((part) => { part.style.flexGrow = part.dataset.grow; });
-  watchSections(host);
+  watchOlder(host);
   each("after", host);
 }
 

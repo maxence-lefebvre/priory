@@ -58,11 +58,13 @@ answers. A `401` from the daemon signs you out too.
 - **Ask**: the open asks of the task, oldest first, with the web view's order: context, question,
   recommendation, options, Write an answer, Dismiss and Snooze. Every open ask shows
   Write an answer; a step's ask and a hold's ask need an answer, so they show no Dismiss. Which asks
-  accept a written answer is in [waits.md](../daemon/waits.md#asks-and-answers). An answer waits 4 s with Undo, then
-  goes with the revision you saw. Leave the page or close the panel before then, and the panel
-  shows the answer unsent the next time it opens on that pull request, with Send and Discard,
-  until the question is asked again at a new revision. A changed question keeps your draft and
-  says so. Keys 1 to 9 pick an option while the panel has focus.
+  accept a written answer is in [waits.md](../daemon/waits.md#asks-and-answers). The first press on an option
+  arms it, "Press again to send"; a second press on it within 4 s sends it with the revision you
+  saw, as the web view does. The option then shows the answer sending on itself, the other
+  options take no press, and the strip says it is sending. A written answer goes at once with
+  Send. A refusal or a lost connection gives the choice back and says why; sending the same answer
+  again stores it once. A changed question keeps your draft and says so. Keys 1 to 9 pick an
+  option while the panel has focus.
 - **A command ask**: a tap on an option that runs a command opens the browser's side panel with the
   command, its folder and its revision. Run it there, within 2 min of the tap. No page can cover
   the side panel. Run reads the ask again first, and runs only when the daemon, the revision and
@@ -151,7 +153,7 @@ What a script on github.com can and cannot do:
 | Fake a guide block: it is page content anyway, shown as text | Send a write without your taps in the panel |
 
 A hostile page could lay out or cover the iframes so your taps land on an option you did not mean.
-On github.com that needs GitHub itself compromised, and the 4 s Undo shows what was sent. A command
+On github.com that needs GitHub itself compromised, and an answer needs two presses on the same option, the first of which says what the second sends. A command
 runs only from the browser's side panel, which no page can cover.
 
 ## Limits

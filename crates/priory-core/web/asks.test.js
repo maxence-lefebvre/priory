@@ -118,7 +118,7 @@ test("a refused ask write says why, and a 504 or a dropped connection says to ch
   assert.equal(writeNote(409, fresh({ state: "answered", answer: "left", answered_at: "x" }), ago), "Already answered 5 min ago: left.");
   assert.equal(writeNote(409, fresh({ state: "withdrawn", withdrawn_why: "done" }), ago), "Withdrawn: done.");
   assert.match(writeNote(503, {}, ago), /no priory daemon runs beside this server/);
-  for (const status of [504, 0]) assert.equal(writeNote(status, {}, ago), "The daemon may have applied this but did not confirm it. Check the ask's state before you send again.");
+  for (const status of [504, 0]) assert.equal(writeNote(status, {}, ago), "The connection dropped before Priory confirmed this. It may be stored: send it again, and it is stored once.");
   assert.equal(writeNote(422, { error: "no such option" }, ago), "Could not send: no such option.");
   assert.equal(writeNote(500, {}, ago), "Could not send: the server answered 500.");
 });

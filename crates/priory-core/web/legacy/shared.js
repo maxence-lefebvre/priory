@@ -118,8 +118,6 @@ export const taskName = (id) => {
   const task = state.data?.tasks?.find((each) => each.id === id);
   return task ? taskLabel(task.key) : `task ${id}`;
 };
-export const batchTag = (task) => (task.batch == null ? "" : html`<a class="tag" href="/batches/${task.batch}">${icon("layers", "s13")}batch ${task.batch}</a>`);
-export const reasonShown = (task) => Boolean(task.reason) && ["blocked", "held", "failed", "dropped"].includes(task.state);
 
 // Ask detail
 export const selectedAsk = () => {

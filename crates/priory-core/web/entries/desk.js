@@ -1,14 +1,9 @@
-import { deskClick, deskList, deskLive, deskPhone, deskView, seen } from "../legacy/desk.js";
-import { current } from "../legacy/shared.js";
+import { DeskList, DeskPage, deskViewOf } from "../pages/Desk.jsx";
+import { current, listSearch } from "../legacy/shared.js";
 
 export const desk = {
   name: "desk",
-  needs: ["asks", "queue", "tasks"],
-  list: deskList,
-  page: () => deskPhone(),
-  preview: () => deskPhone(false),
-  older: { tasks: () => current() === "desk" && deskView() === "all" },
-  click: deskClick,
-  after: (host) => { if (host.querySelector("[data-since]")) seen(); },
-  live: deskLive,
+  List: DeskList,
+  Page: DeskPage,
+  older: { tasks: () => current() === "desk" && deskViewOf(listSearch()) === "all" },
 };
