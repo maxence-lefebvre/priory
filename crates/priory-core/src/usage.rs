@@ -462,7 +462,7 @@ mod tests {
         std::fs::create_dir(&mounted).unwrap();
         std::fs::write(mounted.join("big"), vec![0u8; 1 << 20]).unwrap();
 
-        let total = size(&worktree, &[mounted.clone()], later()).unwrap();
+        let total = size(&worktree, std::slice::from_ref(&mounted), later()).unwrap();
 
         assert!(total >= 1000, "{total}");
         assert!(total < 1 << 20, "a link or a mount was followed: {total}");
@@ -490,7 +490,7 @@ mod tests {
         let locked = worktree.join("locked");
         std::fs::create_dir(&locked).unwrap();
         std::fs::write(locked.join("big"), vec![0u8; 1 << 20]).unwrap();
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0)).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
 
         let total = size(&worktree, &[], later());
 
