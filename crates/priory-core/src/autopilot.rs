@@ -1059,7 +1059,7 @@ fn reverse(
         ))));
     }
     Ok(Some(match (state, ask["kind"] == "step") {
-        ("done", _) => match tools::says_reopens(&tx, task, factory)? {
+        ("done", _) => match tools::says_reopens(&tx, task, factory, None)? {
             Ok(()) => Ok(format!("priory say {task} TEXT")),
             Err(why) => Err(format!(
                 "task {task} is done and {why}: ask for the change in a new task, with `priory add TEXT`"

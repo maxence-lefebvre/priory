@@ -80,7 +80,7 @@ const Spend = memo(function Spend({ costs, by, onPick }) {
     const scored = scoreTable(costs).rows.length > 0;
     return <><p className="empty">No cost in the last two weeks. Costs appear once a model step records its tokens. Price each model in <code>prices.toml</code> in the factory folder.</p>{scored ? <section className="sect" aria-labelledby="costs-scores"><Scores costs={costs} pick={pick} /></section> : null}</>;
   }
-  // The legacy markup wrote each run of text as one node: a split one kerns differently.
+  // The markup before React wrote each run of text as one node: a split one kerns differently.
   const { unpriced: models, unknown } = table;
   const tail = `${models.length ? ` ${models.at(-1).tokens} tokens. Add each model to ` : ""}`;
   const unpriced = models.length || unknown

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClientProvider } from "@tanstack/react-query";
 
-// The legacy files touch the page as they load.
+// The data modules read the device's storage and the page as they load.
 Object.assign(globalThis, {
   document: { getElementById: () => ({ addEventListener() {} }), addEventListener() {}, querySelector: () => null, querySelectorAll: () => [], documentElement: { dataset: {} }, hidden: false },
   localStorage: { getItem: () => null, setItem() {}, removeItem() {} },

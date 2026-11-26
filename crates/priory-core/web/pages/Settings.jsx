@@ -5,7 +5,7 @@ import { useStore } from "../hooks/useData.js";
 import { PUSH_KINDS, confirmPush, saveKinds } from "../push.js";
 import { KEPT_KINDS, api, post } from "../session.js";
 import { store } from "../store.js";
-import { LegacyPreview } from "./PageGrid.jsx";
+import { DeskPreview } from "./Desk.jsx";
 import { listClass, usePlace } from "./place.js";
 
 // Notifications on this device: its status, a request in flight, and why the last one failed, and
@@ -75,8 +75,8 @@ export const Appearance = memo(function Appearance() {
       <div className="themes" role="radiogroup" aria-labelledby="theme-label">{THEMES.map(([key, name, line]) =>
         <div key={key} className="theme" role="radio" tabIndex={0} aria-checked={theme === key ? "true" : "false"} aria-label={name} onClick={() => choose("theme", key)} onKeyDown={(event) => pickKey(event, () => choose("theme", key))}>
           <div className="previews" aria-hidden="true" inert>
-            <div className="preview" data-theme={key} data-mode="light"><LegacyPreview name="desk" /></div>
-            <div className="preview" data-theme={key} data-mode="dark"><LegacyPreview name="desk" /></div></div>
+            <div className="preview" data-theme={key} data-mode="light"><DeskPreview /></div>
+            <div className="preview" data-theme={key} data-mode="dark"><DeskPreview /></div></div>
           <span className="name">{name}<span className="radio" /></span><p>{line}</p></div>)}</div>
       <p className="note">A theme changes color and type only. Every screen keeps the same layout.</p></div>
       <NotificationsLink /></div>
