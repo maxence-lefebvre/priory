@@ -235,15 +235,17 @@ Each is useful alone, in this order:
    its id, when no reply comes. The race is closed: a hook appends under a
    lock on the spool, and starts over when the daemon has taken the file.
 4. **Only the daemon migrates**, with its lock taken first. Built.
-5. **`priory upgrade`.** Verify, back up, rehearse, install, hand over, check, and `--rollback`. The
+5. **Live runs in the quiet moment.** Built: a live run, a tool call or a memory grant no longer holds
+   an upgrade back, since its calls and hooks wait for the restart.
+6. **`priory upgrade`.** Verify, back up, rehearse, install, hand over, check, and `--rollback`. The
    daemon does this by itself with `[upgrade]` ([upgrades.md](../daemon/upgrades.md)), on a herdr-bus
    log and one machine. The verb for a person, and one runner after another on a Postgres log, are left.
    There, a runner would wait until each runner before it by name committed the version, and stop at
    the first rollback.
-6. **Split migrations.** A long backfill runs in batches from the daemon's loop.
-7. **Additive migrations.** Built: each migration declares whether it only adds, and an additive
+7. **Split migrations.** A long backfill runs in batches from the daemon's loop.
+8. **Additive migrations.** Built: each migration declares whether it only adds, and an additive
    one installs beside live runs ([upgrades.md](../daemon/upgrades.md#additive-migrations)).
-8. **Socket activation**, if the open question below says webhooks need it.
+9. **Socket activation**, if the open question below says webhooks need it.
 
 ## Open questions
 

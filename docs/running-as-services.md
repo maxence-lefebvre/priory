@@ -212,15 +212,30 @@ cargo install --path crates/priory     # or install the release, as installing-a
 systemctl --user start priory-intake priory-daemon
 ```
 
-A live run keeps the `priory mcp` server its session started, on the old binary. That server only
-relays calls to the daemon's socket, so it keeps working on a migrated state. A tool call it makes
-while the daemon restarts waits up to 30 seconds for the new daemon, and so does a command that writes.
-A call in flight when the daemon stops is answered first, unless the daemon is killed. A session started on 1.2.0 or earlier keeps a server that opens
-the state itself, so install over one only when `priory runs` shows no live run.
+You can install while runs are live, when the release's migrations are additive (see
+[Additive migrations](daemon/upgrades.md#additive-migrations)) and the installed priory is newer than
+1.3.8. Then skip the stop: install, and restart both units at once.
+
+```sh
+cargo install --path crates/priory     # or install the release
+systemctl --user restart priory-daemon priory-intake
+```
+
+A live run keeps its agent in tmux, and the `priory mcp` server its session started, on the old
+binary. That server only relays calls to the daemon's socket. A tool call it makes while the daemon
+restarts waits up to 30 seconds for the new daemon, and so do hooks, `priory memory` and a command
+that writes. A call in flight when the daemon stops is answered first, unless the daemon is killed.
+
+Stop first, as above, when a migration is not additive, when the log migrates, or when the
+installed priory is 1.3.8 or older: an older binary cannot read such a state, so going back restores
+the backup. A session started on 1.2.0 or earlier keeps a server that opens the state itself, so
+install over one only when `priory runs` shows no live run.
 
 Check: `priory --version` prints the new version and `systemctl --user status` shows both units
-running. To roll back, stop both units, install the older binary and copy each backup over its
-database.
+running. To roll back after an additive migration, install the older binary and restart both units:
+it opens the newer state, and keeps what the new release wrote. To roll back after any other
+migration, stop both units, install the older binary and copy each backup over its database. That
+loses what happened since the backup.
 
 ## What a stop does to agents
 
