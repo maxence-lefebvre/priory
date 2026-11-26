@@ -2450,7 +2450,6 @@ fn post(source: &str, line: &str) -> ExitCode {
     exit("post", posted)
 }
 
-/// Serves the state over HTTP until killed: `priory serve [DIR] [--listen ADDR]`.
 /// `priory gateway`: the diocese's MCP endpoint, and the grants it takes.
 fn gateway(args: Vec<String>) -> ExitCode {
     let (mut rest, mut listen, mut span) = (Vec::new(), None, None);
@@ -2499,6 +2498,7 @@ fn gateway(args: Vec<String>) -> ExitCode {
     }
 }
 
+/// Serves the state over HTTP until killed: `priory serve [DIR] [--listen ADDR]`.
 fn serve_http(args: Vec<String>) -> ExitCode {
     let (mut dirs, mut listen) = (Vec::new(), None);
     let mut args = args.into_iter();

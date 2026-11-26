@@ -63,11 +63,15 @@ does and the page that describes it.
   `127.0.0.1:7429` unless `--listen` names another loopback address; it refuses any other. A TLS
   proxy or `tailscale funnel` fronts it. Each request carries a run grant's token as
   `Authorization: Bearer`, and a missing, unknown, expired or revoked one gets `401`. A grant may
-  make 60 calls a minute, and all requests together 10 refused ones, past which they get `429`. It
+  make 60 calls a minute, and all requests together 10 refused ones, past which they get `429`. A
+  method other than `POST` gets `405`, and a body over 64 KiB gets `413` before it is read. It
   serves one tool, `whoami`, which names the grant and acts on nothing. It reads grants from the
-  log as the consumer `priory.gateway` into `$PRIORY_HOME/diocese-gateway.db`, and appends one JSON
-  line per call and refusal to `$PRIORY_HOME/diocese-gateway.audit.jsonl`, without the token or
-  the arguments. See [the diocese](../design/diocese.md#sign-in-and-tokens).
+  log as the consumer `priory.gateway` into `$PRIORY_HOME/diocese-gateway.db`, each second, and
+  answers `503` to every request while its last full read is over 10 seconds old. It skips a grant
+  message it cannot record, such as one whose hash another grant has. It appends one JSON line per
+  call, refusal and skipped message to `$PRIORY_HOME/diocese-gateway.audit.jsonl`, without the
+  token or the arguments, and one line in all for the refusals past the limit in a minute. See
+  [the diocese](../design/diocese.md#sign-in-and-tokens).
 
 - `priory intake [DIR] [--once]`: polls the sources and publishes events. `--once` polls once and
   exits. See [the intake](../intake/README.md).

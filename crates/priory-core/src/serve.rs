@@ -403,8 +403,18 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Server, String> {
             }
         }
     };
-    let workers = http::serve(listener, token, origins, hooks, public, lane, wait, make)
-        .map_err(|error| format!("start the server threads: {error}"))?;
+    let workers = http::serve(
+        listener,
+        token,
+        origins,
+        hooks,
+        http::BODY,
+        public,
+        lane,
+        wait,
+        make,
+    )
+    .map_err(|error| format!("start the server threads: {error}"))?;
     eprintln!("priory: serving on http://{bound}");
     Ok(Server {
         workers,

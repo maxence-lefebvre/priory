@@ -163,7 +163,10 @@ grant's token is the only credential it takes.
 - The gateway looks up the hash of each request's bearer token, and refuses a token that matches no
   grant, a grant past its deadline, and a revoked grant, with `401`.
 - `priory gateway revoke GRANT` publishes `priory.run.revoked`, and the gateway refuses the grant
-  from its next read of the log, within a second.
+  from its next read of the log, within a second. While the gateway cannot read the log for over
+  10 seconds, it answers `503` to every call, so a revocation it has not read never leaves a grant
+  working. A grant message it cannot record is skipped with an audit line, so it never blocks the
+  messages after it.
 - A run grant lasts until its run ends or its step's `timeout`, whichever comes first. The runner
   publishes `priory.run.revoked` when the run ends.
 
@@ -245,9 +248,10 @@ against a person's key, would take approval power away from the log. They are a 
   comes from loopback. 60 calls a minute per grant. Both answer `429` with `Retry-After`. Request
   bodies up to 64 KB, and at most 128 calls waiting on a reply at once from slice 6, when a call
   first waits on a runner.
-- **Audit log.** Each refusal and each MCP call is one JSON line on the diocese, with the time, the
-  grant, the tool, the status and the outcome, and from slice 6 one span in OpenObserve. A call's
-  arguments and the token are never logged.
+- **Audit log.** Each refusal, each MCP call and each skipped grant message is one JSON line on the
+  diocese, with the time, the grant, the tool, the status and the outcome, and from slice 6 one span
+  in OpenObserve. Refusals past the limit write one line a minute in all. A call's arguments and
+  the token are never logged.
 
 ## Failure modes
 

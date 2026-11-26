@@ -752,7 +752,12 @@ fn postgres_gateway_role_publishes_only_run_calls_and_moves_only_its_cursor() {
 
     let called = Message::new("priory.run.called", serde_json::json!({ "n": 2 }));
     gateway.publish(OUTPUT, &called).unwrap();
-    for refused in ["priory.ask.answered", "github.issues.labeled"] {
+    for refused in [
+        "priory.ask.answered",
+        "priory.run.granted",
+        "priory.run.revoked",
+        "github.issues.labeled",
+    ] {
         let message = Message::new(refused, serde_json::json!({ "n": 3 }));
         let error = format!("{:?}", gateway.publish(OUTPUT, &message).unwrap_err());
         assert!(error.contains("row-level security"), "{refused}: {error}");

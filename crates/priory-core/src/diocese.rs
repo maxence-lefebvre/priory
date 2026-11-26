@@ -25,8 +25,13 @@ pub const REVOKED: &str = "priory.run.revoked";
 
 /// The one path the gateway serves.
 const PATH: &str = "/mcp";
-/// The largest request body the gateway reads; a longer one gets 413.
+/// The largest request body the gateway reads; a longer one gets 413 before it is read.
 const BODY: usize = 64 * 1024;
+/// How old the last good read of the log may be before every call gets 503, so a revocation the
+/// gateway cannot read never leaves a grant working.
+const STALE: Duration = Duration::from_secs(10);
+/// The longest tool name an audit line keeps.
+const TOOL: usize = 64;
 /// Calls a minute one grant may make.
 const CALLS: u32 = 60;
 /// Refused requests a minute, from anyone: behind the TLS proxy every peer is loopback anyway.
@@ -74,8 +79,6 @@ pub fn serve(factory: &Factory, listen: SocketAddr) -> Result<(), String> {
     let log = priory_intake::log::open(factory.log()).map_err(|error| error.to_string())?;
     log.declare(&intake::output())
         .map_err(|error| error.to_string())?;
-    sync(&*log, &db)?;
-
     let audit = home.join("diocese-gateway.audit.jsonl");
     let audit = std::fs::OpenOptions::new()
         .create(true)
@@ -86,14 +89,17 @@ pub fn serve(factory: &Factory, listen: SocketAddr) -> Result<(), String> {
         audit: Mutex::new(audit),
         calls: Mutex::new(Window::default()),
         refusals: Mutex::new(Window::default()),
+        synced: Mutex::new(Instant::now()),
     });
+    gate.sync(&*log, &db)?;
     let listener =
         TcpListener::bind(listen).map_err(|error| format!("listen on {listen}: {error}"))?;
     let bound = listener.local_addr().map_err(|error| error.to_string())?;
     // Every path but `PATH` needs this token, which nobody holds.
     let nobody = crate::serve::new_secret()?;
+    let served = Arc::clone(&gate);
     let make = move || {
-        let (gate, db) = (Arc::clone(&gate), open(&state));
+        let (gate, db) = (Arc::clone(&served), open(&state));
         move |request: &Request| match &db {
             Ok(db) => gate.handle(db, request),
             Err(error) => Reply::error(500, error),
@@ -104,7 +110,9 @@ pub fn serve(factory: &Factory, listen: SocketAddr) -> Result<(), String> {
         nobody,
         Vec::new(),
         &[PATH],
-        |_| false,
+        BODY,
+        // Any method on `PATH` reaches the handler, which answers 405 to all but POST.
+        |path| path == PATH,
         |_| Lane::Write,
         |_| Reply::error(404, "no such path"),
         make,
@@ -113,7 +121,7 @@ pub fn serve(factory: &Factory, listen: SocketAddr) -> Result<(), String> {
     eprintln!("priory: serving on http://{bound}");
     loop {
         std::thread::sleep(Duration::from_secs(1));
-        if let Err(error) = sync(&*log, &db) {
+        if let Err(error) = gate.sync(&*log, &db) {
             eprintln!("priory gateway: read the log: {error}");
         }
     }
@@ -137,43 +145,6 @@ fn open(path: &Path) -> Result<Connection, String> {
     Ok(db)
 }
 
-/// Records each grant and revocation the log holds past the gateway's cursor, and moves it.
-fn sync(log: &dyn Log, db: &Connection) -> Result<(), String> {
-    loop {
-        let read = log
-            .read(GATEWAY_CONSUMER, OUTPUT, 100)
-            .map_err(|error| error.to_string())?;
-        if read.is_empty() {
-            return Ok(());
-        }
-        for delivery in &read {
-            let data = &delivery.message.data;
-            let id = data["grant"].as_str().unwrap_or_default();
-            let recorded = match delivery.message.kind.as_str() {
-                GRANTED => {
-                    // The log's clock when it has one, so a runner's clock decides no deadline.
-                    let from = delivery.logged.unwrap_or(delivery.message.time);
-                    let deadline = from.as_second() + data["seconds"].as_i64().unwrap_or(0);
-                    db.execute(
-                        "INSERT INTO grants (id, hash, deadline) VALUES (?1, ?2, ?3)
-                         ON CONFLICT (id) DO UPDATE SET hash = ?2, deadline = ?3",
-                        params![id, data["hash"].as_str(), deadline],
-                    )
-                }
-                REVOKED => db.execute(
-                    "INSERT INTO grants (id, revoked) VALUES (?1, 1)
-                     ON CONFLICT (id) DO UPDATE SET revoked = 1",
-                    [id],
-                ),
-                _ => Ok(0),
-            };
-            recorded.map_err(|error| error.to_string())?;
-            log.ack(GATEWAY_CONSUMER, delivery)
-                .map_err(|error| error.to_string())?;
-        }
-    }
-}
-
 fn hash(token: &str) -> String {
     Sha256::digest(token.as_bytes())
         .iter()
@@ -189,15 +160,15 @@ struct Window {
 }
 
 impl Window {
-    /// Counts one for `key`, and says whether it stays within `limit` this minute.
-    fn admit(&mut self, key: &str, limit: u32) -> bool {
+    /// Counts one for `key`, and returns its count this minute.
+    fn count(&mut self, key: &str) -> u32 {
         if self.start.is_none_or(|start| start.elapsed() >= MINUTE) {
             self.start = Some(Instant::now());
             self.counts.clear();
         }
         let count = self.counts.entry(key.to_owned()).or_default();
         *count += 1;
-        *count <= limit
+        *count
     }
 }
 
@@ -205,35 +176,69 @@ struct Gate {
     audit: Mutex<std::fs::File>,
     calls: Mutex<Window>,
     refusals: Mutex<Window>,
+    /// When the gateway last read the log to its end.
+    synced: Mutex<Instant>,
 }
 
 impl Gate {
+    /// Records each grant and revocation the log holds past the gateway's cursor, and moves it. A
+    /// message it cannot record is skipped with an audit line, so it never blocks the ones after it.
+    fn sync(&self, log: &dyn Log, db: &Connection) -> Result<(), String> {
+        loop {
+            let read = log
+                .read(GATEWAY_CONSUMER, OUTPUT, 100)
+                .map_err(|error| error.to_string())?;
+            if read.is_empty() {
+                if let Ok(mut synced) = self.synced.lock() {
+                    *synced = Instant::now();
+                }
+                return Ok(());
+            }
+            for delivery in &read {
+                if let Err(why) = record(db, delivery) {
+                    let grant = delivery.message.data["grant"].as_str();
+                    let kind = &delivery.message.kind;
+                    self.audit(grant, None, None, &format!("skipped {kind}: {why}"));
+                }
+                log.ack(GATEWAY_CONSUMER, delivery)
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+    }
+
     fn handle(&self, db: &Connection, request: &Request) -> Reply {
+        if self
+            .synced
+            .lock()
+            .is_ok_and(|synced| synced.elapsed() > STALE)
+        {
+            return Reply::error(503, "the gateway cannot read the log: retry in a minute");
+        }
         if request.method != "POST" {
             return Reply::error(405, "POST a JSON-RPC message to /mcp");
         }
         let grant = match self.grant(db, request) {
             Ok(grant) => grant,
             Err(why) => {
-                let admitted = self
-                    .refusals
-                    .lock()
-                    .is_ok_and(|mut w| w.admit("", REFUSALS));
-                let status = if admitted { 401 } else { 429 };
-                self.audit(None, None, status, &why);
+                let count = self.refusals.lock().map_or(u32::MAX, |mut w| w.count(""));
+                // Past the limit, one line says so and the rest go unwritten.
+                match count {
+                    ..=REFUSALS => self.audit(None, None, Some(401), &why),
+                    count if count == REFUSALS + 1 => {
+                        let over = format!("over {REFUSALS} refusals a minute: {why}");
+                        self.audit(None, None, Some(429), &over);
+                    }
+                    _ => {}
+                }
+                let status = if count <= REFUSALS { 401 } else { 429 };
                 return limited(status, &why);
             }
         };
         let id = grant.id.as_str();
-        if !self.calls.lock().is_ok_and(|mut w| w.admit(id, CALLS)) {
+        if self.calls.lock().map_or(u32::MAX, |mut w| w.count(id)) > CALLS {
             let why = format!("over {CALLS} calls a minute");
-            self.audit(Some(id), None, 429, &why);
+            self.audit(Some(id), None, Some(429), &why);
             return limited(429, &why);
-        }
-        if request.body.len() > BODY {
-            let why = format!("the body is over {BODY} bytes");
-            self.audit(Some(id), None, 413, &why);
-            return Reply::error(413, &why);
         }
         let line = String::from_utf8_lossy(request.body);
         let message: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
@@ -248,12 +253,18 @@ impl Gate {
                 format!("run grant {id}, valid until {deadline}: the gateway reached Priory") }] })),
             _ => Err("the gateway serves whoami only".to_owned()),
         };
-        let reply = mcp::respond(&line, &json!([whoami()]), INSTRUCTIONS, &call);
-        self.audit(Some(id), tool, 200, "served");
-        match reply {
-            Some(reply) => Reply::json(200, reply.to_string()),
-            None => Reply::json(202, String::new()),
-        }
+        let (status, body, outcome) =
+            match mcp::respond(&line, &json!([whoami()]), INSTRUCTIONS, &call) {
+                None => (202, String::new(), "notification".to_owned()),
+                Some(reply) => {
+                    let outcome = reply["error"]["message"]
+                        .as_str()
+                        .map_or_else(|| "served".to_owned(), |error| format!("error: {error}"));
+                    (200, reply.to_string(), outcome)
+                }
+            };
+        self.audit(Some(id), tool, Some(status), &outcome);
+        Reply::json(status, body)
     }
 
     /// The grant the request's bearer token names, while it is live, or why it is refused.
@@ -292,9 +303,11 @@ impl Gate {
         Ok(grant)
     }
 
-    /// Appends one line to the audit log: never the token or a call's arguments.
-    fn audit(&self, grant: Option<&str>, tool: Option<&str>, status: u16, outcome: &str) {
+    /// Appends one line to the audit log: never the token or a call's arguments. `status` is the
+    /// HTTP status of a request, and none for a message of the log it skipped.
+    fn audit(&self, grant: Option<&str>, tool: Option<&str>, status: Option<u16>, outcome: &str) {
         let time = intake::now().map(|now| now.to_string()).unwrap_or_default();
+        let tool = tool.map(|tool| tool.chars().take(TOOL).collect::<String>());
         let line = json!({ "time": time, "grant": grant, "tool": tool, "status": status,
             "outcome": outcome });
         if let Ok(mut file) = self.audit.lock() {
@@ -306,6 +319,44 @@ impl Gate {
 struct Grant {
     id: String,
     deadline: i64,
+}
+
+/// Records one grant or revocation in the gateway's state file, or says why it cannot.
+fn record(db: &Connection, delivery: &priory_intake::log::Delivery) -> Result<(), String> {
+    let kind = delivery.message.kind.as_str();
+    if kind != GRANTED && kind != REVOKED {
+        return Ok(());
+    }
+    let data = &delivery.message.data;
+    let id = data["grant"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .ok_or("it names no grant")?;
+    let recorded = match kind {
+        GRANTED => {
+            let hash = data["hash"]
+                .as_str()
+                .filter(|hash| hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
+                .ok_or("its hash is no SHA-256 in hex")?;
+            let seconds = data["seconds"]
+                .as_i64()
+                .filter(|seconds| *seconds > 0)
+                .ok_or("its seconds are no positive integer")?;
+            // The log's clock when it has one, so a runner's clock decides no deadline.
+            let from = delivery.logged.unwrap_or(delivery.message.time);
+            db.execute(
+                "INSERT INTO grants (id, hash, deadline) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (id) DO UPDATE SET hash = ?2, deadline = ?3",
+                params![id, hash, from.as_second().saturating_add(seconds)],
+            )
+        }
+        _ => db.execute(
+            "INSERT INTO grants (id, revoked) VALUES (?1, 1)
+             ON CONFLICT (id) DO UPDATE SET revoked = 1",
+            [id],
+        ),
+    };
+    recorded.map(|_| ()).map_err(|error| error.to_string())
 }
 
 fn limited(status: u16, why: &str) -> Reply {
@@ -324,4 +375,56 @@ fn whoami() -> Value {
         "description": "Says which run grant this session signed in with, and until when. Acts on nothing.",
         "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use herdr_bus::{Output, Seq, Stored};
+    use priory_intake::log::{Delivery, Result as LogResult};
+
+    /// A log whose every read fails, as a Postgres server that went away.
+    struct Down;
+
+    impl Log for Down {
+        fn declare(&self, _: &Output) -> LogResult<()> {
+            Ok(())
+        }
+        fn publish(&self, _: &str, _: &Message) -> LogResult<Seq> {
+            Err("down".into())
+        }
+        fn message(&self, _: Seq) -> LogResult<Stored> {
+            Err("down".into())
+        }
+        fn messages(&self, _: &str, _: Option<Seq>, _: usize) -> LogResult<Vec<Stored>> {
+            Err("down".into())
+        }
+        fn read(&self, _: &str, _: &str, _: usize) -> LogResult<Vec<Delivery>> {
+            Err("down".into())
+        }
+        fn ack(&self, _: &str, _: &Delivery) -> LogResult<()> {
+            Err("down".into())
+        }
+        fn backlog(&self, _: &str) -> LogResult<Vec<(String, u64)>> {
+            Err("down".into())
+        }
+    }
+
+    #[test]
+    fn a_gateway_that_cannot_read_the_log_for_over_10s_answers_503() {
+        let db = Connection::open_in_memory().unwrap();
+        let gate = Gate {
+            audit: Mutex::new(std::fs::File::create("/dev/null").unwrap()),
+            calls: Mutex::new(Window::default()),
+            refusals: Mutex::new(Window::default()),
+            synced: Mutex::new(Instant::now()),
+        };
+        let request = Request::get(PATH, Instant::now());
+        assert!(gate.sync(&Down, &db).is_err());
+        assert_eq!(gate.handle(&db, &request).status, 405);
+
+        *gate.synced.lock().unwrap() = Instant::now() - STALE - Duration::from_secs(1);
+        assert!(gate.sync(&Down, &db).is_err());
+        assert_eq!(gate.handle(&db, &request).status, 503);
+    }
 }

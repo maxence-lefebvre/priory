@@ -1,7 +1,9 @@
 #[allow(dead_code)]
 mod harness;
 
+use herdr_bus::{Bus, Message};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -140,21 +142,45 @@ fn succeeded(output: &Output) -> &Output {
 /// Posts one JSON-RPC message to `/mcp` and returns the status and the body.
 fn call(address: &str, token: Option<&str>, message: &Value) -> (u16, String) {
     let body = message.to_string();
+    let (status, _, body) = send(address, "POST", token, body.len(), &body);
+    (status, body)
+}
+
+/// Sends one request to `/mcp` that announces `length` body bytes and sends `body`, and returns
+/// the status, the head and the body of the reply.
+fn send(
+    address: &str,
+    method: &str,
+    token: Option<&str>,
+    length: usize,
+    body: &str,
+) -> (u16, String, String) {
     let auth = token.map_or(String::new(), |token| {
         format!("Authorization: Bearer {token}\r\n")
     });
+    let length = match method {
+        "POST" => format!("Content-Type: application/json\r\nContent-Length: {length}\r\n"),
+        _ => String::new(),
+    };
     let mut stream = TcpStream::connect(address).unwrap();
     write!(
         stream,
-        "POST /mcp HTTP/1.1\r\nHost: {address}\r\n{auth}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
+        "{method} /mcp HTTP/1.1\r\nHost: {address}\r\n{auth}{length}Connection: close\r\n\r\n{body}",
     )
     .unwrap();
     let mut response = String::new();
     stream.read_to_string(&mut response).unwrap();
     let status = response[9..12].parse().unwrap();
-    let body = response.split_once("\r\n\r\n").map_or("", |(_, body)| body);
-    (status, body.to_owned())
+    let (head, body) = response.split_once("\r\n\r\n").unwrap_or((&response, ""));
+    (status, head.to_owned(), body.to_owned())
+}
+
+fn outcomes(audit: &[Value], status: u16) -> Vec<&str> {
+    audit
+        .iter()
+        .filter(|line| line["status"] == status)
+        .map(|line| line["outcome"].as_str().unwrap())
+        .collect()
 }
 
 fn whoami() -> Value {
@@ -202,9 +228,29 @@ fn gateway_serves_whoami_to_a_live_grant_and_refuses_and_audits_every_other_toke
         assert!(body.contains(why), "{why}: {body}");
     }
 
+    let unknown = json!({ "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+        "params": { "name": "rm", "arguments": {} } });
+    assert_eq!(call(&address, Some(&token), &unknown).0, 200);
+    let notification = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
+    assert_eq!(call(&address, Some(&token), &notification).0, 202);
+
+    for method in ["GET", "DELETE"] {
+        let (status, head, body) = send(&address, method, Some(&token), 0, "");
+        assert_eq!(status, 405, "{method}: {body}");
+        assert!(!head.contains("WWW-Authenticate"), "{method}: {head}");
+    }
+
     let audit = setup.audit();
     let refused: Vec<_> = audit.iter().filter(|line| line["status"] == 401).collect();
     assert_eq!(refused.len(), 4, "{audit:#?}");
+    assert_eq!(outcomes(&audit, 202), ["notification"]);
+    let served = outcomes(&audit, 200);
+    assert!(
+        served
+            .iter()
+            .any(|outcome| outcome.starts_with("error: the gateway serves whoami only")),
+        "{served:?}"
+    );
     assert!(
         audit
             .iter()
@@ -234,8 +280,99 @@ fn gateway_answers_429_past_60_calls_of_a_grant_and_10_refusals_a_minute() {
         let (status, body) = call(&address, Some("wrong"), &ping);
         assert_eq!(status, 401, "refusal {n}: {body}");
     }
-    let (status, body) = call(&address, Some("wrong"), &ping);
-    assert_eq!(status, 429, "{body}");
+    for _ in 0..20 {
+        let (status, body) = call(&address, Some("wrong"), &ping);
+        assert_eq!(status, 429, "{body}");
+    }
+    let audit = setup.audit();
+    assert_eq!(outcomes(&audit, 401).len(), 10);
+    let over: Vec<_> = audit
+        .iter()
+        .filter(|line| line["status"] == 429 && line["grant"].is_null())
+        .collect();
+    assert_eq!(over.len(), 1, "{audit:#?}");
+
+    let mut long = "a".repeat(300);
+    long.insert_str(0, "x");
+    let tool = json!({ "jsonrpc": "2.0", "id": 1, "method": long });
+    let (_, valid) = setup.grant("2026-11-26T12:00:00Z", "1h");
+    // The new grant reaches the gateway on its next read of the log, within a second.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while call(&address, Some(&valid), &tool).0 != 200 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the grant never arrived"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    let audit = setup.audit();
+    let tools: Vec<_> = audit
+        .iter()
+        .filter_map(|line| line["tool"].as_str())
+        .collect();
+    assert!(
+        tools.iter().all(|tool| tool.chars().count() <= 64),
+        "{tools:?}"
+    );
+    assert!(tools.iter().any(|tool| tool.starts_with("xaaa")));
+}
+
+#[test]
+fn gateway_refuses_a_body_over_64_kib_before_reading_it() {
+    let mut setup = Setup::new("body");
+    let address = setup.start("2026-11-26T12:00:30Z");
+    let (status, _, body) = send(&address, "POST", None, 900 * 1024, "");
+    assert_eq!(status, 413, "{body}");
+    assert!(body.contains("64 KiB"), "{body}");
+}
+
+#[test]
+fn gateway_skips_a_grant_it_cannot_record_and_still_reads_the_revocation_after_it() {
+    let mut setup = Setup::new("skips");
+    let (live, token) = setup.grant("2026-11-26T12:00:00Z", "1h");
+    let bus = Bus::open(&setup.dir.join("bus.db")).unwrap();
+    let hash: String = Sha256::digest(token.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let same_hash = json!({ "grant": "other", "hash": hash, "seconds": 3600 });
+    let no_hash = json!({ "grant": "bare", "seconds": 3600 });
+    for data in [same_hash, no_hash] {
+        bus.publish("factory.intake", &Message::new("priory.run.granted", data))
+            .unwrap();
+    }
+    setup.revoke("2026-11-26T12:00:00Z", &live);
+    let address = setup.start("2026-11-26T12:00:30Z");
+
+    let (status, body) = call(&address, Some(&token), &whoami());
+    assert_eq!(status, 401, "{body}");
+    assert!(body.contains("is revoked"), "{body}");
+    let skipped: Vec<_> = setup
+        .audit()
+        .into_iter()
+        .filter(|line| line["status"].is_null())
+        .map(|line| line["outcome"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(skipped.len(), 2, "{skipped:?}");
+    assert!(skipped[0].contains("UNIQUE"), "{skipped:?}");
+    assert!(skipped[1].contains("no SHA-256"), "{skipped:?}");
+}
+
+#[test]
+fn log_gateway_role_prints_the_roles_sql() {
+    let printed = harness::priory()
+        .args(["log", "gateway-role", "priory_gateway"])
+        .output()
+        .unwrap();
+    let sql = String::from_utf8(succeeded(&printed).stdout.clone()).unwrap();
+    assert_eq!(
+        sql.trim_end(),
+        priory_intake::log::sql::gateway_role("priory_gateway")
+            .unwrap()
+            .trim_end()
+    );
+    assert!(sql.contains("ARRAY['priory.run.called']"), "{sql}");
+    assert!(sql.contains("consumer = 'priory.gateway'"), "{sql}");
 }
 
 #[test]
