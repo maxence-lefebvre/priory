@@ -229,6 +229,10 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         usage: transcript::usage,
     };
     let consumer = runners::consumer(trace.runner.as_deref());
+    // The name an intake keeps this runner's watches by: a factory of one runner has no runner name.
+    let poster = trace.runner.clone().or_else(|| trace.machine.clone());
+    let poster = poster.unwrap_or_else(|| "priory".to_owned());
+    let mut posted = crate::watches::Posted::default();
     runners::name(&db, trace.runner.as_deref())?;
     // What came before writes the state alone, which a rollback puts back. A dispatch reaches further.
     let held = match lock {
@@ -245,6 +249,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     }
     if once {
         drain(&*bus, &consumer, &mut db, &trace, counting.get(&home))?;
+        crate::watches::post(&mut db, &poster, intake::now()?, &mut posted)?;
         runners::flush(&db, &*bus)?;
         crate::held::tick(&mut db, &trace, intake::now()?)?;
         match state::waiting(&db)? {
@@ -511,6 +516,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             && !behind
         {
             runners::tick(&mut db, me, factory, intake::now()?, &mut alive)?;
+        }
+        if !behind {
+            crate::watches::post(&mut db, &poster, intake::now()?, &mut posted)?;
         }
         if let Some(drained) = drained {
             let tried = drained.and_then(|caught_up| match caught_up {

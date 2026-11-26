@@ -4,9 +4,32 @@ Triggers tell the intake which repositories, Linear views and Slack channels to 
 wait can name something no trigger covers, such as a Slack thread where it asked a question. This
 page explains how the intake learns about those waits and polls for them.
 
+## Where the list comes from
+
+Each runner's daemon posts what its intake would watch on the log, as
+[`priory.watch.posted`](../reference/events.md#priorywatchposted). It posts on start, whenever the
+list changes and once a day, with its runner's name. So an intake on another machine, such as the
+diocese, watches every runner's waits without their state files.
+
+The intake reads the log as its own consumer, `priory.intake`, on every poll, and watches the union
+of each runner's newest posting. On start, it reads the log back, at most 7 days, to each runner's
+newest posting. In a factory of fewer than two runner files, it watches the newest posting alone,
+whatever runner name it carries.
+
+- A runner that ends a task posts a list without it, so the intake stops watching it on its next
+  poll.
+- A runner's list expires 7 days after its last posting. A running daemon posts daily, so only a
+  runner stopped for a week loses its watches, and it posts again when it starts. A runner asleep
+  for less keeps them: the log holds the events for it until it wakes.
+- In a factory of several runners, a posting from a runner without a runner file is dropped, so
+  removing a runner's file stops its watches at once.
+
+While no posting is on the log, as with a daemon older than this intake, the intake reads the state
+file that `PRIORY_DB` names instead. Without either, it watches none of them.
+
 ## What it watches
 
-On every poll, the intake reads the state file that `PRIORY_DB` names and collects:
+Each runner's list holds what its state file has of:
 
 | From | Kinds |
 | ---- | ----- |
@@ -21,8 +44,7 @@ A done task's subscriptions stay, so feedback can reopen it. A comment on a fail
 task's key posts a report instead (see [routing.md](../daemon/routing.md#feedback-on-a-failed-or-dropped-task)).
 An ended task's own Slack thread, its key, is read for 7 days only after the task ended, since each
 thread costs a call per poll. A thread that a wait and a subscription
-both name is read once a poll, from the earlier of their times. Without `PRIORY_DB`,
-the intake watches none of them.
+both name is read once a poll, from the earlier of their times.
 
 Each wait gives a resource and the time of its agent's last prompt. A subscription gives its
 resource and when it was made, and a branch the time its task last changed state. Each hold condition gives its

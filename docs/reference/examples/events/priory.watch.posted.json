@@ -1,0 +1,22 @@
+{
+  "id": "4f1c2a8e-7b3d-4e9a-9c61-2d8b5a0e3f17",
+  "type": "priory.watch.posted",
+  "subject": "desktop",
+  "time": "2026-11-21T10:00:00Z",
+  "data": {
+    "runner": "desktop",
+    "watches": [
+      {
+        "resource": "github:owner/name#42",
+        "since": "2026-11-21T09:58:00Z",
+        "rank": 0
+      },
+      {
+        "resource": "github:owner/name@priory/7",
+        "since": "2026-11-21T09:30:00Z",
+        "rank": 1
+      }
+    ]
+  },
+  "links": []
+}

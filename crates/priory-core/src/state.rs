@@ -2719,6 +2719,10 @@ pub(crate) fn handle_in(
     trace: &crate::trace::Trace,
     counter: Option<&crate::embed::Counter>,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    // A runner's watches are for the intake: the inbox would only fill with them.
+    if message.kind == priory_intake::intake::WATCH_POSTED {
+        return Ok(Vec::new());
+    }
     let seen = tx
         .query_row(
             "SELECT 1 FROM inbox WHERE id = ?1",

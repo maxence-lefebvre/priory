@@ -27,9 +27,11 @@ size and cost, the open questions with a recommendation each, and six slices tha
   starts, and its claims, holds and alive messages queue until the link is back
   ([runners.md](../daemon/runners.md#a-runner-cut-off-from-the-log)).
 - **The intake runs on a runner.** `priory intake` polls GitHub, Linear and Slack and publishes
-  events ([intake/README.md](../intake/README.md)). It reads the waits, holds and subscriptions it
-  watches from the state file that `PRIORY_DB` names, so it watches one runner's waits
-  ([watches.md](../intake/watches.md)). Webhook deliveries reach the daemon's server instead, and a
+  events ([intake/README.md](../intake/README.md)). Each runner's daemon posts the waits, holds,
+  subscriptions and task branches its intake would watch as `priory.watch.posted`, and the intake
+  reads them from the log, so it watches every runner's waits. With no posting on the log, it reads
+  them from the state file that `PRIORY_DB` names ([watches.md](../intake/watches.md)). Its other
+  reads, such as red merges and its poll health, still need that state file. Webhook deliveries reach the daemon's server instead, and a
   trigger's `pre` script runs on the machine that took the event ([pre.md](../intake/pre.md#where-it-runs)).
 - **The server listens on loopback.** `priory serve` and the daemon's `[serve]` refuse a
   non-loopback `listen` unless `public = true`, speak plain HTTP and check one bearer token,
@@ -377,6 +379,8 @@ Each slice ships alone and leaves the factory working.
   intake would watch: its open waits, holds, subscriptions and task branches, as
   `priory.watch.posted`. The intake reads them from the log as its own consumer, `priory.intake`,
   in place of a state file. A `pre` script then runs on the VM, so its tools must be there.
+  The posting and the intake's read of it are on `main`; a runner's list expires 7 days after its
+  last posting ([watches.md](../intake/watches.md#where-the-list-comes-from)).
 - **Tests.** A runner's wait on a pull request reaches the intake through the log, and its event
   routes back to that runner. A runner that ends the task removes the watch.
 - **Rollback.** Stop the VM's intake and start the desktop's. Events carry their ids, so an event

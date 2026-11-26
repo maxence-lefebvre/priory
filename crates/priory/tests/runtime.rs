@@ -16749,6 +16749,29 @@ impl Setup {
     /// prints [], since the branch of an active task makes the intake poll `owner/repo`. Without a
     /// fake `curl`, Linear has nothing new, since a Linear task subscribes to its issue.
     fn poll(&self, env: &[(&str, &str)]) -> Exit {
+        self.polling(env).output().unwrap()
+    }
+
+    /// One poll of `priory intake` with no state file, as on a machine that runs no daemon, on a
+    /// factory with this one's runner files: it watches only what the runners post on the log.
+    fn intake_from_log(&self) {
+        let mut polling = self.polling(&[]);
+        let runners = self.dir.join("factory/runners");
+        let into = self.dir.join("intake-factory/runners");
+        fs::create_dir_all(&into).unwrap();
+        for runner in fs::read_dir(&runners).into_iter().flatten() {
+            let runner = runner.unwrap();
+            fs::copy(runner.path(), into.join(runner.file_name())).unwrap();
+        }
+        let output = polling.env_remove("PRIORY_DB").output().unwrap();
+        assert!(
+            output.status.success(),
+            "intake: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn polling(&self, env: &[(&str, &str)]) -> Command {
         let gh = self.dir.join("bin/gh");
         if !gh.exists() {
             fs::create_dir_all(gh.parent().unwrap()).unwrap();
@@ -16776,15 +16799,15 @@ impl Setup {
                 .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
         )
         .unwrap();
-        self.command(env!("CARGO_BIN_EXE_priory"))
+        let mut command = self.command(env!("CARGO_BIN_EXE_priory"));
+        command
             .args(["intake", "--once"])
             .arg(&factory)
             .env("PATH", path)
             .env("SLACK_BOT_TOKEN", SLACK_TOKEN)
             .env("LINEAR_API_KEY", "lin_api_secret_test_key")
-            .envs(env.iter().copied())
-            .output()
-            .unwrap()
+            .envs(env.iter().copied());
+        command
     }
 }
 
@@ -17585,6 +17608,94 @@ fn a_restarted_intake_resumes_a_wait_only_repository_where_it_stopped() {
         .map(|stored| stored.message.data["baseline"].clone())
         .collect();
     assert_eq!(labeled, [json!(false)]);
+}
+
+/// Waits until `runner`'s newest `priory.watch.posted` lists resources that `done` accepts.
+fn posted(setup: &Setup, runner: &str, done: impl Fn(&[String]) -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let newest = setup
+            .bus()
+            .messages(&herdr_bus::MessageQuery {
+                output: Some(OUTPUT.into()),
+                limit: 1000,
+                ..herdr_bus::MessageQuery::default()
+            })
+            .unwrap()
+            .into_iter()
+            .filter(|stored| {
+                stored.message.kind == "priory.watch.posted"
+                    && stored.message.data["runner"] == runner
+            })
+            .inspect(|stored| conform::conforms(&serde_json::to_value(&stored.message).unwrap()))
+            .max_by_key(|stored| stored.seq);
+        let resources: Vec<String> = newest
+            .iter()
+            .flat_map(|stored| stored.message.data["watches"].as_array().unwrap().clone())
+            .map(|watch| watch["resource"].as_str().unwrap().to_owned())
+            .collect();
+        if newest.is_some() && done(&resources) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "{runner} posted {resources:?}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn a_pull_request_wait_reaches_an_intake_without_a_state_file_through_the_log() {
+    let setup = asleep_on("watch-from-log", on_pull_7("review"));
+    // A factory of one runner posts by its hostname.
+    posted(&setup, "runner", |resources| {
+        resources.contains(&"github:owner/repo#7".to_owned())
+    });
+    let log = fake_gh(&setup);
+
+    setup.intake_from_log();
+
+    let calls = fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        calls.contains("api repos/owner/repo/issues/events"),
+        "{calls}"
+    );
+}
+
+#[test]
+fn an_intake_with_no_posting_on_the_log_reads_the_state_file() {
+    let setup = asleep_on(
+        "watch-state-file",
+        json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
+    );
+    setup.answer_slack(&[]);
+    let empty = setup.dir.join("empty-bus.db");
+
+    setup.intake_with(&[("HERDR_BUS_DB", empty.to_str().unwrap())]);
+
+    let args = fs::read_to_string(setup.dir.join("curl-args")).unwrap();
+    assert!(args.contains("conversations.replies"), "{args}");
+}
+
+#[test]
+fn a_runner_that_ends_its_task_stops_the_intake_watching_its_thread() {
+    let setup = asleep_on(
+        "watch-ended",
+        json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
+    );
+    let thread = format!("slack:C0123:{THREAD}");
+    posted(&setup, "runner", |resources| resources.contains(&thread));
+    setup.answer_slack(&[]);
+    setup.intake_from_log();
+    let args = fs::read_to_string(setup.dir.join("curl-args")).unwrap();
+    assert!(args.contains("conversations.replies"), "{args}");
+
+    let cancelled = setup.priory(&["cancel", "1"]);
+    assert!(cancelled.status.success(), "{cancelled:?}");
+    posted(&setup, "runner", |resources| !resources.contains(&thread));
+    fs::remove_file(setup.dir.join("curl-args")).unwrap();
+    setup.intake_from_log();
+
+    let args = fs::read_to_string(setup.dir.join("curl-args")).unwrap_or_default();
+    assert!(!args.contains("conversations.replies"), "{args}");
 }
 
 /// Waits until the daemon answers on its socket.
@@ -27547,6 +27658,32 @@ fn a_runner_several_ticks_behind_applies_no_line_before_it_read_the_whole_log() 
     assert!(reply.contains("Ok"), "{reply}");
     assert!(a.rows("inbox").len() >= 1500);
     a.crash();
+}
+
+#[test]
+fn a_runners_wait_reaches_the_intake_through_the_log_and_its_reply_wakes_only_that_runner() {
+    let mut a = runner("watch-route", "a", None);
+    let mut b = runner("watch-route", "b", Some(&a));
+    let on = json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD });
+    a.calls(&[wait(on)]);
+    a.publish(&requested(42));
+    a.start();
+    a.until_own_tasks(|rows| rows.first().is_some_and(|row| row[4] == "asleep"));
+    b.start();
+    let thread = format!("slack:C0123:{THREAD}");
+    posted(&a, "a", |resources| resources.contains(&thread));
+    posted(&a, "b", |_| true);
+    a.answer_slack(&[slack_message(&ts(after_wait_stored(&a)), "U0PERSON")]);
+
+    a.intake_from_log();
+
+    a.until_own_tasks(|rows| rows.first().is_some_and(|row| row[4] == "running"));
+    b.until("inbox", |rows| {
+        rows.iter()
+            .any(|row| row.contains(&"slack.thread.replied".to_owned()))
+    });
+    assert!(b.own_tasks().is_empty(), "{:?}", b.rows("tasks"));
+    assert!(b.rows("runs").is_empty());
 }
 
 #[test]

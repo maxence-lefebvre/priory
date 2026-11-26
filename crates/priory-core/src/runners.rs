@@ -78,6 +78,9 @@ pub(crate) fn view(
     viewer: &str,
     trace: &Trace,
 ) -> Result<(), Error> {
+    if message.kind == intake::WATCH_POSTED {
+        return Ok(());
+    }
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let seen = tx
         .query_row(

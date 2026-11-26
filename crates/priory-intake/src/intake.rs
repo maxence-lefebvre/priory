@@ -17,6 +17,7 @@ mod sentry;
 mod shortcut;
 mod slack;
 mod threads;
+mod watches;
 mod webhook;
 
 pub use cloudwatch::CloudwatchWebhook;
@@ -39,6 +40,8 @@ pub const TASK_CLAIMED: &str = "priory.task.claimed";
 pub const TASK_HELD: &str = "priory.task.held";
 /// A runner renews its lease.
 pub const RUNNER_ALIVE: &str = "priory.runner.alive";
+/// A runner lists the waits, holds, subscriptions and task branches its intake would watch.
+pub const WATCH_POSTED: &str = "priory.watch.posted";
 /// A person on one runner answers an ask of another.
 pub const ASK_ANSWERED: &str = "priory.ask.answered";
 /// A person on one runner dismisses an ask of another.
@@ -261,6 +264,7 @@ pub fn output() -> Output {
             TASK_CLAIMED,
             TASK_HELD,
             RUNNER_ALIVE,
+            WATCH_POSTED,
             ASK_ANSWERED,
             ASK_DISMISSED,
             ASK_POSTED,
@@ -278,6 +282,7 @@ pub fn output() -> Output {
 /// A resource an open wait names, `linear:<issue>`, `slack:<channel>:<thread ts>` or
 /// `github:<owner/name>#<number>`, and the time of its agent's last prompt: the intake publishes
 /// what happens to it from then on.
+#[derive(Clone)]
 pub struct Watch {
     pub resource: String,
     pub since: Timestamp,
@@ -336,8 +341,10 @@ pub type Outcomes<'a> = [(&'a str, Option<String>)];
 /// How many tasks with a key have ended: done, failed or dropped.
 pub type Ended = fn(&str) -> Result<u64, String>;
 
-/// Polls the sources until stopped, or once. `watched` reads the open waits on each poll, so that
-/// the intake polls the Slack threads, Linear issues and pull request repositories they name.
+/// Polls the sources until stopped, or once. On each poll it reads the waits, holds, subscriptions
+/// and task branches the runners post on the log, or `watched` reads them from the state file while
+/// no runner posted, so that the intake polls the Slack threads, Linear issues and pull request
+/// repositories they name.
 /// `merged` reads the task pull requests merged since the time it is given, to read their merge
 /// commits' check runs.
 /// `red` reads the unread reports of red merges since the time it is given, and `recovered` marks one read.
@@ -393,6 +400,9 @@ pub fn run(
     let opened = log::open(factory.log()).map_err(|error| error.to_string())?;
     let bus = opened.as_ref();
     bus.declare(&output()).map_err(|error| error.to_string())?;
+    let runners: BTreeSet<String> = factory.runners.keys().cloned().collect();
+    let mut postings = watches::Postings::start(bus, &runners, now()?)
+        .map_err(|error| format!("read the runners' watches: {error}"))?;
     // A source the triggers need that cannot start, such as one without its key, ends the intake;
     // recording it first lets the desk say why while systemd restarts it.
     let started = |source: &str, error: String| {
@@ -419,7 +429,7 @@ pub fn run(
         shortcut::start(&factory.dir, settings, ended).map_err(|error| started("slack", error))?;
     }
     // The loop reports a failing read of the waits; here it only costs those repos their cursors.
-    let waiting = watched().unwrap_or_default();
+    let waiting = watch_list(bus, &mut postings, &runners, watched).unwrap_or_default();
     let resumed: BTreeSet<&str> = repos
         .iter()
         .copied()
@@ -445,7 +455,7 @@ pub fn run(
     let mut first = true;
     loop {
         let tick = std::time::Instant::now();
-        let watching = match watched() {
+        let watching = match watch_list(bus, &mut postings, &runners, watched) {
             Ok(watching) => watching,
             Err(error) if once => return Err(error),
             Err(error) => {
@@ -593,6 +603,23 @@ fn since(now: Timestamp) -> String {
         |_| String::new(),
         |earliest| earliest.strftime("%Y-%m-%dT%H:%M:%SZ").to_string(),
     )
+}
+
+/// What the runners posted on the log that their intake would watch, or what `watched` reads from
+/// the state file while no runner posted.
+fn watch_list(
+    bus: &dyn Log,
+    postings: &mut watches::Postings,
+    runners: &BTreeSet<String>,
+    watched: fn() -> Result<Vec<Watch>, String>,
+) -> Result<Vec<Watch>, String> {
+    postings
+        .read(bus, runners)
+        .map_err(|error| format!("read the runners' watches: {error}"))?;
+    match postings.watches(runners, now()?) {
+        Some(watches) => Ok(watches),
+        None => watched(),
+    }
 }
 
 /// The repository of a pull request wait, `owner/name` from `github:owner/name#42`.

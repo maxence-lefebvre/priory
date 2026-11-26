@@ -58,7 +58,9 @@ while the owner routes it as [routing.md](routing.md) says.
 The runners publish more message types on the same output, which
 [events.md](../reference/events.md#runners) lists: `priory.task.claimed`, `priory.task.held`,
 `priory.runner.alive`, `priory.ask.posted`, `priory.ask.applied`, `priory.ask.answered`,
-`priory.ask.dismissed`, `priory.task.acted`, `priory.task.applied` and `priory.task.dropped`, and the memory messages
+`priory.ask.dismissed`, `priory.task.acted`, `priory.task.applied` and `priory.task.dropped`,
+`priory.watch.posted`, which lists what the intake watches for it (see
+[watches.md](../intake/watches.md#where-the-list-comes-from)), and the memory messages
 `priory.memory.written`, `priory.memory.accepted` and `priory.memory.dropped` (see
 [skills.md](skills.md#memories-agents-write)), and `priory.autopilot.set`, which turns
 [autopilot](waits.md#autopilot) on or off on every runner. A runner applies its own setting at once
