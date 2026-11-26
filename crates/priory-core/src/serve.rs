@@ -987,12 +987,20 @@ struct MoveBody {
 #[serde(deny_unknown_fields)]
 struct SnoozeBody {
     kind: String,
-    id: i64,
+    id: SnoozeId,
     #[serde(rename = "for")]
     span: Option<String>,
     until: Option<String>,
     #[serde(default)]
     clear: bool,
+}
+
+/// A snooze's item: a number, or for an ask also the name a daemon-made or outside ask lists.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum SnoozeId {
+    Number(i64),
+    Name(String),
 }
 
 /// The pick endpoint's body: `revision` is the report's revision the client showed.
@@ -1562,10 +1570,17 @@ fn write_line(
                 _ => return Err(Reply::error(400, "send one of for, until and clear: true")),
             }
             .map_err(|error| Reply::error(400, &error))?;
+            let id = match (&body.id, body.kind.as_str()) {
+                (SnoozeId::Number(id), _) => *id,
+                (SnoozeId::Name(name), "ask") => ask_id(db, name)?,
+                (SnoozeId::Name(_), kind) => {
+                    return Err(Reply::error(400, &format!("a {kind} id is a number")));
+                }
+            };
             let snooze = snooze::Snooze {
                 snooze: snooze::Item {
                     kind: body.kind,
-                    id: body.id,
+                    id,
                 },
                 until,
             };

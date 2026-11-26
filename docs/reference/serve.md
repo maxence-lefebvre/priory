@@ -196,7 +196,7 @@ application/json` and a JSON body of at most 16 KiB with exactly the fields belo
 | -------- | ---- |
 | `POST /api/asks/{id}/answer` | `revision`, an integer, and one of `option` or `text`, a string. Both become the answer: a human step's ask takes one of its options, `OPTION: NOTE` or a written answer (see [waits.md](../daemon/waits.md#asks-and-answers)). `run`, a boolean, default `false`: `true` confirms an answer that runs the ask's command, as `priory answer --run` does. Without it, that answer gets `422`. `call`, optional, as below |
 | `POST /api/asks/{id}/dismiss` | `revision`, an integer, and optionally `call` |
-| `POST /api/snooze` | `kind` (`ask`, `blocked`, `failed` or `prompt`) and `id`, an integer, then one of: `for`, a duration such as `1h`; `until`, an RFC 3339 time; or `"clear": true` |
+| `POST /api/snooze` | `kind` (`ask`, `blocked`, `failed` or `prompt`) and `id`, an integer, or for an ask also its name, such as `review-7`, then one of: `for`, a duration such as `1h`; `until`, an RFC 3339 time; or `"clear": true` |
 | `POST /api/request` | `text`, a string, then optionally `workflow`, `band`, `lane` and `repo`, strings, `intervention`, `plan` or `hands-off`, and `auto_answer`, `high` or `medium`. What it leaves unset comes from `[request]` and the URLs in `text`, as for [`priory add`](../intake/cli.md#priory-add) |
 | `POST /api/tasks/{id}/resume` | `{}` |
 | `POST /api/tasks/{id}/revive` | optionally `step`, a string: the step to restart at, as `--step` |
