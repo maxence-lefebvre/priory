@@ -2,7 +2,7 @@
 import { memo, useEffect } from "react";
 import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "../runs.js";
 import { filtered, olderPart, taskLabel } from "../tasks.js";
-import { askFor, asked } from "../legacy/data.js";
+import { askFor, asked } from "../data.js";
 import { Icon, StateWord, Tile } from "../components/Icon.jsx";
 import { Facets, OlderRow, PageLoading, RowsList, RowsPage, facetPicks, facetQuery, listView } from "../components/Lists.jsx";
 import { SavedViews } from "../components/SavedViews.jsx";

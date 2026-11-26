@@ -963,6 +963,7 @@ struct DismissBody {
 #[serde(deny_unknown_fields)]
 struct ActBody {
     text: Option<String>,
+    pull_request: Option<String>,
     step: Option<String>,
     revision: Option<i64>,
 }
@@ -1618,13 +1619,14 @@ fn write_line(
             let body: ActBody = serde_json::from_slice(body).map_err(bad)?;
             let takes = match *act {
                 "say" => body.text.is_some() && body.step.is_none() && body.revision.is_none(),
+                _ if body.pull_request.is_some() => false,
                 "revive" => body.text.is_none() && body.revision.is_none(),
                 "cancel" | "release" => body.text.is_none() && body.step.is_none(),
                 _ => body.text.is_none() && body.step.is_none() && body.revision.is_none(),
             };
             if !takes {
                 let fields = match *act {
-                    "say" => "text",
+                    "say" => "text and an optional pull_request",
                     "revive" => "an optional step",
                     "cancel" | "release" => "an optional revision",
                     _ => "no field",
@@ -1640,6 +1642,7 @@ fn write_line(
                 step: body.step,
                 hold: None,
                 text: body.text,
+                pull_request: body.pull_request,
                 expected: body.revision,
                 now: false,
             };

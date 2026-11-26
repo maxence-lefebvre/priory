@@ -184,3 +184,27 @@ export function deskBanners(desk, ago) {
     ...(desk.caps ?? []).map((/** @type {string} */ text) => ({ text, icon: "hourglass", intake: false })),
   ].filter((banner) => banner.text);
 }
+
+const STOPPED = ["blocked", "failed", "prompt", "command"];
+
+/**
+ * What the Desk draws from its four listings: the open asks oldest first, as the asks listing holds
+ * them, the ask the capsule opens, the stopped work, to-dos, reports and every other item, the
+ * banners, and the queue's parts.
+ * @param {{ desk: any, asks: any[], queue: any, tasks: any[] }} data @param {(iso: string) => string} ago
+ */
+export function deskModel({ desk, asks, queue, tasks }, ago) {
+  const byId = new Map(asks.map((ask) => [ask.id, ask]));
+  const items = desk.items.filter((/** @type {any} */ item) => item.kind !== "queue");
+  const open = items.filter((/** @type {any} */ item) => item.kind === "ask").map((/** @type {any} */ item) => byId.get(item.id) || { ...item, question: item.what, options: [] });
+  const of = (/** @type {string[]} */ kinds) => items.filter((/** @type {any} */ item) => kinds.includes(item.kind));
+  // The capsule opens the ask that ranks first, not only the oldest one.
+  const first = desk.ranked?.find((/** @type {any} */ item) => item.kind === "ask");
+  return {
+    next: desk.next, open, first: first ? byId.get(first.id) || open[0] : open[0],
+    stopped: of(STOPPED), todos: of(["todo"]), reports: of(["report"]),
+    other: items.filter((/** @type {any} */ item) => ![...STOPPED, "ask", "report", "todo"].includes(item.kind)),
+    asleep: desk.counts.asleep, asleepTasks: queue.asleep, banners: deskBanners(desk, ago), intake: desk.intake,
+    running: queue.running, queue: queue.waiting, tasks, upNext: queue.up_next, needs: items.length,
+  };
+}

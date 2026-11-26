@@ -4313,6 +4313,7 @@ fn act(act: &str, mut args: Vec<String>, hold: Option<factory::Hold>, now: bool)
         step,
         hold,
         text,
+        pull_request: None,
         expected,
         now,
     })

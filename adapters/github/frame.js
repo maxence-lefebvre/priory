@@ -6,7 +6,7 @@ import { parsePr } from "./lib/pr.js";
 import { blank, connectForm as sharedForm } from "./lib/connect.js";
 import { call } from "./lib/request.js";
 import { clear, get, put, remove } from "./lib/store.js";
-import { fixBranch, fixText, sayRoute } from "./lib/task.js";
+import { fixBranch, fixText, sayBody, sayRoute } from "./lib/task.js";
 
 const params = new URLSearchParams(location.search);
 // command.html is not web-accessible, so no page can embed its Run button.
@@ -208,7 +208,7 @@ async function say(text, keep, task = S.task.id) {
   S.sayNotice = null;
   S.sayUnknown = null;
   render();
-  const refused = await write(`/api/tasks/${task}/say`, { text });
+  const refused = await write(`/api/tasks/${task}/say`, sayBody(S.pr, text));
   S.sayBusy = false;
   S.sayNotice = refused?.[1] ?? null;
   if (refused?.[0] === "unknown") S.sayUnknown = { task, text };

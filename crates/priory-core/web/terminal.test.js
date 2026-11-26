@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { KEYS, giveBack, keyboardSession, paintRows, sayLine, screenWatch, screenRows, sendKeys, takeKeyboard } from "./terminal.js";
+import { KEYS, giveBack, keyboardSession, sayLine, screenWatch, screenRows, sendKeys, takeKeyboard } from "./terminal.js";
 
 // A clock the test moves by hand, and a server whose replies the test releases one by one.
 function rig() {
@@ -296,32 +296,6 @@ test("the cursor marks the cell it sits on, inside a coloured part or past the r
     { text: " ", cls: "", hidden: false, cursor: true },
   ]);
   assert.deepEqual(screenRows(["ab"], null), screenRows(["ab"]));
-});
-
-// A `pre` of the page: row elements whose markup the test reads, and which a repaint replaced.
-function fakePre() {
-  const pre = { children: [], written: [] };
-  const element = () => {
-    const row = { markup: "", remove: () => pre.children.splice(pre.children.indexOf(row), 1) };
-    Object.defineProperty(row, "innerHTML", { set(markup) { row.markup = markup; pre.written.push(markup); } });
-    return row;
-  };
-  pre.ownerDocument = { createElement: element };
-  pre.append = (row) => pre.children.push(row);
-  return pre;
-}
-
-test("a repaint writes only the rows whose markup changed, so a selection in the others stays", () => {
-  const pre = fakePre();
-  paintRows(pre, ["$ cargo test\n", "running 3 tests\n", "\n"]);
-  const [first, second] = pre.children;
-  pre.written = [];
-  paintRows(pre, ["$ cargo test\n", "running 3 tests\n", "test a ... ok\n", "\n"]);
-  assert.deepEqual(pre.written, ["test a ... ok\n", "\n"]);
-  assert.equal(pre.children[0], first);
-  assert.equal(pre.children[1], second);
-  paintRows(pre, ["$ cargo test\n"]);
-  assert.deepEqual(pre.children.map((row) => row.markup), ["$ cargo test\n"]);
 });
 
 // A server that answers each post with the next of `replies`, and records what it was sent.

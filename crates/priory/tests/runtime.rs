@@ -88,7 +88,7 @@ macro_rules! undo_scheduled_sweeps {
 /// pending requests.
 macro_rules! undo_pre {
     () => {
-        concat!(undo_labels!(), undo_scheduled_sweeps!(), "ALTER TABLE asks DROP COLUMN confidence; ALTER TABLE asks DROP COLUMN rationale;
+        concat!(undo_labels!(), undo_scheduled_sweeps!(), "DROP TRIGGER IF EXISTS an_ended_task_withdraws_its_asks; ALTER TABLE asks DROP COLUMN confidence; ALTER TABLE asks DROP COLUMN rationale;
   ALTER TABLE tasks DROP COLUMN auto_answer; ALTER TABLE tasks DROP COLUMN added_by; DROP VIEW task_text; CREATE VIEW task_text AS SELECT tasks.id AS task,
     coalesce(json_extract(inbox.data, '$.title'), '') AS title,
     coalesce(json_extract(inbox.data, '$.text'), json_extract(inbox.data, '$.body'),
@@ -9915,7 +9915,7 @@ fn an_answer_to_the_ask_of_a_cancelled_task_is_refused() {
     assert!(!answered.status.success());
     assert_eq!(
         String::from_utf8_lossy(&answered.stderr),
-        "priory answer: task 1 is dropped\n"
+        "priory answer: ask 1 was withdrawn when task 1 ended\n"
     );
     assert_eq!(setup.rows("tasks")[0][4], "dropped");
 }
@@ -11550,6 +11550,138 @@ fn a_say_on_a_done_task_whose_pull_request_another_active_task_owns_is_refused()
     .unwrap();
 
     say_refused(&setup, "task 2 is already active on github:owner/repo#7");
+}
+
+/// Adds the inbox event `id` that reads pull request `number` of `repo` open.
+fn read_open(setup: &Setup, id: &str, repo: &str, number: i64) {
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute(
+            "INSERT INTO inbox (id, type, subject, time, data, links, outcome) VALUES
+               (?1, 'github.pull_request.opened', ?2 || '#' || ?3, '2026-11-17T10:00:00Z',
+                json_object('repo', ?2, 'pull_request', ?3, 'open', json('true')), '[]', 'ignored')",
+            rusqlite::params![id, repo, number],
+        )
+        .unwrap();
+}
+
+/// Runs `sql` on the state database of `setup`.
+fn state_sql(setup: &Setup, sql: &str) {
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute_batch(sql)
+        .unwrap();
+}
+
+#[test]
+fn a_say_on_a_done_task_whose_pull_request_merged_is_refused_though_it_subscribes_to_an_open_one() {
+    let setup = gated("say-merged-held");
+    setup.publish(&closed());
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    state_sql(
+        &setup,
+        "INSERT INTO subscriptions (task, resource) VALUES (1, 'github:owner/repo#9');",
+    );
+    read_open(&setup, "nine", "owner/repo", 9);
+
+    say_refused(
+        &setup,
+        "task 1 is done and its pull request github:owner/repo#7 is merged",
+    );
+}
+
+#[test]
+fn a_say_reopens_no_done_task_through_a_spent_wait_another_repository_or_an_unread_pull_request() {
+    let setup = done_with_open_pull_request("say-stale-holds");
+    let mut close = closed().time(herdr_bus::Timestamp::now());
+    close.data["merged"] = json!(false);
+    setup.publish(&close);
+    setup.until("inbox", |rows| rows.len() == 4);
+    state_sql(
+        &setup,
+        "INSERT INTO waits (id, task, run, kind, resource, fired)
+           VALUES (0, 1, 1, 'pull_request', 'github:owner/repo#9', '2026-11-17T10:00:00Z');
+         INSERT INTO subscriptions (task, resource) VALUES (1, 'github:other/repo#9'),
+           (1, 'github:owner/repo#10');",
+    );
+    read_open(&setup, "nine", "owner/repo", 9);
+    read_open(&setup, "other", "other/repo", 9);
+
+    say_refused(
+        &setup,
+        "task 1 is done and its pull request github:owner/repo#7 is closed",
+    );
+}
+
+#[test]
+fn a_say_on_a_done_task_is_refused_while_another_active_task_holds_a_pull_request_of_its_stack() {
+    let setup = done_with_open_pull_request("say-stack-rival");
+    state_sql(
+        &setup,
+        "INSERT INTO tasks (key, workflow, step, state, band, trigger, source)
+           SELECT 'cli:above', workflow, step, 'blocked', band, trigger, source FROM tasks WHERE id = 1;
+         INSERT INTO subscriptions (task, resource) VALUES (2, 'github:owner/repo#7'),
+           (1, 'github:owner/repo#8');",
+    );
+    read_open(&setup, "eight", "owner/repo", 8);
+
+    say_refused(&setup, "task 2 is already active on github:owner/repo#7");
+}
+
+#[test]
+fn a_say_through_the_api_reopens_a_done_task_on_the_pull_request_it_names() {
+    let setup = done_with_open_pull_request("say-names-pr");
+    state_sql(
+        &setup,
+        "INSERT INTO subscriptions (task, resource) VALUES (1, 'github:owner/repo#9');",
+    );
+    read_open(&setup, "nine", "owner/repo", 9);
+    let (mut server, address) = served(&setup);
+    let say = |pull_request: &str| {
+        post(
+            &address,
+            "/api/tasks/1/say",
+            json!({ "text": "Fix the empty case.", "pull_request": pull_request }),
+        )
+    };
+
+    let foreign = say("github:owner/repo#11");
+    let said = say("github:owner/repo#9");
+
+    server.kill().unwrap();
+    server.wait().unwrap();
+    assert!(
+        foreign
+            .1
+            .to_string()
+            .contains("task 1 is done and does not hold github:owner/repo#11"),
+        "{foreign:?}"
+    );
+    assert_eq!(said.0, 200, "{said:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    assert!(
+        typed[2].contains("generation 2: github:owner/repo#9 is still open."),
+        "{typed:?}"
+    );
+    let reopened: Vec<_> = setup
+        .trace()
+        .into_iter()
+        .filter(|record| record["type"] == "factory.task.reopened")
+        .map(|record| record["data"]["pull_request"].clone())
+        .collect();
+    assert_eq!(reopened, [json!("github:owner/repo#9")]);
+}
+
+#[test]
+fn a_say_on_a_task_done_at_a_step_no_agent_runs_is_refused_and_names_the_reopen_key() {
+    let setup = done_with_open_pull_request("say-code-step");
+    state_sql(&setup, "UPDATE tasks SET step = 'gate' WHERE id = 1;");
+
+    say_refused(
+        &setup,
+        "task 1 is done and would reopen at step gate, which no agent runs: name the step it goes back to in its workflow's `reopen`",
+    );
 }
 
 #[test]
@@ -15311,9 +15443,9 @@ fn an_answer_to_the_ask_of_an_earlier_generation_is_refused() {
     assert!(!answered.status.success());
     assert_eq!(
         String::from_utf8_lossy(&answered.stderr),
-        "priory answer: ask 1 was withdrawn when task 1 was revived\n"
+        "priory answer: ask 1 was withdrawn when task 1 ended\n"
     );
-    assert_eq!(withdrawn_reasons(&setup, "asks"), ["revived"]);
+    assert_eq!(withdrawn_reasons(&setup, "asks"), ["task-ended"]);
     assert!(setup.rows("asks").is_empty());
     assert_eq!(setup.rows("tasks")[0][4], "running");
 }
@@ -20801,6 +20933,25 @@ fn a_removed_review_request_drops_its_running_task_and_ends_its_run() {
     assert_eq!(tasks[0][7], "review request removed");
     assert_eq!(setup.rows("runs")[0][7], "cancelled");
     setup.gone("priory-1");
+}
+
+#[test]
+fn a_removed_review_request_withdraws_its_tasks_open_agent_ask() {
+    let mut setup = reviews("review-withdrawn-ask");
+    setup.calls(&[ask()]);
+    setup.publish_all(&review_request(1));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+
+    setup.publish(&review_event(
+        "github.pull_request.review_request_removed",
+        2,
+    ));
+
+    setup.until("tasks", |rows| rows[0][4] == "dropped");
+    assert_eq!(withdrawn_reasons(&setup, "asks"), ["task-ended"]);
 }
 
 #[test]

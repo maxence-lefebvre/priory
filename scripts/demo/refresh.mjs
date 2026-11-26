@@ -226,10 +226,9 @@ report(unseen === 0 && seen === TASKS, "a hidden tab reads nothing, and once whe
 async function holds(name, path, ready, script) {
   await open(path, ready);
   await sleep(2000);
-  report((await evaluate(script)) === true, name);
+  const found = await evaluate(script);
+  report(found === true, name, found === true ? "" : JSON.stringify(found));
 }
-const COUNT = `let draws = 0; const inner = Object.getOwnPropertyDescriptor(Element.prototype, "innerHTML");
-  Object.defineProperty(Element.prototype, "innerHTML", { ...inner, set(text) { if (this.className === "legacy") { draws++; if (globalThis.failDraw) { globalThis.failDraw = false; throw new Error("a draw that throws"); } } inner.set.call(this, text); } });`;
 const SETTLE = (ms) => `await new Promise((done) => setTimeout(done, ${ms}));`;
 const ROW = 'document.querySelector(".row")';
 const TITLE = (name) => `document.querySelector("#app h1")?.textContent === "${name}"`;
@@ -239,9 +238,6 @@ await holds("Back and forward draw the page of their address", "/queue", TITLE("
     history.back(); ${SETTLE(500)} const back = ${TITLE("Queue")}; history.forward(); ${SETTLE(500)} return there && back && ${TITLE("Runs")}; })()`);
 await holds("a search string stays as it is written", "/tasks?view=ended&band=now", TITLE("Tasks"),
   'location.href.endsWith("/tasks?view=ended&band=now")');
-// A legacy page draws with innerHTML; this goes with the last one.
-await holds("a legacy draw that throws keeps the page", "/", ROW,
-  `(async () => { ${COUNT} globalThis.failDraw = true; document.querySelector('a[href="/asks"]').click(); ${SETTLE(800)} return globalThis.failDraw === false && document.getElementById("app")?.innerText.length > 100; })()`);
 await holds("a superseded refresh never draws", "/", ROW,
   `(async () => {
     const read = fetch; let hold = true;
@@ -264,8 +260,9 @@ await holds("a superseded refresh never draws", "/", ROW,
 // The list and the drawer draw apart, in one pass.
 await holds("a list keeps its scroll while the drawer's ask changes", "/asks/1", `location.pathname === "/asks/1" && document.querySelector('.drawer [aria-label="Next ask"][href]')`,
   `(async () => { const list = () => document.querySelector(".list .scroll"); const next = () => document.querySelector('.drawer [aria-label="Next ask"]'); const to = next().getAttribute("href");
-    list().scrollTop = 60; document.dispatchEvent(new Event("visibilitychange")); ${SETTLE(1500)} const kept = list().scrollTop === 60; next().click(); ${SETTLE(800)}
-    return kept && location.pathname === to && document.querySelectorAll("#app .legacy").length === 2; })()`);
+    list().scrollTop = 60; const drawn = list(); document.dispatchEvent(new Event("visibilitychange")); ${SETTLE(1500)} const kept = list().scrollTop === 60; next().click(); ${SETTLE(800)}
+    const found = { kept, to, at: location.pathname, same: list() === drawn, scroll: list().scrollTop };
+    return kept && found.at === to && found.same && found.scroll === 60 || found; })()`);
 await holds("the drawer keeps its scroll through a refresh of the list", "/asks/1", 'location.pathname === "/asks/1" && document.querySelector(".drawer #trace")',
   `(async () => { const part = () => document.querySelector(".drawer .scroll"); part().scrollTop = 60; const at = part().scrollTop; document.dispatchEvent(new Event("visibilitychange")); ${SETTLE(1500)} return at > 0 && part().scrollTop === at; })()`);
 
@@ -336,7 +333,7 @@ await hooked("a Cancel on a cold task page sends the revision of the task on scr
   const sent = await evaluate("posts");
   return sent.length === 1 && sent[0][0] === "/api/tasks/1/cancel" && sent[0][1].revision === 4242 ? true : sent;
 });
-const DESK_CANCEL = 'document.querySelector("[data-act=cancel]")';
+const DESK_CANCEL = 'document.querySelector(".recw [id$=-cancel]")';
 await open("/", DESK_CANCEL);
 await sleep(2000);
 await hooked("a Cancel on a Desk this device kept waits for the live read, then sends its revision", "/", DESK_CANCEL, { reply: refused, slow: { "/api/desk": 4000 }, revision: { "/api/desk": 4243 } }, async () => {
@@ -381,9 +378,9 @@ await hooked("a queue that cannot be read again says so on its page, and the app
   await until('!document.querySelector(".stale")', "the note to go");
   return found.conn === "live" && found.said.startsWith("Could not read the queue again: /api/queue answered 500.") && kept ? true : { ...found, kept };
 });
-// land() keeps a failed listing's last read and lands the others: a tasks list that fails holds no queue back.
-// The Desk's Queue view draws the queue's titles; the Queue page is React and reads no tasks there.
-await hooked("a legacy page draws the listing that read while another one fails", "/?view=queue", 'document.querySelector(".list .scroll .row, .list .scroll tr[data-href]")', {}, async () => {
+// A listing that fails keeps its last read and holds no other back: the Desk's Queue view draws the
+// queue's new titles while the tasks list fails.
+await hooked("the Desk's Queue view draws the listing that read while another one fails", "/?view=queue", 'document.querySelector(".list .scroll .row, .list .scroll tr[data-href]")', {}, async () => {
   await sleep(1500);
   await evaluate('hook.fails = ["/api/tasks"]');
   execFileSync("sqlite3", [join(dir, "state.db"), "UPDATE tasks SET tldr = 'Landed beside a failure' WHERE id = 4; UPDATE revision SET value = value + 1;"]);

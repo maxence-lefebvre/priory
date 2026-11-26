@@ -1,6 +1,6 @@
 // The task page (DESIGN.md, Task detail): state, reason, asks, actions, a box to say something to its
 // agent, then its brief, plan, pull request, trace and terminal.
-import { memo, useEffect, useLayoutEffect, useRef } from "react";
+import { memo, useEffect, useLayoutEffect } from "react";
 import { ENDED, acts, draft, writeTask } from "../acts.js";
 import { answeredAsks, askHeading, confidenceNote, courseNote, openAsksOf } from "../asks.js";
 import { Icon, StateWord, Tile } from "../components/Icon.jsx";
@@ -8,9 +8,8 @@ import { TaskActs } from "../components/TaskActs.jsx";
 import { Section, TaskSections } from "../components/TaskSections.jsx";
 import { Linked, Time } from "../components/Text.jsx";
 import { useAsks, useStore, useTask, useTasks } from "../hooks/useData.js";
-import { useTerminalBox } from "../hooks/useTerminalBox.js";
+import { TerminalPane, terminalRun } from "../components/TerminalPane.jsx";
 import { role } from "../icons.js";
-import { terminalRun } from "../legacy/terminal.js";
 import { backTo } from "../pages.js";
 import { toHash } from "../router.js";
 import { taskLabel, workStep } from "../tasks.js";
@@ -94,14 +93,12 @@ const Say = memo(function Say({ task }) {
 });
 
 const Terminal = memo(function Terminal({ task }) {
-  const box = useRef(null);
   const run = terminalRun(task);
   const end = run?.ended ? run.end || "moved" : "";
-  useTerminalBox(box, run?.id, end);
   if (!run) return null;
   return (
     <Section id="terminal" icon="terminal" title="Terminal" meta={<StateWord state={end || "running"} />}>
-      <div className="termbox" ref={box} data-term={run.id} data-task={task.id} data-tmux={run.tmux} data-end={end} />
+      <TerminalPane run={run.id} task={task.id} tmux={run.tmux} end={end} />
     </Section>
   );
 });
