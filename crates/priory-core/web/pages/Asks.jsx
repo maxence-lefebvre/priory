@@ -570,6 +570,8 @@ const AnswerSheet = memo(function AnswerSheet({ ask, task, locked, bound }) {
     return () => {
       dialog.removeEventListener("close", closed);
       dialog.removeEventListener("click", outside);
+      // The close listener is gone, so clear the store here, or the next ask opens the sheet unasked.
+      set({ sheet: false });
       if (dialog.open) dialog.close();
     };
   }, []);
