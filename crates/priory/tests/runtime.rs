@@ -17698,7 +17698,7 @@ fn a_pull_request_wait_reaches_an_intake_without_a_state_file_and_its_review_wak
         setup
             .typed()
             .iter()
-            .any(|typed| typed.starts_with("github.pull_request_review.submitted owner/repo#7")),
+            .any(|typed| typed.starts_with("wait 1 fired: reviewer reviewed github:owner/repo#7")),
         "{:?}",
         setup.typed()
     );
