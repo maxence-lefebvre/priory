@@ -6538,6 +6538,27 @@ fn a_human_step_asks_ends_the_run_and_sleeps_until_an_answer_resumes_the_session
     assert_eq!(setup.rows("tasks")[0][4], "running");
 }
 
+#[test]
+fn a_human_step_after_a_plan_step_asks_with_the_summarys_first_line_only() {
+    let mut setup = Setup::with_workflow("human-plan-line", STEPS);
+    // One long first line, as an agent that writes no title line sends it.
+    let line = format!("Plan: {}", "x".repeat(300));
+    setup.calls(&[json!({ "name": "result", "arguments": {
+        "outcome": "unsure",
+        "summary": format!("{line}\n\nThe role reads only.")
+    } })]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("asks", |rows| rows.len() == 1);
+    // The Plan section shows the summary whole, so Why does not repeat it.
+    assert_eq!(
+        asks_json(&setup)["asks"][0]["question"],
+        format!("approve: {}…", &line[..160])
+    );
+}
+
 /// The data of each trace record of `kind`, oldest first.
 fn trace_records(setup: &Setup, kind: &str) -> Vec<serde_json::Value> {
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();

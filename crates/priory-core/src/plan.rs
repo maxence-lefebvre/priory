@@ -94,7 +94,7 @@ struct Taken {
 }
 
 /// Whether `step`'s result is the task's plan. A debate's result is its agents' positions.
-fn writes(step: &Step) -> bool {
+pub(crate) fn writes(step: &Step) -> bool {
     step.debate.is_none()
         && ([BRIEF_STEP, PLAN_STEP].contains(&step.id.as_str()) || step.id.starts_with(PLAN_PREFIX))
 }
