@@ -1,10 +1,13 @@
-# Kept sessions
+# Kept runs
 
 This page explains how an agent could stay open after its step sleeps, so a person can type to it
 and a wake reaches the same process. It also covers a person's own Claude Code session started and
 kept by Priory, which is the same feature. It builds nothing. It holds the decisions with the
 options each one rejects, the first slice, the slices after it, and the open questions with a
 recommendation for each.
+
+A **kept run** is a run that ended asleep while Priory keeps its agent process and tmux session.
+The run that its task's next wake starts uses that same process.
 
 Two requests start it:
 
@@ -17,52 +20,70 @@ Two requests start it:
 
 ## What existed when this note was written
 
-- A model step that sleeps on an ask or a wait ends its run. `tools::sleep` ends the run as
-  `asleep`, sets the task `asleep` and returns the tmux session
-  (`crates/priory-core/src/tools.rs:3214`). The daemon kills that session once it replied to the
-  hook (`crates/priory-core/src/daemon.rs:1183`). See [waits.md](../daemon/waits.md).
+- Eight places end a model run asleep, each with `end(tx, run, "asleep")` and a tmux session to
+  kill:
+  - `settle` (`crates/priory-core/src/tools.rs:3288`), when a turn ends: the ordinary `Stop` with
+    an open ask, wait or consult (`tools.rs:3405`), an answer whose command still runs
+    (`tools.rs:3384`), and a plan gate's ask (`tools.rs:3350`). Bonjour sleeps on the first, a
+    time wait.
+  - `tools::sleep` (`tools.rs:3214`), reached only from `gates::park` (`gates.rs:316`), when a
+    result waits on a person's ask about a gate.
+  - `step_in`, through `finish("asleep")`, when a result moves the task into a wait: a closed pull
+    request of a stack (`tools.rs:3920`), the checks of a pull request (`tools.rs:3951`), and a
+    human step's ask (`tools.rs:4084`).
+  - `debate.rs:603`, when a debate ends on an ask.
+- The daemon kills the returned tmux session once it replied to the hook. See
+  [waits.md](../daemon/waits.md).
 - A wake makes an asleep task `ready`, and its next run resumes the step agent's session with
-  `--resume` and types the queued prompt (`crates/priory-runtime/src/runtime.rs:1529`,
-  [waits.md](../daemon/waits.md)). A prompt for a run that has not stopped yet is typed after its
-  `Stop`, through the [outbox](../daemon/outbox.md).
+  `--resume` and types the queued prompt (`crates/priory-runtime/src/runtime.rs:1529`). A prompt
+  for a run that has not stopped yet is typed after its `Stop`, through the
+  [outbox](../daemon/outbox.md).
 - So each bonjour task takes two runs and two tmux sessions: the report, then a new run on a pick
-  or at the 18:30 wait. On a desktop, tasks 512 and 920 each have 2 runs, and today's task 1256 is
-  asleep after 1 run with no live session.
+  or at the 18:30 wait. On a desktop, every bonjour task that reached its evening wait has 2 runs.
 - A run already keeps its process across steps in one case: a result that moves into a model step
-  of the same agent, not irreversible and not a debate, carries the run on and moves its keyboard
-  grant to the new run (`crates/priory-core/src/tools.rs:3990`, `tools.rs:4016`).
+  of the same agent, not irreversible and not a debate. `step_in` ends the old run `moved`,
+  inserts a new run row on the same tmux session and harness session, and moves the run's
+  unconfirmed outbox prompts and its keyboard grant to the new row (`tools.rs:3998-4016`).
+- "A live run" means a row of `runs` with `ended IS NULL`. About 120 queries in 36 files of
+  `priory-core` read it that way. Among them: `running_in` for `max_running`
+  (`state.rs:4134`), the preemption candidates (`preempt.rs:112`), the spend caps' candidates
+  (`spend.rs:415`), the sweep's `UNUSED` (`sweep.rs:1436`), idle compaction (`idle.rs:33`), the
+  room's measured use of live runs (`state.rs:4255`), a task's cancel (`tools.rs:5044`), and
+  `priory attach` (`state.rs:3742`).
+- At start, the daemon kills every tagged tmux session that belongs to an ended run and to no live
+  run (`state::ended_sessions`, `state.rs:5276`, called at `daemon.rs:308`). It then ends as
+  `lost` each live run whose pane is gone (`daemon.rs:322`).
 - `[runs] attach` opens each run of an `attach = true` step through `adapters/herdr/attach`, one
-  kept hc terminal per run, always read-only (`adapters/herdr/attach:50`). Nothing closes it: once
-  the run's tmux session is killed, the terminal has nothing left to show
-  ([sessions.md](../daemon/sessions.md#opening-a-run-when-it-starts)). The Priory bar's attach is
-  read-write unless a panel asks for read-only ([herdr.md](../adapters/herdr.md)).
-- With `[serve] terminal = "type"`, the web view's Terminal takes a 15 minute keyboard grant. While
-  a grant is open, the outbox types nothing into that run
-  (`crates/priory-core/src/keyboard.rs:134`, [serve.md](../daemon/serve.md#a-runs-keyboard)). A
-  read-write tmux client takes no grant, so the outbox cannot see it.
-- Room, the agents slice and lane or trigger caps count live runs only. An asleep task counts for
-  nothing ([runs.md](../daemon/runs.md), [room.md](../daemon/room.md),
-  [agents-slice.md](../daemon/agents-slice.md)). The `day` and `week` spend caps hold new runs and
-  never stop a running one ([spend.md](../daemon/spend.md#new-runs-wait)). A runner filter's days
-  and hours decide which tasks a runner takes ([runners.md](../daemon/runners.md)).
-- A live run and its tmux session survive a daemon restart. A run whose pane is gone when the
-  daemon starts, as after a reboot, ends `lost`, and its task's next run resumes the session
-  ([zero-downtime-restarts.md](zero-downtime-restarts.md), [runs.md](../daemon/runs.md)).
-- `idleCompactAt` compacts a shared session idle for 55 minutes by resuming it in
-  `priory-idle-<agent>`, typing `/compact` after `SessionStart`, and killing it at the
-  `SessionStart` with `source: compact` (`crates/priory-core/src/daemon.rs:3406`,
-  [sessions.md](../daemon/sessions.md#compacting-an-idle-session)).
+  kept hc terminal per run, always read-only (`adapters/herdr/attach:50`). The Priory bar's attach
+  is read-write unless a panel asks for read-only ([herdr.md](../adapters/herdr.md)).
+- A keyboard grant exists only with `[serve] terminal = "type"`: `keyboard::typing` refuses every
+  other setting (`crates/priory-core/src/keyboard.rs:125`). A grant lasts 15 minutes, and while
+  one is open the outbox types nothing into that run
+  ([serve.md](../daemon/serve.md#a-runs-keyboard)). A read-write tmux client takes no grant, so the
+  outbox cannot see it.
+- The room marks runs to stop when the queue's head does not fit, and a mark stops a run at its
+  turn's end ([room.md](../daemon/room.md)). The `day` and `week` spend caps hold new runs and
+  never stop a running one ([spend.md](../daemon/spend.md#new-runs-wait)).
+- A live run and its tmux session survive a daemon restart. Its process keeps the `priory mcp`,
+  kit, plugin and tool list it started with, since Claude Code starts its servers once per session
+  ([zero-downtime-restarts.md](zero-downtime-restarts.md#mcp-servers-survive-a-binary-swap)).
+- A jailed run's writes outside its declared paths land in the jail's folders in memory, and are
+  gone when the run ends ([sandboxes.md](../daemon/sandboxes.md)).
+- The `compact` tool queues a `/compact` prompt in the outbox, which types it once the run is idle
+  (`tools.rs:719`, [outbox.md](../daemon/outbox.md#compact)). `idleCompactAt` compacts a shared
+  session idle for 55 minutes by resuming it in `priory-idle-<agent>`
+  ([sessions.md](../daemon/sessions.md#compacting-an-idle-session)).
 - #455, closed, let a person's own session ask for a compaction through hc. It typed into a
   terminal Priory does not own: the terminal check and `hc send` are two steps, and hc reports an
   idle agent as `idle` or `done` without proving the prompt box is empty.
 
 ## The model
 
-### A kept session is a task
+### A kept run belongs to a task
 
 | Option | What it gives | What it costs |
 | ------ | ------------- | ------------- |
-| **A task.** A kept session is a task whose step keeps its run. A person's own session is a task of a `session` workflow with one model step | The Desk, Costs, `priory tasks`, asks, says, waits, memory grants, the trace and the queue all work as they do, since each one keys on a task | A person's session shows in task listings, so it needs a lane, such as `none/session`, and a title |
+| **A task.** A kept run is a run of a task whose step keeps its process. A person's own session is a task of a `session` workflow with one model step | The Desk, Costs, `priory tasks`, asks, says, waits, memory grants, the trace and the queue all work as they do, since each one keys on a task | A person's session shows in task listings, so it needs a lane, such as `none/session`, and a title |
 | A run with no task | A person's session stays out of task listings | Every reader of runs assumes a task: the outbox, spend caps, the room, the trace, asks and `say`. Each would need a second path |
 
 Recommend a task. The second request then becomes a workflow, not a new kind of thing.
@@ -76,40 +97,83 @@ Recommend a task. The second request then becomes a workflow, not a new kind of 
 | An agent key | One agent serves several workflows and steps, and a keep belongs to only some of them |
 
 `keep` needs a model step, so `priory check` refuses it on a code step, a human step or a debate
-step. It does not need `attach`: a kept session without a terminal still saves the resume.
+step. So `debate.rs:603` never keeps a process. `keep` does not need `attach`: a kept run without a
+terminal still saves the resume.
 
-### What asleep means for a kept session
+### The data model: a kept run ends, and a wake starts a new run in its process
 
-When a kept step's turn ends on an ask or a wait, the task is `asleep` as today, and the run stays
-live with a new end reason held open: the run is `kept`. Its process and tmux session stay.
+A kept run's row ends as today, with `ended` set and the new end reason `kept`. A new column,
+`runs.kept`, holds the time it was kept, and is cleared when its process stops or a wake moves it
+on. A task has at most one kept run, by a partial unique index.
 
-- Waits and asks still fire as today. A wake queues its prompt in the outbox, and the outbox types
-  it into the live pane at its next idle point, instead of making the task `ready` for a new run.
-  The task goes `asleep` to `running` without a start, so the queue, `max_running` and the room do
-  not hold it.
-- A person's turn typed into a kept session does not move the task. Its `Stop` with no result
-  leaves the task asleep, and sends no nudge. A result the agent stores in that turn moves the task
-  as usual.
-- A step change ends the kept run as today, unless the next step carries the run on.
+A wake into a task with a kept run does what the carried run does today: it inserts a new run row
+on the kept run's tmux and harness sessions, copies its kit, harness and sandbox columns, moves its
+open keyboard grant and unconfirmed outbox prompts to the new row, clears `kept`, sets the task
+`running` and queues the wake's prompt. The outbox types it at the process's next idle point.
 
-| Option for the wake | Why rejected |
-| ------------------- | ------------ |
-| A new run that resumes the session, as today | That is the behaviour to change: the terminal goes blank and the process restarts |
-| Keep the pane, but start a new run record in it at the wake | Two runs on one process split its tokens and its keyboard grant for no gain. The carried run already shows one run can span a sleep |
+| Option | Why |
+| ------ | --- |
+| **`ended` set, plus `runs.kept`. Each wake inserts a new run row** | Every reader of "a live run is working" stays right with no change. One run is still one turn of work, so Costs and the trace split by wake, as they split by step for the carried run. Only the readers of the kept process change, listed below |
+| `ended` stays `NULL` while kept | Every one of the 120 queries that read a live run as working would need `AND kept IS NULL` or a reason not to: `max_running` would count idle kept runs, preemption and spend would treat them as busy, and the sweep would keep their worktrees as it does now. Missing one lets an idle process hold a lane |
+
+The readers of `ended IS NULL` that stay as they are, and why:
+
+- `running_in` (`state.rs:4134`) does not count a kept run toward `max_running`, which is the
+  exemption the first slice needs.
+- The spend caps' candidates (`spend.rs:415`) read running tasks between turns. A kept run's task
+  is asleep.
+- The sweep's `UNUSED` (`sweep.rs:1436`) frees a worktree with no live run. A kept run's task is
+  asleep, and the sweep already keeps an asleep task's worktree.
+
+The readers that learn the kept process, all in the first slice unless named:
+
+- `state::ended_sessions` (`state.rs:5276`) excludes kept runs, so the daemon's start does not kill
+  a kept process as a crash's leftover.
+- The start's pane check (`daemon.rs:322`) also checks each kept run's pane. A kept run whose pane
+  is gone clears `kept`, and its task stays asleep with its waits. The next wake resumes the
+  session in a new process, as today.
+- The room's measured use (`state.rs:4255`) adds each kept process's scope use.
+- The preemption candidates (`preempt.rs:112`) add kept runs. See
+  [Room, caps and spend](#room-caps-and-spend).
+- A task's cancel, drop and done stop its kept process, as `tools::cancel` (`tools.rs:5039`)
+  stops a live run.
+- `keyboard::take` accepts a kept run, and `adapters/herdr/attach` follows the process, not the run.
+- Idle compaction (`idle.rs:33`) skips a session with a kept run, since the third slice compacts it
+  in place.
+
+### Which sleep paths change
+
+One helper replaces `end(tx, run, "asleep")` and the returned tmux session at seven of the eight
+paths: the three in `settle`, `tools::sleep`, and the three `finish("asleep")` in `step_in`. When
+the run's step has `keep`, the helper ends the run `kept`, sets `runs.kept` and returns no tmux
+session to kill. Otherwise it does what it does today. `debate.rs:603` never meets a kept step.
+
+In `step_in`, the helper keeps the process only when the run is the one that ended the step, as
+the carried run requires: the step it waits on is the same agent's, and it is not irreversible.
+
+A person's turn typed into a kept run, through a keyboard grant, makes a new run as a wake does,
+when its `UserPromptSubmit` arrives. Its `Stop` with no result goes through `settle` again, so the
+run ends `kept` once more, with no nudge. A result the agent stores in that turn moves the task as
+usual.
 
 ### Who holds the keyboard
 
-The keyboard grant becomes the one lock on a kept session's input, for the web view and Herdr.
+The keyboard grant is the one lock on a kept run's input, for the web view and Herdr.
 
-- `adapters/herdr/attach` keeps opening a read-only terminal, one per kept run, and reuses it
-  across wakes, since the run and its label stay the same.
+- `adapters/herdr/attach` keeps opening a read-only terminal for a kept process, and reuses it
+  across wakes, since the tmux session stays the same.
 - To type, a person takes the keyboard. Herdr's bar takes a grant through the same endpoint as the
   web view, then opens a read-write attach. Detaching or the grant's end returns it. A grant on a
-  kept session renews while its client stays attached, instead of ending at 15 minutes.
+  kept run renews while its client stays attached, instead of ending at 15 minutes.
 - While a grant is open, the outbox waits, as it does today. A wake or a `say` queues and is typed
   at the first idle point after the grant ends. The desk shows `waits for the keyboard` on it.
 - `priory attach` without `--read-only` on a kept run takes a grant too, so a tmux client that can
   type is always visible to the outbox.
+
+Without `[serve] terminal = "type"`, no one can take a grant. A kept run then stays read-only to
+people: Herdr opens only read-only terminals, and `priory attach` on a kept run refuses
+read-write. Wakes still type into it. `priory check` warns when a step has `keep` and `attach` in a
+factory without that setting.
 
 | Option | Why rejected |
 | ------ | ------------ |
@@ -119,43 +183,48 @@ The keyboard grant becomes the one lock on a kept session's input, for the web v
 
 ### Room, caps and spend
 
-A kept idle session costs memory and no tokens. Count what it uses, and bound how many stay.
+A kept idle process costs memory and no tokens. Count what it uses, and bound how many stay.
 
-- **Room.** A kept run is a live run, so the room subtracts its unused memory promise and its
-  scope's real use, as for any run. An idle Claude process holds a few hundred megabytes, so the
-  promise is replaced by the measured use once the run is kept.
-- **Agents slice.** It stays in its scope in the slice, so `CPUQuota` and `MemoryHigh` cover it.
-  It uses almost no CPU while idle.
-- **Lane and trigger caps, the review limit.** A kept run does not count toward `max_running`,
-  since it holds no work. It counts again from a wake to its next sleep.
-- **Spend caps.** A kept session spends only on turns, and every turn counts toward the caps as
-  today. A wake into a kept session is not a new run, so it checks the `day` and `week` caps before
-  the outbox types it, and waits with the same reason when one is reached.
-- **Runner filters.** A filter's hours hold new starts only. A kept session whose task a filter
-  excludes is stopped when the window opens, and resumed by the next wake as today.
-- **A bound.** `[keep] max` in `factory.toml`, 2 by default, caps kept runs per runner. Past it,
-  and whenever the room is short of a start's need, the daemon stops the kept run idle the longest:
-  it compacts it if its context is past `idleCompactAt`, then kills it. The task stays asleep, and
-  its next wake resumes the session in a new run, as today. `[keep] idle`, 8 hours by default,
-  stops a kept session idle that long the same way.
+- **Room.** The room counts a kept process by its scope's measured use, with no unused promise. An
+  idle Claude process holds a few hundred megabytes, and a jailed one adds its in-memory writes.
+- **Agents slice.** The process stays in its scope in the slice, so `CPUQuota` and `MemoryHigh`
+  cover it. It uses almost no CPU while idle.
+- **Lane and trigger caps, the review limit.** A kept run holds no work and does not count toward
+  `max_running`. A wake into it starts its new run without the queue's `max_running` and room
+  checks, since the process already exists and the room already counts it. A lane can so run over
+  its cap by its kept runs, which `[keep] max` bounds.
+- **Spend caps.** A kept process spends only on turns, and every turn counts toward the caps as
+  today. A wake into it checks the `day` and `week` caps before it starts its new run, and waits
+  with the same reason when one is reached.
+- **Runner filters.** A filter's hours hold new starts only. The daemon stops a kept process whose
+  task a filter excludes when the window opens. The next wake resumes it, as today.
+- **Stopping one reuses the preemption marks.** The room's marks ([room.md](../daemon/room.md))
+  take kept runs as candidates, before any live run, the longest idle first. A mark on a kept run
+  stops its process at once, since it has no turn to end. `[keep] max` in `factory.toml`, 2 by
+  default per runner, and `[keep] idle`, 8 hours by default, mark kept runs the same way. A
+  stopped kept run clears `kept`, and its task stays asleep with its waits.
 
 ### Daemon restarts, upgrades and reboots
 
-A kept run is a live run, so it needs nothing new to survive a restart or an upgrade: the tmux
-session outlives the daemon, hooks during the gap are spooled, and the new daemon adopts the run
-([zero-downtime-restarts.md](zero-downtime-restarts.md)). The one change is that adoption keeps the
-`kept` state, so a restarted daemon does not nudge an idle kept run as stalled.
+A kept process survives a restart as any live run does: its tmux session outlives the daemon, and
+the start leaves it alone once `ended_sessions` excludes kept runs.
 
-A reboot kills the tmux server. A kept run whose pane is gone at the daemon's start ends `lost` as
-today, but leaves its task `asleep` with no prompt, instead of `ready`. Its next wake resumes the
-session. For a person's own session, the daemon restarts it at once with `--resume`, so it is back
-in Herdr after a reboot. Its Herdr terminal opens again through `[runs] attach`.
+The daemon upgrades itself, but a kept process keeps the `priory mcp`, kit, plugin and tool list it
+started with. Only a resumed session starts new ones. So after a start, the daemon stops each kept
+process whose run's `kit_hash` differs from the current kit, and every kept process when the hook
+socket's line format changed. Its next wake resumes the session with `--resume` in a new process,
+with the new kit and server. A live run with a turn in flight is left alone, as today.
+
+A reboot kills the tmux server. A kept run whose pane is gone at the start clears `kept`, and its
+task stays asleep. Its next wake resumes the session. For a person's own session, the daemon
+restarts it at once with `--resume`, so it is back in Herdr after a reboot.
 
 ### Compaction on demand
 
-A kept session can compact on demand: the `compact` tool, or a person's `/priory:compact`, queues
-`/compact <focus>` in the outbox, and the outbox types it at the next idle point with no grant
-open. It is safe here and was not in #455 for three reasons:
+A kept run compacts on demand through the existing `compact` tool (`tools.rs:719`) and a person's
+`/priory:compact`. Both queue `/compact <focus>` in the outbox, which types it at the next idle
+point with no grant open ([outbox.md](../daemon/outbox.md#compact)). It is safe here and was not in
+#455 for three reasons:
 
 1. Priory owns the pane. It resolves it from the run's tag and types by pane id, so no other
    program can receive the text.
@@ -164,42 +233,76 @@ open. It is safe here and was not in #455 for three reasons:
 3. The outbox stores the prompt before it types, confirms it on `UserPromptSubmit`, and never types
    it twice across a restart.
 
-The idle compaction of `idleCompactAt` then compacts a kept session in place, without the
-`priory-idle-<agent>` resume, since the process is already live and its cache is warm.
+`idleCompactAt` then compacts a kept run in place, without the `priory-idle-<agent>` resume, since
+the process is already live and its cache is warm.
+
+### Security
+
+- **A jailed run lasts days.** A kept jailed process keeps its declared read-write paths, the
+  daemon's socket and its spool open between wakes, and its in-memory writes stay until the
+  process stops. The room counts those writes, and `[keep] idle` bounds how long they last.
+- **A task's end stops its process.** Cancel, drop and done stop a task's kept process, as they
+  stop its live run today. A kept process never outlives its task.
+- **A person steering a task's agent.** A person who holds the grant can type anything into a kept
+  run. The agent still has only its step's tool list and sandbox, a result still goes through its
+  step's gates, and the trace records each turn with who held the keyboard. It is the same trust
+  the web view's Terminal gives a person over a live run today, for longer.
+- **`priory session` and the jail.** A `session` task runs with its agent's sandbox, as any step
+  does. The built-in `session` workflow's default agent has none, so a person's own session runs
+  as that person, as it does in their own terminal today. A factory can give it a jailed agent.
 
 ### Herdr
 
-`adapters/herdr/attach` keeps one terminal per kept run. Since the run spans its sleeps, the
-terminal keeps showing the same agent: its last answer and its empty prompt while idle. Priory
-does not draw into the pane. The Priory bar shows the kept state on the task's tab instead: `kept,
-idle 2h 10m, wakes at 18:30` from the task's open waits, and `you hold the keyboard` during a
-grant. When the run ends, the terminal shows tmux's exit, as today.
+`adapters/herdr/attach` keeps one terminal per kept process. Since the tmux session spans its
+sleeps, the terminal keeps showing the same agent: its last answer and its empty prompt while idle.
+Priory does not draw into the pane. The Priory bar shows the kept state on the task's tab instead:
+`kept, idle 2h 10m, wakes at 18:30` from the task's open waits, and `you hold the keyboard` during a
+grant. When the process stops, the terminal shows tmux's exit, as today.
 
-## The first slice: bonjour's step stays alive after its report
+### The PRD's Run
 
-- `keep = true` on a model step, with its `priory check` rules.
-- `tools::sleep` keeps the run and its tmux session for a kept step, and the daemon kills nothing.
-- A wake into a kept run queues its prompt for that run and sets the task `running` without a
-  start. A turn end with no result in a kept run leaves the task asleep.
-- `[keep] max` with its stop of the longest idle kept run.
+The [PRD](../prd.md) defines a Run as "One agent process working on a task, from start to sleep or
+exit". A kept run's process outlives its sleep, so this note proposes:
 
-Tests, at the seam the daemon uses: a kept step's sleep leaves the run live and its tmux session
-alive; a time wait that fires types the prompt into the same run, and `priory runs` shows one run
-for the task; a third kept run stops the oldest. Measured on a desktop's bonjour: 2 runs per task
-before, 1 after, and its Herdr terminal shows the agent at 18:30.
+> **Run**: one stretch of an agent process's work on a task, from its start or a wake to its sleep
+> or exit. A kept run's process outlives its sleep, and the run its task's next wake starts uses
+> the same process.
+
+Add **kept run** to the Concepts table: a run that ended asleep while Priory keeps its process.
+
+## The first slice: bonjour's process stays alive after its report
+
+It ships on its own, with every part a kept run needs to be safe for a day:
+
+- `keep = true` on a model step, with its `priory check` rules and the warning without
+  `[serve] terminal = "type"`.
+- `runs.kept`, the `kept` end reason and the helper at the seven sleep paths.
+- A wake into a kept run starts a new run on its process, without the `max_running` and room
+  checks, after the spend caps.
+- The room counts a kept process's measured use, and the preemption marks, `[keep] max` and
+  `[keep] idle` stop kept processes at once.
+- The start keeps kept processes, ends those whose pane is gone, and stops those with an old kit
+  hash or socket line format.
+- The keyboard grant as the lock: Herdr's attach stays read-only, `priory attach` takes a grant for
+  read-write, the outbox waits while one is open, and cancel, drop and done stop the process.
+
+Tests, at the seam the daemon uses: a kept step's sleep at the ordinary `Stop` leaves its tmux
+session alive and the task asleep; a time wait that fires starts a new run on the same tmux
+session and types the prompt into it; a third kept run is marked and stopped; a daemon start keeps
+a kept process and stops one with an old kit hash; a wake while a grant is open types nothing
+until the grant ends. Measured on a desktop's bonjour: 2 tmux sessions per task before, 1 after,
+and its Herdr terminal shows the agent at 18:30.
 
 ## Later slices
 
-1. The keyboard grant as the one lock: Herdr's bar takes a grant before a read-write attach, a
-   grant renews while attached, `priory attach` takes one, and the desk shows `waits for the
-   keyboard`.
-2. Room and caps: the measured use replaces a kept run's promise, `max_running` skips kept runs,
-   wakes check the spend caps, runner filters stop excluded kept runs, and `[keep] idle`.
-3. Compaction on demand through the outbox for kept runs, and `idleCompactAt` in place.
-4. Reboots: a lost kept run leaves its task asleep, and adoption after a restart keeps `kept`.
-5. `priory session [--agent NAME] [TITLE]`: a task of a built-in `session` workflow whose one step
-   keeps its run, opens a read-write attach with a grant, and restarts after a reboot.
-6. The Priory bar's kept line in Herdr.
+1. The grant from Herdr's bar, its renewal while attached, and the desk's `waits for the keyboard`.
+2. Runner filters stop excluded kept processes.
+3. Compaction on demand through the existing `compact` tool for kept runs, and `idleCompactAt` in
+   place.
+4. `priory session [--agent NAME] [TITLE]`: a task of a built-in `session` workflow whose one step
+   keeps its process, opens a read-write attach with a grant, and restarts after a reboot.
+5. The Priory bar's kept line in Herdr.
+6. The PRD amendment, with the first slice's merge.
 
 ## Open questions
 
@@ -208,5 +311,5 @@ before, 1 after, and its Herdr terminal shows the agent at 18:30.
 - **What does `keep` do for a Codex agent?** Codex sends no `SessionStart` on resume, so idle
   compaction cannot work. Recommend allowing `keep` and refusing only compaction, as
   `idleCompactAt` does.
-- **Should a person's turn in a kept session count as the task's spend?** Recommend yes, toward
-  the same caps: the tokens are real, and a separate account would hide them from Costs.
+- **Should a person's turn in a kept run count as the task's spend?** Recommend yes, toward the
+  same caps: the tokens are real, and a separate account would hide them from Costs.
