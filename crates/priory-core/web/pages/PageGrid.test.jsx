@@ -13,7 +13,7 @@ Object.assign(globalThis, {
   location: { origin: "http://localhost" },
   matchMedia: () => ({ matches: false, addEventListener() {} }),
 });
-const { LegacyPreview, PageGrid } = await import("./PageGrid.jsx");
+const { PageGrid } = await import("./PageGrid.jsx");
 const { needsOf } = await import("../registry.js");
 const { cache } = await import("../data.js");
 const { PANELS } = await import("../pages.js");
@@ -49,9 +49,9 @@ test("every panel of a view has an entry with a list and a page", () => {
   assert.equal(new Set(all.map((entry) => entry.name)).size, all.length);
 });
 
-test("a countdown is a memory's, else a task's, else the ask's", () => {
+test("a countdown is a task's, else the ask's", () => {
   const order = all.filter((entry) => entry.drain).map((entry) => entry.name);
-  assert.deepEqual(order, ["memories", "taskacts", "asks"]);
+  assert.deepEqual(order, ["taskacts", "asks"]);
 });
 
 test("each page's legacy parts read the listings they show and no other", () => {
@@ -63,8 +63,7 @@ test("each page's legacy parts read the listings they show and no other", () => 
   assert.deepEqual(reads("/inbox"), [], "a React part reads its own");
   assert.deepEqual(reads("/terminal", { size: "compact" }), []);
   assert.deepEqual(reads("/batches/2"), ["tasks"]);
-  for (const href of ["/costs", "/workflow", "/reports", "/more", "/memories", "/settings/notifications"]) assert.deepEqual(reads(href), [], href);
-  assert.deepEqual(reads("/settings/appearance"), ["asks", "queue", "tasks"], "the theme previews draw the Desk");
+  for (const href of ["/costs", "/workflow", "/reports", "/more", "/memories", "/settings/notifications", "/settings/appearance"]) assert.deepEqual(reads(href), [], href);
   assert.deepEqual(reads("/tasks/7"), [], "a React part reads its own");
   assert.deepEqual(reads("/asks/4"), ["asks", "queue", "tasks"]);
   assert.deepEqual(reads("/asks/4", { list: "asks" }), ["asks", "tasks"]);
@@ -77,7 +76,7 @@ const SLOT = '<div class="legacy"></div>';
 test("a list and its drawer each draw in their own element", () => {
   assert.equal(draw("/"), SLOT + SLOT);
   assert.equal(draw("/tasks"), SLOT);
-  assert.equal(draw("/memories"), SLOT);
+  assert.equal(draw("/queue"), SLOT);
   assert.equal(draw("/asks/4", { size: "compact" }), SLOT);
 });
 
@@ -110,11 +109,9 @@ test("while the listings load, a tree of legacy panels draws one element, and on
   assert.match(draw("/", { layout: TREE }), /Queue in React/);
 });
 
-test("a React Settings draws legacy previews, which need what the Desk does", (t) => {
-  t.after(() => register(all));
-  register(all.map((entry) => (entry.name === "settings" ? { name: "settings", Page: () => <div className="preview"><LegacyPreview name="desk" /></div> } : entry)));
-  assert.equal(draw("/settings/appearance"), '<div class="preview"><div></div></div>');
-  assert.deepEqual(reads("/settings/appearance"), [], "the page itself needs none");
+test("Settings draws the Desk in each theme's previews, which need what the Desk does", () => {
+  const html = draw("/settings/appearance");
+  assert.equal(html.match(/<div class="preview" data-theme="\w+" data-mode="(light|dark)"><div><\/div><\/div>/g).length, 10);
   assert.deepEqual(needsOf([{ kind: "preview", name: "desk" }]), ["asks", "queue", "tasks"]);
 });
 

@@ -145,7 +145,7 @@ export function current() {
 }
 
 export const routeKey = () => pathOf(place.href) + searchOf(place.href);
-const FOCUS_ATTRIBUTES = ["id", "href", "data-option", "data-pick-mode", "data-theme-pick", "data-add-chip", "data-key", "data-action"];
+const FOCUS_ATTRIBUTES = ["id", "href", "data-option", "data-add-chip", "data-key", "data-action"];
 export function focusKey(element) {
   if (!element || element === document.body) return null;
   const name = FOCUS_ATTRIBUTES.find((attribute) => element.hasAttribute(attribute));

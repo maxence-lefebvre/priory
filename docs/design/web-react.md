@@ -196,12 +196,11 @@ No port deletes these files:
 | `terminal.js` | the Terminal and the task page's pane are both in React |
 | `sections.js` | Asks is ported: its drawer draws a task's sections |
 | `taskacts.js` | Desk, Tasks and Inbox are ported |
-| `desk.js` | Settings is ported: its theme previews draw the Desk. Asks and Queue use its model |
+| `desk.js` | Desk is ported: Settings' theme previews draw the legacy Desk until then. Asks and Queue use its model |
 | `asks.js` | Desk is ported: it draws ask rows |
 | `batch.js` | Asks is ported: a go ask draws the plan's lanes |
 | `tasks.js` | Queue is ported: its Held and Last day views draw task rows |
 | `add.js` | Desk and Inbox are ported, and the Add sheet is in React |
-| `settings.js` | More is ported: the file draws both pages |
 
 Such a port deletes only what no other file imports.
 
