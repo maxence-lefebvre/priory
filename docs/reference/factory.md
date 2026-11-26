@@ -61,7 +61,7 @@ running tasks, and the hours it holds in, live in [`lanes.toml`](lanes.md#lane-k
 
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
-| `overlap` | boolean | no | `true` | Whether a task waits for an earlier active task whose branch changes the same files | `false` |
+| `overlap` | boolean | no | `true` | Whether a task waits for an earlier active task whose branch changes the same files. A workflow's own [`overlap`](workflows.md) key turns the check off for that workflow's tasks only | `false` |
 | `preempt` | list of bands | no | `[]` | The bands whose task at the head of the queue, waiting for memory or disk, may stop runs of a lower band at the end of their turn | `["blocker"]` |
 | `age` | duration | no | none: no task moves | How long a task waits in the queue for each band it moves up in start order, up to the highest band not in `preempt` | `"24h"` |
 | `review_limit` | integer, at least 1 | no | no limit | How many pull requests of a lane, or of a batch, may wait for a person before its new tasks wait to start. A task of the first band never waits | `5` |

@@ -74,8 +74,9 @@ fn overlaps(db: &Connection, factory: &Factory) -> rusqlite::Result<Vec<(i64, Ho
             .prepare(
                 "SELECT id, files FROM tasks WHERE id < ?1 AND json_array_length(files) > 0
                  AND state NOT IN ('failed', 'dropped')
-                 AND replace(worktree, '/' || id, '') = replace(
-                   (SELECT worktree FROM tasks WHERE id = ?1), '/' || ?1, '')
+                 -- The same repository: the worktrees' folders match up to their last `/`.
+                 AND rtrim(worktree, replace(worktree, '/', '')) = (SELECT
+                   rtrim(worktree, replace(worktree, '/', '')) FROM tasks WHERE id = ?1)
                  AND NOT EXISTS (SELECT 1 FROM holds WHERE holds.task = tasks.id
                    AND holds.target = ?1 AND holds.released IS NULL)
                  -- A stacked entry's branch starts with the files of every task it is stacked on.
@@ -268,4 +269,53 @@ fn record(db: &Connection, home: &Path) -> rusqlite::Result<()> {
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn task(db: &Connection, id: i64, state: &str, worktree: &str) {
+        db.execute(
+            "INSERT INTO tasks (id, key, workflow, step, state, trigger, source, worktree, files)
+             VALUES (?1, 'k' || ?1, 'implement', 'check', ?2, 't', 's', ?3, '[\"shared.txt\"]')",
+            params![id, state, worktree],
+        )
+        .unwrap();
+    }
+
+    fn held(worktrees: [&str; 3]) -> Vec<(i64, String)> {
+        let db = crate::state::memory();
+        task(&db, 1, "running", worktrees[0]);
+        task(&db, 2, "running", worktrees[1]);
+        task(&db, 3, "ready", worktrees[2]);
+        overlaps(&db, &Factory::default())
+            .unwrap()
+            .into_iter()
+            .map(|(task, hold)| (task, hold.reason))
+            .collect()
+    }
+
+    #[test]
+    fn a_task_waits_on_the_earlier_task_of_its_repository_wherever_the_worktrees_live() {
+        // `/1` and `/2` also appear in the folders above the worktrees.
+        let found = held([
+            "/srv/1310/2/worktrees/owner/other/1",
+            "/srv/1310/2/worktrees/owner/repo/2",
+            "/srv/1310/2/worktrees/owner/repo/3",
+        ]);
+
+        assert_eq!(found, [(3, "overlaps task 2 on shared.txt".to_owned())]);
+    }
+
+    #[test]
+    fn a_runners_task_waits_on_the_earlier_task_of_its_repository() {
+        let found = held([
+            "/home/worktrees/owner/other/a-1",
+            "/home/worktrees/owner/repo/a-2",
+            "/home/worktrees/owner/repo/a-3",
+        ]);
+
+        assert_eq!(found, [(3, "overlaps task 2 on shared.txt".to_owned())]);
+    }
 }
