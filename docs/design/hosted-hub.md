@@ -46,8 +46,9 @@ size and cost, the open questions with a recommendation each, and six slices tha
 - **Local runs load no connector.** Priory starts each Claude Code run with `--strict-mcp-config`,
   under which Claude Code loads none of the account's claude.ai connectors. An agent's
   `connectors` key drops the flag for the connectors it names
-  ([claude-ai-connectors.md](claude-ai-connectors.md)). Whether a `claude --cloud` session loads
-  them is not known.
+  ([claude-ai-connectors.md](claude-ai-connectors.md)). That note says a connector follows the
+  person's Claude login to every machine and cloud session, but no test has checked that a session
+  that `claude --cloud` starts loads it. Open question 1's test settles it.
 - **R8.5 is partly built.** Every runner's asks and tasks show on every desk, actions on another
   runner's task travel through the log, and `priory daemon --view-only` serves them from a machine
   with no runner file ([runners.md](../daemon/runners.md#a-machine-that-only-views)). A task's
@@ -63,7 +64,7 @@ size and cost, the open questions with a recommendation each, and six slices tha
 | Part | The hub VM | Each runner |
 | ---- | ---------- | ----------- |
 | The log | Postgres, on the private network address only | a client, through `PRIORY_LOG_URL` |
-| The intake | `priory intake`, with read-only source tokens | none |
+| The intake | `priory intake`, with read-only GitHub, Linear and Slack tokens, and the Slack shortcut's tokens | none |
 | Views | `priory daemon --view-only`, its web view on the private network | its own daemon and web view, as today |
 | The gateway | `priory gateway`, behind a TLS proxy on port 443 | none |
 | Traces | OpenObserve, on the private network address only | the daemon's OTLP export points at it |
@@ -95,20 +96,21 @@ and `priory give` already hand writes to another runner.
 
 1. Before a cloud run starts, its runner makes a run grant: a random token, the task, the run, the
    runner and a deadline. It publishes `priory.run.granted` with the token's hash, and puts the
-   token in the prompt.
+   token in the prompt. The token itself never reaches the log, a trace or a file the runner keeps.
 2. The session calls `ask`, `wait` or `result` on the connector, with the token as an argument.
    claude.ai sends the call to the gateway with the person's OAuth access token.
-3. The gateway checks the access token, then finds the grant by the token's hash in the hub's view
-   daemon's mirror. It refuses a grant that is unknown, past its deadline or revoked, and a tool
+3. The gateway checks the access token, then finds the grant by the token's hash. The gateway reads
+   the log as its own consumer, `priory.gateway`, and keeps the grants, claims and replies it needs
+   in a state file of its own. It refuses a grant that is unknown, past its deadline or revoked, and a tool
    other than `ask`, `wait` and `result`.
-4. It reads the task's claim in the mirror. When the owner is not the grant's runner, it refuses the
+4. It reads the task's claim. When the owner is not the grant's runner, it refuses the
    call.
 5. It publishes `priory.run.called` with a call id, the grant, the tool and its arguments, and waits
    for the reply.
 6. The owner reads the call on its next tick, within about a second. It applies it in one
    transaction, through the same checks as a call on its socket, and publishes `priory.run.replied`
    with the call id and the tool's text or error.
-7. The gateway reads the reply from its mirror and answers the session. With no reply within 40
+7. The gateway reads the reply from the log and answers the session. With no reply within 40
    seconds, the same bound a run's MCP server waits on the socket, it answers that the runner is
    away. The call id makes a retry apply once.
 
@@ -116,7 +118,22 @@ and `priory give` already hand writes to another runner.
 event arrives, the runner wakes the session with `claude -p MSG --cloud ID`, as
 [cloud-runs.md](cloud-runs.md#later-slices) plans for asks. `result` ends the step. The runner
 still takes the code from the run's pushed branch, so the branch push of ADR 0005 stays the way
-code arrives, and `result` adds outcomes other than `pushed`.
+code arrives. `result` adds outcomes other than `pushed`, so a cloud step can route them as a
+local step does, and `priory check` stops limiting a cloud step to `pushed` and `failed`.
+
+### A task that moves
+
+A run grant names one runner. A cloud run's task is `kept`, so it moves only when a person gives it
+with `priory give --force`. A task that moves starts over at its workflow's start on the new owner
+([runners.md](../daemon/runners.md)), so the new owner starts a new cloud run with a new session
+and a new grant. The old grant stops working at once: the gateway refuses a call whose grant names a
+runner that no longer owns the task, and the old owner publishes `priory.run.revoked` when it drops
+the task.
+
+The old session keeps running until its deadline, since no command stops a cloud session. Only a
+runner signed in to the same Claude account can send it a message with `claude -p MSG --cloud ID`.
+So both runners sign in to one Claude account, and the new owner tells the old session to stop.
+With two accounts, the old session runs until it ends on its own, and its calls are refused.
 
 ## Security
 
@@ -127,20 +144,28 @@ The gateway is Priory's first listener beyond loopback. It serves only what a cl
 | Who | Signs in with | Reaches |
 | --- | ------------- | ------- |
 | A cloud session | the person's connector token and a run grant | `ask`, `wait` and `result` of its own task, while its run is live |
-| A person | GitHub, on the web view | the desk, as `priory mcp --outside` serves it |
+| A person, from slice 4 | the web view's token, `PRIORY_TOKEN`, on the tailnet only | the desk and the views of every runner |
+| A person, after slice 5, if a later slice serves the view publicly | GitHub, through the gateway's sign-in | the same |
 
 A connector belongs to the claude.ai account, so every session of that account gets its tools. So
 the gateway's MCP endpoint never serves the desk: a session that could reach it could answer its
-own asks. The person's desk stays on the web view, served on the tailnet first.
+own asks. The person's desk stays on the web view: on the tailnet with its token in slice 4, and
+behind GitHub sign-in only once a later slice serves it publicly (open question 4).
 
 ### Sign-in and tokens
 
 The gateway follows the MCP authorization spec, revision 2025-11-25: OAuth 2.1 with PKCE, Protected
 Resource Metadata at `/.well-known/oauth-protected-resource`, and authorization server metadata. It
-is its own authorization server, and it hands the login to GitHub.
+is its own authorization server, and it hands the login to GitHub. That revision makes dynamic
+client registration optional, and prefers a pre-registered client or a Client ID Metadata Document.
 
-- Dynamic client registration at `/register`, because a claude.ai custom connector registers itself
-  that way. The gateway accepts only the claude.ai and claude.com callback URLs as redirect URIs.
+- One pre-registered client for claude.ai, and no `/register` endpoint. A claude.ai custom
+  connector accepts a static client id and secret in place of registering itself, by Anthropic's
+  connector docs. To verify in slice 5, before the gateway drops `/register`. Its only redirect URIs
+  are the claude.ai and claude.com callback URLs.
+- Each access token names the gateway's MCP URL as its audience, from the `resource` parameter of
+  RFC 8707. The gateway refuses a token issued for another audience, and never passes a token on to
+  GitHub or anyone else.
 - A GitHub OAuth app with no scope, which proves who the person is and reads nothing else.
 - An allow list of GitHub account ids, not logins, since a login can be renamed. The gateway checks
   it at each sign-in, each refresh and each call.
@@ -155,21 +180,61 @@ is its own authorization server, and it hands the login to GitHub.
 
 | Secret | Its power |
 | ------ | --------- |
-| The log's password | any message on the log, so an answer on any runner |
+| The superuser's password | any message on the log, so an answer on any runner; held by nothing that runs |
+| The intake's database role | publishes only the event types the intake publishes, as Database roles says |
+| The gateway's database role | publishes only `priory.run.called` |
+| The view daemon's database role | publishes answers, dismisses and task actions, so it approves on any runner |
 | A read-only GitHub token, fine-grained, for the factory's repositories | reads issues, pull requests, checks and contents |
 | Linear and Slack read tokens | reads what the triggers watch |
+| The Slack shortcut's tokens, `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` | opens a Socket Mode connection with `connections:write`, opens the form with `views.open`, posts to the shortcut's `response_url` ([slack.md](../intake/slack.md#message-shortcut)) |
 | Webhook secrets, once webhooks move to the hub | accepts a forged delivery |
 | The GitHub OAuth app's secret and the gateway's signing key | signs in an allowed account, issues tokens |
 
-Every GitHub write stays on the runners: pushes, comments, pull requests and merges use each
-runner's own `gh`.
+The intake reads GitHub through `gh api`. On the hub, the read-only token reaches `gh` as
+`GH_TOKEN` in the intake's service environment, so `gh` is never signed in there. Every GitHub
+write stays on the runners: pushes, comments, pull requests and merges use each runner's own `gh`.
+The Slack shortcut is the hub's one write to a source: a form and an ephemeral reply.
+
+Each service runs as its own Unix user, with its own environment file, so the gateway cannot read
+the intake's tokens or the view daemon's database password.
+
+### Database roles
+
+Today one password reaches the log, and it can publish any message, so whoever holds it approves on
+every runner ([adding-a-second-machine.md](../adding-a-second-machine.md#limits)). The gateway is
+the public listener and publishes to the log, so it must not hold that password. Each part gets a
+Postgres role of its own:
+
+| Role | May read | May publish | May move the cursor of |
+| ---- | -------- | ----------- | ---------------------- |
+| One per runner | every message | any message, as today | `priory.<runner>` |
+| The view daemon | every message | answers, dismisses and task actions | `priory.view.<hostname>` |
+| The intake | every message | the source events and requests its triggers make: never an answer, claim, hold, give or alive message | `priory.intake` |
+| The gateway | every message | `priory.run.called` only | `priory.gateway` |
+
+A row security policy on `priory_log_messages` checks the `type` field of each inserted message
+against the role's list, and one on `priory_log_cursors` checks the consumer. A restricted role skips
+the schema step a client runs on connect, since it may not create tables. Slice 2 builds both with
+the intake's role, and slice 5 adds the gateway's and the view daemon's.
 
 ### What an attacker with the VM gets
 
 Root on the hub reads and writes the log. So it can answer any ask on any runner, request tasks,
 and give tasks away. Through those, it steers what agents do on the runners with their permissions.
-It also reads the intake's read tokens, the traces and the audit log. It cannot push to GitHub, open
+It also reads the intake's tokens, the traces and the audit log. It cannot push to GitHub, open
 a shell on a runner, or read a runner's state file, since the hub reaches no runner.
+
+Code execution in the gateway, through a bug in its HTTP or OAuth handling, gets the gateway's Unix
+user and its database role. It can then:
+
+- publish `priory.run.called` for any live grant, so call `ask`, `wait` or `result` for any running
+  cloud run, and end its step with any outcome that the step routes to;
+- read the log, so every task's events, asks and answers;
+- issue tokens to itself, which reach only the gateway.
+
+It cannot answer an ask, claim, give or approve, and it cannot read the intake's tokens. A step
+that a cloud run ends still leads to the human step before `open-pr`, so a forged `result` cannot
+merge code.
 
 This is the same power the log's password grants today. The hub moves it from a desktop to a VM on
 the internet, so the VM runs nothing else: unattended security updates, ssh on the tailnet with
@@ -212,8 +277,11 @@ Notes on each:
   runner to publish an alive message sees the other's last alive message 30 minutes old, and claims
   its `waiting` tasks before the other's queued alive message lands. No task runs twice, since only
   never-started tasks move, but tasks shuffle for no reason. The same happens today when the
-  desktop holding the log sleeps. Slice 3 fixes it: a lease does not run while the log was
-  unreachable, measured by a gap in the log's own message times.
+  desktop holding the log sleeps. Slice 3 fixes it with a hub heartbeat: the hub's view daemon
+  publishes `priory.hub.alive` once a minute. A lease does not run across a gap in the heartbeats,
+  which means the log was down. When both runners sleep and the hub stays up, the heartbeats go on,
+  so the runners' leases end as they do today, and a runner that wakes first takes the other's
+  `waiting` tasks.
 - **A runner away.** A cloud run owned by that runner keeps working in its session, but its calls
   get "runner away" after 40 seconds. Its branch push waits on GitHub until the runner polls again.
 - **Clock skew.** Postgres stamps alive, claim and held messages, so the runners' clocks never decide
@@ -260,7 +328,10 @@ x86 build matters more.
    `claude --cloud "call ping"`, and read the session's page. Recommendation: run this test before
    slice 5 writes code. If sessions do not load connectors, slice 6 uses an HTTP MCP server in the
    cloud environment's settings instead, with the run grant as a bearer token, and slice 5 needs no
-   OAuth at all.
+   OAuth at all. Either way, the test's answer then goes into
+   [claude-ai-connectors.md](claude-ai-connectors.md)'s opening paragraph, which today says a
+   connector reaches every cloud session, and into the MCP servers row of
+   [cloud.md](../daemon/cloud.md#what-still-applies-and-what-a-cloud-run-gives-up).
 2. **One `priory gateway` command, or a separate service?** Recommendation: a command of the
    `priory` binary. It shares the log trait, the tools' schemas and the release, and a separate
    service would copy the tool contract. Its OAuth needs may add a dependency, which slice 5
@@ -299,9 +370,10 @@ Each slice ships alone and leaves the factory working.
 
 - **Operations.** A checkout of the factory on the VM, the read-only tokens, and `priory intake` as
   a service there. Stop the desktop's intake.
-- **Code.** Each runner publishes what its intake would watch: its open waits, holds, subscriptions
-  and task branches, as `priory.watch.posted`. The hub's view daemon mirrors them, and the intake
-  reads them from its state file. A `pre` script then runs on the VM, so its tools must be there.
+- **Code.** The intake's database role, as Database roles says. Each runner publishes what its
+  intake would watch: its open waits, holds, subscriptions and task branches, as
+  `priory.watch.posted`. The intake reads them from the log as its own consumer, `priory.intake`,
+  in place of a state file. A `pre` script then runs on the VM, so its tools must be there.
 - **Tests.** A runner's wait on a pull request reaches the intake through the log, and its event
   routes back to that runner. A runner that ends the task removes the watch.
 - **Rollback.** Stop the VM's intake and start the desktop's. Events carry their ids, so an event
@@ -311,11 +383,12 @@ Each slice ships alone and leaves the factory working.
 
 - **Operations.** The second machine joins the tailnet, and its `PRIORY_LOG_URL` points at the VM.
   Its runner file, such as `runners/key-drum.toml`, already exists. Remove the reverse ssh tunnel.
-- **Code.** A lease does not run while the log was unreachable, as Failure modes says, so a hub
-  outage moves no task.
+- **Code.** The hub heartbeat, `priory.hub.alive`, and a lease that does not run across a gap in
+  it, as Failure modes says, so a hub outage moves no task.
 - **Tests.** `scripts/second-machine.sh` with the log on the VM, its `tunnel-down` replaced by
   cutting one runner's tailnet link. A property test: after a log gap longer than 30 minutes, the
-  first runner back claims none of the other's `waiting` tasks.
+  first runner back claims none of the other's `waiting` tasks, and with the heartbeats going on, a
+  runner asleep for 30 minutes still loses them.
 - **Rollback.** Stop the second daemon. Its `waiting` tasks move after 30 minutes, or sooner with
   `priory give --force`.
 
@@ -334,12 +407,15 @@ Each slice ships alone and leaves the factory working.
 
 - **Operations.** A domain, the TLS proxy, port 443 open, a GitHub OAuth app, and the connector added
   in claude.ai. Settle open question 1 first.
-- **Code.** `priory gateway`: the OAuth endpoints, the allow list, tokens and revocation, the rate
-  limits and the audit log. Its MCP endpoint serves one `whoami` tool, which proves the connector
-  works and acts on nothing.
+- **Code.** `priory gateway`: the OAuth endpoints with a pre-registered client, the audience check,
+  the allow list, tokens and revocation, the rate limits and the audit log. The gateway's and the
+  view daemon's database roles. Its MCP endpoint serves one `whoami` tool, which proves the
+  connector works and acts on nothing.
 - **Tests.** The OAuth flow against a fake GitHub: an allowed account gets a token, another is
   refused, an expired token is refused, a refresh rotates, revoke ends a token, a redirect URI that
-  is not claude.ai's is refused at registration, and the rate limits answer `429`.
+  is not claude.ai's is refused, a token for another audience is refused, and the rate limits answer
+  `429`. Against Postgres: the gateway's role cannot insert `priory.ask.answered`, and the intake's
+  cannot insert a claim.
 - **Rollback.** Stop the gateway, close port 443 and remove the connector. Nothing else depends on
   it.
 
@@ -348,9 +424,12 @@ Each slice ships alone and leaves the factory working.
 - **Operations.** None beyond slice 5.
 - **Code.** Run grants, `priory.run.called` and `priory.run.replied`, the owner applying a call as
   a socket call, waking a session with `claude -p MSG --cloud ID`, and `priory check` allowing
-  `ask` and `wait` on a cloud agent. An ADR records that a cloud run reports through the gateway,
-  with the branch push still carrying its code. A `[cloud] gateway` key turns it on per factory.
+  `ask` and `wait` on a cloud agent, and other outcomes than `pushed`. Before it takes a pushed
+  branch, the runner checks its commits and messages for the run's token, as it screens private
+  terms, and fails the step and revokes the grant when it finds it. An ADR records that a cloud run
+  reports through the gateway, with the branch push still carrying its code. A `[cloud] gateway` key turns it on per factory.
 - **Tests.** A fake session calls each tool through the gateway, and the owner applies it once. A
   grant of another task, an ended run and a moved task are refused. An owner away answers "runner
-  away" after 40 seconds, and the retry applies once.
+  away" after 40 seconds, and the retry applies once. A pushed commit holding the token fails the
+  step. A task given to the other runner gets a new grant, and the old one is refused.
 - **Rollback.** Set `[cloud] gateway = false`: cloud runs report by branch push only, as today.
