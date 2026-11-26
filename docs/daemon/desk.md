@@ -12,7 +12,7 @@ reading each task.
 | `delivery` | the outside ask | `the answer did not reach <session> after <N> tries: <error>`, until the ask is asked again, or `priory deliver` clears or retries it (see [asks.md](asks.md)) | its last try ended |
 | `blocked` | the task | its reason | the task last changed state |
 | `failed` | the task | its reason, then `revive: priory revive <task>` | the task last changed state |
-| `prompt` | the outbox prompt | its text, for an `uncertain` prompt | it was attempted |
+| `prompt` | the outbox prompt | `a prompt was typed but never confirmed: <text>`, for an `uncertain` prompt (see [outbox.md](outbox.md#typing-a-prompt)) | it was attempted |
 | `command` | the answer's action | `Priory stopped while answer <answer> to ask <ask> ran <argv> in <dir>: check the target`, for an `uncertain` command (see [tools.md](../reference/tools.md#commands-an-answer-runs)) | it ended |
 | `held` | the hold | the task's reason: why it is held, and until what. For a marked task with a live run, `holds after this turn: <reason>`, and for one that runs a command, sleeps or is blocked since, `holds once it is ready: <reason>` (see [runs.md](runs.md#holding-a-running-task)) | it was held, or marked |
 | `batch` | the batch | its title and counts, then which entries start next: `Invoice exports: 1 merged, 3 started, 2 planned. Next: ENG-41 and ENG-42 start when ENG-40 merges.`, each task named by its key without the source. One row per going batch, in place of the `held` rows of its entries (see Batches) | the go |
@@ -31,7 +31,7 @@ The lane column is the task's lane, or `-` for a `worktree` row.
 In `priory desk --json`, an `ask` item carries `routed_to`: the lead it is routed to, or null. The
 web Desk and the Herdr Desk show it as "with <lead>" on the ask's row and in the next thing.
 
-It lists only asks and prompts of active tasks, holds of held tasks and of tasks marked to be held, and waiting or long-held memory grants. Then the `queue` rows in start order, then one `worktree` row per worktree the sweep keeps and per folder in the trash. `priory asks` prints every open ask. Both leave snoozed items out, unless you pass `--all` (see Snooze).
+It lists only asks and prompts of active tasks, and no prompt whose run ended after the task moved on, holds of held tasks and of tasks marked to be held, and waiting or long-held memory grants. Then the `queue` rows in start order, then one `worktree` row per worktree the sweep keeps and per folder in the trash. `priory asks` prints every open ask. Both leave snoozed items out, unless you pass `--all` (see Snooze).
 
 ## Batches
 
