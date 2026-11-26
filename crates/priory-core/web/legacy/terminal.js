@@ -1,6 +1,5 @@
 // The terminal page's legacy drawing and actions.
 import { plural } from "../desk.js";
-import { taskLabel } from "../tasks.js";
 import { EARLIER_CAP, KEYS, keyboardSession, paintRows, sayLine, screenRows, screenWatch } from "../terminal.js";
 import { api, signOut } from "./data.js";
 import { STATES, clock, html, icon, post, raw, state, tile } from "./shared.js";
@@ -216,13 +215,6 @@ export function copyTerminal(text, what) {
   }, () => {});
 }
 
-// The Terminal panel: each running task, whose page shows its terminal.
-export function terminalsPanel() {
-  const running = (state.data?.tasks || []).filter((task) => task.state === "running");
-  if (!running.length) return html`<p class="empty">No agent runs now. A running task's terminal shows here.</p>`;
-  return html`<ol class="hist" aria-label="Running tasks">${running.map((task) => html`<li>${tile("running", "sm")}<a href="/tasks/${task.id}#terminal" title="task ${task.id}"><span class="mono">${taskLabel(task.key)}</span> ${task.title || ""}</a></li>`)}</ol>`;
-}
-
 // Each event function of a page returns true once it acted.
 export function terminalClick(action, target) {
   if (action === "term-fit") {
@@ -284,9 +276,5 @@ export function terminalKey(event) {
   return false;
 }
 
-// A page that goes away gives its keyboard back, so the run's outbox does not wait out the 15 minutes.
-addEventListener("pagehide", () => keyboard.leave());
 keyboardSheet().addEventListener("click", (event) => { if (event.target === keyboardSheet()) keyboardSheet().close(); });
 keyboardSheet().addEventListener("close", () => document.querySelector("#app [data-action='term-menu']")?.focus());
-document.addEventListener("visibilitychange", () => syncTerminal(document.getElementById("app")));
-addEventListener("resize", () => { if (terminal.fit) paintTerminal(document.getElementById("app")); });
