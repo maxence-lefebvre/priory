@@ -60,6 +60,12 @@ struct Stalls {
     calls: Vec<Handling>,
 }
 
+/// What keeps a second daemon away: the lock alone, or with the socket a held daemon listens on.
+enum Held {
+    Lock(Option<runtime::Lock>),
+    Listening(runtime::Listening),
+}
+
 /// A handler call in flight on `run`.
 struct Handling {
     id: i64,
@@ -101,7 +107,9 @@ fn view(factory: &Factory) -> Result<(), Error> {
     let watch = reload::Watch::new(factory);
     let machine = room::hostname();
     let viewer = runners::viewer(factory, machine.as_deref())?;
-    let mut db = state::open()?;
+    // The lock keeps a second daemon of this `PRIORY_HOME` off the state, and off its migration.
+    let lock = runtime::lock(&runtime::home())?;
+    let mut db = state::migrate()?;
     let bus = log::open(factory.log())?;
     let trace = Trace {
         factory,
@@ -113,8 +121,7 @@ fn view(factory: &Factory) -> Result<(), Error> {
     // The listings add every runner's asks and tasks once this state file names its machine.
     runners::name(&db, Some(&viewer))?;
     let consumer = runners::view_consumer(&viewer);
-    // The socket's lock keeps a second daemon off this state file.
-    let listening = runtime::listen(&runtime::home())?;
+    let listening = runtime::listen(&runtime::home(), lock)?;
     let server = match factory.serve() {
         Some(config) => Some(crate::serve::start(factory, config.listen)?),
         None => None,
@@ -171,7 +178,16 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     if !once {
         upgrade::admit(&runtime::home(), true)?;
     }
-    let mut db = state::open()?;
+    let home = runtime::home();
+    // Only the daemon migrates, under its lock. `--once` routes beside a running daemon otherwise.
+    let lock = match !once || state::older()? {
+        true => Some(runtime::lock(&home)?),
+        false => None,
+    };
+    let mut db = match lock {
+        Some(_) => state::migrate()?,
+        None => state::open()?,
+    };
     let bus = log::open(factory.log())?;
     tools::backfill_endings(&mut db, &factory.workflows)?;
     state::bands(&mut db, &factory.bands(), factory.age())?;
@@ -179,7 +195,6 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     state::irreversible_asks(&mut db, &factory.workflows)?;
     let embedder = factory.search().embedder().map(|spec| embed::name(&spec));
     search::configure(&db, embedder.as_deref())?;
-    let home = runtime::home();
     let mut counting = Counting {
         embedder: embedder.clone(),
         counter: None,
@@ -196,9 +211,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let consumer = runners::consumer(trace.runner.as_deref());
     runners::name(&db, trace.runner.as_deref())?;
     // What came before writes the state alone, which a rollback puts back. A dispatch reaches further.
-    let held = match !once && upgrade::held(&home) {
-        true => Some(hold(factory, &home)?),
-        false => None,
+    let held = match lock {
+        Some(lock) if !once && upgrade::held(&home) => Held::Listening(hold(factory, &home, lock)?),
+        lock => Held::Lock(lock),
     };
     for error in sections::dispatch(&db, factory, None)? {
         eprintln!("priory daemon: {error}");
@@ -231,8 +246,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     }
     let searching = search::answering(state::read_only()?, home.clone());
     let listening = match held {
-        Some(listening) => listening,
-        None => runtime::listen(&home)?,
+        Held::Listening(listening) => listening,
+        Held::Lock(Some(lock)) => runtime::listen(&home, lock)?,
+        Held::Lock(None) => return Err("the daemon runs without its lock".into()),
     };
     sweep::move_back(&home);
     let headers = otlp::header_file(factory, &home, "otlp-headers")?;
@@ -1234,8 +1250,8 @@ fn version(_: &VersionLine) -> Result<String, String> {
 
 /// Waits until a migration's upgrade is committed. The daemon then answers its version alone, so a
 /// rollback to the backups loses nothing.
-fn hold(factory: &Factory, home: &Path) -> Result<runtime::Listening, Error> {
-    let listening = runtime::listen(home)?;
+fn hold(factory: &Factory, home: &Path, lock: runtime::Lock) -> Result<runtime::Listening, Error> {
+    let listening = runtime::listen(home, lock)?;
     if let Some(config) = factory.serve() {
         drop(std::net::TcpListener::bind(config.listen)?);
     }

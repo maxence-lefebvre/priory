@@ -3064,15 +3064,19 @@ pub struct Line {
     pub applied: Sender<String>,
 }
 
+/// The daemon's lock on its home, held until it is dropped.
+pub struct Lock {
+    _file: File,
+}
+
 /// The daemon's end of the socket: its lock, and the lines that arrive.
 pub struct Listening {
-    _lock: File,
+    _lock: Lock,
     pub lines: Receiver<Line>,
 }
 
-/// Takes the daemon lock under `home` and binds the signal socket. Each connection's line gets
-/// the daemon's reply once the daemon applied it.
-pub fn listen(home: &Path) -> Result<Listening, String> {
+/// Takes the daemon lock under `home`.
+pub fn lock(home: &Path) -> Result<Lock, String> {
     let at = |error: std::io::Error| format!("{}: {error}", home.display());
     fs::create_dir_all(home).map_err(at)?;
     let lock = File::create(home.join("daemon.lock")).map_err(at)?;
@@ -3084,6 +3088,13 @@ pub fn listen(home: &Path) -> Result<Listening, String> {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+    Ok(Lock { _file: lock })
+}
+
+/// Binds the signal socket of the daemon that holds `lock` on `home`. Each connection's line gets
+/// the daemon's reply once the daemon applied it.
+pub fn listen(home: &Path, lock: Lock) -> Result<Listening, String> {
+    let at = |error: std::io::Error| format!("{}: {error}", home.display());
     let path = socket_path(home);
     let run = std::env::var_os("XDG_RUNTIME_DIR").filter(|run| !run.is_empty());
     let why = fallback_reason(run.as_deref().map(Path::new), home);
