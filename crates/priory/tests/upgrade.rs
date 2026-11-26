@@ -32,9 +32,9 @@ case "$verb" in
   stop)
     for unit in "$@"; do
       running=$(pid "$unit")
-      [ "$running" != 0 ] && kill "$running" 2>/dev/null
+      # systemd knows a unit is stopped from before the signal, as the daemon may take a while.
+      [ "$running" != 0 ] && : > "$FAKE/$unit.stopped" && kill "$running" 2>/dev/null
       while [ "$running" != 0 ] && alive "$running"; do sleep 0.05; done
-      [ "$running" != 0 ] && : > "$FAKE/$unit.stopped"
       rm -f "$FAKE/$unit.pid"
     done
     [ -e "$FAKE/on-stop" ] && . "$FAKE/on-stop" ;;
