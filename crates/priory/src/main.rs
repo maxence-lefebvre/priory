@@ -317,15 +317,16 @@ fn load(dir: &Path) -> Option<factory::Factory> {
 }
 
 /// Runs `run` on the factory in `dir`, once it loads with no problems.
-/// The open waits the intake polls for, read from `PRIORY_DB`; none when the intake runs without
-/// a state file.
-fn watched() -> Result<Vec<intake::Watch>, String> {
+/// This runner's name and the open waits the intake polls for, read from `PRIORY_DB`; none when the
+/// intake runs without a state file.
+fn watched() -> Result<Option<intake::Local>, String> {
     if std::env::var_os("PRIORY_DB").is_none() {
-        return Ok(Vec::new());
+        return Ok(None);
     }
     let db = state::open()?;
+    let runner = runners::me(&db).map_err(|error| format!("this runner: {error}"))?;
     let watched = state::watched(&db).map_err(|error| format!("open waits: {error}"))?;
-    watched
+    let watches = watched
         .into_iter()
         .map(|(resource, since, rank)| {
             let since = since
@@ -337,7 +338,8 @@ fn watched() -> Result<Vec<intake::Watch>, String> {
                 rank,
             })
         })
-        .collect()
+        .collect::<Result<_, String>>()?;
+    Ok(Some(intake::Local { runner, watches }))
 }
 
 /// The task pull requests merged since `since` whose merge commits the intake reads check runs at;
