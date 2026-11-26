@@ -4,11 +4,10 @@ export const reads = [
   ["/queue?view=held", "/api/desk /api/queue /api/tasks"],
 ];
 
-// The rows are React's: a refresh, a failed read or a lost connection keeps the very elements and an
-// open Move menu, and no legacy slot draws them.
+// A refresh, a failed read or a lost connection keeps the very row elements and an open Move menu.
 const LIST = 'document.querySelector("#app .list .scroll")';
 const MENU = 'document.querySelector("#app details.move")';
-const HELD = `({ row: ${LIST}?.querySelector("tr[data-href]"), legacy: document.querySelector("#app .legacy") })`;
+const HELD = `({ row: ${LIST}?.querySelector("tr[data-href]") })`;
 export async function check({ hooked, evaluate, until, sleep, change, screen, page }) {
   await screen(1440, 900);
   await hooked("the Queue keeps its rows, an open Move menu and its focus through a refresh", "/queue", MENU, {}, async () => {
@@ -19,8 +18,8 @@ export async function check({ hooked, evaluate, until, sleep, change, screen, pa
     change();
     await until('reads.includes("/api/queue")', "the Queue to read again");
     await sleep(1000);
-    const found = await evaluate(`({ same: ${HELD}.row === held.row && ${MENU} === menu, legacy: Boolean(${HELD}.legacy), open: menu.open, focus: document.activeElement === menu.querySelector("summary") })`);
-    return found.same && !found.legacy && found.open && found.focus ? true : found;
+    const found = await evaluate(`({ same: ${HELD}.row === held.row && ${MENU} === menu, open: menu.open, focus: document.activeElement === menu.querySelector("summary") })`);
+    return found.same && found.open && found.focus ? true : found;
   });
   await hooked("a refused Move says why under its row, closes its menu and gives its button the focus; Esc closes a menu", "/queue", MENU, { reply: { error: "refused by the check" } }, async () => {
     await sleep(1500);
@@ -41,8 +40,7 @@ export async function check({ hooked, evaluate, until, sleep, change, screen, pa
     const said = await evaluate('document.getElementById("app").innerText.match(/Could not load this page: [^\\n]*/)?.[0] ?? ""');
     await evaluate("hook.fails = []");
     await until(`${LIST}?.querySelector("tr[data-href]")`, "the rows");
-    const legacy = await evaluate('Boolean(document.querySelector("#app .legacy"))');
-    return said.startsWith("Could not load this page: /api/queue answered 500.") && !legacy ? true : { said, legacy };
+    return said.startsWith("Could not load this page: /api/queue answered 500.") ? true : said;
   });
   await hooked("offline, the Queue keeps its rows and says it reconnects", "/queue", `${LIST}?.querySelector("tr[data-href]")`, {}, async () => {
     await sleep(1500);
@@ -50,9 +48,9 @@ export async function check({ hooked, evaluate, until, sleep, change, screen, pa
     change();
     await until('document.querySelector(".conn").innerText === "reconnecting"', "the session to fail");
     await sleep(1000);
-    const found = await evaluate(`({ same: ${HELD}.row === held.row, legacy: Boolean(${HELD}.legacy), stale: document.querySelector(".stale")?.innerText ?? "" })`);
+    const found = await evaluate(`({ same: ${HELD}.row === held.row, stale: document.querySelector(".stale")?.innerText ?? "" })`);
     await evaluate("hook.fails = []");
     await until('document.querySelector(".conn").innerText === "live"', "the session to heal");
-    return found.same && !found.legacy && found.stale.startsWith("Reconnecting") ? true : found;
+    return found.same && found.stale.startsWith("Reconnecting") ? true : found;
   });
 }

@@ -9,6 +9,7 @@ const fixture = (name) => readFileSync(new URL(`fixtures/${name}`, import.meta.u
 const OLD = fixture("old-pr.html");
 const NEW = fixture("new-pr-overview.html");
 const NEW_FILES = fixture("new-pr-files.html");
+const CURRENT = fixture("new-pr-current.html");
 globalThis.DOMParser = DOMParser;
 const BARE = '<html><body><div class="application-main"><main><react-app><h1>Fix a bug</h1><div class="comment-body"><p>Fix a bug.</p></div></react-app></main></div></body></html>';
 
@@ -46,6 +47,16 @@ test("where the new page renders the description in the browser only, the Guide 
   body.remove();
   doc.querySelector('script[data-target="react-app.embeddedData"]').replaceChildren(JSON.stringify({ payload: { pullRequest: { body: { html: block } } } }));
   assert.equal(JSON.parse(blockIn(doc)).steps[0].file, "src/app.js");
+});
+
+test("on the current page, the strip's anchor is the tab row by its telemetry names, even without the tabs' ids", () => {
+  for (const html of [CURRENT, CURRENT.replaceAll(/ id="prs-[a-z]+-anchor-tab"/g, "")]) {
+    const found = anchor(parse(html));
+    assert.equal(found.kind, "new");
+    assert.equal(found.nav.getAttribute("aria-label"), "Pull request navigation");
+    assert.equal(found.at.localName, "react-app");
+  }
+  assert.equal(JSON.parse(blockIn(parse(CURRENT))).steps[0].file, "src/app.js");
 });
 
 test("a page with no tab row has no anchor, so the strip takes the fallback place", () => {
@@ -86,6 +97,11 @@ async function until(check, what) {
   }
   assert.fail(`timed out waiting for ${what}`);
 }
+const beforeApp = (strip) => {
+  const app = document.querySelector("react-app");
+  const siblings = [...app.parentElement.childNodes];
+  return siblings.indexOf(strip) + 1 === siblings.indexOf(app);
+};
 const strips = () => [...document.querySelectorAll("iframe")].filter((frame) => frame.src.includes("view=strip"));
 
 test("content.js draws the strip above the old page's tab row, adds the Guide tab and redraws on soft navigation", async (t) => {
@@ -186,4 +202,38 @@ test("content.js puts the strip at the top of a page with no tab row, warns once
   assert.equal(strips()[0].dataset.at, "old");
   assert.equal(strips()[0].parentElement, document.querySelector("main"), "the strip moved above the row");
   assert.equal([...row.parentElement.childNodes].indexOf(strips()[0]) + 1, [...row.parentElement.childNodes].indexOf(row));
+});
+
+test("content.js on the current page adds the Guide tab after the last tab, as a plain copy of one", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const page = await load(CURRENT, "https://github.com/octo/demo/pull/1");
+  t.after(page.restore);
+  const row = () => document.querySelector(".TabNavList__wLlQxB");
+  await until(() => row().querySelector('a[href="#priory-guide"]'), "the Guide tab");
+  const tab = row().querySelector('a[href="#priory-guide"]');
+  assert.equal([...row().children].at(-1), tab);
+  for (const name of ["aria-current", "id", "data-telemetry-action", "data-discover"]) assert.equal(tab.getAttribute(name), null, name);
+  assert.equal(tab.getAttribute("class"), "TabNavLink__LGP-9p", "a copy of a tab that is not selected");
+  assert.equal(strips()[0].dataset.at, "new");
+  assert.ok(beforeApp(strips()[0]));
+});
+
+test("content.js on the new page draws a fresh strip when React moves to another pull request without a reload", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  for (const html of [NEW, CURRENT]) {
+    const page = await load(html, "https://github.com/octo/demo/pull/1");
+    await until(() => strips().length === 1, "the strip");
+    const first = strips()[0];
+
+    // React swaps its own tree; the strip, outside it, stays in place with pull request 1's frame.
+    const next = parse(html.replaceAll("/octo/demo/pull/1", "/octo/demo/pull/2")).querySelector("react-app");
+    document.querySelector("react-app").replaceChildren(...next.childNodes);
+    location.href = "https://github.com/octo/demo/pull/2";
+    observers.forEach((callback) => callback());
+    t.mock.timers.tick(150);
+    await until(() => strips().length === 1 && strips()[0] !== first, "a strip for pull request 2");
+    assert.equal(first.isConnected, false);
+    assert.ok(beforeApp(strips()[0]));
+    page.restore();
+  }
 });

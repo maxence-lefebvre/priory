@@ -150,6 +150,10 @@ that reverses each answer. A done task with no open pull request has none, and t
 revive's step still exists when `PRIORY_FACTORY`, or the current folder, holds the factory.
 When a window ends, the daemon posts one report line to the desk.
 
+While a window is on, the web view's Desk shows it in a banner with Turn off, which sends
+[`POST /api/autopilot/off`](../reference/serve.md#writes). Off takes effect on that machine first.
+When the other runners cannot be told, the banner says so and offers Tell them again.
+
 ## Waits
 
 A wait ends with the first event that fires it. To hear every event on a resource without ending

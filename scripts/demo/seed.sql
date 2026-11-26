@@ -242,3 +242,7 @@ INSERT INTO row_comments (task,row,reply_to,author,text,created,resolved) VALUES
 (21,'eng-250',NULL,'lead','Does this hold across a schema change?',strftime('%Y-%m-%dT%H:%M:%SZ','now','-50 minutes'),0),
 (21,'eng-250',1,'agent','Yes: the cache key holds the schema version.',strftime('%Y-%m-%dT%H:%M:%SZ','now','-45 minutes'),0),
 (21,'eng-224',NULL,'lead','Ping the reviewer.',strftime('%Y-%m-%dT%H:%M:%SZ','now','-2 hours'),1);
+-- autopilot is on until 8 hours from now, and left ENG-231's ask
+INSERT INTO autopilot_windows (id,setting,started,until,level,lanes) VALUES
+(1,'seed-autopilot',strftime('%Y-%m-%dT%H:%M:%SZ','now','-1 hours'),strftime('%Y-%m-%dT%H:%M:%SZ','now','+8 hours'),'high','[]');
+INSERT INTO autopilot_asks (window,ask,revision,verdict,why) VALUES (1,4,1,'left','its confidence, medium, is below high');

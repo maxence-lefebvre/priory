@@ -247,7 +247,8 @@ function answer(ask, text, written, run = false) {
   if (answers.get().pending) return;
   const notices = new Map(answers.get().notices);
   notices.delete(ask.id);
-  set({ pending: { id: ask.id, text }, notices });
+  // The sheet's close event comes later: a quick refusal must not find the sheet still asked for and open it again.
+  set({ pending: { id: ask.id, text }, notices, sheet: false });
   send(ask, text, written, run);
 }
 
@@ -569,6 +570,8 @@ const AnswerSheet = memo(function AnswerSheet({ ask, task, locked, bound }) {
     return () => {
       dialog.removeEventListener("close", closed);
       dialog.removeEventListener("click", outside);
+      // The close listener is gone, so clear the store here, or the next ask opens the sheet unasked.
+      set({ sheet: false });
       if (dialog.open) dialog.close();
     };
   }, []);

@@ -131,7 +131,7 @@ fn view(factory: &Factory) -> Result<(), Error> {
     let mut link = Link::default();
     loop {
         if runtime::stopping() {
-            return listening.stop(|line| seen(&db, line));
+            return listening.stop(|line| seen(&mut db, factory, line));
         }
         live.poll(&mut db, &trace, false)?;
         let trace = live.trace(&trace);
@@ -144,24 +144,37 @@ fn view(factory: &Factory) -> Result<(), Error> {
         }
         let wait = if behind { Duration::ZERO } else { EVERY };
         match listening.lines.recv_timeout(wait) {
-            Ok(line) => seen(&db, line)?,
+            Ok(line) => seen(&mut db, factory, line)?,
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
         }
     }
 }
 
-/// Answers a line on a view-only machine, where since you looked is its own and the rest is refused.
-fn seen(db: &Connection, line: Line) -> Result<(), Error> {
+/// Answers a line on a view-only machine, where since you looked and a person's autopilot `off` are
+/// its own and the rest is refused.
+fn seen(db: &mut Connection, factory: &Factory, line: Line) -> Result<(), Error> {
     let reply = match serde_json::from_str::<Input>(&calls::inner(&line.text)) {
         Ok(Input::Seen(line)) => {
             state::seen(db, &line.seen.person, line.seen.at).map_err(|error| error.to_string())
         }
+        Ok(Input::AutopilotOff(_)) => autopilot_off(db, factory, room::hostname().as_deref()),
         _ => Err(VIEW_ONLY.to_owned()),
     };
     let reply = serde_json::to_string(&reply).expect("a result serializes");
     let _ = line.applied.send(reply);
     Ok(())
+}
+
+/// A person's autopilot `off` from the web view, as `priory autopilot off` does it: its reply is the
+/// JSON of `autopilot::Off`.
+fn autopilot_off(
+    db: &mut Connection,
+    factory: &Factory,
+    host: Option<&str>,
+) -> Result<String, String> {
+    crate::autopilot::off(db, Some(factory), host)
+        .map(|off| serde_json::to_string(&off).expect("an off serializes"))
 }
 
 /// Reads the messages past the view's cursor into its mirrors, as `drain_some` does, and returns
@@ -1278,6 +1291,7 @@ enum Input {
     Proof(crate::proof::Line),
     Push(push::Line),
     Seen(state::SeenLine),
+    AutopilotOff(crate::autopilot::OffLine),
     Read(crate::post::ReadLine),
     BatchEdit(crate::batch::EditLine),
     Move(state::MoveLine),
@@ -1703,6 +1717,10 @@ fn take_line(
         )),
         Ok(Input::Seen(line)) => Ok((
             replied(Ok(state::seen(db, &line.seen.person, line.seen.at)?)),
+            None,
+        )),
+        Ok(Input::AutopilotOff(_)) => Ok((
+            replied(autopilot_off(db, trace.factory, trace.machine.as_deref())),
             None,
         )),
         Ok(Input::Gate(gate)) => {
