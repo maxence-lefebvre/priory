@@ -642,6 +642,10 @@ fn merge_risk(outcome: &str, risk: &Value) -> Result<Option<String>, String> {
     Ok(Some(Value::Object(stored).to_string()))
 }
 
+/// The longest line, in characters, that a human step's question keeps of a summary its task's
+/// Brief or Plan section already shows.
+const SUMMARY_LINE: usize = 160;
+
 /// The task's plan brief and verification, then its latest merge risk, as an ask's Markdown body.
 fn ask_text(tx: &Transaction, task: i64) -> rusqlite::Result<Option<String>> {
     let parts = [plan_text(tx, task)?, risk_text(tx, task)?];
@@ -4077,6 +4081,16 @@ fn step_in(
                 .as_deref()
                 .map(|question| one_line(&command::filled(question, &values)));
             let go = crate::batch::go_ask(tx, task)?;
+            // The Brief or Plan section shows a brief or plan step's summary whole: the question
+            // keeps its first line, so Why does not repeat it.
+            let shown = from
+                .and_then(|run| self::step(workflows, workflow, &run.step))
+                .is_some_and(crate::plan::writes);
+            let context = if shown {
+                crate::judge::cut(&one_line(context), SUMMARY_LINE)
+            } else {
+                context.to_owned()
+            };
             // A result's summary is no news on a go; a failed start's error is.
             let question = match (&go, context.is_empty(), asked) {
                 (Some((asked, _)), _, _) if context.is_empty() || from.is_some() => asked.clone(),
