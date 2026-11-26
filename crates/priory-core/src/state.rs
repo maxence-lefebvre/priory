@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 128;
+const VERSION: i64 = 129;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -2276,6 +2276,16 @@ CREATE TABLE IF NOT EXISTS cloud_heads (
 PRAGMA user_version = 128;
 ";
 
+// The diocese's heartbeats as read from the log: the last one, and the first after the latest gap.
+const SCHEMA_129: &str = "
+CREATE TABLE IF NOT EXISTS diocese (
+  id   INTEGER PRIMARY KEY CHECK (id = 1),
+  last INTEGER NOT NULL,
+  back INTEGER NOT NULL
+);
+PRAGMA user_version = 129;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -2293,7 +2303,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
     SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112, SCHEMA_113,
     SCHEMA_114, SCHEMA_115, SCHEMA_116, SCHEMA_117, SCHEMA_118, SCHEMA_119, SCHEMA_120, SCHEMA_121,
-    SCHEMA_122, SCHEMA_123, SCHEMA_124, SCHEMA_125, SCHEMA_126, SCHEMA_127, SCHEMA_128,
+    SCHEMA_122, SCHEMA_123, SCHEMA_124, SCHEMA_125, SCHEMA_126, SCHEMA_127, SCHEMA_128, SCHEMA_129,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -5899,7 +5909,7 @@ mod inbox_lookups {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        assert_eq!(found, (7, None, 128));
+        assert_eq!(found, (7, None, VERSION));
         db.prepare("SELECT 1 FROM inbox INDEXED BY inbox_by_task WHERE task = 1")
             .unwrap();
     }

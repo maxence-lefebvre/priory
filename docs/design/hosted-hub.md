@@ -278,7 +278,7 @@ Notes on each:
   its `waiting` tasks before the other's queued alive message lands. No task runs twice, since only
   never-started tasks move, but tasks shuffle for no reason. The same happens today when the
   desktop holding the log sleeps. Slice 3 fixes it with a hub heartbeat: the hub's view daemon
-  publishes `priory.hub.alive` once a minute. A lease does not run across a gap in the heartbeats,
+  publishes `priory.diocese.alive` once a minute. A lease does not run across a gap in the heartbeats,
   which means the log was down. When both runners sleep and the hub stays up, the heartbeats go on,
   so the runners' leases end as they do today, and a runner that wakes first takes the other's
   `waiting` tasks.
@@ -386,8 +386,12 @@ Each slice ships alone and leaves the factory working.
 
 - **Operations.** The second machine joins the tailnet, and its `PRIORY_LOG_URL` points at the VM.
   Its runner file, such as `runners/key-drum.toml`, already exists. Remove the reverse ssh tunnel.
-- **Code.** The hub heartbeat, `priory.hub.alive`, and a lease that does not run across a gap in
-  it, as Failure modes says, so a hub outage moves no task.
+- **Code.** The diocese heartbeat, `priory.diocese.alive`, and a lease that does not run across a
+  gap in it, as Failure modes says, so a diocese outage moves no task.
+- **Built.** `priory daemon --view-only --diocese` publishes the heartbeat, and a gap of more than
+  3 minutes stops every lease until the heartbeats are back, when each lease runs 30 minutes again.
+  A diocese silent for 24 hours counts as gone. `scripts/second-machine.sh cut local|remote` cuts
+  one runner's link. See [runners.md](../daemon/runners.md#a-log-outage-with-a-diocese).
 - **Tests.** `scripts/second-machine.sh` with the log on the VM, its `tunnel-down` replaced by
   cutting one runner's tailnet link. A property test: after a log gap longer than 30 minutes, the
   first runner back claims none of the other's `waiting` tasks, and with the heartbeats going on, a

@@ -193,6 +193,25 @@ compare one clock. On herdr-bus, each message keeps its sender's time, so a take
 machines' clocks. Keep the runners' clocks synchronized, with NTP, or a runner whose clock runs
 ahead takes waiting tasks before their lease ends.
 
+### A log outage with a diocese
+
+When the log itself is down, no runner can publish an alive message. Once it is back, the first
+runner to publish sees the other's last alive message more than 30 minutes old, and would take its
+`waiting` tasks before the other's queued alive message lands.
+
+The diocese prevents that. Its view daemon, `priory daemon --view-only --diocese`, publishes
+`priory.diocese.alive` once a minute, stamped by the log like an alive message. Every runner reads
+those heartbeats in log order:
+
+- A pause of more than 3 minutes between two heartbeats is a gap: the log was down.
+- No lease ends while the latest heartbeat is more than 3 minutes old.
+- After a gap, every lease runs again for 30 minutes from the first heartbeat back.
+
+While the heartbeats go on, leases end as they do without a diocese, so a runner asleep for 30
+minutes still loses its `waiting` tasks. A factory that never saw a heartbeat keeps the rule
+above. A diocese silent for 24 hours counts as gone, and leases run as without one: stopping the
+diocese for good costs a day of frozen takeovers, or a `priory give --force` per task.
+
 When a runner reads its own alive message, it claims each `waiting` key of another runner whose
 lease ended before it. That takeover wins only if the old owner sent no alive message in between
 and the key is still `waiting`. The new owner creates the task from its request.
@@ -321,7 +340,7 @@ newest submission shows under its title: sent, refused with why, or applied.
 ## A machine that only views
 
 ```sh
-priory daemon --view-only [DIR]
+priory daemon --view-only [--diocese] [DIR]
 ```
 
 serves every runner's asks and tasks on a machine with no runner file, such as a laptop. It needs

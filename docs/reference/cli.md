@@ -56,9 +56,11 @@ does and the page that describes it.
   pending, grades the tasks a `held` scorer is due to grade, starts no run and exits. On a state of an
   older schema it takes the daemon's lock and migrates it, so it is refused while a daemon runs.
   Otherwise it runs beside a running daemon. See [the daemon](../daemon/README.md).
-- `priory daemon --view-only [DIR]`: on a machine with no runner file, mirrors every runner's asks
-  and tasks, serves them and runs nothing. See
-  [runners.md](../daemon/runners.md#a-machine-that-only-views).
+- `priory daemon --view-only [--diocese] [DIR]`: on a machine with no runner file, mirrors every
+  runner's asks and tasks, serves them and runs nothing. See
+  [runners.md](../daemon/runners.md#a-machine-that-only-views). `--diocese` also publishes
+  `priory.diocese.alive` once a minute, so no lease runs across a log outage. See
+  [runners.md](../daemon/runners.md#a-log-outage-with-a-diocese).
 - `priory serve [DIR] [--listen ADDR]`: runs the HTTP server on its own, without a daemon. See
   [serve.md](../daemon/serve.md#where-it-runs).
 

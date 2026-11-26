@@ -13,6 +13,8 @@ usage: scripts/second-machine.sh [--run] <command> <ssh-host> [args...]
   down                stop both daemons, the tunnel and Postgres, and remove the scratch folders
   tunnel-up           start the reverse tunnel
   tunnel-down         stop the reverse tunnel
+  cut local|remote    cut that runner's link to the log only: the relay here, or the tunnel
+  mend local|remote   restore that runner's link
   start local|remote  start that machine's daemon
   stop local|remote   stop that machine's daemon
   priory local|remote ARGS...
@@ -193,17 +195,20 @@ plan() {
   say "docker run -d --name $container --env-file ~/$name/postgres.env -p 127.0.0.1:<random port>:5432 postgres:17-alpine"
   say "write ~/$name here and on $host: a factory with one runner file per hostname, the fakes, a bare origin, env"
   say "ssh -N -o ExitOnForwardFailure=yes -R 127.0.0.1:<port>:127.0.0.1:<port> $host, then check it listens on 127.0.0.1 only"
+  say "python3 relay 127.0.0.1:<relay port> to the log, this runner's own link"
   say "priory daemon ~/$name/factory here, then on $host"
 }
 
 up() {
   $RUN || { plan; return; }
   preflight
-  local local_runner remote_runner port password
+  local local_runner remote_runner port relay_port password
   local_runner=$(hostname)
   remote_runner=$(remote hostname)
   [ "$local_runner" != "$remote_runner" ] || fail "both machines are named $local_runner; a runner file names one"
   port=$(shuf -i 20000-60000 -n 1)
+  relay_port=$(shuf -i 20000-60000 -n 1)
+  [ "$relay_port" != "$port" ] || relay_port=$((port + 1))
   password=$(openssl rand -hex 24)
   trap 'echo "second-machine: up failed; run down to clean up" >&2' ERR
   echo "runners: $local_runner here, $remote_runner on $host; log port $port"
@@ -216,6 +221,7 @@ up() {
   (umask 077 && printf 'POSTGRES_USER=priory\nPOSTGRES_PASSWORD=%s\nPOSTGRES_DB=priory\n' "$password" > "$dir/postgres.env")
   docker run -d --name "$container" --env-file "$dir/postgres.env" -p "127.0.0.1:$port:5432" postgres:17-alpine > "$dir/container"
   echo "$port" > "$dir/port"
+  echo "$relay_port" > "$dir/relay-port"
   # The image's first-init server listens on its socket only, so TCP answers once the real one runs.
   local tries=0
   until docker exec "$container" pg_isready -q -h 127.0.0.1 -U priory -d priory; do
@@ -225,7 +231,8 @@ up() {
   done
 
   write_scratch "$dir" "$repo/target/debug/priory" "$local_runner" "$remote_runner"
-  env_file "$password" "$port" | (umask 077 && cat > "$dir/env")
+  # This runner reaches the log through a relay of its own, so `cut local` spares the other runner.
+  env_file "$password" "$relay_port" | (umask 077 && cat > "$dir/env")
   local stage
   stage=$(mktemp -d)
   write_scratch "$stage/s" /nonexistent "$local_runner" "$remote_runner"
@@ -236,6 +243,7 @@ up() {
   env_file "$password" "$port" | remote "umask 077 && cat > ~/$name/env"
 
   tunnel_up
+  relay_up
   start_daemon local
   start_daemon remote
   trap - ERR
@@ -274,6 +282,57 @@ tunnel_down() {
   rm -f "$dir/tunnel.pid"
 }
 
+# Copies bytes between this runner's relay port and the log's, one connection at a time each way.
+relay_script='
+import asyncio, sys
+
+async def pipe(reader, writer):
+    try:
+        while data := await reader.read(65536):
+            writer.write(data)
+            await writer.drain()
+    finally:
+        writer.close()
+
+async def serve(reader, writer):
+    try:
+        log_reader, log_writer = await asyncio.open_connection("127.0.0.1", int(sys.argv[3]))
+    except OSError:
+        writer.close()
+        return
+    await asyncio.gather(pipe(reader, log_writer), pipe(log_reader, writer), return_exceptions=True)
+
+async def main():
+    server = await asyncio.start_server(serve, "127.0.0.1", int(sys.argv[2]))
+    await server.serve_forever()
+
+asyncio.run(main())
+'
+
+relay_up() {
+  $RUN || { say "python3 relay from 127.0.0.1:<relay port> to the log's port, here"; return; }
+  if [ -e "$dir/relay.pid" ] && kill -0 "$(cat "$dir/relay.pid")" 2> /dev/null; then
+    fail "the relay runs already"
+  fi
+  nohup python3 -c "$relay_script" second-machine-relay "$(cat "$dir/relay-port")" "$(cat "$dir/port")" \
+    > "$dir/relay.log" 2>&1 < /dev/null &
+  echo $! > "$dir/relay.pid"
+  sleep 1
+  kill -0 "$(cat "$dir/relay.pid")" 2> /dev/null || fail "the relay exited: $(cat "$dir/relay.log")"
+}
+
+# Killing the relay closes this runner's open connections too, as a cut link does.
+relay_down() {
+  $RUN || { say "kill the relay, by the pid in ~/$name/relay.pid"; return; }
+  [ -e "$dir/relay.pid" ] || return 0
+  local pid
+  pid=$(cat "$dir/relay.pid")
+  if tr '\0' ' ' < "/proc/$pid/cmdline" 2> /dev/null | grep -qF -- second-machine-relay; then
+    kill "$pid"
+  fi
+  rm -f "$dir/relay.pid"
+}
+
 start_daemon() {
   $RUN || { say "priory daemon ~/$name/factory on the $1 machine"; return; }
   on "$1" '
@@ -306,6 +365,7 @@ down() {
   stop_daemon local || echo "second-machine: could not stop the local daemon" >&2
   stop_daemon remote || echo "second-machine: could not stop the daemon on $host" >&2
   tunnel_down || echo "second-machine: could not stop the tunnel" >&2
+  relay_down || echo "second-machine: could not stop the relay" >&2
   if [ -e "$dir/container" ]; then
     docker rm -f "$(cat "$dir/container")" > /dev/null || echo "second-machine: could not remove the container" >&2
   fi
@@ -327,6 +387,8 @@ case $command in
   down) down ;;
   tunnel-up) tunnel_up ;;
   tunnel-down) tunnel_down ;;
+  cut) case ${1:?local or remote} in local) relay_down ;; remote) tunnel_down ;; *) usage >&2; exit 2 ;; esac ;;
+  mend) case ${1:?local or remote} in local) relay_up ;; remote) tunnel_up ;; *) usage >&2; exit 2 ;; esac ;;
   start) start_daemon "${1:?local or remote}" ;;
   stop) stop_daemon "${1:?local or remote}" ;;
   priory) run_priory "${1:?local or remote}" "${@:2}" ;;

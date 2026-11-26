@@ -88,8 +88,10 @@ each command unless you pass `--run`. Replace `me@second` with your ssh target.
    scripts/second-machine.sh --run down me@second
    ```
 
-`tunnel-down`, `tunnel-up`, `stop local|remote` and `start local|remote` let you cut the link or
-stop a runner on purpose.
+`cut local|remote` and `mend local|remote` cut and restore one runner's link to the log and leave
+the other's: this machine's runner reaches the log through a relay of its own, and the second
+machine's through the tunnel. `tunnel-down` and `tunnel-up` do the same for the second machine.
+`stop local|remote` and `start local|remote` stop and start a runner on purpose.
 
 ## 2. Run your own factory on two machines
 
@@ -145,3 +147,6 @@ added this guide.
   it is back, as when the tunnel closes.
 - A runner's tasks move only 30 minutes after its last alive message, and only those that never
   started. Use `priory give --force` to move one sooner.
+- With a diocese, `priory daemon --view-only --diocese` on a third machine, no lease runs across a
+  gap in its heartbeats, so an outage of the log moves no task. See
+  [A log outage with a diocese](daemon/runners.md#a-log-outage-with-a-diocese).

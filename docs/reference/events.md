@@ -33,7 +33,8 @@ Each type has a JSON Schema in [`docs/schemas/events/`](../schemas/events/), nam
   [`factory.task.requested`](#factorytaskrequested), [`factory.intake.dropped`](#factoryintakedropped),
   [`factory.intake.baseline`](#factoryintakebaseline)
 - Runners: [`priory.task.claimed`](#priorytaskclaimed), [`priory.task.held`](#priorytaskheld),
-  [`priory.runner.alive`](#prioryrunneralive), [`priory.ask.answered`](#prioryaskanswered),
+  [`priory.runner.alive`](#prioryrunneralive), [`priory.diocese.alive`](#priorydiocesealive),
+  [`priory.ask.answered`](#prioryaskanswered),
   [`priory.ask.dismissed`](#prioryaskdismissed), [`priory.ask.posted`](#prioryaskposted),
   [`priory.ask.applied`](#prioryaskapplied), [`priory.task.dropped`](#priorytaskdropped)
 - Memories: [`priory.memory.written`](#priorymemorywritten),
@@ -1592,6 +1593,32 @@ Schema: [`priory.runner.alive.json`](../schemas/events/priory.runner.alive.json)
   "time": "2026-11-21T10:00:00Z",
   "data": {
     "runner": "desktop"
+  },
+  "links": []
+}
+```
+
+### `priory.diocese.alive`
+
+The diocese's view daemon, `priory daemon --view-only --diocese`, says the log is up, once a minute.
+A pause of more than 3 minutes between two of these is a gap: no runner's lease ends while the
+gap lasts, and each lease runs again for 30 minutes from the first message after it. A diocese
+silent for 24 hours counts as gone. Subject: the diocese's machine.
+Schema: [`priory.diocese.alive.json`](../schemas/events/priory.diocese.alive.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `diocese` | string | The diocese's machine, named by its hostname |
+
+<!-- example: events/priory.diocese.alive.json -->
+```json
+{
+  "id": "4e8a1c37-2b6d-5f90-b3c4-d5e6f7a8b9c0",
+  "type": "priory.diocese.alive",
+  "subject": "diocese",
+  "time": "2026-11-21T10:00:00Z",
+  "data": {
+    "diocese": "diocese"
   },
   "links": []
 }
