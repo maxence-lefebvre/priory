@@ -599,7 +599,7 @@ test("Copy puts an ask's command on the clipboard as one shell line, and its not
 
 // An approval step's ask as Max's desk showed it on 2026-11-23: no title, and a 12-line question.
 const LONG = [
-  "approve-implementation: Plan: /home/max/factory/plans/FND-2434-plan.md. Only apps/admin-api/src/mcp/routes.ts changes.",
+  "approve-implementation: Plan: /home/max/factory/plans/ENG-2434-plan.md. Only apps/admin-api/src/mcp/routes.ts changes.",
   "The route table gains one entry for the export tool, behind the existing admin guard.",
   "No migration: the export reads the tables the list tools already read.",
   "Tests: apps/admin-api/test/mcp/routes.test.ts adds a case for the guard and one for the export.",
@@ -615,15 +615,15 @@ const LONG = [
 
 test("an untitled ask with a 12-line question heads its row and detail with a short title, and Why keeps the whole question", () => {
   assert.equal(LONG.split("\n").length, 12);
-  const long = { ...asks[1], key: "linear:FND-2434", step: "approve-implementation", title: null, question: LONG, text: null };
+  const long = { ...asks[1], key: "linear:ENG-2434", step: "approve-implementation", title: null, question: LONG, text: null };
   const links = [{ pattern: "\\bpull/(\\d+)\\b", url: "https://github.com/acme/app/pull/$1" }];
   const detail = askDetail(long, { now, armed: null, links });
-  assert.equal(detail.question, "FND-2434 asks at approve-implementation");
-  assert.deepEqual(detail.questionSpans, [{ text: "FND-2434 asks at approve-implementation" }]);
+  assert.equal(detail.question, "ENG-2434 asks at approve-implementation");
+  assert.deepEqual(detail.questionSpans, [{ text: "ENG-2434 asks at approve-implementation" }]);
   assert.equal(detail.why.question, LONG);
   assert.equal(detail.why.text, null);
   const row = asksList([long], { view: "all", now }).sections.flatMap((section) => section.rows)[0];
-  assert.equal(row.text, "FND-2434 asks at approve-implementation");
+  assert.equal(row.text, "ENG-2434 asks at approve-implementation");
 });
 
 test("askHeading, askBody and cutAt are the web view's, word for word", () => {

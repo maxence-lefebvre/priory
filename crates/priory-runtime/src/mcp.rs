@@ -28,7 +28,7 @@ pub(crate) fn instructions(set: Tools, gives_up: bool) -> String {
 }
 
 /// How to write what a person reads on the desk, often on a phone: an ask and a result's summary.
-pub const WRITING: &str = "A person reads your asks and result summaries on the desk, often on a phone, so write them for a quick read. Give an ask a one-line title and a question of one or two plain sentences. Put the context in the ask's text, in Markdown: short paragraphs of one idea each, with a blank line between them, and a list for files, steps or options. Lead with what you recommend and what it changes. Name a long plan or log by its path instead of pasting it. Open a result's summary with one plain line that works as a title, with no Markdown, since a pull request and a stopped task take it as their title. Then write short Markdown paragraphs after a blank line, never one block of text.";
+pub const WRITING: &str = "A person reads your asks and result summaries on the desk, often on a phone, so write them for a quick read. Give an ask a one-line title and a question of one or two plain sentences. Put the context in the ask's text, in Markdown: short paragraphs of one idea each, with a blank line between them, and a list for files, steps or options. Lead with what you recommend and what it changes. Name a long plan or log by its path instead of pasting it. Open a result's summary with one plain line that works as a title, with no Markdown, since a pull request, an issue and a stopped task take it as their title. Then write short Markdown paragraphs after a blank line, never one block of text.";
 
 /// Which of Priory's tools a run's server serves.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
