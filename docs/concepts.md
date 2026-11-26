@@ -93,6 +93,11 @@ labels: `project=oss` or `!project=oss`, optionally only on some days and hours.
 starts only the tasks its filters accept, so a desktop can leave a project's tasks to a server by
 day. See [docs/daemon/runners.md](daemon/runners.md#placing-tasks-with-filters).
 
+**Diocese.** A small rented VM that is always on and holds what every runner shares: the log, the
+intake, the trace store and an MCP gateway for cloud runs. It runs no agent. A diocese oversees many
+priories, as this VM serves every runner. It is designed but not built yet. See
+[docs/design/diocese.md](design/diocese.md).
+
 **Health.** Every second, the daemon checks each run for an unexpected exit, a timeout or a
 permission prompt. It never approves a permission prompt. A crashed run gets one repair attempt.
 A step's `budget` limits the dollars a task may spend at that step. When a fix fails the
