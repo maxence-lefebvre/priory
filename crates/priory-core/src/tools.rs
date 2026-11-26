@@ -43,6 +43,56 @@ pub struct Answer {
     pub by: String,
 }
 
+/// A write of a person's with the id of the press that made it, which each resend carries.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct Called<T> {
+    #[serde(flatten)]
+    pub write: T,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call: Option<uuid::Uuid>,
+}
+
+impl<T: serde::Serialize> Called<T> {
+    /// What this call got when it applied before, or why it is refused as another write's. None
+    /// when it has no id or never applied.
+    fn before(&self, tx: &Transaction) -> rusqlite::Result<Option<Result<String, String>>> {
+        let Some(call) = self.call else {
+            return Ok(None);
+        };
+        let held = tx
+            .query_row(
+                "SELECT write, reply FROM calls WHERE id = ?1",
+                [call.to_string()],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?;
+        Ok(held.map(|(write, reply)| match write == self.written() {
+            true => Ok(reply),
+            false => Err(format!("call {call} already made another write")),
+        }))
+    }
+
+    /// Records that this call applied with `reply`, and forgets the calls no client resends.
+    fn applied(&self, tx: &Transaction, reply: &str) -> rusqlite::Result<()> {
+        let Some(call) = self.call else {
+            return Ok(());
+        };
+        tx.execute(
+            "DELETE FROM calls WHERE created < strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-7 days')",
+            [],
+        )?;
+        tx.execute(
+            "INSERT INTO calls (id, write, reply) VALUES (?1, ?2, ?3)",
+            params![call.to_string(), self.written(), reply],
+        )?;
+        Ok(())
+    }
+
+    fn written(&self) -> String {
+        serde_json::to_string(&self.write).expect("a write serializes")
+    }
+}
+
 /// A live run with its task's workflow.
 pub(crate) struct Run {
     pub id: i64,
@@ -4052,12 +4102,18 @@ fn has_result(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
 /// Applies a person's answer, or records why it was refused on the ask it names.
 pub(crate) fn answer(
     db: &mut Connection,
-    answer: &Answer,
+    answer: &Called<Answer>,
     trace: &Trace,
     head: &dyn Fn(&Path, &str) -> Option<String>,
 ) -> rusqlite::Result<Result<String, String>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let applied = answer_in_tx(&tx, answer, trace, head)?;
+    if let Some(before) = answer.before(&tx)? {
+        return Ok(before);
+    }
+    let applied = answer_in_tx(&tx, &answer.write, trace, head)?;
+    if let Ok(reply) = &applied {
+        answer.applied(&tx, reply)?;
+    }
     tx.commit()?;
     Ok(applied)
 }
@@ -4792,12 +4848,16 @@ pub struct Dismiss {
 /// ask, which only its options move on, is refused.
 pub(crate) fn dismiss(
     db: &mut Connection,
-    dismiss: &Dismiss,
+    dismiss: &Called<Dismiss>,
     factory: &priory_factory::factory::Factory,
 ) -> rusqlite::Result<Result<String, String>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let dismissed = dismiss_in_tx(&tx, dismiss, factory, None)?;
-    if dismissed.is_ok() {
+    if let Some(before) = dismiss.before(&tx)? {
+        return Ok(before);
+    }
+    let dismissed = dismiss_in_tx(&tx, &dismiss.write, factory, None)?;
+    if let Ok(reply) = &dismissed {
+        dismiss.applied(&tx, reply)?;
         tx.commit()?;
     }
     Ok(dismissed)

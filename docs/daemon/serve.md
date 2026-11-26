@@ -69,7 +69,19 @@ read-only. Without a daemon, the visit gets `503` and the desk shows the same ev
 A write carries the revision of the ask the client showed, as `priory answer --revision` does. The
 first answer to that revision stands. When the daemon refuses, the server reads the ask again: a
 revision that moved, or an ask that closed, gets `409` with the ask, so a view can redraw it and
-keep the person's draft. A cancel may carry the state's revision the client showed, as `priory
+keep the person's draft. An applied answer or dismiss comes back with the stored ask.
+
+An answer or a dismiss may carry a `call`, an id the client makes once per press and sends again
+with each resend. The daemon stores it in the transaction that applies the write, and answers a
+resend with the first reply for 7 days, so a lost reply never answers twice.
+
+The daemon applies a person's answers, dismisses and desk actions (cancel, hold, release, resume,
+revive and say) between two phases of a tick, between two messages of the log and between two task
+starts, in the order they arrived and ahead of the other lines on its socket. So a cancel sent before
+an answer still applies first. A single step, such as a `git fetch`, is not cut. A runner applies
+none while it reads the log, since a task may have moved.
+
+A cancel may carry the state's revision the client showed, as `priory
 cancel --expected` does: a newer state gets `409`, and nothing is dropped.
 
 `priory serve` without a daemon has no socket to send to: its writes get `503`, and its reads keep
@@ -125,9 +137,9 @@ Each read costs what the listings hold, so `/api/asks`, `/api/tasks` and `/api/r
 open rows and those closed in the last 7 days, and say how many they left out. The web view asks for every row
 with `?all=1` only once the person scrolls to the older ones, or opens an older ask by its URL.
 
-The server holds at most 4 such requests at once, half its 8 workers, so waiting clients leave 4
-workers to the other requests. A fifth request that would wait gets `503` with `Retry-After: 1`; one
-whose answer is ready gets it at once.
+The server holds at most 128 such requests at once, each on its connection's own thread, so they
+hold no worker. One more that would wait gets `503` with `Retry-After: 1`; one whose answer is ready
+gets it at once.
 
 The revision changes with what is stored, and the daemon raises it for two changes the clock makes:
 a snoozed item coming back at its `snoozed_until`, and an ended task leaving the queue's `ended`
@@ -149,14 +161,18 @@ kept a revision from a replaced state file does not hang.
 | Time to send the whole request, head and body | 5 seconds | `408` |
 | Time for the whole reply to go out | 5 seconds | The connection closes |
 | Connections read or written at once | 256 | The connection closes unanswered |
-| Requests handled at once | 8 | Others wait for a worker, with their connection open |
-| `/api/events` requests held at once | 4 | `503` |
+| Writes handled at once | 8 | Others wait for a worker, with their connection open |
+| Listings computed at once | 2 | The same |
+| Other requests handled at once | 6 | The same |
+| Time a request waits for a worker | 10 seconds | `503` with `Retry-After: 1` |
+| `/api/events` requests held at once | 128 | `503` |
 | Run screens read at once | 2 | `503` |
 | Time for tmux to show a run screen | 2 seconds | `404` |
 
 Each connection carries one request and closes after the reply. One thread accepts connections,
 and each connection reads its request and writes its reply on a thread of its own. Only a request
-read in full reaches one of the 8 workers that run the handlers. So a client that sends slowly, or
+read in full reaches a worker. Writes, listings and the other requests each have their own workers,
+so an answer never waits for a read. So a client that sends slowly, or
 reads its reply slowly, holds its own connection for at most 5 seconds each way and never a worker.
 Without the token, past those 256 connections a flood still shuts out other clients until its
 connections time out: the limit bounds memory, not a determined attacker.
