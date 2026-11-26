@@ -98,12 +98,13 @@ pub const VIEW_ONLY: &str = "this machine is view-only: it runs no task and chan
 
 /// Reads the whole log into mirrors of every runner's asks and tasks, and serves them when the
 /// factory has `[serve]`. It claims, runs and publishes nothing: a person's answer, dismiss or task
-/// action goes to its runner through the log, from the server or the command line.
-pub fn view_only(factory: &Factory) -> Result<(), String> {
-    view(factory).map_err(|error| error.to_string())
+/// action goes to its runner through the log, from the server or the command line. As the
+/// `diocese`, it also publishes the heartbeat that keeps leases from running across a log outage.
+pub fn view_only(factory: &Factory, diocese: bool) -> Result<(), String> {
+    view(factory, diocese).map_err(|error| error.to_string())
 }
 
-fn view(factory: &Factory) -> Result<(), Error> {
+fn view(factory: &Factory, diocese: bool) -> Result<(), Error> {
     let watch = reload::Watch::new(factory);
     let machine = room::hostname();
     let viewer = runners::viewer(factory, machine.as_deref())?;
@@ -128,6 +129,7 @@ fn view(factory: &Factory) -> Result<(), Error> {
     };
     let mut live = Live::new(factory, watch, trace.revision.clone(), server);
     let mut link = Link::default();
+    let mut beat = None;
     loop {
         if runtime::stopping() {
             return listening.stop(|line| seen(&mut db, factory, line));
@@ -136,6 +138,9 @@ fn view(factory: &Factory) -> Result<(), Error> {
         let trace = live.trace(&trace);
         let mut behind = false;
         if link.due() {
+            if diocese {
+                runners::heartbeat(&*bus, &viewer, intake::now()?, &mut beat);
+            }
             let drained = view_drain(&*bus, &consumer, &mut db, &viewer, &trace);
             metered(&*bus, drained.as_ref().map(|_| ()));
             behind = matches!(drained, Ok(false));

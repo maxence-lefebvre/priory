@@ -1,13 +1,12 @@
 //! The watches each runner posts on the log, which the intake polls for in place of a state file.
 
 use super::{OUTPUT, WATCH_POSTED, Watch};
+use crate::log::sql::INTAKE_CONSUMER as CONSUMER;
 use crate::log::{self, Delivery, Log};
 use herdr_bus::{Message, Timestamp};
 use jiff::SignedDuration;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The consumer the intake reads the log as.
-pub const CONSUMER: &str = "priory.intake";
 /// How long a runner's watches last past its last posting. A running daemon posts daily.
 const KEEP: SignedDuration = SignedDuration::from_hours(7 * 24);
 const PAGE: usize = 500;

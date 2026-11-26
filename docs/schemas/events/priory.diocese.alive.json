@@ -1,0 +1,81 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/events/priory.diocese.alive.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "DioceseAlive": {
+      "additionalProperties": false,
+      "description": "The diocese's view daemon says the log is up, once a minute. A runner's lease does not run\nacross a gap of more than 3 minutes between two of these, which means the log was down.",
+      "properties": {
+        "diocese": {
+          "description": "The diocese's machine, named by its hostname.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "diocese"
+      ],
+      "type": "object"
+    },
+    "Link": {
+      "additionalProperties": false,
+      "description": "A link for people.",
+      "properties": {
+        "label": {
+          "description": "`issue` or `pull_request`.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "The diocese's view daemon says the log is up, once a minute. A runner's lease does not run\nacross a gap of more than 3 minutes between two of these, which means the log was down.",
+  "properties": {
+    "data": {
+      "$ref": "#/definitions/DioceseAlive"
+    },
+    "id": {
+      "description": "A UUIDv5 of the message's name, so a retried publish keeps its id.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "links": {
+      "description": "GitHub and Linear events carry one link to the event's page.",
+      "items": {
+        "$ref": "#/definitions/Link"
+      },
+      "type": "array"
+    },
+    "subject": {
+      "description": "A short line for listings, such as `owner/name#42`.",
+      "type": "string"
+    },
+    "time": {
+      "description": "When the event happened, RFC 3339.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "type": {
+      "const": "priory.diocese.alive",
+      "description": "The message type, such as `github.issues.labeled`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "subject",
+    "time",
+    "data",
+    "links"
+  ],
+  "title": "priory.diocese.alive",
+  "type": "object"
+}

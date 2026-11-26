@@ -195,6 +195,39 @@ compare one clock. On herdr-bus, each message keeps its sender's time, so a take
 machines' clocks. Keep the runners' clocks synchronized, with NTP, or a runner whose clock runs
 ahead takes waiting tasks before their lease ends.
 
+### A log outage with a diocese
+
+When the log itself is down, no runner can publish an alive message. Once it is back, the first
+runner to publish sees the other's last alive message more than 30 minutes old, and would take its
+`waiting` tasks before the other's queued alive message lands.
+
+The diocese prevents that. Its view daemon, `priory daemon --view-only --diocese`, publishes
+`priory.diocese.alive` once a minute, stamped by the log like an alive message. Every runner reads
+those heartbeats in log order:
+
+- A pause of more than 3 minutes between two heartbeats is a gap: the log was down.
+- No lease ends while the latest heartbeat is more than 3 minutes old.
+- After a gap, every lease runs again for 30 minutes from the first heartbeat back.
+- The first heartbeat a runner ever reads changes no lease.
+
+While the heartbeats go on, leases end as they do without a diocese, so a runner asleep for 30
+minutes still loses its `waiting` tasks. A factory that never saw a heartbeat keeps the rule
+above.
+
+A heartbeat proves only that the log took a write. A runner whose own link to the log is cut stays
+away as without a diocese, and its lease ends 30 minutes after its last alive message.
+
+When the diocese's daemon stops while the log stays up, such as in a crash loop or after a bad
+upgrade, every takeover waits. The silence counts from the first runner alive message the log
+takes more than 3 minutes after the last heartbeat. An hour later, the diocese counts as gone and
+leases run as without one, until its next heartbeat. During that hour, `priory give` says the
+lease is frozen, and `priory give --force` moves a task. An outage of the log itself takes no
+alive message, so however long it lasts, it moves no task.
+
+Upgrade every runner to a version that reads the heartbeat before you start the diocese's daemon.
+A runner that skips the heartbeats ends leases by the rule above while the others wait, and a task
+it takes may then run on two runners.
+
 When a runner reads its own alive message, it claims each `waiting` key of another runner whose
 lease ended before it. That takeover wins only if the old owner sent no alive message in between
 and the key is still `waiting`. The new owner creates the task from its request.
@@ -323,7 +356,7 @@ newest submission shows under its title: sent, refused with why, or applied.
 ## A machine that only views
 
 ```sh
-priory daemon --view-only [DIR]
+priory daemon --view-only [--diocese] [DIR]
 ```
 
 serves every runner's asks and tasks on a machine with no runner file, such as a laptop. It needs

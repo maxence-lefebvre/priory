@@ -42,6 +42,8 @@ pub const TASK_HELD: &str = "priory.task.held";
 pub const RUNNER_ALIVE: &str = "priory.runner.alive";
 /// A runner lists the waits, holds, subscriptions and task branches its intake would watch.
 pub const WATCH_POSTED: &str = "priory.watch.posted";
+/// The diocese's view daemon says the log is up, so a lease does not run across a gap in it.
+pub const DIOCESE_ALIVE: &str = "priory.diocese.alive";
 /// A person on one runner answers an ask of another.
 pub const ASK_ANSWERED: &str = "priory.ask.answered";
 /// A person on one runner dismisses an ask of another.
@@ -265,6 +267,7 @@ pub fn output() -> Output {
             TASK_HELD,
             RUNNER_ALIVE,
             WATCH_POSTED,
+            DIOCESE_ALIVE,
             ASK_ANSWERED,
             ASK_DISMISSED,
             ASK_POSTED,

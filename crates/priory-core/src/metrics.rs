@@ -24,6 +24,37 @@ const BOUNDS: [f64; 13] = [
     0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0,
 ];
 
+/// The upper bounds of the byte histograms' buckets: 1 MiB to 64 GiB, by fours.
+const BYTE_BOUNDS: [f64; 9] = [
+    1_048_576.0,
+    4_194_304.0,
+    16_777_216.0,
+    67_108_864.0,
+    268_435_456.0,
+    1_073_741_824.0,
+    4_294_967_296.0,
+    17_179_869_184.0,
+    68_719_476_736.0,
+];
+/// The upper bounds of the CPU time histogram's buckets, in seconds: 1 second to 4 hours.
+const CPU_BOUNDS: [f64; 10] = [
+    1.0, 10.0, 30.0, 60.0, 300.0, 600.0, 1800.0, 3600.0, 7200.0, 14400.0,
+];
+const CPU_TIME: &str = "priory.run.cpu.time";
+const MEMORY_PEAK: &str = "priory.run.memory.peak";
+const IO_READ: &str = "priory.run.io.read";
+const IO_WRITE: &str = "priory.run.io.write";
+const DISK: &str = "priory.run.disk";
+
+/// A histogram's unit and bucket bounds, by its name.
+fn scale(metric: &str) -> (&'static str, &'static [f64]) {
+    match metric {
+        CPU_TIME => ("s", &CPU_BOUNDS),
+        MEMORY_PEAK | IO_READ | IO_WRITE | DISK => ("By", &BYTE_BOUNDS),
+        _ => ("s", &BOUNDS),
+    }
+}
+
 const PROBE: &str = "priory.log.probe.duration";
 const CONNECTION_WAIT: &str = "priory.log.connection.wait";
 const START: &str = "priory.run.start.duration";
@@ -419,26 +450,34 @@ enum Number {
     Histogram(Histogram),
 }
 
-/// A cumulative histogram over `BOUNDS`.
-#[derive(Debug, Clone, Default, PartialEq)]
+/// A cumulative histogram over `bounds`.
+#[derive(Debug, Clone, PartialEq)]
 struct Histogram {
     count: u64,
     sum: f64,
     buckets: Vec<u64>,
+    bounds: &'static [f64],
 }
 
 impl Histogram {
-    fn observe(&mut self, seconds: f64) {
-        if self.buckets.is_empty() {
-            self.buckets = vec![0; BOUNDS.len() + 1];
+    fn new(bounds: &'static [f64]) -> Self {
+        Self {
+            count: 0,
+            sum: 0.0,
+            buckets: vec![0; bounds.len() + 1],
+            bounds,
         }
-        let bucket = BOUNDS
+    }
+
+    fn observe(&mut self, value: f64) {
+        let bucket = self
+            .bounds
             .iter()
-            .position(|bound| seconds <= *bound)
-            .unwrap_or(BOUNDS.len());
+            .position(|bound| value <= *bound)
+            .unwrap_or(self.bounds.len());
         self.buckets[bucket] += 1;
         self.count += 1;
-        self.sum += seconds;
+        self.sum += value;
     }
 }
 
@@ -634,6 +673,12 @@ impl Exporter {
                 value,
             ));
         }
+        for ((metric, _), count) in ticks::counts() {
+            if metric == priory_intake::log::SKIPPED {
+                let count = Number::Int(count);
+                points.push(point(Kind::Counter, metric, "{message}", Vec::new(), count));
+            }
+        }
         let state = crate::state::read_only()
             .and_then(|db| link_state(&db).map_err(|error| error.to_string()));
         match state {
@@ -716,6 +761,11 @@ impl Exporter {
                         runtime::PHASE
                     };
                     self.observe("runs", metric, attributes, ended.seconds.max(0.0));
+                }
+                for used in unseen(state.used, &self.seen, &mut seen) {
+                    for (metric, attributes, value) in used.observations() {
+                        self.observe("runs", metric, attributes, value);
+                    }
                 }
                 self.seen = seen;
                 self.since = self.since.max(now - OVERLAP);
@@ -991,18 +1041,18 @@ impl Exporter {
         }
     }
 
-    /// Counts one duration of histogram `metric` of `group` under `attributes`.
+    /// Counts one value of histogram `metric` of `group` under `attributes`.
     fn observe(
         &mut self,
         group: &'static str,
         metric: &'static str,
         attributes: Attributes,
-        seconds: f64,
+        value: f64,
     ) {
         self.histograms
             .entry((group, metric, attributes))
-            .or_default()
-            .observe(seconds);
+            .or_insert_with(|| Histogram::new(scale(metric).1))
+            .observe(value);
     }
 
     /// Every histogram series of `group` since the process started.
@@ -1013,7 +1063,7 @@ impl Exporter {
                     group,
                     kind: Kind::Histogram,
                     name,
-                    unit: "s",
+                    unit: scale(name).0,
                     attributes: attributes.clone(),
                     value: Number::Histogram(histogram.clone()),
                 });
@@ -1045,7 +1095,7 @@ impl Exporter {
                         .map(u64::to_string)
                         .collect::<Vec<_>>()
                         .into();
-                    data["explicitBounds"] = json!(BOUNDS);
+                    data["explicitBounds"] = json!(histogram.bounds);
                 }
             }
             if point.kind != Kind::Gauge {
@@ -1298,10 +1348,59 @@ struct Ended {
     seconds: f64,
 }
 
+/// What one ended run used, as `run_usage` stores it once its worktree was measured.
+struct Used {
+    run: i64,
+    workflow: String,
+    agent: String,
+    step: String,
+    cpu_usec: Option<u64>,
+    memory_peak: Option<u64>,
+    io_read: Option<u64>,
+    io_write: Option<u64>,
+    disk: Option<u64>,
+}
+
+impl Used {
+    /// Each histogram value of the run, with its workflow, agent and step and not its task, to
+    /// bound the series. A value not measured has none.
+    fn observations(&self) -> Vec<(&'static str, Attributes, f64)> {
+        let attributes = vec![
+            ("priory.workflow", self.workflow.clone()),
+            ("gen_ai.agent.name", self.agent.clone()),
+            ("priory.step", self.step.clone()),
+        ];
+        [
+            (CPU_TIME, self.cpu_usec.map(|usec| usec as f64 / 1e6)),
+            (MEMORY_PEAK, self.memory_peak.map(|bytes| bytes as f64)),
+            (IO_READ, self.io_read.map(|bytes| bytes as f64)),
+            (IO_WRITE, self.io_write.map(|bytes| bytes as f64)),
+            (DISK, self.disk.map(|bytes| bytes as f64)),
+        ]
+        .into_iter()
+        .filter_map(|(metric, value)| Some((metric, attributes.clone(), value?)))
+        .collect()
+    }
+}
+
+/// The runs of `used` not in `before`, the runs already counted, each added to `seen`, so a run read
+/// again in the next sample's overlap counts once.
+fn unseen(
+    used: Vec<Used>,
+    before: &HashSet<(&'static str, i64)>,
+    seen: &mut HashSet<(&'static str, i64)>,
+) -> Vec<Used> {
+    used.into_iter()
+        .filter(|used| seen.insert(("usage", used.run)) && !before.contains(&("usage", used.run)))
+        .collect()
+}
+
 /// What the state file says of the runs' starts and the recipes.
 struct RunState {
     /// The starts and recipes that ended at or after the time asked.
     ended: Vec<Ended>,
+    /// The runs whose use was measured in full at or after the time asked.
+    used: Vec<Used>,
     /// Each live run whose session has not started yet: its harness, or its agent, and its age in seconds.
     starting: Vec<(Option<String>, u64)>,
 }
@@ -1381,7 +1480,36 @@ fn run_state(db: &Connection, since: f64) -> rusqlite::Result<RunState> {
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(RunState { ended, starting })
+    let bytes = |value: Option<i64>| value.and_then(|value| u64::try_from(value).ok());
+    let used = db
+        .prepare(concat!(
+            "SELECT runs.id, tasks.workflow, coalesce(runs.agent, ''), runs.step, usage.cpu_usec,
+               usage.memory_peak, usage.io_read, usage.io_write, usage.disk
+             FROM run_usage AS usage JOIN runs ON runs.id = usage.run
+             JOIN tasks ON tasks.id = runs.task
+             WHERE usage.measured IS NOT NULL AND ",
+            unix!("usage.measured"),
+            " >= ?1"
+        ))?
+        .query_map([since], |row| {
+            Ok(Used {
+                run: row.get(0)?,
+                workflow: row.get(1)?,
+                agent: row.get(2)?,
+                step: row.get(3)?,
+                cpu_usec: bytes(row.get(4)?),
+                memory_peak: bytes(row.get(5)?),
+                io_read: bytes(row.get(6)?),
+                io_write: bytes(row.get(7)?),
+                disk: bytes(row.get(8)?),
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(RunState {
+        ended,
+        used,
+        starting,
+    })
 }
 
 /// The ticks' average, 95th percentile by nearest rank, and maximum; none without a tick.
@@ -1528,7 +1656,7 @@ mod tests {
 
     #[test]
     fn a_histogram_counts_each_duration_in_the_first_bucket_whose_bound_holds_it() {
-        let mut histogram = Histogram::default();
+        let mut histogram = Histogram::new(&BOUNDS);
         for seconds in [0.001, 0.005, 0.2, 2.0, 61.0] {
             histogram.observe(seconds);
         }
@@ -1539,6 +1667,60 @@ mod tests {
         assert_eq!(histogram.buckets, buckets);
         assert_eq!(histogram.count, 5);
         assert!((histogram.sum - 63.206).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_measured_run_gives_byte_and_cpu_histograms_by_workflow_agent_and_step() {
+        let db = crate::state::memory();
+        db.execute_batch(
+            "INSERT INTO tasks (key, workflow, step, state, trigger, source)
+               VALUES ('cli:a', 'build', 'implement', 'done', 'cli', 'a');
+             INSERT INTO runs (task, step, agent, tmux, session, ended)
+               VALUES (1, 'implement', 'implementer', 'p', 'a', '2026-11-23T10:05:00Z'),
+                      (1, 'review', 'reviewer', 'p', 'b', '2026-11-23T09:05:00Z');
+             INSERT INTO run_usage (run, cpu_usec, memory_peak, io_read, io_write, disk, measured)
+               VALUES (1, 90000000, 2147483648, NULL, NULL, 5000000, '2026-11-23T10:05:01Z'),
+                      (2, 1, 1, 1, 1, 1, '2026-11-23T09:05:01Z');",
+        )
+        .unwrap();
+        let since = 1_795_428_000.0; // 2026-11-23T10:00:00Z
+
+        let used = run_state(&db, since).unwrap().used;
+
+        assert_eq!(used.iter().map(|used| used.run).collect::<Vec<_>>(), [1]);
+        let attributes = vec![
+            ("priory.workflow", "build".to_owned()),
+            ("gen_ai.agent.name", "implementer".to_owned()),
+            ("priory.step", "implement".to_owned()),
+        ];
+        // IO was not measured, so it has no value rather than 0.
+        assert_eq!(
+            used[0].observations(),
+            [
+                (CPU_TIME, attributes.clone(), 90.0),
+                (MEMORY_PEAK, attributes.clone(), 2_147_483_648.0),
+                (DISK, attributes, 5_000_000.0),
+            ]
+        );
+        // The next sample reads the run again in its overlap, and counts it once.
+        let mut seen = HashSet::new();
+        let first = unseen(
+            run_state(&db, since).unwrap().used,
+            &HashSet::new(),
+            &mut seen,
+        );
+        let mut again = HashSet::new();
+        let second = unseen(run_state(&db, since).unwrap().used, &seen, &mut again);
+        assert_eq!((first.len(), second.len()), (1, 0));
+        assert!(
+            again.contains(&("usage", 1)),
+            "the run stays seen while it is read"
+        );
+        let mut memory = Histogram::new(scale(MEMORY_PEAK).1);
+        memory.observe(2_147_483_648.0);
+        assert_eq!(scale(MEMORY_PEAK).0, "By");
+        // 2 GiB falls in the 4 GiB bucket.
+        assert_eq!(memory.buckets[6], 1);
     }
 
     #[test]
