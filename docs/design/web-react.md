@@ -194,8 +194,7 @@ No port deletes these files:
 |---|---|
 | `state.js`, `shared.js`, `data.js`, `frame.js` | the last port: every legacy part draws with them |
 | `terminal.js` | the Terminal and the task page's pane are both in React |
-| `taskacts.js` | Tasks is ported |
-| `tasks.js` | Queue is ported: its Held and Last day views draw task rows |
+| `taskacts.js` | the task actions' event handlers and `remoteGeneration` are in React |
 | `add.js` | the Add sheet is in React |
 
 Such a port deletes only what no other file imports.
@@ -325,6 +324,7 @@ The person approved it on 2026-11-24: https://claude.ai/artifact/DJzXheB2nzY27bS
 ## Later slices
 
 1. The page ports of section 4, one pull request each. Desk, Asks with the answer sheet, Batch,
-   Inbox, the Terminal panel, Settings, More, Memories, Costs, Flows and Reports are in React.
+   Inbox, the Terminal panel, Settings, More, Memories, Costs, Flows, Reports, Tasks, Runs and
+   Queue are in React.
 2. The GitHub extension in the workspace.
 3. Deleting the legacy slot and the legacy drawing.

@@ -54,12 +54,7 @@ test("a legacy countdown is a task's", () => {
 });
 
 test("each page's legacy parts read the listings they show and no other", () => {
-  assert.deepEqual(reads("/"), [], "a React part reads its own");
-  assert.deepEqual(reads("/asks"), []);
-  assert.deepEqual(reads("/tasks"), ["tasks"]);
-  assert.deepEqual(reads("/runs"), ["runs"]);
-  assert.deepEqual(reads("/queue"), ["queue", "tasks"]);
-  assert.deepEqual(reads("/inbox"), [], "a React part reads its own");
+  for (const href of ["/", "/asks", "/tasks", "/runs", "/queue", "/inbox"]) assert.deepEqual(reads(href), [], `${href}: a React part reads its own`);
   assert.deepEqual(reads("/terminal", { size: "compact" }), []);
   assert.deepEqual(reads("/batches/2"), []);
   for (const href of ["/costs", "/workflow", "/reports", "/more", "/memories", "/settings/notifications", "/settings/appearance"]) assert.deepEqual(reads(href), [], href);
@@ -74,17 +69,19 @@ const SLOT = '<div class="legacy"></div>';
 // A React part not read yet, and a drawer with no ask, which needs no read.
 const LOADING = '<p class="empty" role="status">Loading…</p>';
 const DRAWER = '<aside class="drawer" aria-label="Ask"><p class="empty">Select an ask to read it here.</p></aside>';
+const LEGACY_TREE = { row: [{ panel: "costs" }, { panel: "reports" }] };
 
 test("a legacy list draws in its own element, and a React one says it loads beside its drawer", () => {
-  assert.equal(draw("/tasks"), SLOT);
-  assert.equal(draw("/queue"), SLOT);
+  assert.equal(draw("/", { layout: LEGACY_TREE }), `<div class="tree tree-row">${SLOT}${SLOT}</div>${DRAWER}`);
+  assert.equal(draw("/tasks"), LOADING, "a React list says it loads in its own place");
+  assert.equal(draw("/queue"), LOADING);
   assert.equal(draw("/"), LOADING + DRAWER);
   assert.equal(draw("/asks/4", { size: "compact" }), `<div class="flat">${LOADING}</div>`);
 });
 
 test("a tree draws its wrappers, its tab strip and one element per panel", () => {
   const html = draw("/", { layout: TREE }).replace(/<svg.*?<\/svg>/g, "");
-  assert.equal(html, `<div class="tree tree-row">${LOADING}<div class="tree tree-column">${SLOT}<div class="tree-tabs"><nav class="tabbar" aria-label="Tabs"><a href="/runs" aria-current="page">Runs</a><a href="/inbox" aria-current="false">Inbox</a></nav>${SLOT}</div></div></div>${DRAWER}`);
+  assert.equal(html, `<div class="tree tree-row">${LOADING}<div class="tree tree-column">${LOADING}<div class="tree-tabs"><nav class="tabbar" aria-label="Tabs"><a href="/runs" aria-current="page">Runs</a><a href="/inbox" aria-current="false">Inbox</a></nav>${LOADING}</div></div></div>${DRAWER}`);
 });
 
 test("a React list sits beside legacy panels, and the legacy ones read only their own", (t) => {
@@ -93,7 +90,7 @@ test("a React list sits beside legacy panels, and the legacy ones read only thei
   assert.match(draw("/", { layout: TREE }), /tree-column"><p>Queue in React<\/p><div class="tree-tabs">/);
   assert.equal(draw("/queue"), "<p>Queue in React</p>", "no legacy element, so nothing lands for one");
   assert.deepEqual(reads("/queue"), []);
-  assert.deepEqual(reads("/", { layout: { row: [{ panel: "queue" }, { panel: "runs" }] } }), ["runs"]);
+  assert.deepEqual(reads("/", { layout: { row: [{ panel: "queue" }, { panel: "costs" }] } }), []);
 });
 
 test("a drawer takes the ask's id and the panels beside it", (t) => {
@@ -105,11 +102,10 @@ test("a drawer takes the ask's id and the panels beside it", (t) => {
 test("while the listings load, a tree of legacy panels draws one element, and one with a React panel keeps it", (t) => {
   t.after(() => (register(all), landing.set(false)));
   landing.set(true);
-  const legacy = { row: [{ panel: "tasks" }, { column: [{ panel: "queue" }, { panel: "runs" }] }] };
-  assert.equal(draw("/", { layout: legacy }), SLOT);
+  assert.equal(draw("/", { layout: LEGACY_TREE }), SLOT);
   assert.match(draw("/", { layout: TREE }), /tree-row"><p class="empty" role="status">Loading…<\/p>/);
   register(all.map((entry) => (entry.name === "queue" ? { name: "queue", List: () => <p>Queue in React</p> } : entry)));
-  assert.match(draw("/", { layout: legacy }), /Queue in React/);
+  assert.match(draw("/", { layout: { row: [{ panel: "queue" }, { panel: "costs" }] } }), /Queue in React/);
 });
 
 test("Settings draws the Desk in each theme's previews, empty until its listings are read", () => {

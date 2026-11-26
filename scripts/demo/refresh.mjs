@@ -229,8 +229,6 @@ async function holds(name, path, ready, script) {
   const found = await evaluate(script);
   report(found === true, name, found === true ? "" : JSON.stringify(found));
 }
-const COUNT = `let draws = 0; const inner = Object.getOwnPropertyDescriptor(Element.prototype, "innerHTML");
-  Object.defineProperty(Element.prototype, "innerHTML", { ...inner, set(text) { if (this.className === "legacy") { draws++; if (globalThis.failDraw) { globalThis.failDraw = false; throw new Error("a draw that throws"); } } inner.set.call(this, text); } });`;
 const SETTLE = (ms) => `await new Promise((done) => setTimeout(done, ${ms}));`;
 const ROW = 'document.querySelector(".row")';
 const TITLE = (name) => `document.querySelector("#app h1")?.textContent === "${name}"`;
@@ -240,9 +238,6 @@ await holds("Back and forward draw the page of their address", "/queue", TITLE("
     history.back(); ${SETTLE(500)} const back = ${TITLE("Queue")}; history.forward(); ${SETTLE(500)} return there && back && ${TITLE("Runs")}; })()`);
 await holds("a search string stays as it is written", "/tasks?view=ended&band=now", TITLE("Tasks"),
   'location.href.endsWith("/tasks?view=ended&band=now")');
-// A legacy page draws with innerHTML; this goes with the last one.
-await holds("a legacy draw that throws keeps the page", "/", ROW,
-  `(async () => { ${COUNT} globalThis.failDraw = true; document.querySelector('a[href="/runs"]').click(); ${SETTLE(800)} return globalThis.failDraw === false && document.getElementById("app")?.innerText.length > 100; })()`);
 await holds("a superseded refresh never draws", "/", ROW,
   `(async () => {
     const read = fetch; let hold = true;
@@ -384,7 +379,8 @@ await hooked("a queue that cannot be read again says so on its page, and the app
   return found.conn === "live" && found.said.startsWith("Could not read the queue again: /api/queue answered 500.") && kept ? true : { ...found, kept };
 });
 // land() keeps a failed listing's last read and lands the others: a tasks list that fails holds no queue back.
-await hooked("a legacy page draws the listing that read while another one fails", "/queue", TITLE("Queue"), {}, async () => {
+// The Desk's Queue view draws the queue's titles; the Queue page is React and reads no tasks there.
+await hooked("a legacy page draws the listing that read while another one fails", "/?view=queue", 'document.querySelector(".list .scroll .row, .list .scroll tr[data-href]")', {}, async () => {
   await sleep(1500);
   await evaluate('hook.fails = ["/api/tasks"]');
   execFileSync("sqlite3", [join(dir, "state.db"), "UPDATE tasks SET tldr = 'Landed beside a failure' WHERE id = 4; UPDATE revision SET value = value + 1;"]);
