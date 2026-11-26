@@ -323,6 +323,9 @@ x86 build matters more.
 
 ## Open questions
 
+Decided on 2026-11-26: the owner took every recommendation below. Question 1's test still runs
+before slice 5 writes code.
+
 1. **Does a `claude --cloud` session load the account's connectors?** One test settles it: add a
    connector of the account to a test MCP server with one `ping` tool, start a session with
    `claude --cloud "call ping"`, and read the session's page. Recommendation: run this test before
