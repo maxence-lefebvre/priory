@@ -1444,14 +1444,14 @@ pub fn answer(
 ) -> Result<String, String> {
     known(factory, runner)?;
     let data = serde_json::to_value(answer).map_err(|error| error.to_string())?;
-    submit(factory.log(), ANSWERED, runner, answer.ask, data).map_err(|why| why.said("ask"))
+    submit(factory.log(), ANSWERED, runner, answer.ask, data, None).map_err(|why| why.said("ask"))
 }
 
 /// Publishes a person's dismiss of ask `ask` of runner `runner`, read at `revision`.
 pub fn dismiss(factory: &Factory, runner: &str, ask: i64, revision: i64) -> Result<String, String> {
     known(factory, runner)?;
     let data = json!({ "ask": ask, "revision": revision });
-    submit(factory.log(), DISMISSED, runner, ask, data).map_err(|why| why.said("ask"))
+    submit(factory.log(), DISMISSED, runner, ask, data, None).map_err(|why| why.said("ask"))
 }
 
 /// Refuses a runner the factory has no runner file for.
@@ -1469,8 +1469,15 @@ pub fn submit(
     runner: &str,
     ask: i64,
     data: Value,
+    call: Option<uuid::Uuid>,
 ) -> Result<String, Unsent> {
-    send_to(log, kind, runner, &format!("{runner}:{ask}"), data)
+    send_to(log, kind, runner, &format!("{runner}:{ask}"), data, call)
+}
+
+/// The id of the message that sends `data` for `call`: a resend of the same write has the same id,
+/// which the log holds once.
+pub(crate) fn called(call: uuid::Uuid, kind: &str, subject: &str, data: &Value) -> uuid::Uuid {
+    uuid::Uuid::new_v5(&call, format!("{kind} {subject} {data}").as_bytes())
 }
 
 /// Publishes a write for runner `runner` about `subject`, with its own message id as its
@@ -1481,12 +1488,16 @@ fn send_to(
     runner: &str,
     subject: &str,
     mut data: Value,
+    call: Option<uuid::Uuid>,
 ) -> Result<String, Unsent> {
     // A machine with no state file of its own runs no daemon to say whether it reaches the log.
     if let Ok(db) = crate::state::read_only() {
         crate::link::refuse_while_unreachable(&db).map_err(Unsent::Nothing)?;
     }
     let mut message = Message::new(kind, json!({})).subject(subject);
+    if let Some(call) = call {
+        message.id = called(call, kind, subject, &data);
+    }
     data["runner"] = json!(runner);
     data["submission"] = json!(message.id.to_string());
     message.data = data;
@@ -1793,6 +1804,7 @@ pub fn act(log: &EventLog, act: &TaskAct) -> Result<String, Unsent> {
         act.runner,
         &format!("{}:{}", act.runner, act.key),
         data,
+        None,
     )
 }
 
