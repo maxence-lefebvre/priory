@@ -48,7 +48,8 @@ function choice(pick) {
       recommended: pick.recommended ?? null,
     };
   }
-  return { id: pick.id, state: "open", options, note: pick.recommended == null ? null : `Recommends ${pick.recommended}`, chosen: null, recommended: pick.recommended ?? null };
+  // The recommended option carries its own mark, so an open pick needs no note.
+  return { id: pick.id, state: "open", options, note: null, chosen: null, recommended: pick.recommended ?? null };
 }
 
 /**

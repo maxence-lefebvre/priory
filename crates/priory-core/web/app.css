@@ -562,11 +562,15 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .rl1 { display: flex; align-items: flex-start; gap: 8px; font: 500 var(--type-body) var(--font-ui); max-width: var(--measure); }
 .rl1 .tile { flex: none; margin-top: 1px; }
 .rl1 .mono { flex: none; font-size: 13px; color: var(--text-2); padding-top: 2px; }
-.rtext { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.rtext { min-width: 0; overflow-wrap: anywhere; }
+.rtext .md, .rtext .md p { margin: 0; font: inherit; max-width: none; }
+.rtext .md .host { font: 400 var(--type-caption) var(--font-ui); color: var(--text-3); }
+.rmeta { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; max-width: var(--measure); }
 .rl2 { display: flex; flex-wrap: wrap; gap: 4px 12px; font: 400 var(--type-caption) var(--font-ui); color: var(--text-3); }
 .rpick { display: flex; flex-wrap: wrap; gap: 3px; padding: 3px; background: var(--raised); border-radius: var(--radius-md); max-width: 100%; justify-self: start; }
 .rpick button { min-height: calc(var(--control) - 6px); padding: 0 14px; display: inline-flex; align-items: center; gap: 6px; border-radius: calc(var(--radius-md) - 3px); font: 600 var(--type-small) var(--font-ui); color: var(--text); }
 .rpick button .ico { color: var(--action-text); }
+.rpick button.rec { text-decoration: underline dotted 1.5px; text-underline-offset: 4px; }
 .rpick button.chosen { background: var(--emph); color: var(--on-emph); }
 .rpick button.chosen .ico { color: var(--on-emph); }
 .rpick button[aria-disabled="true"]:not(.chosen) { color: var(--text-3); }
@@ -595,9 +599,21 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .rresolved { align-items: center; }
 .rresolved .ico { color: var(--ok-text); }
 .rresolved .ghost { margin-left: 4px; }
+.rthreads { display: grid; gap: 8px; }
+.rthreads > summary { list-style: none; justify-self: start; min-height: 32px; display: inline-flex; align-items: center; gap: 6px; font: 600 var(--type-small) var(--font-ui); color: var(--action-text); cursor: pointer; }
+.rthreads > summary::-webkit-details-marker { display: none; }
+@media (pointer: coarse) { .rthreads > summary { min-height: 44px; } }
 .rcompose { padding-left: 0; max-width: var(--measure); }
 .rcompose .racts { justify-content: flex-end; }
 @media (pointer: coarse) { .racts .ghost { min-height: 44px; } }
+/* With room, a pick's control sits beside its row's text. */
+@container (min-width: 720px) {
+  .rrow { grid-template-columns: minmax(0, 1fr) auto; column-gap: var(--space-5); }
+  .rrow > * { grid-column: 1 / -1; }
+  .rrow > .rl1, .rrow > .rl2 { grid-column: 1; }
+  .rrow > .rpick { grid-column: 2; grid-row: 1 / span 2; justify-self: end; align-self: start; }
+  .rrow > .rpick + .rpending { grid-column: 2; justify-self: end; }
+}
 @media (min-width: 1024px) {
   .rbody { display: grid; grid-template-columns: 200px minmax(0, 1fr); align-items: start; }
   .report .rbody .jump { flex-direction: column; top: 0; border: 0; border-right: 1px solid var(--line); padding: 8px 12px; overflow: visible; }

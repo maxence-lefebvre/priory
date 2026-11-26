@@ -11,7 +11,7 @@ import { store } from "../store.js";
 import { taskLabel } from "../tasks.js";
 import { Icon, Tile } from "../components/Icon.jsx";
 import { PageTop, Panel } from "../components/PhonePage.jsx";
-import { Linked } from "../components/Text.jsx";
+import { Linked, Markdown } from "../components/Text.jsx";
 import { useReport, useReports, useStore, useTasks } from "../hooks/useData.js";
 import { useMinute } from "../hooks/useScreen.js";
 import { listClass, usePlace } from "./place.js";
@@ -182,7 +182,8 @@ const Pick = memo(function Pick({ row, mine, changing, failed }) {
   return (
     <><div className="rpick" role="group" aria-label={`Pick for ${row.key || row.text}`}>{choice.options.map((option) => {
       const chosen = mine ? mine.option === option.label : option.label === choice.chosen;
-      return <button type="button" key={option.label} id={focusId("pick", choice.id, option.label)} className={chosen ? "chosen" : ""} aria-pressed={chosen ? "true" : "false"} aria-disabled={off || mine ? "true" : "false"} onClick={unless(off || mine, () => pick(row.id, option.label))}>{chosen ? <Icon name="check" size="s15" /> : null}{option.label}</button>;
+      const className = [chosen ? "chosen" : "", option.recommended ? "rec" : ""].filter(Boolean).join(" ");
+      return <button type="button" key={option.label} id={focusId("pick", choice.id, option.label)} className={className} aria-label={option.recommended ? `${option.label}, recommended` : undefined} aria-pressed={chosen ? "true" : "false"} aria-disabled={off || mine ? "true" : "false"} onClick={unless(off || mine, () => pick(row.id, option.label))}>{chosen ? <Icon name="check" size="s15" /> : null}{option.label}</button>;
     })}</div>{note}</>
   );
 });
@@ -249,14 +250,17 @@ const Row = memo(function Row({ row, held, failed, newest, task, reports }) {
   const facts = [row.meta, row.owner].filter(Boolean);
   const notice = held.notices.get(row.id);
   const open = held.compose?.row === row.id && held.compose.task === task ? held.compose : null;
+  const count = row.threads.length;
+  const talk = <Compose row={row} open={open} newest={newest} failed={failed} remarking={held.remarking} reports={reports} />;
   return (
     <li className="rrow" id={focusId("row", row.id)}>
-      <p className="rl1">{row.tile ? <Tile state={row.tile} size="sm" /> : null}{row.key ? <span className="mono"><Linked text={row.key} /></span> : null}<span className="rtext"><Linked text={row.text} /></span></p>
-      {facts.length || row.time ? <p className="rl2">{facts.map((fact) => <span key={fact}>{fact}</span>)}{row.time ? <span>{row.time}</span> : null}</p> : null}
+      <div className="rl1">{row.tile ? <Tile state={row.tile} size="sm" /> : null}{row.key ? <span className="mono"><Linked text={row.key} /></span> : null}<div className="rtext"><Markdown text={row.text} /></div></div>
+      {facts.length || row.time ? <p className="rl2">{facts.map((fact) => <span key={fact} className={fact === row.meta ? "rmeta" : undefined} title={fact === row.meta ? fact : undefined}>{fact}</span>)}{row.time ? <span>{row.time}</span> : null}</p> : null}
       {row.pick ? <Pick row={row} mine={held.pending.get(row.id)} changing={held.changing} failed={failed} /> : null}
       {notice ? <p className="warnline" role="status">{notice}</p> : null}
-      {row.threads.map((thread) => <Thread key={thread.id} row={row} thread={thread} off={failed || held.remarking} />)}
-      <Compose row={row} open={open} newest={newest} failed={failed} remarking={held.remarking} reports={reports} /></li>
+      {/* Threads fold behind their count; an open comment field keeps them open. */}
+      {count ? <details className="rthreads" open={open ? true : undefined}><summary><Icon name="message-text" size="s15" />{`${count} ${count === 1 ? "comment" : "comments"}`}</summary>
+        {row.threads.map((thread) => <Thread key={thread.id} row={row} thread={thread} off={failed || held.remarking} />)}{talk}</details> : talk}</li>
   );
 });
 

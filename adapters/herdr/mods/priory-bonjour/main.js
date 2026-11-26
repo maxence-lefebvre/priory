@@ -630,7 +630,7 @@ export default class PrioryBonjour extends View {
         }
         const row = item[1];
         return v_flex().max_w(DOCUMENT).child(row.pick ? this.pick(model, row, t) : this.line(model, row, t))
-          .when(row.threads.length > 0 || (row.id === this.selected && (this.threadable(row) || this.replyTo != null)), (el) => el.child(this.threads(model, row, t)));
+          .when((row.threads.length > 0 && (!row.pick || row.id === this.selected)) || (row.id === this.selected && (this.threadable(row) || this.replyTo != null)), (el) => el.child(this.threads(model, row, t)));
       }));
   }
 
@@ -708,34 +708,42 @@ export default class PrioryBonjour extends View {
     }
     const pending = this.pending.get(row.id);
     const busy = Boolean(pending) || Boolean(this.error);
-    return v_flex().w_full().p(S["space-3"]).gap(S["space-2"]).rounded(S["radius-md"]).border(1).border_color(selected ? t["action-soft"] : t.line).bg(selected ? t["action-soft"] : t.surface)
-      .when(Boolean(row.tile || row.key || row.owner || row.time), (el) => el.child(h_flex().gap(S["space-2"]).items_center()
-        .when(Boolean(row.tile), (el) => el.child(this.tile(/** @type {string} */ (row.tile), t)))
-        .child(div().flex_1().min_w_0().font_family(this.font.mono).text_size(S["type-caption"][0]).text_color(t["text-2"]).child(selectable(`key-${row.id}`, row.key ?? "")))
-        .when(Boolean(row.owner || row.time), (el) => el.child(this.side(row, t)))))
-      .child(div().whitespace_normal().line_height(LINE(S["type-body"])).font_weight(600).child(selectableMarkdown(`text-${row.id}`, row.text ?? "", this.links)))
-      .when(Boolean(row.meta), (el) => el.child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(selectableMarkdown(`meta-${row.id}`, row.meta ?? "", this.links))))
+    const control = h_flex().flex_none().flex_wrap().p(S["space-1"]).gap(S["space-1"]).rounded(S["radius-sm"] + 2).border(1).border_color(t["control-line"]).bg(t.bg)
+      .children(pick.options.map((option) => {
+        const on = pending ? pending.option === option.label : option.label === pick.chosen;
+        return Button.new(`pick-${row.id}-${option.key || option.label}`).h(S["pane-chip"] - 4).px(S["space-3"]).flex().items_center().gap(S["space-1"]).rounded(S["radius-sm"])
+          .selected(on).disabled(busy && !on).opacity(busy && !on ? 0.5 : 1)
+          .bg(on ? t.emph : t.bg).text_color(on ? t["on-emph"] : t.text)
+          .text_size(S["type-small"][0]).font_weight(on ? 600 : 500)
+          // GPUI draws no dotted line, so the recommended option takes a plain underline.
+          .when(option.recommended, (el) => el.underline())
+          .when(!busy, (el) => el.hover((s) => s.bg(t.raised))).focus((s) => s.border(2).border_color(t["action-text"]))
+          .accessibility_label([option.label, option.recommended && "recommended", option.key && `key ${option.key}`].filter(Boolean).join(", "))
+          .on_click((_event, cx) => this.choose(model, row, option.label, cx))
+          .when(on, (el) => el.child(svg(ICON("check")).size(13)))
+          .child(option.label);
+      }));
+    // Threads fold until the row is selected; their count, or Comment, selects it.
+    const talk = row.threads.length ? plural(row.threads.length, "comment") : "Comment";
+    return v_flex().w_full().px(S["space-2"]).py(S["space-2"]).gap(S["space-1"]).rounded(S["radius-md"]).bg(selected ? t["action-soft"] : t.bg)
+      .child(h_flex().flex_wrap().items_start().gap(S["space-3"])
+        .child(v_flex().flex_1().min_w(280).gap(S["space-1"])
+          .child(h_flex().gap(S["space-2"]).items_start()
+            .when(Boolean(row.tile), (el) => el.child(this.tile(/** @type {string} */ (row.tile), t)))
+            .when(Boolean(row.key), (el) => el.child(div().flex_none().font_family(this.font.mono).text_size(S["type-caption"][0]).text_color(t["text-2"]).child(selectable(`key-${row.id}`, row.key ?? ""))))
+            .child(div().flex_1().min_w_0().whitespace_normal().line_height(LINE(S["type-body"])).font_weight(600).child(selectableMarkdown(`text-${row.id}`, row.text ?? "", this.links)))
+            .when(Boolean(row.owner || row.time), (el) => el.child(this.side(row, t))))
+          .when(Boolean(row.meta), (el) => el.child(selected
+            ? div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(selectableMarkdown(`meta-${row.id}`, row.meta ?? "", this.links))
+            : div().truncate().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(markdownText(row.meta ?? "")))))
+        .child(v_flex().flex_none().items_end().gap(S["space-1"]).child(control)
+          .when(Boolean(pending), (el) => el.child(h_flex().gap(S["space-2"]).items_center().text_size(S["type-small"][0])
+            .child(div().child(pending?.batch != null && pending.timer ? "With the batch" : pending?.timer ? `Picking ${pending.option}` : `Sending ${pending?.option}…`))
+            .when(Boolean(pending?.timer) && pending?.batch == null, (el) => el.child(this.secondary(`undo-${row.id}`, "Undo", (cx) => this.undo(row.id, cx), t)))))))
       .when(Boolean(notice), (el) => el.child(this.notice(String(row.id), notice, t)))
-      .child(h_flex().gap(S["space-2"]).items_center().flex_wrap()
-        .child(h_flex().min_w_0().flex_wrap().p(S["space-1"]).gap(S["space-1"]).rounded(S["radius-sm"] + 2).border(1).border_color(t["control-line"]).bg(t.bg)
-          .children(pick.options.map((option) => {
-            const on = pending ? pending.option === option.label : option.label === pick.chosen;
-            return Button.new(`pick-${row.id}-${option.key || option.label}`).h(S["pane-chip"] - 4).px(S["space-3"]).flex().items_center().gap(S["space-1"]).rounded(S["radius-sm"])
-              .selected(on).disabled(busy && !on).opacity(busy && !on ? 0.5 : 1)
-              .bg(on ? t.emph : t.bg).text_color(on ? t["on-emph"] : t.text)
-              .text_size(S["type-small"][0]).font_weight(on ? 600 : 500)
-              .when(!busy, (el) => el.hover((s) => s.bg(t.raised))).focus((s) => s.border(2).border_color(t["action-text"]))
-              .accessibility_label([option.label, option.recommended && "recommended", option.key && `key ${option.key}`].filter(Boolean).join(", "))
-              .on_click((_event, cx) => this.choose(model, row, option.label, cx))
-              .when(on, (el) => el.child(svg(ICON("check")).size(13)))
-              .child(option.label);
-          })))
-        .when(Boolean(pick.note) && !pending, (el) => el.child(div().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(pick.note ?? "")))
-        .when(commentable && !pending, (el) => el.child(this.secondary(`comment-${row.id}`, "Comment", (cx) => this.select(model, row.id, cx), t)))
-        .when(reopened && !pending, (el) => el.child(this.secondary("change-cancel", "Keep", (cx) => { this.changing = null; cx.notify(); }, t)))
-        .when(Boolean(pending), (el) => el.child(h_flex().flex_1().gap(S["space-2"]).items_center().justify_end().text_size(S["type-small"][0])
-          .child(div().child(pending?.batch != null && pending.timer ? "With the batch" : pending?.timer ? `Picking ${pending.option}` : `Sending ${pending?.option}…`))
-          .when(Boolean(pending?.timer) && pending?.batch == null, (el) => el.child(this.secondary(`undo-${row.id}`, "Undo", (cx) => this.undo(row.id, cx), t))))));
+      .when((commentable || reopened) && !pending, (el) => el.child(h_flex().gap(S["space-2"]).items_center()
+        .when(commentable, (el) => el.child(this.secondary(`comment-${row.id}`, talk, (cx) => this.select(model, row.id, cx), t)))
+        .when(reopened, (el) => el.child(this.secondary("change-cancel", "Keep", (cx) => { this.changing = null; cx.notify(); }, t)))));
   }
 
   /** A row's threads under it, a resolved one folded to one line, then the comment field on the selected row. */
