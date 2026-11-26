@@ -42485,7 +42485,7 @@ fn a_cloud_session_calls_ask_wait_and_result_through_the_gateway_and_each_applie
     }
     let (status, _) = gateway.call(token, "ask", an_ask());
     assert_eq!(status, 401);
-    assert_eq!(setup.rows("asks").len(), 1);
+    assert_eq!(setup.on_log("priory.run.called"), 4);
 }
 
 #[test]

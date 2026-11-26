@@ -1931,9 +1931,9 @@ Schema: [`priory.run.granted.json`](../schemas/events/priory.run.granted.json).
 | `grant` | UUID string | The grant's id |
 | `hash` | string | The token's SHA-256, in lowercase hex |
 | `seconds` | integer | How long the grant lasts, in seconds from when the log took this message |
-| `task` | string, optional | The key of the task whose cloud run the grant signs in |
-| `run` | integer, optional | The cloud run's id on its runner |
-| `runner` | string, optional | The runner that made the grant and applies its calls |
+| `task` | string or null | The key of the task whose cloud run the grant signs in; null on a grant made by hand |
+| `run` | integer or null | The cloud run's id on its runner; null on a grant made by hand |
+| `runner` | string or null | The runner that made the grant and applies its calls; null on a grant made by hand or with no runner files |
 
 <!-- example: events/priory.run.granted.json -->
 ```json
@@ -1987,7 +1987,7 @@ Subject: the call's id. Schema: [`priory.run.called.json`](../schemas/events/pri
 | `call` | UUID string | The call's id. The same arguments, sent again before a reply reached the session, make the same call |
 | `grant` | string | The grant the session signed in with |
 | `run` | integer | The cloud run the grant names |
-| `runner` | string, optional | The runner the grant names; none on a factory with no runner files |
+| `runner` | string or null | The runner the grant names; null on a factory with no runner files |
 | `tool` | string | `ask`, `wait` or `result` |
 | `arguments` | object | The tool's arguments, as the session sent them |
 

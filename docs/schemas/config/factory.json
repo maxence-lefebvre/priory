@@ -128,6 +128,18 @@
       "additionalProperties": false,
       "description": "`[cloud]`: the bounds of cloud runs, which take no room and whose cost Priory cannot read.",
       "properties": {
+        "gateway": {
+          "default": false,
+          "description": "Whether each cloud run gets a run grant and reaches `ask`, `wait` and `result` through the\ndiocese's gateway. False when unset: a cloud run reports by its branch push only.",
+          "type": "boolean"
+        },
+        "gateway_url": {
+          "description": "The gateway's public MCP endpoint, such as `https://diocese.example/mcp`, which a cloud\nsession connects to. `gateway = true` needs it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "max": {
           "description": "How many cloud runs a runner has at once, 4 when unset. Past it, a task waits to start one.",
           "format": "uint32",

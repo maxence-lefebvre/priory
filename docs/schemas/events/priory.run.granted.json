@@ -66,7 +66,10 @@
       "required": [
         "grant",
         "hash",
-        "seconds"
+        "seconds",
+        "task",
+        "run",
+        "runner"
       ],
       "type": "object"
     }

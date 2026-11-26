@@ -64,7 +64,8 @@ pub fn grant(factory: &Factory, span: &str) -> Result<String, String> {
     }
     let token = crate::serve::new_secret()?;
     let id = uuid::Uuid::now_v7().to_string();
-    let data = json!({ "grant": id, "hash": hash(&token), "seconds": seconds });
+    let data = json!({ "grant": id, "hash": hash(&token), "seconds": seconds, "task": null,
+        "run": null, "runner": null });
     crate::runners::publish(factory.log(), &Message::new(GRANTED, data).subject(&id))?;
     Ok(json!({ "grant": id, "token": token }).to_string())
 }
