@@ -3790,51 +3790,45 @@ fn an_answer_is_stored_while_slow_listing_reads_and_long_polls_wait() {
         .execute_batch(
             "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1500)
              INSERT INTO asks (kind, name, question, options, text)
-             SELECT 'outside', 'bulk-' || i, 'q', '[\"yes\"]', printf('%.*c', 2000, 't') FROM n",
+             SELECT 'outside', 'bulk-' || i, 'q', '[\"yes\"]', printf('%.*c', 4000, 't') FROM n",
         )
         .unwrap();
     let address = setup.start(&["daemon", &setup.factory()]);
     let revision = api(&address, "/api/tasks")["revision"].as_i64().unwrap();
+    let started = Instant::now();
+    assert_eq!(get(&address, "/api/asks?all=1", Some(TOKEN)).0, 200);
+    let alone = started.elapsed();
     let timed = |path: String| {
         let address = address.clone();
-        std::thread::spawn(move || {
-            let started = Instant::now();
-            let status = get(&address, &path, Some(TOKEN)).0;
-            (status, started.elapsed())
-        })
+        std::thread::spawn(move || get(&address, &path, Some(TOKEN)).0)
     };
-    let reads: Vec<_> = (0..16)
+    // Reads several times over every worker but the writers.
+    let reads: Vec<_> = (0..40)
         .map(|_| timed("/api/asks?all=1".to_owned()))
         .collect();
     let polls: Vec<_> = (0..16)
         .map(|_| timed(format!("/api/events?since={revision}&timeout=25")))
         .collect();
-    std::thread::sleep(Duration::from_millis(300));
+    std::thread::sleep(Duration::from_millis(100));
 
-    let started = Instant::now();
     let body = r#"{"option": "left", "revision": 2}"#;
-
+    let started = Instant::now();
     let (status, reply) = post(&address, "/api/asks/1/answer", "", body);
     let answered = started.elapsed();
 
     assert_eq!(status, 200, "{reply}");
     assert_eq!(setup.ask()["state"], "answered");
-    let fastest = reads
-        .into_iter()
-        .map(|read| read.join().unwrap())
-        .map(|(status, took)| {
-            assert_eq!(status, 200, "after {took:?}");
-            took
-        })
-        .min()
-        .unwrap();
-    // Behind the reads, the answer would wait for at least one of them.
+    // A slow runner may give a read 503 after its 10 s wait for a worker: reads degrade first.
+    for read in reads {
+        assert!([200, 503].contains(&read.join().unwrap()));
+    }
+    // Behind the reads, the answer would wait for rounds of them.
     assert!(
-        answered * 2 < fastest,
-        "answered in {answered:?}, the fastest read took {fastest:?}"
+        answered < alone * 2,
+        "answered in {answered:?}, a read alone took {alone:?}"
     );
     for poll in polls {
-        assert_eq!(poll.join().unwrap().0, 200);
+        assert_eq!(poll.join().unwrap(), 200);
     }
 }
 
