@@ -338,11 +338,14 @@ pub(crate) fn call(
         return Ok((Err(refused), None));
     }
     // The run moves on from the asks and waits of earlier runs. A refused call rolls this back.
-    tx.execute(
-        "UPDATE asks SET withdrawn = 1, withdrawn_reason = 'moved-on' WHERE task = ?1
-         AND run IS NOT NULL AND run != ?2 AND answer IS NULL AND withdrawn IS NULL",
-        params![run.task, run.id],
-    )?;
+    // A wait does not move the task on, so the asks of earlier runs stay open beside it.
+    if call.tool != "wait" {
+        tx.execute(
+            "UPDATE asks SET withdrawn = 1, withdrawn_reason = 'moved-on' WHERE task = ?1
+             AND run IS NOT NULL AND run != ?2 AND answer IS NULL AND withdrawn IS NULL",
+            params![run.task, run.id],
+        )?;
+    }
     tx.execute(
         "UPDATE waits SET withdrawn = 1, withdrawn_reason = 'moved-on' WHERE task = ?1 AND run != ?2
          AND fired IS NULL AND withdrawn IS NULL AND NOT daemon",

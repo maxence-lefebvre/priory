@@ -14113,8 +14113,8 @@ fn a_fixed_key_firing_wakes_an_asleep_task_and_its_ask_stays_open() {
 }
 
 #[test]
-fn a_woken_run_can_wait_on_something_else_and_so_withdraws_the_ask_it_took_over() {
-    let mut setup = support_day("tick-wait-instead");
+fn a_woken_run_that_waits_keeps_the_ask_it_took_over_and_the_answer_wakes_the_task() {
+    let mut setup = support_day("tick-wait-keeps");
     setup.calls(&[ask(), wait(json!({ "type": "time", "until": "1 hour" }))]);
     setup.publish(&tick("2026-11-19T08:00:00Z"));
     setup.start();
@@ -14126,13 +14126,60 @@ fn a_woken_run_can_wait_on_something_else_and_so_withdraws_the_ask_it_took_over(
 
     setup.until("waits", |rows| rows.len() == 1);
     setup.until("tasks", |rows| rows[0][4] == "asleep");
-    assert!(setup.rows("asks").is_empty());
+    assert_eq!(setup.rows("asks").len(), 1);
     let answer = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
-    assert_eq!(
-        String::from_utf8_lossy(&answer.stderr),
-        "priory answer: ask 1 was withdrawn when a later run of task 1 called another tool\n"
+    assert!(answer.status.success(), "{answer:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    assert!(
+        setup
+            .typed()
+            .last()
+            .is_some_and(|typed| typed.starts_with("Answer to ask 1 (revision 1): sqlite")),
+        "{:?}",
+        setup.typed()
     );
-    assert_eq!(withdrawn_reasons(&setup, "asks"), ["moved-on"]);
+    assert_eq!(withdrawn_reasons(&setup, "waits"), ["answered-elsewhere"]);
+}
+
+#[test]
+fn a_woken_run_that_reports_progress_keeps_the_ask_it_took_over() {
+    let mut setup = support_day("tick-progress-keeps");
+    let progress =
+        json!({ "name": "progress", "arguments": { "nextAction": "Wait for the answer" } });
+    setup.calls(&[ask(), progress]);
+    setup.publish(&tick("2026-11-19T08:00:00Z"));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+
+    setup.publish(&tick("2026-11-19T09:00:00Z"));
+
+    setup.calls_left(0);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    setup.until("tasks", |rows| rows[0][4] == "asleep");
+    assert_eq!(setup.rows("asks").len(), 1);
+    assert_eq!(withdrawn_reasons(&setup, "asks"), [serde_json::Value::Null]);
+}
+
+#[test]
+fn a_woken_run_that_asks_again_withdraws_the_ask_it_took_over() {
+    let mut setup = support_day("tick-ask-again");
+    setup.calls(&[ask(), ask()]);
+    setup.publish(&tick("2026-11-19T08:00:00Z"));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+
+    setup.publish(&tick("2026-11-19T09:00:00Z"));
+
+    setup.calls_left(0);
+    setup.until("tasks", |rows| rows[0][4] == "asleep");
+    assert_eq!(
+        withdrawn_reasons(&setup, "asks"),
+        [json!("moved-on"), serde_json::Value::Null]
+    );
 }
 
 #[test]
