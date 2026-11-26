@@ -60,8 +60,8 @@ test("each page's legacy parts read the listings they show and no other", () => 
   assert.deepEqual(reads("/tasks"), ["tasks"]);
   assert.deepEqual(reads("/runs"), ["runs"]);
   assert.deepEqual(reads("/queue"), ["queue", "tasks"]);
-  assert.deepEqual(reads("/inbox"), ["tasks"]);
-  assert.deepEqual(reads("/terminal", { size: "compact" }), ["tasks"]);
+  assert.deepEqual(reads("/inbox"), [], "a React part reads its own");
+  assert.deepEqual(reads("/terminal", { size: "compact" }), []);
   assert.deepEqual(reads("/reports"), ["report", "reports", "tasks"]);
   assert.deepEqual(reads("/batches/2"), ["tasks"]);
   for (const href of ["/costs", "/workflow", "/more", "/memories", "/settings/notifications"]) assert.deepEqual(reads(href), [], href);

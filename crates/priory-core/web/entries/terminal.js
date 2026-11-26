@@ -1,11 +1,11 @@
-import { html } from "../legacy/shared.js";
-import { keyboard, terminalClick, terminalInput, terminalKey, terminalSubmit, terminalsPanel, watch } from "../legacy/terminal.js";
+// The Terminal panel is React. The events are the task page's terminal pane's, which legacy/terminal.js paints.
+import { keyboard, terminalClick, terminalInput, terminalKey, terminalSubmit, watch } from "../legacy/terminal.js";
+import { TerminalList, TerminalPage } from "../pages/Terminal.jsx";
 
 export const terminal = {
   name: "terminal",
-  needs: ["tasks"],
-  list: () => html`<div class="list" role="region" aria-label="Terminal"><div class="lhead"><h1>Terminal</h1></div>${terminalsPanel()}</div>`,
-  page: () => html`<div class="top"><h1>Terminal</h1></div>${terminalsPanel()}`,
+  List: TerminalList,
+  Page: TerminalPage,
   click: terminalClick,
   submit: terminalSubmit,
   input: terminalInput,
