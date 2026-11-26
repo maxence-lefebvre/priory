@@ -5478,7 +5478,7 @@ mod autopilot_times {
         )
         .unwrap();
 
-        migrate(&mut db).unwrap();
+        apply(&mut db, false).unwrap();
 
         let row: (String, String, Option<String>) = db
             .query_row(
@@ -5508,7 +5508,7 @@ mod autopilot_times {
         )
         .unwrap();
 
-        migrate(&mut db).unwrap();
+        apply(&mut db, false).unwrap();
 
         let off: String = db
             .query_row("SELECT off FROM autopilot_times", [], |row| row.get(0))
