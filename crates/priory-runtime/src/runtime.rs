@@ -6,8 +6,9 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex, OnceLock, TryLockError};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock, TryLockError};
 use std::time::{Duration, Instant};
 
 use serde_json::json;
@@ -3064,15 +3065,88 @@ pub struct Line {
     pub applied: Sender<String>,
 }
 
-/// The daemon's end of the socket: its lock, and the lines that arrive.
-pub struct Listening {
-    _lock: File,
-    pub lines: Receiver<Line>,
+/// The daemon's lock on its home, held until it is dropped.
+pub struct Lock {
+    _file: File,
 }
 
-/// Takes the daemon lock under `home` and binds the signal socket. Each connection's line gets
-/// the daemon's reply once the daemon applied it.
-pub fn listen(home: &Path) -> Result<Listening, String> {
+/// The daemon's end of the socket: its lock, and the lines that arrive.
+pub struct Listening {
+    _lock: Lock,
+    pub lines: Receiver<Line>,
+    open: Arc<Open>,
+    path: PathBuf,
+}
+
+/// The connections of a socket that are not answered yet.
+#[derive(Default)]
+struct Open {
+    /// Set once the socket takes no more.
+    closing: AtomicBool,
+    /// The listener, until it closed, and each connection.
+    left: AtomicUsize,
+}
+
+/// One of `Open`'s `left`.
+struct Left(Arc<Open>);
+
+impl Left {
+    fn new(open: &Arc<Open>) -> Left {
+        open.left.fetch_add(1, Ordering::SeqCst);
+        Left(open.clone())
+    }
+}
+
+impl Drop for Left {
+    fn drop(&mut self) {
+        self.0.left.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Set by SIGTERM once the daemon listens.
+static STOPPING: LazyLock<Arc<AtomicBool>> = LazyLock::new(Arc::default);
+
+/// Whether the daemon was told to stop: it answers what it took, then ends.
+pub fn stopping() -> bool {
+    STOPPING.load(Ordering::SeqCst)
+}
+
+/// Whether the signals are caught, once per process.
+static CAUGHT: LazyLock<Result<(), String>> = LazyLock::new(|| {
+    use signal_hook::{consts::SIGTERM, flag};
+    // The first in order, so a second SIGTERM ends a daemon that does not get to its stop.
+    flag::register_conditional_default(SIGTERM, STOPPING.clone())
+        .and_then(|_| flag::register(SIGTERM, STOPPING.clone()))
+        .map(drop)
+        .map_err(|error| format!("cannot catch SIGTERM: {error}"))
+});
+
+/// How long a stop may take to answer what the socket took.
+const STOP: Duration = Duration::from_secs(20);
+
+impl Listening {
+    /// Takes no more connections, has `apply` answer each line that arrived, then ends this process
+    /// by SIGTERM. The socket's file stays, so clients are refused and wait.
+    pub fn stop<E>(self, mut apply: impl FnMut(Line) -> Result<(), E>) -> Result<(), E> {
+        // Tells clients a daemon restarts here, so they wait for it. A crash writes none.
+        let _ = fs::write(stopping_path(&self.path), "");
+        self.open.closing.store(true, Ordering::SeqCst);
+        // Wakes the listener.
+        let _ = UnixStream::connect(&self.path);
+        let deadline = Instant::now() + STOP;
+        while self.open.left.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
+            if let Ok(line) = self.lines.recv_timeout(Duration::from_millis(20)) {
+                apply(line)?;
+            }
+        }
+        // As before this handled SIGTERM, so systemd and an upgrade's helper see a stop.
+        let _ = signal_hook::low_level::emulate_default_handler(signal_hook::consts::SIGTERM);
+        Ok(())
+    }
+}
+
+/// Takes the daemon lock under `home`.
+pub fn lock(home: &Path) -> Result<Lock, String> {
     let at = |error: std::io::Error| format!("{}: {error}", home.display());
     fs::create_dir_all(home).map_err(at)?;
     let lock = File::create(home.join("daemon.lock")).map_err(at)?;
@@ -3084,6 +3158,13 @@ pub fn listen(home: &Path) -> Result<Listening, String> {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+    Ok(Lock { _file: lock })
+}
+
+/// Binds the signal socket of the daemon that holds `lock` on `home`. Each connection's line gets
+/// the daemon's reply once the daemon applied it.
+pub fn listen(home: &Path, lock: Lock) -> Result<Listening, String> {
+    let at = |error: std::io::Error| format!("{}: {error}", home.display());
     let path = socket_path(home);
     let run = std::env::var_os("XDG_RUNTIME_DIR").filter(|run| !run.is_empty());
     let why = fallback_reason(run.as_deref().map(Path::new), home);
@@ -3097,15 +3178,37 @@ pub fn listen(home: &Path) -> Result<Listening, String> {
     let _ = fs::remove_file(&bound);
     let listener = UnixListener::bind(&bound).map_err(at)?;
     fs::rename(&bound, &path).map_err(at)?;
+    let _ = fs::remove_file(stopping_path(&path));
+    CAUGHT.clone()?;
     let (sender, lines) = mpsc::channel();
+    let open = Arc::new(Open::default());
+    let (listening, opened) = (Left::new(&open), open.clone());
     std::thread::spawn(move || {
-        for mut stream in listener.incoming().flatten() {
+        let _listening = listening;
+        let mut closing = false;
+        loop {
+            if !closing && opened.closing.load(Ordering::SeqCst) {
+                // What waits in the queue is still taken.
+                closing = listener.set_nonblocking(true).is_ok();
+            }
+            let mut stream = match listener.accept() {
+                Ok((stream, _)) => stream,
+                Err(_) if closing => return,
+                Err(_) => continue,
+            };
+            let left = Left::new(&opened);
             // A thread each, so a line the daemon answers late holds no other connection.
             let sender = sender.clone();
             std::thread::spawn(move || {
+                let _left = left;
+                // macOS hands on the listener's mode.
+                let _ = stream.set_nonblocking(false);
                 let Some(text) = line_within(&stream, Duration::from_secs(2)) else {
                     return;
                 };
+                if text.is_empty() {
+                    return;
+                }
                 let (applied, done) = mpsc::channel();
                 if sender.send(Line { text, applied }).is_err() {
                     return;
@@ -3117,7 +3220,12 @@ pub fn listen(home: &Path) -> Result<Listening, String> {
             });
         }
     });
-    Ok(Listening { _lock: lock, lines })
+    Ok(Listening {
+        _lock: lock,
+        lines,
+        open,
+        path,
+    })
 }
 
 /// The first line `stream` sends, newline included, if it ends or the stream does within `limit`.
@@ -3166,14 +3274,40 @@ fn drain(dir: &Path, apply: &mut impl FnMut(&str) -> Result<(), String>) -> Resu
     let taken = dir.join("signals.spool.taken");
     let at = |error: std::io::Error| format!("{}: {error}", taken.display());
     loop {
-        // shortcut: a hook that opened the spool before this rename and writes after the read is lost; move the spool into SQLite if that shows up.
         if !taken.exists() && fs::rename(spool(dir), &taken).is_err() {
             return Ok(());
         }
+        // A hook that opened it before the rename appends under this lock, or sees that it moved.
+        let file = File::open(&taken).map_err(at)?;
+        locked(&file);
         for line in fs::read_to_string(&taken).map_err(at)?.lines() {
             apply(line)?;
         }
         fs::remove_file(&taken).map_err(at)?;
+    }
+}
+
+/// Waits a little for the lock on `file`: a run can hold its own spool's, and must not hold the daemon.
+fn locked(file: &File) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while file.try_lock().is_err() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Appends `line` to the spool at `path`, on a file no daemon has taken.
+fn append(path: &Path, line: &str) -> std::io::Result<()> {
+    loop {
+        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+        locked(&file);
+        let id = |file: &fs::Metadata| (file.dev(), file.ino());
+        match fs::metadata(path) {
+            Ok(there) if id(&there) == id(&file.metadata()?) => {
+                return file.write_all(line.as_bytes());
+            }
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
+            _ => {}
+        }
     }
 }
 
@@ -3186,46 +3320,104 @@ pub const NO_DAEMON: &str = "no priory daemon listens on";
 /// How long `call_through_restart` tries again while the daemon's socket refuses it.
 pub const RESTART: Duration = Duration::from_secs(30);
 
+/// The reply to a line a stopping daemon did not apply: the client may send it again.
+pub const NOT_APPLIED: &str = "the daemon stopped before it applied this line: send it again";
+
+/// The file a stopping daemon writes beside its socket at `path`, and its next start removes.
+fn stopping_path(path: &Path) -> PathBuf {
+    path.with_extension("stopping")
+}
+
+/// Whether a daemon stopped at the socket `path` lately, so its restart is worth waiting for.
+fn restarting(path: &Path) -> bool {
+    fs::metadata(stopping_path(path))
+        .and_then(|marker| marker.modified())
+        .is_ok_and(|at| at.elapsed().is_ok_and(|age| age < STOP + RESTART))
+}
+
 /// Sends one line to the daemon and returns its reply within about `wait`. Nothing is spooled:
 /// with no daemon, it fails at once.
 pub fn call(home: &Path, line: &str, wait: Duration) -> Result<String, String> {
-    call_at(&socket_path(home), line, wait, Duration::ZERO)
+    call_at(&socket_path(home), line, wait, Duration::ZERO, false)
 }
 
-/// `call` for an MCP server, which a run keeps across a daemon restart: while the socket refuses
-/// it, as a restarting daemon's does, it tries again for up to `RESTART`, then waits `wait`.
+/// `call` for a person's verb, which outlives a daemon restart: while a daemon that stopped lately
+/// restarts, it tries again for up to `RESTART`, then waits `wait`. Without a stop, it fails at once.
 pub fn call_through_restart(home: &Path, line: &str, wait: Duration) -> Result<String, String> {
-    call_at(&socket_path(home), line, wait, RESTART)
+    call_at(&socket_path(home), line, wait, RESTART, false)
 }
 
-/// Sends `line` on the socket at `path`, trying a refused connection again for up to `retry`. Once
-/// connected, the reply has the whole of `wait`, so a late connect never cuts a call short.
-fn call_at(path: &Path, line: &str, wait: Duration, retry: Duration) -> Result<String, String> {
+/// `call_through_restart` for an MCP server, which a run keeps across a daemon restart: it also
+/// waits for a socket that refuses it after a crash, which systemd restarts.
+pub fn call_for_run(home: &Path, line: &str, wait: Duration) -> Result<String, String> {
+    call_at(&socket_path(home), line, wait, RESTART, true)
+}
+
+/// `call_through_restart` that tries again for up to `retry` alone.
+pub fn call_retrying(
+    home: &Path,
+    line: &str,
+    wait: Duration,
+    retry: Duration,
+) -> Result<String, String> {
+    call_at(&socket_path(home), line, wait, retry.min(RESTART), false)
+}
+
+/// Sends `line` on the socket at `path`. While a daemon that stopped there restarts, it tries a refused
+/// or missing socket, or a line the stop did not apply, again for up to `retry`; with `crash`, any
+/// refused socket too. Once connected, the reply has the whole of `wait`, so a late connect never
+/// cuts a call short.
+fn call_at(
+    path: &Path,
+    line: &str,
+    wait: Duration,
+    retry: Duration,
+    crash: bool,
+) -> Result<String, String> {
     let deadline = Instant::now() + retry;
-    let mut stream = loop {
-        match UnixStream::connect(path) {
-            Ok(stream) => break stream,
+    let mut said = false;
+    let mut again = |refused: bool| {
+        let waits = Instant::now() < deadline && (refused && crash || restarting(path));
+        if waits && !std::mem::replace(&mut said, true) {
+            eprintln!(
+                "priory: the daemon is restarting: waiting up to {} s for it",
+                retry.as_millis().div_ceil(1000)
+            );
+        }
+        if waits {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        waits
+    };
+    loop {
+        let mut stream = match UnixStream::connect(path) {
+            Ok(stream) => stream,
             Err(error)
-                if error.kind() == std::io::ErrorKind::ConnectionRefused
-                    && Instant::now() < deadline =>
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+                ) && again(error.kind() == std::io::ErrorKind::ConnectionRefused) =>
             {
-                std::thread::sleep(Duration::from_millis(200));
+                continue;
             }
             Err(error) => return Err(format!("{NO_DAEMON} {}: {error}", path.display())),
+        };
+        let wait = Some(wait);
+        let mut reply = String::new();
+        stream
+            .set_write_timeout(wait)
+            .and_then(|()| stream.set_read_timeout(wait))
+            .and_then(|()| stream.write_all(format!("{line}\n").as_bytes()))
+            .and_then(|()| BufReader::new(&stream).read_line(&mut reply))
+            .map_err(|error| format!("the daemon did not reply: {error}"))?;
+        if reply.is_empty() {
+            return Err("the daemon closed the connection without a reply".to_owned());
         }
-    };
-    let wait = Some(wait);
-    let mut reply = String::new();
-    stream
-        .set_write_timeout(wait)
-        .and_then(|()| stream.set_read_timeout(wait))
-        .and_then(|()| stream.write_all(format!("{line}\n").as_bytes()))
-        .and_then(|()| BufReader::new(&stream).read_line(&mut reply))
-        .map_err(|error| format!("the daemon did not reply: {error}"))?;
-    if reply.is_empty() {
-        return Err("the daemon closed the connection without a reply".to_owned());
+        if reply.contains(NOT_APPLIED) && again(false) {
+            continue;
+        }
+        return Ok(reply.trim_end().to_owned());
     }
-    Ok(reply.trim_end().to_owned())
 }
 
 /// Sends one line to the daemon and waits up to 10 seconds for it to be applied. Only when no
@@ -3245,6 +3437,7 @@ pub fn send(home: &Path, line: &str) -> Result<(), String> {
         match BufReader::new(stream).read_line(&mut answer) {
             Ok(0) => {}
             Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+            Ok(_) if answer.contains(NOT_APPLIED) => {}
             Ok(_) if answer == "ok\n" => return Ok(()),
             Ok(_) | Err(_) => {
                 eprintln!("priory hook: the daemon took the signal but has not applied it yet");
@@ -3257,18 +3450,136 @@ pub fn send(home: &Path, line: &str) -> Result<(), String> {
         .filter(|spool| !spool.is_empty())
         .map_or_else(|| spool(home), PathBuf::from);
     fs::create_dir_all(spool.parent().unwrap_or(home)).map_err(|error| error.to_string())?;
-    OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&spool)
-        .and_then(|mut file| file.write_all(line.as_bytes()))
-        .map_err(|error| format!("{}: {error}", spool.display()))
+    append(&spool, &line).map_err(|error| format!("{}: {error}", spool.display()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn a_hook_that_opened_the_spool_the_daemon_takes_writes_to_the_next_one() {
+        let dir = std::env::temp_dir().join(format!("priory-spool-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = spool(&dir);
+        fs::write(&path, "first\n").unwrap();
+        // As `drain` takes it, held from before the hook opens it.
+        let taking = File::open(&path).unwrap();
+        taking.lock().unwrap();
+        let hook = std::thread::spawn({
+            let path = path.clone();
+            move || append(&path, "second\n")
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!hook.is_finished());
+        let taken = dir.join("signals.spool.taken");
+        fs::rename(&path, &taken).unwrap();
+        assert_eq!(fs::read_to_string(&taken).unwrap(), "first\n");
+        fs::remove_file(&taken).unwrap();
+        drop(taking);
+
+        hook.join().unwrap().unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "second\n");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_drain_waits_for_a_hook_that_holds_the_spool_to_finish_its_line() {
+        let dir = std::env::temp_dir().join(format!("priory-drain-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(spool(&dir), "first\n").unwrap();
+        // A hook between its lock and its write.
+        let mut hook = OpenOptions::new().append(true).open(spool(&dir)).unwrap();
+        hook.lock().unwrap();
+        let drained = std::thread::spawn({
+            let dir = dir.clone();
+            move || {
+                let mut lines = Vec::new();
+                drain(&dir, &mut |line: &str| {
+                    lines.push(line.to_owned());
+                    Ok(())
+                })
+                .map(|()| lines)
+            }
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        hook.write_all(b"second\n").unwrap();
+        drop(hook);
+
+        assert_eq!(drained.join().unwrap().unwrap(), ["first", "second"]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A socket at `path` that answers each connection's line with the next of `replies`, and
+    /// returns the lines it read.
+    fn answering(
+        path: &Path,
+        after: Duration,
+        replies: &'static [&'static str],
+    ) -> std::thread::JoinHandle<Vec<String>> {
+        let path = path.to_owned();
+        std::thread::spawn(move || {
+            std::thread::sleep(after);
+            let bound = path.with_extension("new");
+            let listener = UnixListener::bind(&bound).unwrap();
+            fs::rename(&bound, &path).unwrap();
+            let mut lines = Vec::new();
+            for reply in replies {
+                let (mut stream, _) = listener.accept().unwrap();
+                lines.extend(line_within(&stream, Duration::from_secs(5)));
+                stream.write_all(format!("{reply}\n").as_bytes()).unwrap();
+            }
+            lines
+        })
+    }
+
+    #[test]
+    fn a_verb_fails_at_once_on_a_socket_whose_daemon_did_not_stop() {
+        let path = refusing("crashed");
+        let started = Instant::now();
+
+        let reply = call_at(&path, "hello", Duration::from_secs(2), RESTART, false);
+
+        assert!(reply.is_err_and(|error| error.starts_with(NO_DAEMON)));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_verb_waits_for_a_missing_socket_while_its_stopped_daemon_restarts() {
+        let path = refusing("restarting");
+        fs::remove_file(&path).unwrap();
+        fs::write(stopping_path(&path), "").unwrap();
+        let daemon = answering(&path, Duration::from_secs(1), &["done"]);
+
+        let reply = call_at(&path, "hello", Duration::from_secs(2), RESTART, false);
+
+        assert_eq!(reply, Ok("done".to_owned()));
+        assert_eq!(daemon.join().unwrap(), ["hello\n"]);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_line_a_stop_did_not_apply_goes_to_the_next_daemon() {
+        let path = refusing("not-applied");
+        fs::write(stopping_path(&path), "").unwrap();
+        let refused: &'static str =
+            Box::leak(format!("{{\"Err\":\"{NOT_APPLIED}\"}}").into_boxed_str());
+        let daemon = answering(
+            &path,
+            Duration::ZERO,
+            Box::leak(Box::new([refused, "done"])),
+        );
+
+        let reply = call_at(&path, "hello", Duration::from_secs(2), RESTART, false);
+
+        assert_eq!(reply, Ok("done".to_owned()));
+        assert_eq!(daemon.join().unwrap(), ["hello\n", "hello\n"]);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
 
     #[test]
     fn a_command_that_answers_more_than_a_pipe_holds_while_it_reads_still_ends() {
@@ -3413,6 +3724,7 @@ mod tests {
     #[test]
     fn a_call_through_a_restart_has_its_whole_wait_after_a_late_connect() {
         let path = refusing("late");
+        fs::write(stopping_path(&path), "").unwrap();
         let daemon = {
             let path = path.clone();
             std::thread::spawn(move || {
@@ -3430,7 +3742,7 @@ mod tests {
             })
         };
 
-        let reply = call_at(&path, "hello", Duration::from_secs(2), RESTART);
+        let reply = call_at(&path, "hello", Duration::from_secs(2), RESTART, false);
 
         assert_eq!(reply, Ok("done".to_owned()));
         assert_eq!(daemon.join().unwrap().as_deref(), Some("hello\n"));
@@ -3442,7 +3754,13 @@ mod tests {
         let path = refusing("refused");
         let started = Instant::now();
 
-        let reply = call_at(&path, "hello", Duration::from_secs(2), Duration::ZERO);
+        let reply = call_at(
+            &path,
+            "hello",
+            Duration::from_secs(2),
+            Duration::ZERO,
+            false,
+        );
 
         assert!(
             reply

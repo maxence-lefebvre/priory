@@ -464,7 +464,7 @@ fn serve(
 /// copies, and prints nothing.
 fn upgrade_probe(dir: &Path) -> Result<(), String> {
     let factory = load(dir).ok_or("the factory does not load")?;
-    drop(state::open()?);
+    drop(state::migrate()?);
     priory_intake::log::open(factory.log())
         .map(drop)
         .map_err(|error| error.to_string())
@@ -2920,6 +2920,11 @@ fn acquire(args: &[OsString], lease: bool) -> ExitCode {
     let began = Instant::now();
     let deadline = began + timeout;
     let (mut grant, mut said, mut sent) = (None, String::new(), false);
+    // A restart's wait counts against `--timeout` too.
+    let through_restart = |home: &Path, line: &str, wait: Duration| {
+        let left = deadline.saturating_duration_since(Instant::now());
+        runtime::call_retrying(home, line, wait, left)
+    };
     // The daemon keeps a waiting grant while this process lives, so a lost reply or a daemon
     // restart only delays the next poll of the same grant.
     let grant = loop {
@@ -2929,11 +2934,9 @@ fn acquire(args: &[OsString], lease: bool) -> ExitCode {
                     grant,
                     waited: gives_up.then(|| began.elapsed().as_secs()),
                 },
-                runtime::call_through_restart,
+                through_restart,
             ),
-            // Until a daemon took the request, none may be coming back: fail at once.
-            None if !sent => call(&acquire, runtime::call),
-            None => call(&acquire, runtime::call_through_restart),
+            None => call(&acquire, through_restart),
         };
         sent |= !matches!(&asked, Err(error) if error.starts_with(runtime::NO_DAEMON));
         let reply = match asked {
@@ -3172,7 +3175,7 @@ fn gate(gate: &Gate) -> Result<String, String> {
 /// Sends `gate` to the daemon with `send` and returns its reply, or why none came.
 fn call(
     gate: &Gate,
-    send: fn(&Path, &str, Duration) -> Result<String, String>,
+    send: impl Fn(&Path, &str, Duration) -> Result<String, String>,
 ) -> Result<Result<String, String>, String> {
     let line = serde_json::to_string(gate).expect("a gate message serializes");
     let reply = send(&runtime::home(), &line, runtime::REPLY)?;
@@ -3191,7 +3194,7 @@ fn project_gate() -> ExitCode {
     };
     let call = |line: &proof::Line| {
         let line = serde_json::to_string(line).expect("a gate line serializes");
-        runtime::call(&runtime::home(), &line, runtime::REPLY).and_then(|reply| {
+        runtime::call_through_restart(&runtime::home(), &line, runtime::REPLY).and_then(|reply| {
             serde_json::from_str::<Result<String, String>>(&reply)
                 .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
         })
@@ -3347,8 +3350,8 @@ fn evidence_add(file: &str, caption: &str) -> ExitCode {
         Err(error) => return exit("evidence add", Err(format!("{file}: {error}"))),
     };
     let line = json!({ "evidence": evidence::Add { session, file, caption: caption.to_owned() } });
-    let sent =
-        runtime::call(&runtime::home(), &line.to_string(), runtime::REPLY).and_then(|reply| {
+    let sent = runtime::call_through_restart(&runtime::home(), &line.to_string(), runtime::REPLY)
+        .and_then(|reply| {
             serde_json::from_str::<Result<String, String>>(&reply)
                 .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
         });
@@ -3436,7 +3439,7 @@ fn answer(mut args: Vec<String>) -> ExitCode {
 }
 
 /// Another runner's ask as this machine's mirror holds it, refused when the mirror shows it closed
-/// or at another revision, for one that `answers` it or dismisses it. An ask the mirror lacks, or a machine without a state file, goes to its
+/// or at another revision, for one that `answers` it or dismisses it. An ask the mirror lacks, or a machine whose state file `state::current` does not open, goes to its
 /// runner unchecked, which checks it again anyway.
 fn remote_ask(
     runner: &str,
@@ -3444,7 +3447,7 @@ fn remote_ask(
     revision: i64,
     answers: bool,
 ) -> Result<Option<serde_json::Value>, String> {
-    let Ok(db) = state::open() else {
+    let Some(db) = state::current() else {
         return Ok(None);
     };
     let mirrored = runners::mirrored(&db, runner, ask).map_err(|error| error.to_string())?;
@@ -3458,10 +3461,10 @@ fn remote_ask(
 }
 
 /// The generation to send with an action on runner `runner`'s task of `key`: `generation`, checked
-/// against this machine's claims, else the one they hold. A machine without a state file sends the
+/// against this machine's claims, else the one they hold. A machine whose state file `state::current` does not open sends the
 /// one the person named unchecked, which the runner checks again anyway.
 fn remote_generation(runner: &str, key: &str, generation: Option<i64>) -> Result<i64, String> {
-    let Ok(db) = state::open() else {
+    let Some(db) = state::current() else {
         return generation.ok_or_else(|| {
             format!("this machine knows no generation of task {runner}:{key}: pass --generation N")
         });
@@ -3699,7 +3702,15 @@ fn ask_id(ask: &str) -> Result<i64, String> {
     {
         return Ok(id);
     }
-    tools::ask_named(&state::open()?, ask)
+    // Another runner's `RUNNER:N` goes to it unchecked when this state file does not open at once.
+    let remote = ask
+        .split_once(':')
+        .is_some_and(|(_, id)| id.parse::<i64>().is_ok());
+    let db = match remote {
+        true => state::current().ok_or_else(|| format!("no ask {ask} on this machine"))?,
+        false => state::open()?,
+    };
+    tools::ask_named(&db, ask)
 }
 
 /// Stores or revises an ask from a session Priory did not start, from Fleet's JSON shape.
@@ -4323,10 +4334,11 @@ fn drop_waiting(factory: &factory::Factory, key: &str) -> Result<String, String>
 
 /// Sends `line` to the daemon and prints its reply.
 fn send(verb: &str, line: &str) -> ExitCode {
-    let reply = runtime::call(&runtime::home(), line, runtime::REPLY).and_then(|reply| {
-        serde_json::from_str::<Result<String, String>>(&reply)
-            .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
-    });
+    let reply =
+        runtime::call_through_restart(&runtime::home(), line, runtime::REPLY).and_then(|reply| {
+            serde_json::from_str::<Result<String, String>>(&reply)
+                .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
+        });
     match reply {
         Ok(text) => {
             println!("{text}");

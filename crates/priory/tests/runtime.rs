@@ -2260,6 +2260,35 @@ fn a_signal_the_daemon_dies_holding_is_spooled_for_the_next_daemon() {
 }
 
 #[test]
+fn a_signal_a_stopping_daemon_did_not_apply_is_spooled_for_the_next_daemon() {
+    let setup = Setup::new("stop-not-applied");
+    fs::create_dir_all(setup.dir.join("home")).unwrap();
+    fs::create_dir_all(setup.socket().parent().unwrap()).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(setup.socket()).unwrap();
+    let daemon = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(&stream), &mut line).unwrap();
+        let reply = json!({ "Err": priory_runtime::runtime::NOT_APPLIED });
+        std::io::Write::write_all(&mut stream, format!("{reply}\n").as_bytes()).unwrap();
+        line
+    });
+
+    let mut hook = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args(["hook", "Stop"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::io::Write::write_all(&mut hook.stdin.take().unwrap(), br#"{"session_id":"s1"}"#).unwrap();
+    assert!(hook.wait().unwrap().success());
+    let sent = daemon.join().unwrap();
+
+    let spool = fs::read_to_string(setup.dir.join("home/signals.spool")).unwrap_or_default();
+    assert_eq!(spool, sent);
+}
+
+#[test]
 fn a_daemon_started_while_a_dead_daemons_lock_lingers_waits_for_it() {
     let mut setup = Setup::new("lingering-lock");
     fs::create_dir_all(setup.dir.join("home")).unwrap();
@@ -10343,6 +10372,9 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
     )
     .unwrap();
     drop(db);
+    let factory = setup.dir.join("factory");
+    let migrated = setup.priory(&["upgrade", "probe", factory.to_str().unwrap()]);
+    assert!(migrated.status.success(), "{migrated:?}");
 
     let asks = setup.rows("asks");
 
@@ -17795,12 +17827,14 @@ fn a_holder_killed_before_the_daemon_takes_the_command_leaves_no_command_running
 #[test]
 fn without_a_daemon_the_command_fails_fast_and_never_runs() {
     let setup = Setup::new("gate-no-daemon");
+    let start = Instant::now();
 
     let done = acquire(&setup, "1", "echo ran > ran")
         .wait_with_output()
         .unwrap();
 
     assert_eq!(done.status.code(), Some(125));
+    assert!(start.elapsed() < Duration::from_secs(2));
     let stderr = String::from_utf8_lossy(&done.stderr);
     assert!(
         stderr.contains("no priory daemon listens") && stderr.contains("the command did not run"),
@@ -17946,6 +17980,37 @@ fn a_stale_socket_fails_the_command_fast_and_it_never_runs() {
 
     assert_eq!(done.status.code(), Some(125));
     assert!(start.elapsed() < Duration::from_secs(10));
+    assert!(!setup.dir.join("fake/ran").exists());
+}
+
+#[test]
+fn an_acquire_waits_for_a_restarting_daemon_no_longer_than_its_timeout() {
+    let setup = Setup::new("gate-restart-timeout");
+    fs::create_dir_all(setup.socket().parent().unwrap()).unwrap();
+    drop(std::os::unix::net::UnixListener::bind(setup.socket()).unwrap());
+    // What a daemon's stop leaves beside its socket.
+    fs::write(setup.socket().with_extension("stopping"), "").unwrap();
+    let start = Instant::now();
+
+    let done = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args(["memory", "acquire", "--gb", "1", "--timeout", "2s", "--"])
+        .args(["sh", "-c", "echo ran > ran"])
+        .current_dir(setup.dir.join("fake"))
+        .output()
+        .unwrap();
+
+    assert_eq!(done.status.code(), Some(125));
+    assert!(
+        (2..5).contains(&start.elapsed().as_secs()),
+        "{:?}",
+        start.elapsed()
+    );
+    let stderr = String::from_utf8_lossy(&done.stderr);
+    assert!(
+        stderr.contains("the daemon is restarting: waiting up to 2 s"),
+        "{stderr}"
+    );
     assert!(!setup.dir.join("fake/ran").exists());
 }
 
@@ -19665,6 +19730,215 @@ fn a_tool_call_made_while_the_daemon_restarts_succeeds_once_it_is_back() {
     let ((text, error), _kept) = call.join().unwrap();
     let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap_or_default();
     assert!(!error, "{text}\ndaemon: {log}");
+}
+
+/// Sends `signal` to the process `pid`.
+fn send_signal(pid: u32, signal: &str) {
+    let sent = harness::command("kill")
+        .args([&format!("-{signal}"), &pid.to_string()])
+        .status();
+    assert!(sent.unwrap().success());
+}
+
+#[test]
+fn a_tool_call_in_flight_when_the_daemon_stops_is_answered() {
+    use std::os::unix::process::ExitStatusExt;
+    let mut setup = Setup::new("stop-in-flight");
+    setup.calls(&[]);
+    setup.publish(&requested(42));
+    setup.start();
+    let session = live_session(&setup, "1");
+    let mut kept = Kept::new(&setup, &session);
+    let mut daemon = setup.daemon.take().unwrap();
+    send_signal(daemon.id(), "STOP");
+    let call = std::thread::spawn(move || kept.call("tldr", json!({ "text": "At the stop." })));
+    std::thread::sleep(Duration::from_secs(1));
+    send_signal(daemon.id(), "TERM");
+    send_signal(daemon.id(), "CONT");
+
+    let (text, error) = call.join().unwrap();
+
+    assert!(!error, "{text}");
+    // systemd and an upgrade's helper read this as a stop, not as a failure.
+    assert_eq!(daemon.wait().unwrap().signal(), Some(15));
+}
+
+#[test]
+fn a_second_sigterm_ends_a_stopping_daemon_at_once() {
+    use std::io::Write;
+    use std::os::unix::process::ExitStatusExt;
+    let mut setup = Setup::new("stop-twice");
+    setup.start();
+    listening(&setup);
+    let mut daemon = setup.daemon.take().unwrap();
+    // A line never ended holds the stop for 2 seconds.
+    let mut unended = std::os::unix::net::UnixStream::connect(setup.socket()).unwrap();
+    unended.write_all(b"{").unwrap();
+    send_signal(daemon.id(), "TERM");
+    let stopping = setup.socket().with_extension("stopping");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !stopping.exists() {
+        assert!(Instant::now() < deadline, "the daemon never stopped");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let second = Instant::now();
+
+    send_signal(daemon.id(), "TERM");
+
+    assert_eq!(daemon.wait().unwrap().signal(), Some(15));
+    assert!(
+        second.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        second.elapsed()
+    );
+}
+
+/// Sends `line` on the daemon's socket once a daemon other than a crashed one takes it, and
+/// returns the connection, whose reply is the daemon's.
+fn taken(setup: &Setup, line: &serde_json::Value) -> std::os::unix::net::UnixStream {
+    use std::io::Write;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(setup.socket()) {
+            stream.write_all(format!("{line}\n").as_bytes()).unwrap();
+            return stream;
+        }
+        assert!(Instant::now() < deadline, "the daemon never listened");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn reply_of(stream: &std::os::unix::net::UnixStream) -> String {
+    use std::io::BufRead;
+    let mut reply = String::new();
+    std::io::BufReader::new(stream)
+        .read_line(&mut reply)
+        .unwrap();
+    reply
+}
+
+#[test]
+fn a_stop_during_a_hung_tmux_call_skips_the_rest_of_the_tick() {
+    use std::os::unix::process::ExitStatusExt;
+    // Two live runs, as `Setup::running` makes one: each costs `tend` a `list-panes`.
+    let mut setup = Setup::new("stop-mid-tick");
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    setup.crash();
+    for session in ["=priory-1:", "=priory-2:"] {
+        setup.tmux_out(&["respawn-pane", "-k", "-t", session, "sleep 600"]);
+    }
+    setup.start();
+    listening(&setup);
+    std::thread::sleep(Duration::from_secs(2));
+    // Each later `list-panes` hangs 60 seconds, so each one the tick reaches costs that.
+    fs::write(setup.dir.join("fake/tmux-hang-panes"), "").unwrap();
+    std::thread::sleep(Duration::from_secs(3));
+    let mut daemon = setup.daemon.take().unwrap();
+    let stop = Instant::now();
+
+    send_signal(daemon.id(), "TERM");
+
+    assert_eq!(daemon.wait().unwrap().signal(), Some(15));
+    assert!(
+        stop.elapsed() < Duration::from_secs(80),
+        "{:?}",
+        stop.elapsed()
+    );
+    fs::remove_file(setup.dir.join("fake/tmux-hang-panes")).unwrap();
+}
+
+#[test]
+fn a_stop_before_a_runners_first_tick_applies_no_line_it_took() {
+    use std::os::unix::process::ExitStatusExt;
+    let mut setup = Setup::running("stop-first-tick");
+    for (path, content) in [
+        ("factory/runners/a.toml", "platform = { os = \"linux\" }\n"),
+        ("factory/runners/b.toml", "platform = { os = \"linux\" }\n"),
+        ("proc/sys/kernel/hostname", "a\n"),
+        // The start checks the live run's pane before its first tick, and hangs there.
+        ("fake/tmux-hang-panes", ""),
+    ] {
+        let file = setup.dir.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, content).unwrap();
+    }
+    setup.start();
+    let todo = json!({ "todo": { "add": { "text": "Before the first tick." } } });
+    let stream = taken(&setup, &todo);
+    let mut daemon = setup.daemon.take().unwrap();
+
+    send_signal(daemon.id(), "TERM");
+
+    let reply = reply_of(&stream);
+    assert!(
+        reply.contains(priory_runtime::runtime::NOT_APPLIED),
+        "{reply}"
+    );
+    assert_eq!(daemon.wait().unwrap().signal(), Some(15));
+    fs::remove_file(setup.dir.join("fake/tmux-hang-panes")).unwrap();
+    let listed = setup.priory(&["todo", "list", "--json"]);
+    assert_eq!(String::from_utf8_lossy(&listed.stdout).trim(), "[]");
+}
+
+#[test]
+fn a_stop_while_a_runner_reads_the_log_applies_no_line_it_took() {
+    use std::io::{BufRead, Write};
+    use std::os::unix::process::ExitStatusExt;
+    let mut a = runner("stop-catch-up", "a", None);
+    let bus = a.bus();
+    for n in 0..6000 {
+        let noise = Message::new("test.noise", json!({ "n": n }));
+        bus.publish(OUTPUT, &noise).unwrap();
+    }
+    a.start();
+    listening(&a);
+    let mut daemon = a.daemon.take().unwrap();
+    send_signal(daemon.id(), "STOP");
+    // Connected and sent before the stop, so the daemon takes it.
+    let mut taken = std::os::unix::net::UnixStream::connect(a.socket()).unwrap();
+    let todo = json!({ "todo": { "add": { "text": "Through the stop." } } });
+    taken.write_all(format!("{todo}\n").as_bytes()).unwrap();
+    send_signal(daemon.id(), "TERM");
+    send_signal(daemon.id(), "CONT");
+
+    let mut reply = String::new();
+    std::io::BufReader::new(&taken)
+        .read_line(&mut reply)
+        .unwrap();
+
+    assert!(
+        reply.contains(priory_runtime::runtime::NOT_APPLIED),
+        "{reply}"
+    );
+    assert_eq!(daemon.wait().unwrap().signal(), Some(15));
+    let listed = a.priory(&["todo", "list", "--json"]);
+    assert_eq!(String::from_utf8_lossy(&listed.stdout).trim(), "[]");
+}
+
+#[test]
+fn a_verb_run_while_the_daemon_restarts_waits_for_it() {
+    let mut setup = Setup::new("verb-restart");
+    setup.calls(&[]);
+    setup.publish(&requested(42));
+    setup.start();
+    live_session(&setup, "1");
+    let mut daemon = setup.daemon.take().unwrap();
+    send_signal(daemon.id(), "TERM");
+    daemon.wait().unwrap();
+    let mut say = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args(["say", "1", "Through the restart."])
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(say.try_wait().unwrap().is_none());
+    setup.start();
+
+    assert!(say.wait().unwrap().success());
 }
 
 #[test]
