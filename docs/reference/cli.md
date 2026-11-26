@@ -49,7 +49,9 @@ does and the page that describes it.
   publish. It publishes nothing and posts no report. It fails for a trigger without `[pre]`. See
   [pre.md](../intake/pre.md).
 - `priory daemon [DIR] [--once]`: routes events to tasks and runs agents. `--once` routes what is
-  pending, grades the tasks a `held` scorer is due to grade, starts no run and exits. See [the daemon](../daemon/README.md).
+  pending, grades the tasks a `held` scorer is due to grade, starts no run and exits. On a state of an
+  older schema it takes the daemon's lock and migrates it, so it is refused while a daemon runs.
+  Otherwise it runs beside a running daemon. See [the daemon](../daemon/README.md).
 - `priory daemon --view-only [DIR]`: on a machine with no runner file, mirrors every runner's asks
   and tasks, serves them and runs nothing. See
   [runners.md](../daemon/runners.md#a-machine-that-only-views).
@@ -158,8 +160,10 @@ a group. `PRIORY_METRICS` replaces that list for one process, such as `process,l
   lets the daemon answer eligible asks with their recommendation until it ends by itself. `TIME` is
   the next `HH:MM` in [`[autopilot] timezone`](factory.md#autopilot), or an RFC 3339 instant. Without
   an end, it ends at the next 08:00. The longest is 7 days, and the default level is `high`. `LANE`
-  reads `<team>/<theme>`. See
-  [waits.md](../daemon/waits.md#autopilot).
+  reads `<team>/<theme>`, and a task, done or not, a trigger or `lanes.toml` uses it: a rule, a
+  `[lane]` table, or the fallback for any team. Any other is refused. It is refused too when an `off`
+  was made after it, or the stored `off` is later than this machine's clock. On a view-only machine,
+  a failed publish changes nothing there. See [waits.md](../daemon/waits.md#autopilot).
 - `priory autopilot off [DIR]`: ends it here first, whatever the daemon, the factory or the log do.
   It then tells the other runners, and exits nonzero when it cannot: the factory does not load, this
   machine has no role in it, or a view-only machine's publish fails.

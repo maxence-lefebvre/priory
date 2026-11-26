@@ -46,12 +46,13 @@ the one CI uses.
 - Start any web view work from a design reviewed by a person before you write code.
 - After you change the web view's JavaScript, run `corepack pnpm install` once, then
   `corepack pnpm web:build`, and commit `crates/priory-core/web/dist/app.js` with your change. CI
-  fails on a stale bundle. [ADR 0004](docs/adr/0004-the-web-view-is-a-react-app-whose-built-bundle-is-committed.md)
+  fails on a stale bundle and on an oxlint warning, through `corepack pnpm web:check`. [ADR 0004](docs/adr/0004-the-web-view-is-a-react-app-whose-built-bundle-is-committed.md)
   says why the bundle is committed.
 - Check that a refresh keeps the page drawn: with the demo served, run
   `node scripts/demo/refresh.mjs DIR [CHROMIUM]`. It changes the demo's data while a page is open
-  and fails on a frame that lost a section, or the Say field's focus, text or caret, on a blank page or on a
-  stale draw. It needs the `sqlite3` command. Paste its output in the pull request, since CI has no
+  and fails on a frame that lost a section, or the Say field's focus, text or caret, on a blank page, on a
+  stale draw, or on a page that reads what it does not show. With `WEB=crates/priory-core/web` it
+  checks that folder's bundle and `app.css`, with no Rust build. It needs the `sqlite3` command. Paste its output in the pull request, since CI has no
   browser.
 - Follow [DESIGN.md](DESIGN.md) for tokens, components, states, touch and copy. Change it in the
   same pull request when the UI needs something it lacks.
@@ -59,7 +60,8 @@ the one CI uses.
   folder `DIR`: it seeds a scratch state and serves it on 127.0.0.1:7391 for 15 minutes. The seed
   holds the states a design review needs to reach: a live run, a command ask, a snoozed ask, a
   stalled queue's banner, a skipped check, a task with a brief and a plan, and that task's
-  answered asks, one answered by auto. In another
+  answered asks, one answered by auto. It also holds two reports: the newest has an open, an agreed
+  and an applied pick, and a thread. In another
   shell, run `PLAYWRIGHT=<path to playwright-core/index.mjs> node scripts/demo/shoot.mjs docs/images`.
   Keep each PNG under 400 KB.
 

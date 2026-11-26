@@ -87,7 +87,7 @@ macro_rules! undo_scheduled_sweeps {
 /// pending requests.
 macro_rules! undo_pre {
     () => {
-        concat!(undo_labels!(), undo_scheduled_sweeps!(), "ALTER TABLE asks DROP COLUMN confidence; ALTER TABLE asks DROP COLUMN rationale;
+        concat!(undo_labels!(), undo_scheduled_sweeps!(), "DROP TRIGGER IF EXISTS an_ended_task_withdraws_its_asks; ALTER TABLE asks DROP COLUMN confidence; ALTER TABLE asks DROP COLUMN rationale;
   ALTER TABLE tasks DROP COLUMN auto_answer; ALTER TABLE tasks DROP COLUMN added_by; DROP VIEW task_text; CREATE VIEW task_text AS SELECT tasks.id AS task,
     coalesce(json_extract(inbox.data, '$.title'), '') AS title,
     coalesce(json_extract(inbox.data, '$.text'), json_extract(inbox.data, '$.body'),
@@ -579,7 +579,10 @@ impl Drop for Setup {
 
 fn git(dir: &Path) -> Command {
     let mut command = harness::command("git");
-    command.current_dir(dir);
+    // Detached maintenance would outlive a commit and occupy the worktree.
+    command
+        .current_dir(dir)
+        .args(["-c", "maintenance.auto=false"]);
     command
 }
 
@@ -2254,6 +2257,35 @@ fn a_signal_the_daemon_dies_holding_is_spooled_for_the_next_daemon() {
 
     let spool = fs::read_to_string(setup.dir.join("home/signals.spool")).unwrap_or_default();
     assert_eq!(spool.lines().count(), 1, "{spool:?}");
+}
+
+#[test]
+fn a_signal_a_stopping_daemon_did_not_apply_is_spooled_for_the_next_daemon() {
+    let setup = Setup::new("stop-not-applied");
+    fs::create_dir_all(setup.dir.join("home")).unwrap();
+    fs::create_dir_all(setup.socket().parent().unwrap()).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(setup.socket()).unwrap();
+    let daemon = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(&stream), &mut line).unwrap();
+        let reply = json!({ "Err": priory_runtime::runtime::NOT_APPLIED });
+        std::io::Write::write_all(&mut stream, format!("{reply}\n").as_bytes()).unwrap();
+        line
+    });
+
+    let mut hook = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args(["hook", "Stop"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::io::Write::write_all(&mut hook.stdin.take().unwrap(), br#"{"session_id":"s1"}"#).unwrap();
+    assert!(hook.wait().unwrap().success());
+    let sent = daemon.join().unwrap();
+
+    let spool = fs::read_to_string(setup.dir.join("home/signals.spool")).unwrap_or_default();
+    assert_eq!(spool, sent);
 }
 
 #[test]
@@ -3960,7 +3992,7 @@ fn a_lane_window_that_opens_stops_no_running_task_and_shows_in_the_queue() {
     setup.publish(&requested_lane(42, "a/x"));
     setup.publish(&requested_lane(43, "a/x"));
     start_at(&mut setup, SATURDAY_10);
-    setup.until("tasks", |rows| with(rows, 4, "running") == 2);
+    setup.until("runs", |_| setup.replies().len() == 2);
     setup.crash();
 
     start_at(&mut setup, MONDAY_10);
@@ -9882,7 +9914,7 @@ fn an_answer_to_the_ask_of_a_cancelled_task_is_refused() {
     assert!(!answered.status.success());
     assert_eq!(
         String::from_utf8_lossy(&answered.stderr),
-        "priory answer: task 1 is dropped\n"
+        "priory answer: ask 1 was withdrawn when task 1 ended\n"
     );
     assert_eq!(setup.rows("tasks")[0][4], "dropped");
 }
@@ -10340,6 +10372,9 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
     )
     .unwrap();
     drop(db);
+    let factory = setup.dir.join("factory");
+    let migrated = setup.priory(&["upgrade", "probe", factory.to_str().unwrap()]);
+    assert!(migrated.status.success(), "{migrated:?}");
 
     let asks = setup.rows("asks");
 
@@ -12054,6 +12089,160 @@ fn a_green_check_counting_a_failure_wakes_the_agent_with_the_failed_check() {
     );
 }
 
+/// The run `id` of the check `gate` as an intake that counted each suite apart stored it.
+fn stored_gate(id: u64, conclusion: &str) -> Message {
+    let mut gate = check(id, 0);
+    gate.data["name"] = json!("gate");
+    gate.data["app"] = json!("github-actions");
+    gate.data["conclusion"] = json!(conclusion);
+    gate.data["failing"] = json!(6);
+    gate
+}
+
+/// As `gated`, with `checks` stored before the result.
+fn gated_after(mut setup: Setup, checks: &[Message]) -> Setup {
+    setup.calls(&[
+        wait(on_pull_7("review")),
+        passed_at(ABC),
+        json!({ "name": "result", "arguments": { "outcome": "quiet", "summary": "all quiet" } }),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.hold("hold-submit");
+    setup.publish(&reviewed());
+    setup.until("outbox", |rows| with(rows, 3, "attempted") == 1);
+    for check in checks {
+        setup.publish(check);
+    }
+    setup.until("inbox", |rows| rows.len() == 2 + checks.len());
+    setup.release("hold-submit");
+    setup.until("runs", |rows| rows.len() >= 2 && rows[1][7] == "asleep");
+    setup
+}
+
+fn superseded_gate() -> [Message; 3] {
+    [
+        stored_gate(1, "failure"),
+        stored_gate(2, "failure"),
+        stored_gate(3, "success"),
+    ]
+}
+
+#[test]
+fn a_red_check_a_later_run_of_it_superseded_wakes_no_agent_and_a_later_real_one_does() {
+    let setup = gated_after(Setup::new("gate-superseded"), &superseded_gate());
+    stays_asleep_after(&setup, 2);
+
+    setup.publish(&red_at(9, "lint", ABC));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    assert!(
+        typed[2].starts_with(&format!(
+            "wait 2 fired: check lint at {ABC} concluded failure\n"
+        )),
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn a_superseded_red_check_lets_the_merge_enter_the_step_after_it() {
+    let setup = gated_after(
+        Setup::with_workflow("after-merge-superseded", AFTER_MERGE),
+        &superseded_gate(),
+    );
+    stays_asleep_after(&setup, 2);
+
+    setup.publish(&closed());
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    let runs = setup.rows("runs");
+    assert_eq!(runs.len(), 3, "{runs:?}");
+    assert_eq!(runs[2][2], "watch");
+}
+
+#[test]
+fn a_red_check_of_one_workflow_fires_though_another_workflow_has_a_later_green_job_of_its_name() {
+    let of = |id: u64, conclusion: &str, workflow: u64| {
+        let mut check = stored_gate(id, conclusion);
+        check.data["origin"] = json!(format!("workflow:{workflow}:pull_request"));
+        check.data["failing"] = json!(1);
+        check
+    };
+    let checks = [of(1, "failure", 12), of(2, "success", 13)];
+    let setup = gated_after(Setup::new("gate-two-workflows"), &checks);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    assert!(
+        typed[2].starts_with(&format!(
+            "wait 2 fired: check gate at {ABC} concluded failure\n"
+        )),
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn a_red_check_stored_without_an_origin_fires_though_a_later_check_of_its_name_has_one() {
+    let mut green = stored_gate(2, "success");
+    green.data["origin"] = json!("workflow:13:pull_request");
+    green.data["failing"] = json!(1);
+    let checks = [stored_gate(1, "failure"), green];
+    let setup = gated_after(Setup::new("gate-no-origin"), &checks);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    assert!(
+        typed[2].starts_with(&format!(
+            "wait 2 fired: check gate at {ABC} concluded failure\n"
+        )),
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn a_red_check_a_later_run_skipped_fires() {
+    let of = |id: u64, conclusion: &str| {
+        let mut check = stored_gate(id, conclusion);
+        check.data["origin"] = json!("workflow:12:pull_request");
+        check.data["failing"] = json!(1);
+        check
+    };
+    let checks = [of(1, "failure"), of(2, "skipped")];
+    let setup = gated_after(Setup::new("gate-skipped"), &checks);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+}
+
+#[test]
+fn a_fix_that_fails_the_same_check_stops_the_loop_though_one_commit_has_a_superseded_red() {
+    let setup = gated("breaker-superseded");
+    setup.calls(&[passed_at(DEF), passed_at(FED)]);
+    setup.publish(&red_at(1, "test", ABC));
+    setup.until("runs", |rows| rows.len() == 3 && rows[2][7] == "asleep");
+    setup.publish(&red_at(2, "lint", DEF));
+    setup.until("runs", |rows| rows.len() == 4 && rows[3][7] == "asleep");
+    let of_unit = |id: u64, conclusion: &str| {
+        let mut check = red_at(id, "unit", FED);
+        check.data["conclusion"] = json!(conclusion);
+        check.data["failing"] = json!(0);
+        check.data["pending"] = json!(1);
+        check
+    };
+    // The green rerun is stored first, so the older red is superseded when its event comes.
+    setup.publish(&of_unit(4, "success"));
+    setup.publish(&of_unit(3, "failure"));
+
+    setup.publish(&red_at(5, "lint", FED));
+
+    setup.until("asks", |rows| rows.len() == 1);
+    assert_eq!(
+        open_asks(&setup)[0]["title"],
+        "ci-fix-exhausted: lint (failure)"
+    );
+}
+
 #[test]
 fn green_checks_at_the_result_commit_do_not_finish_the_task_when_the_head_moved_before_it() {
     let mut setup = Setup::new("gate-moved-before");
@@ -13016,6 +13205,8 @@ impl Setup {
         let output = self
             .command("git")
             .current_dir(dir)
+            // Detached maintenance would outlive a commit and occupy the worktree.
+            .args(["-c", "maintenance.auto=false"])
             .args(args)
             .output()
             .unwrap();
@@ -15162,9 +15353,9 @@ fn an_answer_to_the_ask_of_an_earlier_generation_is_refused() {
     assert!(!answered.status.success());
     assert_eq!(
         String::from_utf8_lossy(&answered.stderr),
-        "priory answer: ask 1 was withdrawn when task 1 was revived\n"
+        "priory answer: ask 1 was withdrawn when task 1 ended\n"
     );
-    assert_eq!(withdrawn_reasons(&setup, "asks"), ["revived"]);
+    assert_eq!(withdrawn_reasons(&setup, "asks"), ["task-ended"]);
     assert!(setup.rows("asks").is_empty());
     assert_eq!(setup.rows("tasks")[0][4], "running");
 }
@@ -17679,12 +17870,14 @@ fn a_holder_killed_before_the_daemon_takes_the_command_leaves_no_command_running
 #[test]
 fn without_a_daemon_the_command_fails_fast_and_never_runs() {
     let setup = Setup::new("gate-no-daemon");
+    let start = Instant::now();
 
     let done = acquire(&setup, "1", "echo ran > ran")
         .wait_with_output()
         .unwrap();
 
     assert_eq!(done.status.code(), Some(125));
+    assert!(start.elapsed() < Duration::from_secs(2));
     let stderr = String::from_utf8_lossy(&done.stderr);
     assert!(
         stderr.contains("no priory daemon listens") && stderr.contains("the command did not run"),
@@ -17830,6 +18023,37 @@ fn a_stale_socket_fails_the_command_fast_and_it_never_runs() {
 
     assert_eq!(done.status.code(), Some(125));
     assert!(start.elapsed() < Duration::from_secs(10));
+    assert!(!setup.dir.join("fake/ran").exists());
+}
+
+#[test]
+fn an_acquire_waits_for_a_restarting_daemon_no_longer_than_its_timeout() {
+    let setup = Setup::new("gate-restart-timeout");
+    fs::create_dir_all(setup.socket().parent().unwrap()).unwrap();
+    drop(std::os::unix::net::UnixListener::bind(setup.socket()).unwrap());
+    // What a daemon's stop leaves beside its socket.
+    fs::write(setup.socket().with_extension("stopping"), "").unwrap();
+    let start = Instant::now();
+
+    let done = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args(["memory", "acquire", "--gb", "1", "--timeout", "2s", "--"])
+        .args(["sh", "-c", "echo ran > ran"])
+        .current_dir(setup.dir.join("fake"))
+        .output()
+        .unwrap();
+
+    assert_eq!(done.status.code(), Some(125));
+    assert!(
+        (2..5).contains(&start.elapsed().as_secs()),
+        "{:?}",
+        start.elapsed()
+    );
+    let stderr = String::from_utf8_lossy(&done.stderr);
+    assert!(
+        stderr.contains("the daemon is restarting: waiting up to 2 s"),
+        "{stderr}"
+    );
     assert!(!setup.dir.join("fake/ran").exists());
 }
 
@@ -18456,6 +18680,50 @@ fn a_sweep_keeps_a_done_task_worktree_with_a_mount_and_takes_it_once_unmounted()
     setup.start();
     setup.removed(2);
     assert!(outside.join("keep").exists());
+}
+
+#[test]
+fn a_mount_in_a_worktree_does_not_keep_its_teardown_from_running() {
+    if !mounts_allowed() {
+        return;
+    }
+    let mut setup = Setup::ended("teardown-mount", 2);
+    ignore_target(&setup);
+    let point = setup.worktree(2).join("target/mnt");
+    let (exe, outside) = mounting(&setup, &point);
+    setup.recipes(r#"teardown = { shell = "echo $PRIORY_TASK >> $FAKE_DIR/torn" }"#);
+    setup.work_on(1);
+    setup.push(1);
+    setup.merge(1);
+    setup.start_as(&exe);
+    setup.removed(1);
+
+    let reason = format!("{} is a mount", point.display());
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while setup.stays(2).as_ref() != Some(&reason) {
+        assert!(Instant::now() < deadline, "{:?}", setup.stays(2));
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(setup.faked("torn").lines().any(|task| task == "2"));
+    assert!(outside.join("keep").exists());
+}
+
+#[test]
+fn a_command_scorer_that_deletes_its_checkout_leaves_no_entry() {
+    let (setup, _) = committed_task("score-deleted");
+    let script = "#!/bin/sh\nrm -rf \"$PWD\"\n";
+    command_scorer(&setup, "deletes", "1m", script);
+
+    scores(&setup, &[]);
+
+    let listed = harness::command("git")
+        .arg("-C")
+        .arg(setup.clone())
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .unwrap();
+    let listed = String::from_utf8_lossy(&listed.stdout);
+    assert!(!listed.contains("/scores/"), "{listed}");
 }
 
 #[test]
@@ -19507,6 +19775,215 @@ fn a_tool_call_made_while_the_daemon_restarts_succeeds_once_it_is_back() {
     assert!(!error, "{text}\ndaemon: {log}");
 }
 
+/// Sends `signal` to the process `pid`.
+fn send_signal(pid: u32, signal: &str) {
+    let sent = harness::command("kill")
+        .args([&format!("-{signal}"), &pid.to_string()])
+        .status();
+    assert!(sent.unwrap().success());
+}
+
+#[test]
+fn a_tool_call_in_flight_when_the_daemon_stops_is_answered() {
+    use std::os::unix::process::ExitStatusExt;
+    let mut setup = Setup::new("stop-in-flight");
+    setup.calls(&[]);
+    setup.publish(&requested(42));
+    setup.start();
+    let session = live_session(&setup, "1");
+    let mut kept = Kept::new(&setup, &session);
+    let mut daemon = setup.daemon.take().unwrap();
+    send_signal(daemon.id(), "STOP");
+    let call = std::thread::spawn(move || kept.call("tldr", json!({ "text": "At the stop." })));
+    std::thread::sleep(Duration::from_secs(1));
+    send_signal(daemon.id(), "TERM");
+    send_signal(daemon.id(), "CONT");
+
+    let (text, error) = call.join().unwrap();
+
+    assert!(!error, "{text}");
+    // systemd and an upgrade's helper read this as a stop, not as a failure.
+    assert_eq!(daemon.wait().unwrap().signal(), Some(15));
+}
+
+#[test]
+fn a_second_sigterm_ends_a_stopping_daemon_at_once() {
+    use std::io::Write;
+    use std::os::unix::process::ExitStatusExt;
+    let mut setup = Setup::new("stop-twice");
+    setup.start();
+    listening(&setup);
+    let mut daemon = setup.daemon.take().unwrap();
+    // A line never ended holds the stop for 2 seconds.
+    let mut unended = std::os::unix::net::UnixStream::connect(setup.socket()).unwrap();
+    unended.write_all(b"{").unwrap();
+    send_signal(daemon.id(), "TERM");
+    let stopping = setup.socket().with_extension("stopping");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !stopping.exists() {
+        assert!(Instant::now() < deadline, "the daemon never stopped");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let second = Instant::now();
+
+    send_signal(daemon.id(), "TERM");
+
+    assert_eq!(daemon.wait().unwrap().signal(), Some(15));
+    assert!(
+        second.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        second.elapsed()
+    );
+}
+
+/// Sends `line` on the daemon's socket once a daemon other than a crashed one takes it, and
+/// returns the connection, whose reply is the daemon's.
+fn taken(setup: &Setup, line: &serde_json::Value) -> std::os::unix::net::UnixStream {
+    use std::io::Write;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(setup.socket()) {
+            stream.write_all(format!("{line}\n").as_bytes()).unwrap();
+            return stream;
+        }
+        assert!(Instant::now() < deadline, "the daemon never listened");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn reply_of(stream: &std::os::unix::net::UnixStream) -> String {
+    use std::io::BufRead;
+    let mut reply = String::new();
+    std::io::BufReader::new(stream)
+        .read_line(&mut reply)
+        .unwrap();
+    reply
+}
+
+#[test]
+fn a_stop_during_a_hung_tmux_call_skips_the_rest_of_the_tick() {
+    use std::os::unix::process::ExitStatusExt;
+    // Two live runs, as `Setup::running` makes one: each costs `tend` a `list-panes`.
+    let mut setup = Setup::new("stop-mid-tick");
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    setup.crash();
+    for session in ["=priory-1:", "=priory-2:"] {
+        setup.tmux_out(&["respawn-pane", "-k", "-t", session, "sleep 600"]);
+    }
+    setup.start();
+    listening(&setup);
+    std::thread::sleep(Duration::from_secs(2));
+    // Each later `list-panes` hangs 60 seconds, so each one the tick reaches costs that.
+    fs::write(setup.dir.join("fake/tmux-hang-panes"), "").unwrap();
+    std::thread::sleep(Duration::from_secs(3));
+    let mut daemon = setup.daemon.take().unwrap();
+    let stop = Instant::now();
+
+    send_signal(daemon.id(), "TERM");
+
+    assert_eq!(daemon.wait().unwrap().signal(), Some(15));
+    assert!(
+        stop.elapsed() < Duration::from_secs(80),
+        "{:?}",
+        stop.elapsed()
+    );
+    fs::remove_file(setup.dir.join("fake/tmux-hang-panes")).unwrap();
+}
+
+#[test]
+fn a_stop_before_a_runners_first_tick_applies_no_line_it_took() {
+    use std::os::unix::process::ExitStatusExt;
+    let mut setup = Setup::running("stop-first-tick");
+    for (path, content) in [
+        ("factory/runners/a.toml", "platform = { os = \"linux\" }\n"),
+        ("factory/runners/b.toml", "platform = { os = \"linux\" }\n"),
+        ("proc/sys/kernel/hostname", "a\n"),
+        // The start checks the live run's pane before its first tick, and hangs there.
+        ("fake/tmux-hang-panes", ""),
+    ] {
+        let file = setup.dir.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, content).unwrap();
+    }
+    setup.start();
+    let todo = json!({ "todo": { "add": { "text": "Before the first tick." } } });
+    let stream = taken(&setup, &todo);
+    let mut daemon = setup.daemon.take().unwrap();
+
+    send_signal(daemon.id(), "TERM");
+
+    let reply = reply_of(&stream);
+    assert!(
+        reply.contains(priory_runtime::runtime::NOT_APPLIED),
+        "{reply}"
+    );
+    assert_eq!(daemon.wait().unwrap().signal(), Some(15));
+    fs::remove_file(setup.dir.join("fake/tmux-hang-panes")).unwrap();
+    let listed = setup.priory(&["todo", "list", "--json"]);
+    assert_eq!(String::from_utf8_lossy(&listed.stdout).trim(), "[]");
+}
+
+#[test]
+fn a_stop_while_a_runner_reads_the_log_applies_no_line_it_took() {
+    use std::io::{BufRead, Write};
+    use std::os::unix::process::ExitStatusExt;
+    let mut a = runner("stop-catch-up", "a", None);
+    let bus = a.bus();
+    for n in 0..6000 {
+        let noise = Message::new("test.noise", json!({ "n": n }));
+        bus.publish(OUTPUT, &noise).unwrap();
+    }
+    a.start();
+    listening(&a);
+    let mut daemon = a.daemon.take().unwrap();
+    send_signal(daemon.id(), "STOP");
+    // Connected and sent before the stop, so the daemon takes it.
+    let mut taken = std::os::unix::net::UnixStream::connect(a.socket()).unwrap();
+    let todo = json!({ "todo": { "add": { "text": "Through the stop." } } });
+    taken.write_all(format!("{todo}\n").as_bytes()).unwrap();
+    send_signal(daemon.id(), "TERM");
+    send_signal(daemon.id(), "CONT");
+
+    let mut reply = String::new();
+    std::io::BufReader::new(&taken)
+        .read_line(&mut reply)
+        .unwrap();
+
+    assert!(
+        reply.contains(priory_runtime::runtime::NOT_APPLIED),
+        "{reply}"
+    );
+    assert_eq!(daemon.wait().unwrap().signal(), Some(15));
+    let listed = a.priory(&["todo", "list", "--json"]);
+    assert_eq!(String::from_utf8_lossy(&listed.stdout).trim(), "[]");
+}
+
+#[test]
+fn a_verb_run_while_the_daemon_restarts_waits_for_it() {
+    let mut setup = Setup::new("verb-restart");
+    setup.calls(&[]);
+    setup.publish(&requested(42));
+    setup.start();
+    live_session(&setup, "1");
+    let mut daemon = setup.daemon.take().unwrap();
+    send_signal(daemon.id(), "TERM");
+    daemon.wait().unwrap();
+    let mut say = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args(["say", "1", "Through the restart."])
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(say.try_wait().unwrap().is_none());
+    setup.start();
+
+    assert!(say.wait().unwrap().success());
+}
+
 #[test]
 fn a_tool_call_is_answered_while_a_search_waits_on_its_embedder() {
     let mut setup = Setup::new("mcp-slow-search");
@@ -20321,6 +20798,44 @@ fn a_removed_review_request_drops_its_running_task_and_ends_its_run() {
     assert_eq!(tasks[0][7], "review request removed");
     assert_eq!(setup.rows("runs")[0][7], "cancelled");
     setup.gone("priory-1");
+}
+
+#[test]
+fn a_removed_review_request_withdraws_its_tasks_open_agent_ask() {
+    let mut setup = reviews("review-withdrawn-ask");
+    setup.calls(&[ask()]);
+    setup.publish_all(&review_request(1));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+
+    setup.publish(&review_event(
+        "github.pull_request.review_request_removed",
+        2,
+    ));
+
+    setup.until("tasks", |rows| rows[0][4] == "dropped");
+    assert_eq!(withdrawn_reasons(&setup, "asks"), ["task-ended"]);
+}
+
+#[test]
+fn a_start_over_a_backlog_runs_no_task_that_the_rest_of_the_log_withdraws() {
+    let mut setup = reviews("review-withdrawn-in-backlog");
+    setup.publish_all(&review_request(1));
+    // Over one pass's 100 messages, so the removal comes in a later pass than the request.
+    for at in 0..150 {
+        setup.publish(&Message::new("t.event", json!({ "at": at })));
+    }
+    setup.publish(&review_event(
+        "github.pull_request.review_request_removed",
+        2,
+    ));
+
+    setup.start();
+
+    setup.until("tasks", |rows| rows.len() == 1 && rows[0][4] == "dropped");
+    assert!(setup.rows("runs").is_empty());
 }
 
 #[test]
@@ -21628,7 +22143,7 @@ impl Setup {
         let answers = [
             (
                 "open",
-                json!([{ "data": { "repository": { "pullRequests": { "nodes": pulls } } } }]),
+                json!({ "data": { "repository": { "pullRequests": { "nodes": pulls } } } }),
             ),
             ("named", json!({ "data": { "repository": named } })),
             ("issues", json!(issues)),
@@ -21643,7 +22158,7 @@ impl Setup {
         let fake = self.dir.join("fake");
         let script = format!(
             "#!/bin/sh\necho \"$*\" >> '{0}/gh-api.log'\ncase \"$*\" in\n  \
-             \"api graphql --paginate\"*) cat '{0}/gh-open.json' ;;\n  \
+             \"api graphql -F\"*) cat '{0}/gh-open.json' ;;\n  \
              \"api graphql\"*) cat '{0}/gh-named.json' ;;\n  \
              \"api repos/owner/repo/issues?\"*) cat '{0}/gh-issues.json' ;;\n  *) echo '[]' ;;\nesac\n",
             fake.display()
@@ -24055,6 +24570,29 @@ fn a_comment_on_a_merged_pull_request_of_an_open_stack_wakes_the_task() {
         "{outbox:?}"
     );
     setup.until("runs", |rows| rows.len() == 2);
+}
+
+#[test]
+fn a_superseded_red_check_fires_no_gate_of_a_stack() {
+    let setup = opened_stack("stack-superseded");
+    let gate = |id: u64, conclusion: &str| {
+        on_stack(
+            7,
+            "github.check_run.completed",
+            json!({ "name": "gate", "app": "github-actions", "conclusion": conclusion,
+                    "github_id": id, "pending": 0, "failing": 6 }),
+        )
+    };
+    setup.until("waits", |rows| rows.len() == 3);
+
+    // The cancelled duplicate's job ends after the rerun of the other run passed.
+    setup.publish(&gate(3, "success"));
+    setup.publish(&gate(1, "failure"));
+    setup.publish(&gate(2, "failure"));
+
+    setup.until("inbox", |rows| rows.len() == 4);
+    stays_asleep_after(&setup, 1);
+    assert_eq!(setup.rows("waits").len(), 3);
 }
 
 #[test]
@@ -26713,6 +27251,103 @@ fn a_runner_that_joins_late_reads_a_finished_task_without_running_it_again() {
     until_alive(&b, "b");
     assert!(b.own_tasks().is_empty());
     assert_eq!(claimants(&b, "github:owner/repo#1"), ["a"]);
+}
+
+#[test]
+fn a_runner_several_ticks_behind_claims_and_runs_nothing_before_it_read_the_whole_log() {
+    let mut a = runner("behind", "a", None);
+    let key = "github:owner/repo#1";
+    let request = requested(1);
+    a.publish(&request);
+    // Over one tick's 100 messages, so the claim comes in a later tick than the request.
+    for at in 0..250 {
+        a.publish(&Message::new("t.event", json!({ "at": at })));
+    }
+    for (kind, data) in [
+        (
+            "priory.task.claimed",
+            json!({ "key": key, "runner": "b", "request": request.id.to_string() }),
+        ),
+        (
+            "priory.task.held",
+            json!({ "key": key, "runner": "b", "hold": "kept", "generation": 1 }),
+        ),
+    ] {
+        a.publish(&Message::new(kind, data).subject(key));
+    }
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    until_alive(&a, "a");
+
+    assert_eq!(claimants(&a, key), ["b"]);
+    assert!(a.own_tasks().is_empty());
+    assert!(a.rows("runs").is_empty());
+    a.crash();
+}
+
+#[test]
+fn a_runner_several_ticks_behind_holds_and_runs_no_task_that_the_rest_of_the_log_gives_away() {
+    let mut a = runner("behind-given", "a", None);
+    let key = "github:owner/repo#1";
+    let request = requested(1);
+    let id = request.id.to_string();
+    a.publish(&request);
+    let mine = json!({ "key": key, "runner": "a", "request": id });
+    let kept = json!({ "key": key, "runner": "a", "hold": "kept", "generation": 1 });
+    a.publish(&Message::new("priory.task.claimed", mine).subject(key));
+    a.publish(&Message::new("priory.task.held", kept).subject(key));
+    for at in 0..150 {
+        a.publish(&Message::new("t.event", json!({ "at": at })));
+    }
+    let gift = json!({ "key": key, "runner": "b", "request": id, "from": "a", "given": true });
+    a.publish(&Message::new("priory.task.claimed", gift).subject(key));
+
+    a.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+    until_alive(&a, "a");
+
+    assert_eq!(a.own_tasks()[0][4], "dropped");
+    assert!(a.rows("runs").is_empty());
+    let held = a
+        .rows("inbox")
+        .into_iter()
+        .filter(|row| row[1] == "priory.task.held")
+        .count();
+    assert_eq!(held, 1, "a says nothing from a log it read in part");
+    a.crash();
+}
+
+#[test]
+fn a_runner_several_ticks_behind_applies_no_line_before_it_read_the_whole_log() {
+    let mut a = runner("behind-line", "a", None);
+    let bus = a.bus();
+    for at in 0..1500 {
+        let event = Message::new("t.event", json!({ "at": at }));
+        bus.publish(OUTPUT, &event).unwrap();
+    }
+
+    a.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut socket = loop {
+        if let Ok(socket) = std::os::unix::net::UnixStream::connect(a.socket()) {
+            break socket;
+        }
+        assert!(Instant::now() < deadline, "the daemon does not listen");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    std::io::Write::write_all(&mut socket, b"{\"version\":true}\n").unwrap();
+    let mut reply = String::new();
+    std::io::Read::read_to_string(&mut socket, &mut reply).unwrap();
+
+    assert!(reply.contains("Ok"), "{reply}");
+    assert!(a.rows("inbox").len() >= 1500);
+    a.crash();
 }
 
 #[test]
@@ -29886,6 +30521,27 @@ fn an_answer_sent_to_another_runners_ask_is_accepted_applied_by_its_runner_and_i
 }
 
 #[test]
+fn a_resent_answer_to_another_runners_ask_gets_its_first_reply_after_the_runner_applied_it() {
+    let (a, _b, ask, address) = asked_on_a("remote-resend");
+    let id = format!("a:{ask}");
+    until_ask(&address, &id, |ask| ask["state"] == "open");
+    let body =
+        r#"{"option": "approved", "revision": 1, "call": "0a1b2c3d-0000-4000-8000-000000000002"}"#;
+    let path = format!("/api/asks/{id}/answer");
+
+    let (status, first) = runner_http(&address, "POST", &path, body);
+    assert_eq!(status, 202, "{first}");
+    until_ask(&address, &id, |ask| {
+        ask["state"] == "answered" && ask["submissions"][0]["outcome"] == "answered"
+    });
+    let (status, again) = runner_http(&address, "POST", &path, body);
+
+    assert_eq!(status, 202, "{again}");
+    assert_eq!(again["submission"], first["submission"]);
+    assert_eq!(on_log(&a, "priory.ask.answered").len(), 1);
+}
+
+#[test]
 fn a_stale_answer_to_another_runners_ask_gets_409_and_nothing_is_published() {
     let (a, _b, ask, address) = asked_on_a("remote-stale");
     let id = format!("a:{ask}");
@@ -32715,6 +33371,7 @@ fn a_failed_fetch_keeps_the_last_good_commit_and_says_so_on_the_desk() {
     setup.until("runs", |rows| {
         rows.first().is_some_and(|row| row[9] == good)
     });
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
     setup.crash();
     let bare = setup.dir.join("kit.git");
     let gone = setup.dir.join("kit-gone.git");
@@ -34979,6 +35636,7 @@ fn a_failed_memories_fetch_keeps_the_last_good_commit_and_says_so_on_the_desk() 
     setup.until("runs", |rows| {
         rows.first().is_some_and(|row| row[10] == good)
     });
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
     setup.crash();
     let bare = setup.dir.join("scriptorium.git");
     let gone = setup.dir.join("scriptorium-gone.git");
@@ -36291,6 +36949,64 @@ fn pull_comment(body: &str) -> Message {
             "url": "https://github.com/owner/repo/pull/7#issuecomment-701"
         }),
     )
+}
+
+/// Restarts `setup`'s daemon over four comments whose triage sleeps 4 s each, so every pass of the
+/// catch-up is under the 10 s of a long tick, and asserts that it reports the whole hold.
+fn reports_a_held_catch_up(mut setup: Setup) {
+    setup.decides(ANSWERS);
+    let output = setup.calibrate();
+    assert!(output.status.success(), "{output:?}");
+    fs::write(
+        setup.dir.join("factory/answers.tsv"),
+        "Thanks\tsleep\t4\t-\n",
+    )
+    .unwrap();
+    setup.calls(&[wait(on_pull_7("review"))]);
+    setup.publish(&requested(42));
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    setup.start_with(exe, &[KEY]);
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.crash();
+    for id in 701..705 {
+        let mut comment = pull_comment("Thanks, looks good.");
+        comment.data["github_id"] = json!(id);
+        comment.data["url"] = json!(format!(
+            "https://github.com/owner/repo/pull/7#issuecomment-{id}"
+        ));
+        setup.publish(&comment);
+    }
+
+    setup.start_with(exe, &[KEY]);
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let log = loop {
+        let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+        if log.contains("a tick took") {
+            break log;
+        }
+        assert!(Instant::now() < deadline, "no long tick: {log}");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert!(log.contains("a tick runs for over 10s: messages"), "{log}");
+    let messages = log
+        .split_once("s: messages for ")
+        .and_then(|(_, rest)| rest.split_once('s'))
+        .and_then(|(seconds, _)| seconds.parse::<u64>().ok());
+    assert!(messages.is_some_and(|seconds| seconds >= 14), "{log}");
+    let noted = fs::read_to_string(setup.dir.join("home/tick.json")).unwrap();
+    assert!(noted.contains("messages for"), "{noted}");
+    setup.crash();
+}
+
+#[test]
+fn a_held_catch_up_of_short_passes_is_reported_as_one_long_tick() {
+    reports_a_held_catch_up(Setup::new("held-catch-up"));
+}
+
+#[test]
+fn a_runners_held_catch_up_of_short_passes_is_reported_as_one_long_tick() {
+    reports_a_held_catch_up(runner("held-catch-up", "a", None));
 }
 
 #[test]

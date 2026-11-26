@@ -199,7 +199,7 @@ Priory cannot check the text of a nudge.
 
 Each answered call appends a `factory.handler.called` record to the trace, with the action, its text, the model,
 the tokens and Claude's own `cost_usd`. A daemon that stops mid-call kills that call's process group
-when it starts again, after checking its start time in `/proc`. It then records the call's answer, if
+when it starts again, after checking its start time in `/proc`, or with `ps` on macOS. It then records the call's answer, if
 the call wrote one, as not applied, or `leave` with `the handler call failed: interrupted by a daemon
 restart`. The call still counts.
 

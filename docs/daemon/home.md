@@ -114,6 +114,26 @@ started elsewhere does not change it. A command you run yourself must see the sa
 `no priory daemon listens on <path>`. The path is in that error. The daemon reads one connection at a time, and drops one that sends no
 full line within 2 seconds, so a silent client cannot stop the others.
 
+On `SIGTERM` the daemon finishes the step of its tick in progress, then takes no more connections,
+answers those it has within 20 seconds, and ends by that signal. It checks for the stop between the
+phases of a tick, and between the live runs it tends, and starts no run after it. A step can take as
+long as its command's timeout, such as a tmux call that hangs, so the stop takes that plus 20 seconds.
+systemd kills the daemon after `TimeoutStopSec`, 90 seconds by default: raise it when a factory's
+command timeout is longer than about 60 seconds. The daemon does not cut a command short at a stop,
+since it reads a tmux call that timed out as a run that ended. A second `SIGTERM` ends the daemon at
+once.
+
+The stop writes `<socket>.stopping` beside the socket, and the next daemon removes it. While that file
+is under 50 seconds old, a command that writes and `priory memory` wait up to 30 seconds for the next
+daemon, with a line on stderr. `priory memory acquire --timeout` caps that wait. Without it, as after a
+crash, with no daemon or with another `PRIORY_HOME`, they fail at once. An MCP server waits up to 30
+seconds for any socket that refuses it, as after a crash that systemd restarts. `priory attach`, a web
+server's write and the tool guard do not wait.
+
+A runner that has not read the whole log yet applies no line of the socket, so its stop applies none
+either. It answers each one that the daemon stopped before applying it. The command then sends it to
+the next daemon, and a hook spools it.
+
 `signals.spool` holds the signals sent while no daemon listened. The next daemon applies them first.
 
 `daemon.lock` allows one daemon per home. A second daemon waits up to 5 seconds for the lock, then
@@ -162,3 +182,6 @@ runs for over 10s: sweep, git fetch`, and when it ends, what took longest: `a ti
 40s, git fetch for 30s`. The line names the program and its subcommand, never an argument. The desk
 shows the last one for 24 hours, also while the tick holds the loop (see
 [desk.md](desk.md#intake-banner)).
+
+The passes of the loop that [hold work until the log is read to its end](README.md) count as one
+tick, so a long hold is reported even when each pass is short.

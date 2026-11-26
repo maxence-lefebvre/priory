@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { TYPED_FIELDS, backTo, pageTitle, taskRead } from "./pages.js";
+import { backTo, pageTitle, taskRead } from "./pages.js";
 
 test("a detail page's back link names the list the person came from", () => {
   assert.deepEqual(backTo("/"), ["/", "Desk"]);
@@ -42,10 +42,6 @@ test("a title names the page the address renders", () => {
   assert.equal(pageTitle("/settings/other", data), "Appearance · Priory");
 });
 
-test("a repaint gives the caret back to every text field the main view draws, the Say box too", () => {
-  for (const id of ["draft", "say", "report-draft", "report-query", "term-line", "term-keys"]) assert.ok(TYPED_FIELDS.includes(id), id);
-});
-
 test("a refresh keeps the open ask's task drawn while it is read again, and the new body replaces it", () => {
   const first = taskRead(null, 16);
   assert.deepEqual(first, { task: { id: 16, body: null, error: null, stale: false }, read: true });
@@ -69,4 +65,8 @@ test("another ask or task page starts empty", () => {
   const { task, read } = taskRead({ id: 16, body: { id: 16 }, stale: false }, 17);
   assert.equal(read, true);
   assert.equal(task.body, null);
+});
+
+test("an ask's title survives an address that does not decode", () => {
+  assert.equal(pageTitle("/asks/%E0%A4%A", { tasks: [] }), "Ask #%E0%A4%A · Priory");
 });

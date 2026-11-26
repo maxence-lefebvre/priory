@@ -10,7 +10,7 @@ use crate::route;
 use crate::runners;
 use crate::snooze::{self, Snooze};
 use crate::state::{self, Admission, NewRun, Signal};
-use crate::tools::{self, Act, Answer, Call, Dismiss, Done, Repair};
+use crate::tools::{self, Act, Answer, Call, Called, Dismiss, Done, Repair};
 use crate::trace::Trace;
 use crate::upgrade::Upgrader;
 use crate::{
@@ -26,9 +26,9 @@ use priory_runtime::{room, slice, ticks, transcript, upgrade};
 use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::cell::OnceCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
-use std::sync::mpsc::{RecvTimeoutError, Sender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 // shortcut: polls the bus file; switch to herdr-bus-client's notify with the systemd service.
@@ -58,6 +58,12 @@ const EXPORT_RETRY: Duration = Duration::from_secs(5);
 struct Stalls {
     screens: HashMap<i64, (Vec<String>, Instant)>,
     calls: Vec<Handling>,
+}
+
+/// What keeps a second daemon away: the lock alone, or with the socket a held daemon listens on.
+enum Held {
+    Lock(Option<runtime::Lock>),
+    Listening(runtime::Listening),
 }
 
 /// A handler call in flight on `run`.
@@ -101,7 +107,9 @@ fn view(factory: &Factory) -> Result<(), Error> {
     let watch = reload::Watch::new(factory);
     let machine = room::hostname();
     let viewer = runners::viewer(factory, machine.as_deref())?;
-    let mut db = state::open()?;
+    // The lock keeps a second daemon of this `PRIORY_HOME` off the state, and off its migration.
+    let lock = runtime::lock(&runtime::home())?;
+    let mut db = state::migrate()?;
     let bus = log::open(factory.log())?;
     let trace = Trace {
         factory,
@@ -113,8 +121,7 @@ fn view(factory: &Factory) -> Result<(), Error> {
     // The listings add every runner's asks and tasks once this state file names its machine.
     runners::name(&db, Some(&viewer))?;
     let consumer = runners::view_consumer(&viewer);
-    // The socket's lock keeps a second daemon off this state file.
-    let listening = runtime::listen(&runtime::home())?;
+    let listening = runtime::listen(&runtime::home(), lock)?;
     let server = match factory.serve() {
         Some(config) => Some(crate::serve::start(factory, config.listen)?),
         None => None,
@@ -122,50 +129,53 @@ fn view(factory: &Factory) -> Result<(), Error> {
     let mut live = Live::new(factory, watch, trace.revision.clone(), server);
     let mut link = Link::default();
     loop {
+        if runtime::stopping() {
+            return listening.stop(|line| seen(&db, line));
+        }
         live.poll(&mut db, &trace, false)?;
         let trace = live.trace(&trace);
+        let mut behind = false;
         if link.due() {
             let drained = view_drain(&*bus, &consumer, &mut db, &viewer, &trace);
-            metered(&*bus, drained.as_ref());
-            link.tried(&db, drained)?;
+            metered(&*bus, drained.as_ref().map(|_| ()));
+            behind = matches!(drained, Ok(false));
+            link.tried(&db, drained.map(drop))?;
         }
-        match listening.lines.recv_timeout(EVERY) {
-            Ok(line) => {
-                let reply = match serde_json::from_str::<Input>(&line.text) {
-                    // Since you looked is this machine's own.
-                    Ok(Input::Seen(line)) => state::seen(&db, &line.seen.person, line.seen.at)
-                        .map_err(|error| error.to_string()),
-                    _ => Err(VIEW_ONLY.to_owned()),
-                };
-                let reply = serde_json::to_string(&reply).expect("a result serializes");
-                let _ = line.applied.send(reply);
-            }
+        let wait = if behind { Duration::ZERO } else { EVERY };
+        match listening.lines.recv_timeout(wait) {
+            Ok(line) => seen(&db, line)?,
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
         }
     }
 }
 
-/// Reads every message past the view's cursor into its mirrors.
+/// Answers a line on a view-only machine, where since you looked is its own and the rest is refused.
+fn seen(db: &Connection, line: Line) -> Result<(), Error> {
+    let reply = match serde_json::from_str::<Input>(&line.text) {
+        Ok(Input::Seen(line)) => {
+            state::seen(db, &line.seen.person, line.seen.at).map_err(|error| error.to_string())
+        }
+        _ => Err(VIEW_ONLY.to_owned()),
+    };
+    let reply = serde_json::to_string(&reply).expect("a result serializes");
+    let _ = line.applied.send(reply);
+    Ok(())
+}
+
+/// Reads the messages past the view's cursor into its mirrors, as `drain_some` does, and returns
+/// whether none is left.
 fn view_drain(
     bus: &dyn Log,
     consumer: &str,
     db: &mut Connection,
     viewer: &str,
     trace: &Trace,
-) -> Result<(), Error> {
-    let mut probe = Some(Instant::now());
-    loop {
-        let deliveries = read(bus, consumer, &mut probe)?;
-        if deliveries.is_empty() {
-            return Ok(());
-        }
-        for delivery in deliveries {
-            let message = runners::clocked(delivery.message.clone(), delivery.logged);
-            runners::view(db, &message, viewer, trace)?;
-            bus.ack(consumer, &delivery)?;
-        }
-    }
+) -> Result<bool, Error> {
+    some(bus, consumer, true, &mut |delivery| {
+        let message = runners::clocked(delivery.message.clone(), delivery.logged);
+        runners::view(db, &message, viewer, trace)
+    })
 }
 
 fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
@@ -175,7 +185,16 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     if !once {
         upgrade::admit(&runtime::home(), true)?;
     }
-    let mut db = state::open()?;
+    let home = runtime::home();
+    // Only the daemon migrates, under its lock. `--once` routes beside a running daemon otherwise.
+    let lock = match !once || state::older()? {
+        true => Some(runtime::lock(&home)?),
+        false => None,
+    };
+    let mut db = match lock {
+        Some(_) => state::migrate()?,
+        None => state::open()?,
+    };
     let bus = log::open(factory.log())?;
     tools::backfill_endings(&mut db, &factory.workflows)?;
     state::bands(&mut db, &factory.bands(), factory.age())?;
@@ -183,7 +202,6 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     state::irreversible_asks(&mut db, &factory.workflows)?;
     let embedder = factory.search().embedder().map(|spec| embed::name(&spec));
     search::configure(&db, embedder.as_deref())?;
-    let home = runtime::home();
     let mut counting = Counting {
         embedder: embedder.clone(),
         counter: None,
@@ -200,9 +218,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let consumer = runners::consumer(trace.runner.as_deref());
     runners::name(&db, trace.runner.as_deref())?;
     // What came before writes the state alone, which a rollback puts back. A dispatch reaches further.
-    let held = match !once && upgrade::held(&home) {
-        true => Some(hold(factory, &home)?),
-        false => None,
+    let held = match lock {
+        Some(lock) if !once && upgrade::held(&home) => Held::Listening(hold(factory, &home, lock)?),
+        lock => Held::Lock(lock),
     };
     for error in sections::dispatch(&db, factory, None)? {
         eprintln!("priory daemon: {error}");
@@ -235,8 +253,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     }
     let searching = search::answering(state::read_only()?, home.clone());
     let listening = match held {
-        Some(listening) => listening,
-        None => runtime::listen(&home)?,
+        Held::Listening(listening) => listening,
+        Held::Lock(Some(lock)) => runtime::listen(&home, lock)?,
+        Held::Lock(None) => return Err("the daemon runs without its lock".into()),
     };
     sweep::move_back(&home);
     let headers = otlp::header_file(factory, &home, "otlp-headers")?;
@@ -312,7 +331,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     // No one bounds a script a stopped daemon started; one whose pid another process reused is gone.
     for (id, group) in stall::orphans(&db)? {
         if let Some((pid, _)) =
-            group.filter(|(pid, started)| memory::started(*pid) == Some(*started))
+            group.filter(|(pid, started)| memory::started(*pid) == Ok(Some(*started)))
         {
             script::kill(pid);
         }
@@ -322,7 +341,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     // A `run` command neither runs twice nor runs on unbounded: it ends `failed`, and its task moves on.
     for (id, group) in state::orphan_commands(&db)? {
         if let Some((pid, _)) =
-            group.filter(|(pid, started)| memory::started(*pid) == Some(*started))
+            group.filter(|(pid, started)| memory::started(*pid) == Ok(Some(*started)))
         {
             script::kill(pid);
         }
@@ -336,7 +355,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     // An answer's command never runs twice: one a stopped daemon left running ends `uncertain`.
     for (id, group) in state::orphan_answers(&db)? {
         if let Some((pid, _)) =
-            group.filter(|(pid, started)| memory::started(*pid) == Some(*started))
+            group.filter(|(pid, started)| memory::started(*pid) == Ok(Some(*started)))
         {
             script::kill(pid);
         }
@@ -350,7 +369,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let handlers = home.join("handlers");
     for (id, group) in handler::orphans(&db)? {
         if let Some((pid, _)) =
-            group.filter(|(pid, started)| memory::started(*pid) == Some(*started))
+            group.filter(|(pid, started)| memory::started(*pid) == Ok(Some(*started)))
         {
             script::kill(pid);
         }
@@ -362,7 +381,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let summaries = home.join("summaries");
     for (id, group) in summary::orphans(&db)? {
         if let Some((pid, _)) =
-            group.filter(|(pid, started)| memory::started(*pid) == Some(*started))
+            group.filter(|(pid, started)| memory::started(*pid) == Ok(Some(*started)))
         {
             script::kill(pid);
         }
@@ -407,9 +426,36 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut live = Live::new(factory, watch, trace.revision.clone(), server);
     let mut upgrader = Upgrader::new(factory);
     crate::watchdog::watch(&home);
+    // Until the first catch-up after a start or a lost link, the rest of the log may withdraw a task.
+    let mut catching_up = true;
+    // Passes that hold work are one tick for the watchdog, which the first other pass ends.
+    let mut holding = false;
+    // A runner applies no line of the socket until it has read the whole log, nor does its stop.
+    let mut holds_lines = trace.runner.is_some();
+    let mut lines = Lines {
+        socket: &listening.lines,
+        waiting: VecDeque::new(),
+    };
     loop {
+        if runtime::stopping() {
+            let trace = live.trace(&trace);
+            let waiting = std::mem::take(&mut lines.waiting);
+            let mut answer = |line: Line| match holds_lines {
+                true => not_applied(line),
+                false => {
+                    let counter = counting.get(&home);
+                    apply(&mut db, line, &trace, counter, kit.current(), &searching)
+                }
+            };
+            for line in waiting {
+                answer(line)?;
+            }
+            return listening.stop(answer);
+        }
         let tick = Instant::now();
-        ticks::begin();
+        if !std::mem::take(&mut holding) {
+            ticks::begin();
+        }
         if live.poll(&mut db, &trace, true)? {
             let factory = live.factory();
             state::bands(&mut db, &factory.bands(), factory.age())?;
@@ -428,15 +474,37 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         // and before it publishes what it queued meanwhile.
         let drained = link.due().then(|| {
             let counter = counting.get(&home);
-            drain_probed(&*bus, &consumer, &mut db, &trace, counter, true)
+            // A runner answers no ask before it read the whole log: a task may have moved.
+            let mut people = |db: &mut Connection| match trace.runner {
+                None => lines.people(db, &trace),
+                Some(_) => Ok(()),
+            };
+            drain_some(
+                &*bus,
+                &consumer,
+                &mut db,
+                &trace,
+                counter,
+                true,
+                &mut people,
+            )
         });
-        if let Some(me) = &trace.runner {
+        // What a runner says follows from the whole log, so it says nothing before it read it.
+        let behind = matches!(drained, Some(Ok(false)));
+        holds_lines = behind && trace.runner.is_some();
+        if let Some(me) = &trace.runner
+            && !behind
+        {
             runners::tick(&mut db, me, factory, intake::now()?, &mut alive)?;
         }
         if let Some(drained) = drained {
-            let tried = drained.and_then(|()| runners::flush(&db, &*bus));
-            metered(&*bus, tried.as_ref());
+            let tried = drained.and_then(|caught_up| match caught_up {
+                true => runners::flush(&db, &*bus),
+                false => Ok(()),
+            });
+            metered(&*bus, tried.as_ref().copied());
             let reached = tried.is_ok();
+            catching_up = tried.is_err() || (catching_up && behind);
             link.tried(&db, tried)?;
             // A pick's request that a lost log refused goes out once the log answers again.
             if reached && redispatch.is_none_or(|after| Instant::now() >= after) {
@@ -447,8 +515,16 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
                 redispatch = (!failed.is_empty()).then(|| Instant::now() + REDISPATCH);
             }
         }
+        // A task that moved may still be in the rest of the log: a runner acts on none before that,
+        // not even on an answer to it.
+        if behind && trace.runner.is_some() {
+            ticks::record(tick.elapsed());
+            holding = true;
+            continue;
+        }
         ticks::phase("signals");
-        while let Ok(line) = listening.lines.try_recv() {
+        lines.people(&mut db, &trace)?;
+        while let Some(line) = lines.waiting.pop_front() {
             apply(
                 &mut db,
                 line,
@@ -457,6 +533,16 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
                 kit.current(),
                 &searching,
             )?;
+            lines.people(&mut db, &trace)?;
+        }
+        if behind && catching_up {
+            ticks::record(tick.elapsed());
+            holding = true;
+            continue;
+        }
+        // A stop starts after the phase in progress, not after the whole tick.
+        if runtime::stopping() {
+            continue;
         }
         ticks::phase("commands");
         // After the socket's lines, so an answer a person sent before this tick comes first.
@@ -468,11 +554,22 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         if crate::recipe::tick(&mut db, &trace, &home, &mut recipes)? {
             swept = None;
         }
+        if runtime::stopping() {
+            continue;
+        }
+        lines.people(&mut db, &trace)?;
         ticks::phase("evidence");
         crate::evidence::tick(&mut db, factory, &home, &mut records)?;
+        if runtime::stopping() {
+            continue;
+        }
         ticks::phase("kit");
         kit.tick(&db)?;
         let fetched = kit.current();
+        if runtime::stopping() {
+            continue;
+        }
+        lines.people(&mut db, &trace)?;
         ticks::phase("runs");
         tend(
             &mut db,
@@ -489,11 +586,16 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             &mut attaching,
             &mut starting,
             &mut sweeping,
+            &mut lines,
         )?;
         // Committed first, so a crash before the kill leaves an ended run, not a lost one.
         for tmux in tools::over_budget_in_turn(&mut db, &trace, &mut peeked, &watched)? {
             runtime::kill(&tmux);
         }
+        if runtime::stopping() {
+            continue;
+        }
+        lines.people(&mut db, &trace)?;
         ticks::phase("background work");
         compact_idle(&db, &trace, &home, &scope, fetched)?;
         handle_stalls(&mut db, &trace, &home, &mut stalls)?;
@@ -502,12 +604,14 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         if let Some(export) = &mut export {
             send_spans(&db, &trace, &home, export)?;
         }
+        lines.people(&mut db, &trace)?;
         deliver::tick(&db, factory, &home, &mut deliveries)?;
         crate::attach::tick(&mut db, &trace, &mut attaching)?;
         push::tick(&db, &home, &mut pushing)?;
         if let Some(desktop) = &mut desktop {
             notify::tick(&db, desktop)?;
         }
+        lines.people(&mut db, &trace)?;
         snooze::tick(&mut db, &trace)?;
         state::age_queue(&db, &mut aged)?;
         read_states(&mut db, &mut reads)?;
@@ -515,6 +619,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         for tmux in crate::gates::tick(&mut db, &trace, &home, &mut grading, &head)? {
             runtime::kill(&tmux);
         }
+        lines.people(&mut db, &trace)?;
         if sweep_scripts(&db, factory, &home, &mut scripts)? {
             swept = None;
         }
@@ -528,6 +633,10 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             held = Some(Instant::now());
             crate::held::tick(&mut db, &trace, intake::now()?)?;
         }
+        if runtime::stopping() {
+            continue;
+        }
+        lines.people(&mut db, &trace)?;
         ticks::phase("sweep");
         let due = swept.is_none_or(|at| at.elapsed() >= every) || sweeping.asked();
         if due && sweeping.start(&db, factory, &home)? {
@@ -536,11 +645,17 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
                 limits.check(&slice, &share, &home);
             }
         }
-        let short = || room::measure(&home).is_ok_and(|room| crate::room::short_of_disk(&room));
+        // A measure from before the last removal would retire one task too many.
+        let short =
+            || room::measure_fresh(&home).is_ok_and(|room| crate::room::short_of_disk(&room));
         let ended = sweeping.tick(&db, factory, &home, short)?;
         if ended {
             sweep::measure(&home);
         }
+        if runtime::stopping() {
+            continue;
+        }
+        lines.people(&mut db, &trace)?;
         ticks::phase("reclaim");
         let under = || {
             room::measure(&home)
@@ -551,6 +666,10 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         if reclaiming.retires() {
             sweeping.retire(&db)?;
         }
+        if runtime::stopping() {
+            continue;
+        }
+        lines.people(&mut db, &trace)?;
         ticks::phase("upgrade");
         let working = !(commands.is_empty()
             && recipes.is_empty()
@@ -562,8 +681,15 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         ticks::record(tick.elapsed());
         crate::watchdog::ended(&home);
         // A pasted prompt's Enter is due before the next whole tick.
-        let wait = entering.due().map_or(EVERY, |due| due.min(EVERY));
-        match listening.lines.recv_timeout(wait) {
+        let wait = match behind {
+            true => Duration::ZERO,
+            false => entering.due().map_or(EVERY, |due| due.min(EVERY)),
+        };
+        let line = match lines.waiting.pop_front() {
+            Some(line) => Ok(line),
+            None => listening.lines.recv_timeout(wait),
+        };
+        match line {
             Ok(line) => {
                 ticks::begin();
                 ticks::phase("signals");
@@ -783,7 +909,7 @@ fn summarize(
         let prompt = summary::prompt(&title, &request);
         match runtime::ask_claude(dir, id, model, &prompt, HANDLER_TIMEOUT) {
             Ok(script) => {
-                summary::spawned(db, id, script.pid(), memory::started(script.pid()))?;
+                summary::spawned(db, id, script.pid(), memory::start_time(script.pid()))?;
                 calls.push((id, script));
             }
             Err(error) => {
@@ -876,7 +1002,7 @@ fn handle_stalls(
         let prompt = handler::prompt(db, factory, run.run, stalled_for, &screen)?;
         match runtime::ask_claude(&dir, id, model, &prompt, HANDLER_TIMEOUT) {
             Ok(script) => {
-                handler::spawned(db, id, script.pid(), memory::started(script.pid()))?;
+                handler::spawned(db, id, script.pid(), memory::start_time(script.pid()))?;
                 stalls.calls.push(Handling {
                     id,
                     run: run.run,
@@ -1023,7 +1149,7 @@ fn start_script(
     let timeout = script.timeout.unwrap_or(SCRIPT_TIMEOUT);
     match script::spawn(&script.run, home, &log_of(home, id), timeout) {
         Ok(child) => {
-            stall::spawned(db, id, child.pid(), memory::started(child.pid()))?;
+            stall::spawned(db, id, child.pid(), memory::start_time(child.pid()))?;
             running.push((id, child));
         }
         Err(error) => stall::ended(db, id, &format!("cannot start: {error}"), "")?,
@@ -1058,6 +1184,65 @@ fn apply(
     Ok(())
 }
 
+/// A person's answer, dismiss or desk action, which waits for no tick. Desk actions share the path,
+/// so a cancel or a hold sent before an answer still applies first.
+enum Person {
+    Answer(Called<Answer>),
+    Dismiss(Called<Dismiss>),
+    Act(Act),
+}
+
+impl Person {
+    /// The person's write that `line` holds, if it holds one.
+    fn of(line: &str) -> Option<Person> {
+        match serde_json::from_str(line).ok()? {
+            Input::Answer(answer) => Some(Person::Answer(answer)),
+            Input::Dismiss(dismiss) => Some(Person::Dismiss(dismiss)),
+            Input::Act(act) => Some(Person::Act(act)),
+            _ => None,
+        }
+    }
+
+    /// The reply, and a tmux session to kill.
+    fn apply(
+        &self,
+        db: &mut Connection,
+        trace: &Trace,
+    ) -> Result<(Result<String, String>, Option<String>), Error> {
+        let head =
+            |worktree: &Path, branch: &str| runtime::kept_head(&runtime::home(), worktree, branch);
+        Ok(match self {
+            Person::Answer(answer) => (tools::answer(db, answer, trace, &head)?, None),
+            Person::Dismiss(dismiss) => (tools::dismiss(db, dismiss, trace.factory)?, None),
+            Person::Act(act) => tools::act(db, act, trace)?,
+        })
+    }
+}
+
+/// The socket's lines: a person's are applied between two steps of a tick, the others keep their
+/// order for its `signals` phase.
+struct Lines<'a> {
+    socket: &'a Receiver<Line>,
+    waiting: VecDeque<Line>,
+}
+
+impl Lines<'_> {
+    /// Applies the answers, dismisses and desk actions that arrived, in order.
+    fn people(&mut self, db: &mut Connection, trace: &Trace) -> Result<(), Error> {
+        while let Ok(line) = self.socket.try_recv() {
+            let Some(person) = Person::of(&line.text) else {
+                self.waiting.push_back(line);
+                continue;
+            };
+            let (reply, kill) = person.apply(db, trace)?;
+            let reply = serde_json::to_string(&reply).expect("a result serializes");
+            let _ = line.applied.send(reply);
+            kill.inspect(|tmux| runtime::kill(tmux));
+        }
+        Ok(())
+    }
+}
+
 /// What arrives on the socket: a hook's signal, a run's tool call, a person's answer, desk action
 /// or snooze, a pick or a comment on a report, a task's progress, a memory gate message, a quick
 /// request, a browser that turns notifications on or off, a visit to the desk, or a report read.
@@ -1080,8 +1265,8 @@ enum Input {
     Outside(crate::outside::Line),
     Signal(Signal),
     Call(Call),
-    Answer(Answer),
-    Dismiss(Dismiss),
+    Answer(Called<Answer>),
+    Dismiss(Called<Dismiss>),
     Act(Act),
     Snooze(Snooze),
     Choice(sections::Choice),
@@ -1113,23 +1298,39 @@ fn version(_: &VersionLine) -> Result<String, String> {
     Ok(env!("CARGO_PKG_VERSION").to_owned())
 }
 
+/// Answers a line a stop does not apply, so its client sends it to the next daemon.
+fn not_applied(line: Line) -> Result<(), Error> {
+    let reply = serde_json::to_string(&Err::<String, _>(runtime::NOT_APPLIED))
+        .map_err(|error| error.to_string())?;
+    let _ = line.applied.send(reply);
+    Ok(())
+}
+
+/// Answers a line while the upgrade holds the daemon, with its version alone.
+fn held_back(line: Line) -> Result<(), String> {
+    let reply = match serde_json::from_str::<Input>(&line.text) {
+        Ok(Input::Version(line)) => version(&line),
+        _ => Err(upgrade::IN_PROGRESS.to_owned()),
+    };
+    let reply = serde_json::to_string(&reply).map_err(|error| error.to_string())?;
+    let _ = line.applied.send(reply);
+    Ok(())
+}
+
 /// Waits until a migration's upgrade is committed. The daemon then answers its version alone, so a
 /// rollback to the backups loses nothing.
-fn hold(factory: &Factory, home: &Path) -> Result<runtime::Listening, Error> {
-    let listening = runtime::listen(home)?;
+fn hold(factory: &Factory, home: &Path, lock: runtime::Lock) -> Result<runtime::Listening, Error> {
+    let listening = runtime::listen(home, lock)?;
     if let Some(config) = factory.serve() {
         drop(std::net::TcpListener::bind(config.listen)?);
     }
     while upgrade::uncommitted(home) {
+        if runtime::stopping() {
+            listening.stop(|line| held_back(line).map_err(Error::from))?;
+            return Err("the daemon stopped".into());
+        }
         match listening.lines.recv_timeout(EVERY) {
-            Ok(line) => {
-                let reply = match serde_json::from_str::<Input>(&line.text) {
-                    Ok(Input::Version(line)) => version(&line),
-                    _ => Err(upgrade::IN_PROGRESS.to_owned()),
-                };
-                let reply = serde_json::to_string(&reply).expect("a result serializes");
-                let _ = line.applied.send(reply);
-            }
+            Ok(line) => held_back(line)?,
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
         }
@@ -1144,9 +1345,10 @@ struct AddLine {
     add: priory_intake::request::Add,
 }
 
-/// Publishes `add` as `priory add` does, then takes it in at once, so the reply names the task and
-/// what the request did: `{"key": ..., "id": ..., "outcome": ...}`, with no id when no active task
-/// has the key. A repeated text adds `error`, which says nothing was added, in place of `outcome`.
+/// Publishes `add` as `priory add` does, then takes in one pass of the log, so the reply names the
+/// task and what the request did once the pass reached it: `{"key": ..., "id": ..., "outcome": ...}`,
+/// with no id when no active task has the key. A repeated text adds `error`, which says nothing was
+/// added, in place of `outcome`.
 fn add(
     db: &mut Connection,
     add: &priory_intake::request::Add,
@@ -1167,8 +1369,8 @@ fn add(
     };
     let log = log::open(trace.factory.log())?;
     let consumer = runners::consumer(trace.runner.as_deref());
-    // A request the log took but did not hand back yet: the loop takes it in once the log answers.
-    match drain(&*log, &consumer, db, trace, counter).and_then(|()| runners::flush(db, &*log)) {
+    // A request the log took but did not hand back yet: the loop takes it in later.
+    match take_in(&*log, &consumer, db, trace, counter) {
         Err(error) if !log::unreachable(&*error) => return Err(error),
         _ => {}
     }
@@ -1181,6 +1383,21 @@ fn add(
         None => reply["outcome"] = serde_json::json!(added(db, &key)?),
     }
     Ok(Ok(reply.to_string()))
+}
+
+/// Takes in one pass of the log, and publishes what is queued only when the pass read it to its end,
+/// since the rest of the log may overrule it.
+fn take_in(
+    bus: &dyn Log,
+    consumer: &str,
+    db: &mut Connection,
+    trace: &Trace,
+    counter: Option<&embed::Counter>,
+) -> Result<(), Error> {
+    match drain_some(bus, consumer, db, trace, counter, false, &mut |_| Ok(()))? {
+        true => runners::flush(db, bus),
+        false => Ok(()),
+    }
 }
 
 /// What the newest request for `key` did: `created` its task, `said` its text to the task's agent,
@@ -1437,17 +1654,16 @@ fn take(
             )?),
             None,
         )),
-        Ok(Input::Answer(answer)) => Ok((
-            replied(tools::answer(db, &answer, trace, &|worktree, branch| {
-                runtime::kept_head(&runtime::home(), worktree, branch)
-            })?),
-            None,
-        )),
+        Ok(Input::Answer(answer)) => {
+            let (reply, kill) = Person::Answer(answer).apply(db, trace)?;
+            Ok((replied(reply), kill))
+        }
         Ok(Input::Dismiss(dismiss)) => {
-            Ok((replied(tools::dismiss(db, &dismiss, trace.factory)?), None))
+            let (reply, kill) = Person::Dismiss(dismiss).apply(db, trace)?;
+            Ok((replied(reply), kill))
         }
         Ok(Input::Act(act)) => {
-            let (reply, kill) = tools::act(db, &act, trace)?;
+            let (reply, kill) = Person::Act(act).apply(db, trace)?;
             Ok((replied(reply), kill))
         }
         Ok(Input::Snooze(snooze)) => Ok((replied(snooze::snooze(db, &snooze, trace)?), None)),
@@ -1502,6 +1718,7 @@ fn tend(
     attaching: &mut Vec<crate::attach::Attaching>,
     starting: &mut HashMap<i64, Option<slice::Cpu>>,
     sweeping: &mut sweep::Sweeping,
+    lines: &mut Lines,
 ) -> Result<(), Error> {
     let factory = trace.factory;
     let live = state::live(db)?;
@@ -1513,6 +1730,10 @@ fn tend(
     }
     starting.retain(|id, _| live.iter().any(|run| run.id == *id && !run.ready));
     for mut run in live {
+        // Each run can cost a tmux call, so a stop does not wait for them all.
+        if runtime::stopping() {
+            return Ok(());
+        }
         if !run.ready && !scope.is_empty() {
             starting
                 .entry(run.id)
@@ -1640,6 +1861,9 @@ fn tend(
             }
         }
     }
+    if runtime::stopping() {
+        return Ok(());
+    }
     state::due(db, factory, &|worktree, branch| {
         runtime::kept_head(home, Path::new(worktree), branch)
     })?;
@@ -1648,6 +1872,7 @@ fn tend(
     tools::enter_queued(db, factory)?;
     state::disk_due(db, || room::measure(home).ok().map(|room| room.disk_free))?;
     memory::reclaim(db)?;
+    lines.people(db, trace)?;
     perform(db, trace, home, commands)?;
     crate::keyboard::sweep(db, trace)?;
     let now: String = db.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
@@ -1666,6 +1891,8 @@ fn tend(
     // The last measurement of this tick, for the metrics.
     let mut last = None;
     let (promised, waiting) = loop {
+        // Each pass reads the queue again, so an answer between two starts is one it sees.
+        lines.people(db, trace)?;
         // Measured again after each start, since its clone and worktree take disk.
         let measured = OnceCell::new();
         let room = || measured.get_or_init(|| room::measure(home));
@@ -1678,7 +1905,6 @@ fn tend(
             let repo = repo_of(trace.factory, &admission.trigger, admission.repo.as_deref())?;
             let name = worktree_name(db, trace.runner.as_deref(), admission.task).ok()?;
             runtime::mounted_orphan(home, repo, &name)
-                .map(|reason| format!("waits to add its worktree back: {reason}"))
                 .or_else(|| runtime::fetch_waits(home, repo, &name))
         };
         let pass = state::admissible(
@@ -1691,6 +1917,10 @@ fn tend(
             &checking,
         )?;
         last = measured.into_inner().or(last);
+        // A stopping daemon starts no run: the start would only race its stop.
+        if runtime::stopping() {
+            break (pass.promised, None);
+        }
         let Some(admission) = pass.admission else {
             break (pass.promised, Some(pass.waiting));
         };
@@ -1735,7 +1965,9 @@ fn tend(
         }
     }
     // Enter goes on a later tick, so the agent never reads it as part of the paste.
-    while let Some(attempt) = state::attempt(db)? {
+    while !runtime::stopping()
+        && let Some(attempt) = state::attempt(db)?
+    {
         let pasted = runtime::pane(&attempt.tmux, &attempt.session)
             .ok_or_else(|| "its pane is gone".to_owned())
             .and_then(|pane| runtime::paste(&pane, &attempt.text).map(|()| pane));
@@ -2228,8 +2460,14 @@ fn restore_worktree(
             state::set_base(db, task, added.base(), factory.trust_worktrees())?;
             db.execute(
                 "UPDATE tasks SET reason = NULL WHERE id = ?1
-                 AND (substr(reason, 1, length(?2)) = ?2 OR substr(reason, 1, length(?3)) = ?3)",
-                rusqlite::params![task, crate::room::RESTORES, runtime::FETCH_WAITS],
+                 AND (substr(reason, 1, length(?2)) = ?2 OR substr(reason, 1, length(?3)) = ?3
+                      OR substr(reason, 1, length(?4)) = ?4)",
+                rusqlite::params![
+                    task,
+                    crate::room::RESTORES,
+                    runtime::FETCH_WAITS,
+                    runtime::ORPHAN_WAITS
+                ],
             )?;
             // The code step needs no resume; the task's next run starts it first.
             let resume = factory.recipe(repo, factory::Moment::Resume);
@@ -2244,7 +2482,7 @@ fn restore_worktree(
                 )?;
             }
         }
-        Err(reason) if reason.starts_with(runtime::FETCH_WAITS) => {
+        Err(reason) if runtime::waits(&reason) => {
             set_reason(db, task, &reason)?;
             return Ok(Restored::Waits);
         }
@@ -2278,7 +2516,7 @@ fn start_command(
     let timeout = step.timeout.unwrap_or(factory.command_timeout());
     match script::spawn_held(&["sh", "-c", run, "sh"], &env, dir, &out, &err, timeout) {
         Ok(mut child) => {
-            state::command_spawned(db, id, child.pid(), memory::started(child.pid()))?;
+            state::command_spawned(db, id, child.pid(), memory::start_time(child.pid()))?;
             child.release();
             commands.push((id, child));
         }
@@ -2355,7 +2593,7 @@ fn start_answers(
             .map_or_else(|| trace.factory.command_timeout(), Duration::from_secs);
         match script::spawn_held(&argv, &env, &ran.dir, &out, &err, timeout) {
             Ok(mut child) => {
-                state::command_spawned(db, id, child.pid(), memory::started(child.pid()))?;
+                state::command_spawned(db, id, child.pid(), memory::start_time(child.pid()))?;
                 child.release();
                 commands.push((id, child));
             }
@@ -2777,7 +3015,7 @@ fn start(
             }
             (worktree, branch, added)
         }
-        Err(reason) if reason.starts_with(runtime::FETCH_WAITS) => {
+        Err(reason) if runtime::waits(&reason) => {
             set_reason(db, admission.task, &reason)?;
             return Ok(Ok(()));
         }
@@ -3309,6 +3547,11 @@ fn harness(harness: &Harness) -> &'static dyn runtime::Harness {
     }
 }
 
+/// How many messages, and how long, one tick's drain takes before the loop does its other work.
+const DRAIN: usize = 100;
+const DRAIN_FOR: Duration = Duration::from_secs(1);
+
+/// Handles every message past `consumer`'s cursor.
 fn drain(
     bus: &dyn Log,
     consumer: &str,
@@ -3316,44 +3559,70 @@ fn drain(
     trace: &Trace,
     counter: Option<&embed::Counter>,
 ) -> Result<(), Error> {
-    drain_probed(bus, consumer, db, trace, counter, false)
+    while !drain_some(bus, consumer, db, trace, counter, false, &mut |_| Ok(()))? {}
+    Ok(())
 }
 
-/// Handles every message past `consumer`'s cursor. With `probe`, times the first read as the
-/// tick's probe of the log.
-fn drain_probed(
+/// Handles the oldest messages past `consumer`'s cursor, up to the bounds of one tick, and returns
+/// whether none is left. With `probe`, times the first read as the tick's probe of the log.
+/// `between` runs before each message.
+fn drain_some(
     bus: &dyn Log,
     consumer: &str,
     db: &mut Connection,
     trace: &Trace,
     counter: Option<&embed::Counter>,
     probe: bool,
-) -> Result<(), Error> {
+    between: &mut dyn FnMut(&mut Connection) -> Result<(), Error>,
+) -> Result<bool, Error> {
+    some(bus, consumer, probe, &mut |delivery| {
+        between(db)?;
+        let mut message = runners::clocked(delivery.message.clone(), delivery.logged);
+        crate::decision::triage(db, trace, &mut message)?;
+        let ended = state::handle(db, &message, trace, counter)?;
+        // Before the ack, which can fail on a lost link: a redelivered message kills nothing.
+        ended.iter().for_each(|tmux| runtime::kill(tmux));
+        Ok(())
+    })
+}
+
+/// Hands `handle` each message past `consumer`'s cursor and acknowledges it, until none is left
+/// (`true`) or a bound of one tick's drain is reached.
+fn some(
+    bus: &dyn Log,
+    consumer: &str,
+    probe: bool,
+    handle: &mut dyn FnMut(&log::Delivery) -> Result<(), Error>,
+) -> Result<bool, Error> {
     let mut probe = probe.then(Instant::now);
+    let mut handled = 0;
+    // The clock starts after the first read, so a slow log leaves a pass its time.
+    let mut started = None;
     loop {
         let deliveries = read(bus, consumer, &mut probe)?;
+        let started = *started.get_or_insert_with(Instant::now);
         if deliveries.is_empty() {
-            return Ok(());
+            return Ok(true);
         }
         for delivery in deliveries {
-            let mut message = runners::clocked(delivery.message.clone(), delivery.logged);
-            crate::decision::triage(db, trace, &mut message)?;
-            let ended = state::handle(db, &message, trace, counter)?;
-            // Before the ack, which can fail on a lost link: a redelivered message kills nothing.
-            ended.iter().for_each(|tmux| runtime::kill(tmux));
+            handle(&delivery)?;
             bus.ack(consumer, &delivery)?;
+            handled += 1;
+            if handled == DRAIN || started.elapsed() >= DRAIN_FOR {
+                return Ok(false);
+            }
         }
     }
 }
 
-/// Reads up to 100 messages past `consumer`'s cursor, timing the read as the log's probe when
+/// Reads up to `DRAIN` messages past `consumer`'s cursor, timing the read as the log's probe when
 /// `probe` holds when it started, and then clearing it.
 fn read(
     bus: &dyn Log,
     consumer: &str,
     probe: &mut Option<Instant>,
 ) -> Result<Vec<log::Delivery>, Error> {
-    let read = bus.read(consumer, OUTPUT, 100);
+    let read = bus.read(consumer, OUTPUT, DRAIN);
     if let Some(started) = probe.take() {
         metrics::probed(
             started.elapsed(),
@@ -3365,7 +3634,7 @@ fn read(
 
 /// Samples the log's backlog for the metrics once a try on the log reached it, and forgets the
 /// last one when it did not.
-fn metered(bus: &dyn Log, tried: Result<&(), &Error>) {
+fn metered(bus: &dyn Log, tried: Result<(), &Error>) {
     match tried {
         Ok(()) => metrics::sample_backlog(bus),
         Err(_) => metrics::unreached(),
@@ -3442,6 +3711,245 @@ mod tests {
         assert!(shown.ends_with("exit 1"), "{shown}");
         let split = "first-\u{200b}half\n  second-half";
         assert_eq!(envrc_error(split, &secrets), "[redacted]");
+    }
+
+    /// A log of `count` messages the consumer `c` has yet to read, in the folder `name`.
+    fn backlog(name: &str, count: usize) -> herdr_bus::Bus {
+        let home = std::env::temp_dir().join(format!("priory-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        let bus = herdr_bus::Bus::open(&home.join("bus.db")).unwrap();
+        Log::declare(&bus, &herdr_bus::Output::new(OUTPUT)).unwrap();
+        for at in 0..count {
+            let message = herdr_bus::Message::new("t.event", serde_json::json!({ "at": at }));
+            Log::publish(&bus, OUTPUT, &message).unwrap();
+        }
+        bus
+    }
+
+    #[test]
+    fn a_tick_handles_100_messages_at_most_and_the_next_ones_go_on_in_order() {
+        let bus = backlog("bounded-drain", 250);
+        let mut seen = Vec::new();
+
+        let mut passes = vec![0];
+        loop {
+            let caught_up = some(&bus, "c", false, &mut |delivery| {
+                seen.push(delivery.message.data["at"].as_u64().unwrap());
+                Ok(())
+            });
+            passes.push(seen.len());
+            if caught_up.unwrap() {
+                break;
+            }
+        }
+
+        // A slow disk may end a pass sooner, so only the most is certain.
+        assert!(
+            passes.windows(2).all(|pass| pass[1] - pass[0] <= 100),
+            "{passes:?}"
+        );
+        assert!(seen.into_iter().eq(0..250));
+    }
+
+    /// A log whose every read takes as long as a tick's whole time.
+    struct Slow(herdr_bus::Bus);
+
+    impl Log for Slow {
+        fn declare(&self, output: &herdr_bus::Output) -> log::Result<()> {
+            Log::declare(&self.0, output)
+        }
+        fn publish(
+            &self,
+            output: &str,
+            message: &herdr_bus::Message,
+        ) -> log::Result<herdr_bus::Seq> {
+            Log::publish(&self.0, output, message)
+        }
+        fn message(&self, seq: herdr_bus::Seq) -> log::Result<herdr_bus::Stored> {
+            Log::message(&self.0, seq)
+        }
+        fn messages(
+            &self,
+            output: &str,
+            before: Option<herdr_bus::Seq>,
+            limit: usize,
+        ) -> log::Result<Vec<herdr_bus::Stored>> {
+            Log::messages(&self.0, output, before, limit)
+        }
+        fn read(
+            &self,
+            consumer: &str,
+            output: &str,
+            limit: usize,
+        ) -> log::Result<Vec<log::Delivery>> {
+            std::thread::sleep(DRAIN_FOR);
+            Log::read(&self.0, consumer, output, limit)
+        }
+        fn ack(&self, consumer: &str, delivery: &log::Delivery) -> log::Result<()> {
+            Log::ack(&self.0, consumer, delivery)
+        }
+        fn backlog(&self, output: &str) -> log::Result<Vec<(String, u64)>> {
+            Log::backlog(&self.0, output)
+        }
+    }
+
+    #[test]
+    fn a_tick_whose_read_took_its_whole_time_still_handles_what_it_read() {
+        let bus = Slow(backlog("slow-read", 3));
+        let mut handled = 0;
+
+        let drained = some(&bus, "c", false, &mut |_| {
+            handled += 1;
+            Ok(())
+        });
+
+        drained.unwrap();
+        assert_eq!(handled, 3);
+    }
+
+    #[test]
+    fn a_persons_writes_apply_in_order_between_two_messages_of_the_drain_and_the_other_lines_keep_theirs()
+     {
+        let dir = std::env::temp_dir().join(format!("priory-between-{}", std::process::id()));
+        fs::create_dir_all(dir.join("workflows")).unwrap();
+        fs::write(dir.join("factory.toml"), "name = \"t\"\n").unwrap();
+        fs::write(dir.join("workflows/w.toml"), workflow(&["a"])).unwrap();
+        let factory = priory_factory::rules::validated(&dir).unwrap();
+        let trace = Trace {
+            factory: &factory,
+            revision: None,
+            machine: None,
+            runner: None,
+            usage: |_, _| None,
+        };
+        let mut db = state::memory();
+        db.execute_batch(
+            "INSERT INTO asks (id, kind, name, question, options)
+             VALUES (1, 'outside', 'o', 'q', '[\"yes\"]')",
+        )
+        .unwrap();
+        let bus = backlog("between", 3);
+        let (sender, socket) = std::sync::mpsc::channel();
+        let (applied, reply) = std::sync::mpsc::channel();
+        let send = |text: &str| {
+            let applied = applied.clone();
+            let text = text.to_owned();
+            sender.send(Line { text, applied }).unwrap();
+        };
+        let mut lines = Lines {
+            socket: &socket,
+            waiting: VecDeque::new(),
+        };
+        let mut passes = 0;
+
+        let drained = drain_some(&bus, "c", &mut db, &trace, None, false, &mut |db| {
+            passes += 1;
+            if passes == 2 {
+                send(r#"{"version":true}"#);
+                send(r#"{"act":"cancel","task":7}"#);
+                send(r#"{"ask":1,"text":"yes","revision":1,"by":"serve"}"#);
+                send(r#"{"dismiss":1,"revision":1}"#);
+                send(r#"{"read":9}"#);
+            }
+            lines.people(db, &trace)?;
+            if passes == 2 {
+                let cancelled = reply.try_recv().expect("the cancel waited for the drain");
+                assert!(
+                    cancelled.contains("Err") && cancelled.contains('7'),
+                    "{cancelled}"
+                );
+                let replied = reply.try_recv().expect("the answer waited for the drain");
+                assert_eq!(replied, r#"{"Ok":"ask o answered"}"#);
+                assert!(reply.try_recv().unwrap().contains("Err"));
+            }
+            Ok(())
+        });
+
+        assert!(drained.unwrap());
+        assert_eq!(passes, 3);
+        let waiting: Vec<_> = lines.waiting.iter().map(|line| &line.text).collect();
+        assert_eq!(waiting, [r#"{"version":true}"#, r#"{"read":9}"#]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_tick_past_its_time_stops_after_the_message_it_handles() {
+        let bus = backlog("slow-drain", 3);
+        let mut handled = 0;
+        let mut slow = || {
+            some(&bus, "c", false, &mut |_| {
+                handled += 1;
+                std::thread::sleep(DRAIN_FOR);
+                Ok(())
+            })
+            .unwrap()
+        };
+
+        let first = slow();
+        let second = slow();
+
+        assert!(!first && !second);
+        assert_eq!(handled, 2);
+    }
+
+    #[test]
+    fn an_add_publishes_a_claim_only_once_it_read_the_whole_log() {
+        let dir = std::env::temp_dir().join(format!("priory-take-in-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("runners")).unwrap();
+        fs::create_dir_all(dir.join("workflows")).unwrap();
+        fs::write(dir.join("factory.toml"), "name = \"t\"\n").unwrap();
+        fs::write(dir.join("workflows/w.toml"), workflow(&["a"])).unwrap();
+        for runner in ["a", "b"] {
+            let file = dir.join(format!("runners/{runner}.toml"));
+            fs::write(file, "platform = { os = \"linux\" }\n").unwrap();
+        }
+        let factory = priory_factory::rules::validated(&dir).unwrap();
+        let trace = Trace {
+            factory: &factory,
+            revision: None,
+            machine: None,
+            runner: Some("a".to_owned()),
+            usage: |_, _| None,
+        };
+        let bus = backlog("take-in-log", 0);
+        let key = "github:owner/repo#1";
+        let request = serde_json::json!({
+            "key": key, "workflow": "w", "trigger": "cli", "source": "s"
+        });
+        let request = herdr_bus::Message::new("factory.task.requested", request).subject(key);
+        Log::publish(&bus, OUTPUT, &request).unwrap();
+        for at in 0..150 {
+            let event = herdr_bus::Message::new("t.event", serde_json::json!({ "at": at }));
+            Log::publish(&bus, OUTPUT, &event).unwrap();
+        }
+        let mut db = state::memory();
+        let consumer = runners::consumer(Some("a"));
+        let claims = || {
+            let messages = Log::messages(&bus, OUTPUT, None, 1000).unwrap();
+            let claimed = |stored: &&herdr_bus::Stored| stored.message.kind == intake::TASK_CLAIMED;
+            messages.iter().filter(claimed).count()
+        };
+        let unread = || Log::read(&bus, &consumer, OUTPUT, 1000).unwrap().len();
+
+        take_in(&bus, &consumer, &mut db, &trace, None).unwrap();
+
+        let queued: i64 = db
+            .query_row("SELECT count(*) FROM sends", [], |row| row.get(0))
+            .unwrap();
+        assert!(unread() > 0);
+        assert_eq!((claims(), queued), (0, 1));
+
+        // A slow disk may need more passes. The log's own claim then waits to be read.
+        for _ in 0..200 {
+            take_in(&bus, &consumer, &mut db, &trace, None).unwrap();
+            if unread() == 0 {
+                break;
+            }
+        }
+        assert_eq!(claims(), 1);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// Writes the factory's file once `reload::EVERY` passed, then polls.

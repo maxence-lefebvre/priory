@@ -112,4 +112,4 @@ when:
 | `Priory acts on nothing-to-do only, not <class>` | The model sorted it `trivial` or `persons-call` |
 
 The call runs while the daemon routes events, so a slow call delays the events behind it, by
-`timeout` at most.
+`timeout` at most. [The daemon](README.md) says how calls and the bound of one pass of its loop meet.

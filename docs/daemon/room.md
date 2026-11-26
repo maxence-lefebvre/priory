@@ -191,4 +191,23 @@ Known limits:
 - An agent that grows past its declared `memory` can still crowd the machine. The memory gate covers
   builds an agent wraps in it. The agents slice (below) slows the rest down.
 - Load is not declared per agent, so when load leaves no room, no task fits anyway.
-- The measurements need Linux's `/proc`.
+- On macOS, free memory counts inactive pages, which the kernel may have to compress or swap
+  before it hands them out.
+
+## On macOS
+
+macOS has no `/proc`, so the daemon reads the same measures from the system's own tools:
+
+| Measure | Read from |
+| ------- | --------- |
+| Memory | `hw.memsize` in `sysctl` for the total, and the free, speculative and inactive pages of `vm_stat` for free memory |
+| CPU | the 1-minute load in `vm.loadavg` in `sysctl` |
+| Host name | `hostname -s` |
+| A process's start time | `ps -o lstart=`, to the second |
+| The daemon's own memory and CPU time | `ps -o rss=,utime=,time=` |
+| The memory of a held grant's command and its descendants | `ps -axo pid=,ppid=,rss=`, whose resident memory counts shared pages once per process |
+
+Each tool runs in the C locale and has 5 seconds. A measure of the room is used again for 1 second. Setting `PRIORY_PROC` on macOS reads its directory
+in place of the tools for memory, CPU, the host name, the daemon's own use and a command's memory.
+A process's start time always comes from `ps`. The
+[agents slice](agents-slice.md) needs systemd, so on macOS the room check is the only cap.

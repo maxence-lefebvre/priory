@@ -32,15 +32,21 @@ fn panes() -> std::sync::MutexGuard<'static, BTreeMap<(i64, String), Pane>> {
 /// scope's anonymous and shared memory. None when the run has no scope inside the agents slice, as
 /// on a host without systemd, or when it cannot be read.
 pub(crate) fn memory(run: i64, tmux: &str, session: &str) -> Option<u64> {
+    // macOS has no cgroup to read.
+    if cfg!(target_os = "macos") {
+        return None;
+    }
     let key = (run, session.to_owned());
     let cached = panes().get(&key).copied();
     let pid = match cached {
-        Some(Pane::Found { pid, started }) if crate::memory::started(pid) == Some(started) => pid,
+        Some(Pane::Found { pid, started }) if crate::memory::start_time(pid) == Some(started) => {
+            pid
+        }
         Some(Pane::Missing { at }) if at.elapsed() < RETRY => return None,
         // The lock is not held while tmux runs.
         _ => {
             let found = runtime::pane_pid(tmux, session)
-                .and_then(|pid| Some((pid, crate::memory::started(pid)?)));
+                .and_then(|pid| Some((pid, crate::memory::start_time(pid)?)));
             let pane = match found {
                 Some((pid, started)) => Pane::Found { pid, started },
                 None => Pane::Missing { at: Instant::now() },

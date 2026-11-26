@@ -46,10 +46,18 @@ holder by pid and start time in `/proc/<pid>/stat`, so a zombie or reused pid co
 killed `acquire` that waits frees its place within a second. A killed `acquire` whose command still
 runs keeps its grant until that command ends.
 
+On macOS, which has no `/proc`, the shell of step 3 waits for a go-ahead file in place of a pipe.
+The file is in a new folder of the temporary folder that only its owner can enter, and `acquire`
+refuses to run when that folder is already there. The shell checks every 50 ms that `acquire` still
+runs, and exits without running the command once `acquire` is gone. The daemon identifies a holder
+there by pid and the start time `ps` prints, to the second. When `ps` cannot run or takes more than
+5 seconds, the daemon keeps the grant. It then refuses a new `acquire`, or the hand-over of step 3,
+whose process it cannot check, and that `acquire` exits 125 and never runs the command.
+
 `acquire` exits 125 and never runs the command when no daemon listens to its first request, when
 the daemon cannot measure the room or refuses the grant, or when the grant still waits after
-`--timeout`, 1 hour by default. No daemon listens when its socket refuses the first request, and `acquire` does
-not wait for a restart then. A grant of a run that stops waiting, because it timed out or its
+`--timeout`, 1 hour by default. No daemon listens when its socket refuses the first request. `acquire` waits for
+a daemon that [stopped](home.md#socket-spool-and-lock) to restart, within `--timeout`. A grant of a run that stops waiting, because it timed out or its
 `acquire` was killed, leaves its request time behind for an hour. The daemon records it even when
 it only sees that the process is gone. When the same task acquires the same command with the same
 GB again within that hour, the new grant

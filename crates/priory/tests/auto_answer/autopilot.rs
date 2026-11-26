@@ -278,6 +278,11 @@ fn an_ask_under_the_level_is_left_marked_and_medium_answers_it() {
 #[test]
 fn a_lane_it_does_not_cover_is_left() {
     let setup = asleep("pilot-lane", WORKFLOW, "high");
+    fs::write(
+        setup.dir.join("factory/lanes.toml"),
+        "[[rules]]\nkey = \"github:owner/repo#7\"\nlane = \"core/other\"\n",
+    )
+    .unwrap();
 
     setup.autopilot_on(&["--for", "1h", "--lane", "core/other"]);
 
@@ -1130,6 +1135,332 @@ fn an_off_that_told_no_runner_is_not_undone_by_an_older_on() {
     until_read(&a, 1);
     assert_eq!(status_level(&a), json!(null));
     assert_eq!(status_level(&b), json!("high"));
+}
+
+/// Runs `setup`'s daemon once: it reads the log to its end, then publishes what it queued.
+fn pass(setup: &Setup) {
+    let pass = setup.priory(&["daemon", &factory(setup), "--once"]);
+    assert!(pass.status.success(), "{pass:?}");
+}
+
+#[test]
+fn a_late_on_made_before_another_runners_off_turns_no_runner_on() {
+    let a = runner("pilot-late-on", "a", None);
+    let b = runner("pilot-late-on", "b", Some(&a));
+    a.autopilot_on(&["--for", "1h"]);
+    off(&b);
+
+    pass(&b);
+    logged(&b, "priory.autopilot.set", json!({}));
+    pass(&a);
+    let obeyed = status_level(&a);
+    logged(&a, "priory.autopilot.set", json!({ "level": "high" }));
+    pass(&b);
+    pass(&a);
+
+    assert_eq!(
+        [obeyed, status_level(&a), status_level(&b)],
+        [json!(null), json!(null), json!(null)]
+    );
+    assert_eq!(a.autopilot_report()["why"], "off");
+    let late = |setup: &Setup| setup.rows("inbox").into_iter().find(|row| row[0] == "2");
+    assert_eq!(late(&b).unwrap()[4], "ignored");
+}
+
+#[test]
+fn a_runner_whose_own_on_is_unread_ignores_an_older_off() {
+    let a = runner("pilot-older-off", "a", None);
+    let b = runner("pilot-older-off", "b", Some(&a));
+    off(&b);
+    pass(&b);
+    a.autopilot_on(&["--for", "1h"]);
+
+    pass(&a);
+    let kept = status_level(&a);
+    pass(&b);
+    pass(&a);
+
+    assert_eq!(
+        [kept, status_level(&a), status_level(&b)],
+        [json!("high"), json!("high"), json!("high")]
+    );
+}
+
+#[test]
+fn an_off_dated_far_ahead_ends_it_and_bars_no_later_on() {
+    let a = runner("pilot-far-off", "a", None);
+    let b = runner("pilot-far-off", "b", Some(&a));
+    a.autopilot_on(&["--for", "1h"]);
+    pass(&a);
+    pass(&b);
+    a.publish(
+        &Message::new("priory.autopilot.set", json!({}))
+            .time("2099-01-01T00:00:00Z".parse().unwrap()),
+    );
+    pass(&a);
+    pass(&b);
+    assert_eq!(
+        [status_level(&a), status_level(&b)],
+        [json!(null), json!(null)]
+    );
+
+    a.autopilot_on(&["--for", "1h", "--level", "medium"]);
+    pass(&a);
+    pass(&b);
+
+    assert_eq!(
+        [status_level(&a), status_level(&b)],
+        [json!("medium"), json!("medium")]
+    );
+}
+
+#[test]
+fn a_view_only_machine_whose_publish_fails_stays_off() {
+    let mut laptop = runner("pilot-view-cut", "laptop", None);
+    laptop.bus = laptop.dir.clone();
+
+    let on = laptop.autopilot(&["on", "--for", "1h"]);
+
+    assert!(!on.status.success(), "{on:?}");
+    let status = laptop.autopilot(&["status"]);
+    assert_eq!(
+        String::from_utf8_lossy(&status.stdout),
+        "autopilot is off\n"
+    );
+}
+
+/// Runs `sql` on `setup`'s state file.
+fn state(setup: &Setup, sql: &str) {
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.busy_timeout(Duration::from_secs(10)).unwrap();
+    db.execute_batch(sql).unwrap();
+}
+
+/// What `setup` made of the `on` at `level` it read from the log.
+fn outcome(setup: &Setup, level: &str) -> String {
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .query_row(
+            "SELECT outcome FROM inbox WHERE type = 'priory.autopilot.set'
+             AND json_extract(data, '$.level') = ?1",
+            [level],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
+fn an_on_dated_before_the_stored_off_is_refused() {
+    let a = runner("pilot-set-back", "a", None);
+    off(&a);
+    state(
+        &a,
+        "UPDATE autopilot_times SET off = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '+1 hour')",
+    );
+
+    let on = a.autopilot(&["on", "--for", "2h"]);
+
+    assert!(!on.status.success(), "{on:?}");
+    assert!(
+        String::from_utf8_lossy(&on.stderr).contains("autopilot was turned off at"),
+        "{on:?}"
+    );
+    pass(&a);
+    assert_eq!(status_level(&a), json!(null));
+    assert_eq!(settings_read(&a), 0);
+}
+
+#[test]
+fn an_own_on_read_back_after_a_later_off_ends_its_window() {
+    let a = runner("pilot-echo", "a", None);
+    a.autopilot_on(&["--for", "1h"]);
+    state(&a, "UPDATE autopilot_times SET off = unread_at");
+    pass(&a);
+
+    pass(&a);
+
+    assert_eq!(status_level(&a), json!(null));
+    assert_eq!(a.autopilot_report()["why"], "off");
+}
+
+#[test]
+fn a_view_only_machines_on_keeps_its_date_on_the_log() {
+    let a = runner("pilot-view-date", "a", None);
+    let laptop = runner("pilot-view-date", "laptop", Some(&a));
+    let on = laptop
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args(["autopilot", "on", &factory(&laptop), "--for", "1h"])
+        .env("PRIORY_NOW", "2099-01-01T00:00:00Z")
+        .output()
+        .unwrap();
+    assert!(on.status.success(), "{on:?}");
+
+    pass(&a);
+
+    let dated: String = rusqlite::Connection::open(a.dir.join("priory.db"))
+        .unwrap()
+        .query_row(
+            "SELECT time FROM inbox WHERE json_extract(data, '$.level') = 'high'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!dated.starts_with("2099"), "{dated}");
+}
+
+#[test]
+fn an_upgrade_keeps_an_off_already_read_against_a_late_on() {
+    let a = runner("pilot-upgrade", "a", None);
+    let b = runner("pilot-upgrade", "b", Some(&a));
+    a.autopilot_on(&["--for", "1h"]);
+    off(&b);
+    pass(&b);
+    pass(&b);
+    state(&b, "DROP TABLE autopilot_times; PRAGMA user_version = 123;");
+    pass(&a);
+    logged(&a, "priory.autopilot.set", json!({ "level": "high" }));
+
+    pass(&b);
+
+    assert_eq!(status_level(&b), json!(null));
+    assert_eq!(outcome(&b, "high"), "ignored");
+}
+
+#[test]
+fn an_off_of_the_date_of_an_unread_own_on_ends_it() {
+    let a = runner("pilot-same-date", "a", None);
+    a.autopilot_on(&["--for", "1h"]);
+    let dated: String = rusqlite::Connection::open(a.dir.join("priory.db"))
+        .unwrap()
+        .query_row("SELECT unread_at FROM autopilot_times", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    a.publish(&Message::new("priory.autopilot.set", json!({})).time(dated.parse().unwrap()));
+
+    pass(&a);
+
+    assert_eq!(status_level(&a), json!(null));
+}
+
+#[test]
+fn a_runner_cut_off_takes_an_on_made_after_the_off_that_ended_its_own() {
+    let a = runner("pilot-next-on", "a", None);
+    let b = runner("pilot-next-on", "b", Some(&a));
+    a.autopilot_on(&["--for", "1h"]);
+    off(&b);
+    b.autopilot_on(&["--for", "1h", "--level", "medium"]);
+    pass(&b);
+
+    pass(&a);
+    let first = status_level(&a);
+    pass(&a);
+    pass(&b);
+
+    assert_eq!(
+        [first, status_level(&a), status_level(&b)],
+        [json!("medium"), json!("medium"), json!("medium")]
+    );
+    assert_eq!(
+        [outcome(&a, "high"), outcome(&b, "high")],
+        ["ignored", "ignored"]
+    );
+}
+
+#[test]
+fn an_older_on_skipped_while_its_own_is_unread_is_recorded_as_ignored() {
+    let a = runner("pilot-skipped", "a", None);
+    let b = runner("pilot-skipped", "b", Some(&a));
+    b.autopilot_on(&["--for", "1h"]);
+    pass(&b);
+    a.autopilot_on(&["--for", "1h", "--level", "medium"]);
+
+    pass(&a);
+
+    assert_eq!(status_level(&a), json!("medium"));
+    assert_eq!(outcome(&a, "high"), "ignored");
+}
+
+#[test]
+fn an_off_that_told_no_runner_bars_an_older_on_after_a_newer_one() {
+    let a = runner("pilot-own-off", "a", None);
+    let b = runner("pilot-own-off", "b", Some(&a));
+    b.autopilot_on(&["--for", "1h"]);
+    let settings = a.dir.join("factory/factory.toml");
+    let text = fs::read_to_string(&settings).unwrap();
+    fs::write(&settings, "name = [").unwrap();
+    assert!(!a.autopilot(&["off", &factory(&a)]).status.success());
+    fs::write(&settings, text).unwrap();
+    a.autopilot_on(&["--for", "1h", "--level", "medium"]);
+    pass(&a);
+    pass(&a);
+
+    pass(&b);
+    pass(&a);
+
+    assert_eq!(status_level(&a), json!("medium"));
+    assert_eq!(outcome(&a, "high"), "ignored");
+}
+
+#[test]
+fn a_lane_the_fallback_or_a_lane_table_names_is_accepted() {
+    let setup = Setup::new("pilot-lanes-toml");
+    fs::write(
+        setup.dir.join("factory/lanes.toml"),
+        "fallback = \"{team}/misc\"\n[lane.\"web/ui\"]\nmax_running = 1\n",
+    )
+    .unwrap();
+
+    setup.autopilot_on(&["--for", "1h", "--lane", "core/misc", "--lane", "web/ui"]);
+
+    let other = setup.autopilot(&["on", "--for", "1h", "--lane", "core/other"]);
+    assert!(!other.status.success(), "{other:?}");
+}
+
+#[test]
+fn asks_it_left_take_no_write_transaction_on_later_ticks() {
+    let setup = asleep("pilot-reads", WORKFLOW, "medium");
+    setup.autopilot_on(&["--for", "1h"]);
+    left(&setup, "1");
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.busy_timeout(Duration::from_secs(10)).unwrap();
+    // A judgement writes through this insert even when it changes no row.
+    db.execute_batch(
+        "CREATE TABLE judged (at TEXT);
+         CREATE TRIGGER judging BEFORE INSERT ON autopilot_asks BEGIN
+           INSERT INTO judged VALUES ('x');
+         END;",
+    )
+    .unwrap();
+
+    std::thread::sleep(Duration::from_secs(3));
+
+    let judged: i64 = db
+        .query_row("SELECT count(*) FROM judged", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(judged, 0);
+}
+
+#[test]
+fn a_lane_no_task_or_trigger_uses_is_refused() {
+    let setup = Setup::new("pilot-unused-lane");
+    let unused = setup.autopilot(&["on", "--for", "1h", "--lane", "no/where"]);
+    assert!(!unused.status.success(), "{unused:?}");
+    assert!(
+        String::from_utf8_lossy(&unused.stderr)
+            .contains("--lane `no/where`: no task or trigger uses it"),
+        "{unused:?}"
+    );
+    let trigger = fs::read_dir(setup.dir.join("factory/triggers"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let text = fs::read_to_string(&trigger).unwrap();
+    fs::write(&trigger, format!("lane = \"no/where\"\n{text}")).unwrap();
+
+    setup.autopilot_on(&["--for", "1h", "--lane", "no/where", "--lane", "none/misc"]);
 }
 
 #[test]

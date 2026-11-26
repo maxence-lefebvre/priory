@@ -462,7 +462,7 @@ fn stable(unit: &str, seconds: u64) -> Result<bool, String> {
         return Ok(false);
     }
     let pid = journal::property(unit, "MainPID")?.parse().ok();
-    let started = pid.and_then(memory::started);
+    let started = pid.and_then(memory::start_time);
     let up = fs::read_to_string("/proc/uptime").ok();
     let up: Option<f64> = up.and_then(|text| text.split_whitespace().next()?.parse().ok());
     // Linux reports 100 ticks a second to every process.
@@ -485,7 +485,7 @@ fn ended(unit: &str, what: &str) -> Result<Fault, String> {
 /// Whether `unit` was stopped, as `systemctl stop` does, rather than ended by itself.
 fn was_stopped(unit: &str) -> Result<bool, String> {
     Ok(journal::property(unit, "ActiveState")? == "inactive"
-        // CLD_KILLED, by SIGTERM: the services handle no signal.
+        // CLD_KILLED, by SIGTERM: the intake handles no signal, and the daemon ends its stop by it.
         && journal::property(unit, "ExecMainCode")? == "2"
         && journal::property(unit, "ExecMainStatus")? == "15")
 }

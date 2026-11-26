@@ -14,7 +14,7 @@ reading each task.
 | `failed` | the task | its reason, then `revive: priory revive <task>` | the task last changed state |
 | `prompt` | the outbox prompt | its text, for an `uncertain` prompt | it was attempted |
 | `command` | the answer's action | `Priory stopped while answer <answer> to ask <ask> ran <argv> in <dir>: check the target`, for an `uncertain` command (see [tools.md](../reference/tools.md#commands-an-answer-runs)) | it ended |
-| `held` | the hold | the task's reason: why it is held, and until what. For a running task marked to be held, `holds after this turn: <reason>`, and for one that sleeps or is blocked since, `holds once it is ready: <reason>` (see [runs.md](runs.md#holding-a-running-task)) | it was held, or marked |
+| `held` | the hold | the task's reason: why it is held, and until what. For a marked task with a live run, `holds after this turn: <reason>`, and for one that runs a command, sleeps or is blocked since, `holds once it is ready: <reason>` (see [runs.md](runs.md#holding-a-running-task)) | it was held, or marked |
 | `batch` | the batch | its title and counts, then which entries start next: `Invoice exports: 1 merged, 3 started, 2 planned. Next: ENG-41 and ENG-42 start when ENG-40 merges.`, each task named by its key without the source. One row per going batch, in place of the `held` rows of its entries (see Batches) | the go |
 | `memory` | the memory grant | `waits for <N> GB: <command>`, then `; grant <id> of task <task> holds <N> GB for <time>` for the longest held grant. A grant held past an hour while others wait has its own row: `holds <N> GB for <time> while <n> grants wait: <command>` (see [memory-gate.md](memory-gate.md)) | it was requested, or granted for the held row |
 | `memories` | `memories` | `` <n> memory candidates wait for a person: <name>, <name>; see them with `priory memories` ``. One row while any candidate waits (see Memory candidates) | the oldest candidate was written |
@@ -24,14 +24,14 @@ reading each task.
 | `report` | the report's inbox sequence number | `<source>: <line>`, for an unread report | it was posted |
 | `todo` | the to-do | its text, then `, due <time>` when it has one (see To-dos). `priory desk` prints the time in UTC; the web and Herdr Desks show it in local time | it was added |
 | `retired` | the task | `its worktree was removed to free disk; it resurrects from <branch> when its wait fires` | it retired |
-| `worktree` | the worktree's path | why it stays, then its size: see Sweep | `-` |
+| `worktree` | the worktree's path | why it stays, then its size: see Sweep. Also each folder or file in the trash: see [The trash](sweep.md#the-trash) | `-` |
 
 The lane column is the task's lane, or `-` for a `worktree` row.
 
 In `priory desk --json`, an `ask` item carries `routed_to`: the lead it is routed to, or null. The
 web Desk and the Herdr Desk show it as "with <lead>" on the ask's row and in the next thing.
 
-It lists only asks and prompts of active tasks, holds of held tasks and of tasks marked to be held, and waiting or long-held memory grants. Then the `queue` rows in start order, then one `worktree` row per worktree the sweep keeps. `priory asks` prints every open ask. Both leave snoozed items out, unless you pass `--all` (see Snooze).
+It lists only asks and prompts of active tasks, holds of held tasks and of tasks marked to be held, and waiting or long-held memory grants. Then the `queue` rows in start order, then one `worktree` row per worktree the sweep keeps and per folder in the trash. `priory asks` prints every open ask. Both leave snoozed items out, unless you pass `--all` (see Snooze).
 
 ## Batches
 
@@ -346,8 +346,8 @@ carries that line as `paused`.
 task starts at generation 1. The revive goes to the daemon over its socket and, in one
 transaction:
 
-1. Withdraws every open ask and wait of the task with the reason `revived`, and marks its queued
-   prompts `withdrawn`.
+1. Withdraws every open wait of the task with the reason `revived`, and marks its queued prompts
+   `withdrawn`. Its asks closed when it ended, with the reason `task-ended`.
 2. Raises the task's generation by one.
 3. Enters the step it ended on, or `<step>`, as a move into it would (see Moving on): a model step
    makes the task `ready` with its prompt queued, a human step asks again, and a code step makes it
@@ -369,9 +369,10 @@ and the worktree already holds the earlier generation's work. When the sweep rem
 next run adds it back from the branch (see Priory home). A revive straight into a code step, such as
 `open-pr`, adds it back before the action runs.
 
-A withdrawn ask or wait stays in the state file but counts as closed. An answer to one is refused with
-`ask <id> was withdrawn when task <task> was revived`, or with `ask <id> was withdrawn when a later
-run of task <task> called another tool` (see Routing). [Why an ask or wait was
+A withdrawn ask or wait stays in the state file but counts as closed. An ask whose task is dropped,
+done or failed is withdrawn with it, and an answer to it is refused with `ask <id> was withdrawn when
+task <task> ended`. An answer to an ask that a later run moved past is refused with `ask <id> was
+withdrawn when a later run of task <task> called another tool` (see Routing). [Why an ask or wait was
 withdrawn](waits.md#why-an-ask-or-wait-was-withdrawn) lists every reason. An event for a withdrawn wait
 fires nothing, and the task keeps it like any event that matches no wait, for the next run to read.
 `priory asks`, `priory waits` and the desk leave withdrawn ones out. A new run never takes over a

@@ -20,6 +20,10 @@ It removes a folder and its branch `priory/<id>` only when all checks hold:
   the pid of the Priory process that runs it, and so do its children. A process counts as
   Priory's only when that pid runs Priory's program, is its ancestor, and that ancestor's child on
   the way carries the same value. Any process can set the variable, so the value alone hides none.
+  On macOS, `lsof` lists the working directories. No process's environment can be read there, so
+  Priory's own git counts too, and the worktree waits for the next sweep. A worktree also stays when
+  `lsof` fails, takes more than 5 seconds, lists nothing or prints an error in place of a folder. So
+  does one whose path holds a backslash or is not plain ASCII, which `lsof` escapes.
 - Its task has no live run and no memory grant, waiting or held (see Memory gate).
 - No mount is at or under it, and it holds no repository of its own (see What a removal never takes).
 - The branch tip is in `origin/HEAD`, or is the head commit of a merged pull request for the
@@ -46,7 +50,11 @@ that branch once the pull request merges, since the sweep walks folders. A `fail
 task keeps its worktree as `not merged`, since a person revives it in place.
 
 When the task's repository has a [`teardown` recipe](runs.md#recipes), the sweep runs it in the
-worktree first, once all checks hold, and removes the worktree at the sweep after it succeeds. The
+worktree first, once all checks hold, and removes the worktree at the sweep after it succeeds. Before the
+first teardown it also looks for what certainly keeps the worktree: a repository, a submodule or a
+lock. Then it runs no teardown. Anything it could not learn does not hold the teardown back, since the
+teardown may remove the cause, such as a mount or a folder that a container's user owns. The sweep
+looks again after it, and that walk decides. The
 daemon sweeps again as soon as a teardown ends. A failed teardown keeps the worktree. The desk says
 `teardown failed: <status>. Its output ended with: <lines>`, and no sweep runs it again until the
 factory's teardown changes. While it runs, the desk says `teardown runs` or
@@ -72,10 +80,11 @@ clone, as a `git worktree remove` stopped halfway leaves it, the task's next run
 `not a worktree of <clone>`, `not recorded as the worktree of task <id>`, `not on branch priory/<id>`,
 `uncommitted changes`, `untracked files`, `a process runs in it`, `unpushed commits`, `not merged`,
 `its patch check waits for the next sweep`, `its checks wait for the next sweep`,
-`its HEAD moved during the sweep`, `its worktree is locked`, `it holds a submodule`, `teardown runs`, `teardown failed: ...`, `<path> is a mount`, `<path> holds a git repository` or
+`its HEAD moved during the sweep`, `its worktree is locked`, `it holds a submodule`, `teardown runs`, `teardown failed: ...`, `<path> is a mount`, `<path> holds a git repository`,
+`cannot read <path>: <error>`, `cannot check <path> for mounts: <error>` or
 `task <id> has a live run or a memory grant, or left its state`.
-It runs no git: it reads the reasons from `sweep/sizes.json`, which each sweep writes. Before the
-first sweep, it lists only the reasons it reads from the database. Each reason ends with the size of
+It runs no git: it reads the reasons from `sweep/sizes.json`, which each sweep writes once it has judged every worktree
+and once it ends. Before the first sweep, it lists only the reasons it reads from the database. Each reason ends with the size of
 the folder in binary units, such as `not merged, 7.4 GiB`. After each periodic sweep, a thread of its
 own walks the kept folders and records their sizes, since that walk takes seconds. A folder the walk
 has not measured yet shows its reason alone.
@@ -87,8 +96,10 @@ The daemon's loop starts runs and delivers answers, so a sweep must not hold it:
 1. The loop lists the worktrees of ended tasks and starts one thread. The thread fetches, checks each
    worktree, and walks the ignored files of one that may go. A walk has no time limit, so a large
    worktree can go too. Its answer waits for a later tick.
-2. Each tick takes one worktree and runs no git. The task's state is the same, with no live run and no
-   memory grant, no process runs in the folder, and no mount is in it. Then the tick renames the folder
+2. Each tick takes one worktree and runs no git. On macOS it runs `mount` and `lsof`, which share 5
+   seconds. The task's state is the same, with no live run and no
+   memory grant, no process runs in the folder, and no mount is in it. A check that cannot answer keeps
+   the worktree. Then the tick renames the folder
    to `PRIORY_HOME/reclaim/`, or beside it on another filesystem.
 3. A second thread checks the moved folder, where a change by the old path no longer reaches it: `HEAD`
    and the branch are those the first thread judged, nothing is uncommitted or untracked, no process
@@ -160,12 +171,23 @@ the desk as `no task`.
 A delete takes the files of a folder mounted under the worktree too. So the sweep and a retirement
 check, after any teardown:
 
-- No mount is at or under the worktree, as `/proc/self/mountinfo` shows. A table that cannot be read
+- No mount is at or under the worktree, as `/proc/self/mountinfo` shows, or `mount` on macOS. A table that cannot be read
   keeps the worktree.
 - No ignored file or folder is part of a repository: a `.git` entry, or a `HEAD` beside `objects` and
   `refs`. Nor is a `.git` in a folder of tracked files. Its commits can be nowhere else, and the reclaim keeps it too. A repository in the `tmp`
-  folder of a cargo target does not count. A tracked folder that looks like a repository does not count
+  folder of a cargo target, also a nested one, does not count. A tracked folder that looks like a repository does not count
   either, since the branch holds it.
+- Every folder in it can be read. First, the daemon adds the owner's read, write and search bits to each folder
+  of its own user that it cannot read, such as one a test left with mode 000. git lists none of the files
+  in such a folder. Before each one, it checks that no process runs in the worktree and no mount is there.
+  On Linux it changes the mode through a handle on the folder it looked at, so a symlink that takes the
+  place of the folder, or of one above it, leads nowhere else. On macOS a symlink above it still can. A
+  mount that appears while the daemon only reads is not seen until the next check.
+  The bits stay when the worktree stays. A folder of another user keeps the worktree
+  as `cannot read <path>: <error>`: give the daemon's user access, or delete that folder.
+  The checks after the move, the reclaim and the walk of a folder without its entry open no folder. A
+  worktree with a folder closed after the first walk moves to `PRIORY_HOME/trash/`, and the
+  reclaim keeps such build output.
 - The checks listed above still hold: the task's state, its runs and grants, uncommitted and untracked
   files, and processes.
 
@@ -178,11 +200,26 @@ the thread's own check finds it before the delete. A mount in a private namespac
 git does not enter it.
 
 A folder without its entry in the clone (see above) waits the same way: its task stays `queued` or
-`ready` with `waits to add its worktree back: <path> is a mount`, and each tick tries again. One that
-holds a repository, ignored or not, moves to `PRIORY_HOME/trash/` instead of going.
+`ready` with `waits to add its worktree back: <path> is a mount`, and each tick tries again. The mounts
+are checked again after the walk, right before the folder moves. One that
+holds a repository, ignored or not, or a folder it cannot read moves to `PRIORY_HOME/trash/` instead
+of going. The log says why and where.
 
 The checkouts of a `record` command and of a `command` scorer also stay when a mount is in them. They
-are logged and not tried again.
+are logged and not tried again. A checkout that its command deleted loses its entry in the clone.
+
+## The trash
+
+Nothing empties `PRIORY_HOME/trash/`, since what is there can hold the only copy of a commit. The desk
+lists each folder or file in it as `in the trash until a person empties it`, with its size once a sweep measured
+it. A path's control characters, and bytes that are not UTF-8, show escaped, such as `\n` or `\xFF`. The size leaves out what the daemon cannot read. To empty it:
+
+1. Read in the daemon's log why it moved there.
+2. Look for mounts: `findmnt -l | grep <path>`. Unmount each one first: `chmod -R` and `rm -rf` go through it.
+3. Run `chmod -R u+rwx <path>`, then look for repositories: `find <path> -name .git -o -name HEAD`. Push or
+   copy the commits you want. A `.git` file in `<path>` itself may name an entry that is gone, so git may
+   not work there.
+4. Run `rm -rf <path>`, with `sudo` for another user's files. It leaves the desk at once.
 
 ## Reclaiming build output
 
@@ -210,7 +247,7 @@ takes):
 
 - One with a mount at or under it, as `/proc/self/mountinfo` shows.
 - One inside a submodule or a nested repository.
-- One that holds a `.git` entry. A `.git` in the `tmp` folder of a cargo target does not count: tests
+- One that holds a `.git` entry. A `.git` in the `tmp` folder of a cargo target, also a nested one, does not count: tests
   keep scratch files there. Cargo's `CACHEDIR.TAG` marks such a target.
 - One that is or holds a bare repository: a `HEAD` beside `objects` and `refs`. The same `tmp` does not count.
 
@@ -327,7 +364,7 @@ script past its `timeout`, 5 minutes by default, is killed with its children. Th
 last 2000 bytes of output and the status, `exit <code>` or `timed out after <n>s`. The desk lists
 each script of the open stall as a `sweep` row. Children a script leaves in the background are
 killed when it ends. A script that fails or cannot start never stops the daemon. A restarted daemon
-kills its predecessor's running scripts, after checking each process group's start time in `/proc`
+kills its predecessor's running scripts, after checking each process group's start time in `/proc`, or with `ps` on macOS
 so a reused pid is left alone. It records them as `interrupted by a daemon restart`, with the tail
 of their output.
 

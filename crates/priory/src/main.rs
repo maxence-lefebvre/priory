@@ -464,7 +464,7 @@ fn serve(
 /// copies, and prints nothing.
 fn upgrade_probe(dir: &Path) -> Result<(), String> {
     let factory = load(dir).ok_or("the factory does not load")?;
-    drop(state::open()?);
+    drop(state::migrate()?);
     priory_intake::log::open(factory.log())
         .map(drop)
         .map_err(|error| error.to_string())
@@ -1775,10 +1775,17 @@ fn autopilot_on(flags: &[&str]) -> ExitCode {
             lanes,
         };
         let mut db = state::open()?;
-        let message = autopilot::set(&mut db, Some(&setting), role == autopilot::Role::Runner)
-            .map_err(|error| error.to_string())?;
+        autopilot::unused(&db, &factory, &setting.lanes)?;
+        let message = autopilot::message(Some(&setting));
+        let queued = role == autopilot::Role::Runner;
         if role == autopilot::Role::Viewer {
-            autopilot::publish(&factory, &message)?;
+            autopilot::barred(&db, &message)?;
+            autopilot::publish_on(&factory, &message)?;
+            autopilot::set(&mut db, Some(&setting), &message, queued).map_err(|why| {
+                format!("{why}. The log holds it: run `priory autopilot off` to be sure")
+            })?;
+        } else {
+            autopilot::set(&mut db, Some(&setting), &message, queued)?;
         }
         let status = autopilot::status(&db).map_err(|error| error.to_string())?;
         autopilot::line(&status).ok_or_else(|| "autopilot ended at once".to_owned())
@@ -1791,7 +1798,8 @@ fn autopilot_on(flags: &[&str]) -> ExitCode {
 fn autopilot_off(dir: Option<&str>) -> ExitCode {
     let turned = state::open().and_then(|mut db| {
         let on = autopilot::status(&db).map_err(|error| error.to_string())?;
-        let message = autopilot::set(&mut db, None, false).map_err(|error| error.to_string())?;
+        let message = autopilot::message(None);
+        autopilot::set(&mut db, None, &message, false)?;
         println!(
             "{}",
             match on.is_null() {
@@ -2912,6 +2920,11 @@ fn acquire(args: &[OsString], lease: bool) -> ExitCode {
     let began = Instant::now();
     let deadline = began + timeout;
     let (mut grant, mut said, mut sent) = (None, String::new(), false);
+    // A restart's wait counts against `--timeout` too.
+    let through_restart = |home: &Path, line: &str, wait: Duration| {
+        let left = deadline.saturating_duration_since(Instant::now());
+        runtime::call_retrying(home, line, wait, left)
+    };
     // The daemon keeps a waiting grant while this process lives, so a lost reply or a daemon
     // restart only delays the next poll of the same grant.
     let grant = loop {
@@ -2921,11 +2934,9 @@ fn acquire(args: &[OsString], lease: bool) -> ExitCode {
                     grant,
                     waited: gives_up.then(|| began.elapsed().as_secs()),
                 },
-                runtime::call_through_restart,
+                through_restart,
             ),
-            // Until a daemon took the request, none may be coming back: fail at once.
-            None if !sent => call(&acquire, runtime::call),
-            None => call(&acquire, runtime::call_through_restart),
+            None => call(&acquire, through_restart),
         };
         sent |= !matches!(&asked, Err(error) if error.starts_with(runtime::NO_DAEMON));
         let reply = match asked {
@@ -3015,6 +3026,9 @@ fn held(
 ) -> Result<std::io::Result<std::process::ExitStatus>, String> {
     use std::io::Write;
     use std::os::fd::AsRawFd;
+    if !cfg!(target_os = "linux") {
+        return held_without_proc(program, rest, grant);
+    }
     let (reader, mut writer) = std::io::pipe().map_err(|error| error.to_string())?;
     // The shell opens the pipe's read end through /proc by this pid, not $PPID, which a dead holder turns into init, and which keeps the command's stdin as it was.
     let wait = format!(
@@ -3031,13 +3045,27 @@ fn held(
         Ok(child) => child,
         Err(error) => return Ok(Err(error)),
     };
+    let taken = take(&mut child, grant);
+    if let Err(error) =
+        taken.and_then(|_| writer.write_all(b"\n").map_err(|error| error.to_string()))
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
+    drop(writer);
+    Ok(child.wait())
+}
+
+/// Has the daemon take the pid of `child` for `grant`, through a restart of the daemon.
+fn take(child: &mut std::process::Child, grant: i64) -> Result<String, String> {
     let run = Gate::Run {
         grant,
         pid: child.id(),
     };
     // The daemon takes the same pid again, so a lost reply only delays the hand-over.
     let mut said = String::new();
-    let taken = loop {
+    loop {
         match call(&run, runtime::call_through_restart) {
             Err(error) if matches!(child.try_wait(), Ok(None)) => {
                 if said != error {
@@ -3048,16 +3076,68 @@ fn held(
             }
             taken => break taken.flatten(),
         }
+    }
+}
+
+/// `held` where no `/proc` reaches the holder's pipe, as on macOS: the shell waits for a go-ahead
+/// file instead, and gives up once this process, the holder, is gone.
+fn held_without_proc(
+    program: &OsString,
+    rest: &[OsString],
+    grant: i64,
+) -> Result<std::io::Result<std::process::ExitStatus>, String> {
+    let now = std::time::SystemTime::now();
+    let nanos = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    let name = format!("{grant}-{nanos}");
+    let folder = go_ahead_folder(&std::env::temp_dir(), &name)?;
+    let mut child = match waiting(&folder, std::process::id(), program, rest).spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            let _ = std::fs::remove_dir(&folder);
+            return Ok(Err(error));
+        }
     };
-    if let Err(error) =
-        taken.and_then(|_| writer.write_all(b"\n").map_err(|error| error.to_string()))
-    {
+    let taken = take(&mut child, grant);
+    if let Err(error) = taken.and_then(|_| {
+        std::fs::File::create_new(folder.join("go"))
+            .map(drop)
+            .map_err(|error| format!("{}: {error}", folder.display()))
+    }) {
         let _ = child.kill();
         let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&folder);
         return Err(error);
     }
-    drop(writer);
     Ok(child.wait())
+}
+
+/// Makes the folder of a go-ahead file, which only its owner can enter, and never takes one that is
+/// already there: another user may have planted it.
+fn go_ahead_folder(parent: &Path, name: &str) -> Result<PathBuf, String> {
+    use std::os::unix::fs::DirBuilderExt;
+    let folder = parent.join(format!("priory-go-{}-{name}", std::process::id()));
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&folder)
+        .map_err(|error| format!("{}: {error}", folder.display()))?;
+    Ok(folder)
+}
+
+/// A shell that runs the command once `go` is in `folder`, or exits once process `holder` is gone.
+fn waiting(folder: &Path, holder: u32, program: &OsString, rest: &[OsString]) -> Command {
+    let wait = "while [ ! -f \"$1/go\" ]; do \
+                kill -0 \"$2\" 2>/dev/null || { rm -rf \"$1\"; exit 125; }; sleep 0.05; done; \
+                rm -rf \"$1\"; shift 2; exec \"$@\"";
+    let mut command = Command::new("sh");
+    command
+        .args(["-c", wait, "sh"])
+        .arg(folder)
+        .arg(holder.to_string())
+        .arg(program)
+        .args(rest);
+    command
 }
 
 /// Runs a leased command in the process group of a guard that stops the group once its pipe from
@@ -3095,7 +3175,7 @@ fn gate(gate: &Gate) -> Result<String, String> {
 /// Sends `gate` to the daemon with `send` and returns its reply, or why none came.
 fn call(
     gate: &Gate,
-    send: fn(&Path, &str, Duration) -> Result<String, String>,
+    send: impl Fn(&Path, &str, Duration) -> Result<String, String>,
 ) -> Result<Result<String, String>, String> {
     let line = serde_json::to_string(gate).expect("a gate message serializes");
     let reply = send(&runtime::home(), &line, runtime::REPLY)?;
@@ -3114,7 +3194,7 @@ fn project_gate() -> ExitCode {
     };
     let call = |line: &proof::Line| {
         let line = serde_json::to_string(line).expect("a gate line serializes");
-        runtime::call(&runtime::home(), &line, runtime::REPLY).and_then(|reply| {
+        runtime::call_through_restart(&runtime::home(), &line, runtime::REPLY).and_then(|reply| {
             serde_json::from_str::<Result<String, String>>(&reply)
                 .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
         })
@@ -3270,8 +3350,8 @@ fn evidence_add(file: &str, caption: &str) -> ExitCode {
         Err(error) => return exit("evidence add", Err(format!("{file}: {error}"))),
     };
     let line = json!({ "evidence": evidence::Add { session, file, caption: caption.to_owned() } });
-    let sent =
-        runtime::call(&runtime::home(), &line.to_string(), runtime::REPLY).and_then(|reply| {
+    let sent = runtime::call_through_restart(&runtime::home(), &line.to_string(), runtime::REPLY)
+        .and_then(|reply| {
             serde_json::from_str::<Result<String, String>>(&reply)
                 .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
         });
@@ -3359,7 +3439,7 @@ fn answer(mut args: Vec<String>) -> ExitCode {
 }
 
 /// Another runner's ask as this machine's mirror holds it, refused when the mirror shows it closed
-/// or at another revision, for one that `answers` it or dismisses it. An ask the mirror lacks, or a machine without a state file, goes to its
+/// or at another revision, for one that `answers` it or dismisses it. An ask the mirror lacks, or a machine whose state file `state::current` does not open, goes to its
 /// runner unchecked, which checks it again anyway.
 fn remote_ask(
     runner: &str,
@@ -3367,7 +3447,7 @@ fn remote_ask(
     revision: i64,
     answers: bool,
 ) -> Result<Option<serde_json::Value>, String> {
-    let Ok(db) = state::open() else {
+    let Some(db) = state::current() else {
         return Ok(None);
     };
     let mirrored = runners::mirrored(&db, runner, ask).map_err(|error| error.to_string())?;
@@ -3381,10 +3461,10 @@ fn remote_ask(
 }
 
 /// The generation to send with an action on runner `runner`'s task of `key`: `generation`, checked
-/// against this machine's claims, else the one they hold. A machine without a state file sends the
+/// against this machine's claims, else the one they hold. A machine whose state file `state::current` does not open sends the
 /// one the person named unchecked, which the runner checks again anyway.
 fn remote_generation(runner: &str, key: &str, generation: Option<i64>) -> Result<i64, String> {
-    let Ok(db) = state::open() else {
+    let Some(db) = state::current() else {
         return generation.ok_or_else(|| {
             format!("this machine knows no generation of task {runner}:{key}: pass --generation N")
         });
@@ -3622,7 +3702,15 @@ fn ask_id(ask: &str) -> Result<i64, String> {
     {
         return Ok(id);
     }
-    tools::ask_named(&state::open()?, ask)
+    // Another runner's `RUNNER:N` goes to it unchecked when this state file does not open at once.
+    let remote = ask
+        .split_once(':')
+        .is_some_and(|(_, id)| id.parse::<i64>().is_ok());
+    let db = match remote {
+        true => state::current().ok_or_else(|| format!("no ask {ask} on this machine"))?,
+        false => state::open()?,
+    };
+    tools::ask_named(&db, ask)
 }
 
 /// Stores or revises an ask from a session Priory did not start, from Fleet's JSON shape.
@@ -4246,10 +4334,11 @@ fn drop_waiting(factory: &factory::Factory, key: &str) -> Result<String, String>
 
 /// Sends `line` to the daemon and prints its reply.
 fn send(verb: &str, line: &str) -> ExitCode {
-    let reply = runtime::call(&runtime::home(), line, runtime::REPLY).and_then(|reply| {
-        serde_json::from_str::<Result<String, String>>(&reply)
-            .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
-    });
+    let reply =
+        runtime::call_through_restart(&runtime::home(), line, runtime::REPLY).and_then(|reply| {
+            serde_json::from_str::<Result<String, String>>(&reply)
+                .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
+        });
     match reply {
         Ok(text) => {
             println!("{text}");
@@ -5181,5 +5270,75 @@ fn hook(event: &str) -> ExitCode {
             eprintln!("priory hook: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// A fresh folder, removed when the test ends.
+    struct Dir(PathBuf);
+
+    impl Dir {
+        fn new(name: &str) -> Dir {
+            let dir = std::env::temp_dir().join(format!("priory-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir(&dir).unwrap();
+            Dir(dir)
+        }
+    }
+
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn touch(file: &Path, dir: &Dir, holder: u32) -> Command {
+        waiting(&dir.0.join("f"), holder, &"touch".into(), &[file.into()])
+    }
+
+    #[test]
+    fn only_its_owner_enters_a_go_ahead_folder_and_a_planted_one_is_refused() {
+        let dir = Dir::new("go-folder");
+        let folder = go_ahead_folder(&dir.0, "1").unwrap();
+        let mode = std::fs::metadata(&folder).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+        assert!(go_ahead_folder(&dir.0, "1").is_err());
+        std::fs::write(folder.with_file_name("planted"), "").unwrap();
+        std::os::unix::fs::symlink(
+            "planted",
+            folder.with_file_name(format!("priory-go-{}-2", std::process::id())),
+        )
+        .unwrap();
+        assert!(go_ahead_folder(&dir.0, "2").is_err());
+    }
+
+    #[test]
+    fn a_command_runs_after_its_go_ahead_file_and_not_for_a_folder_of_that_name() {
+        let dir = Dir::new("go-runs");
+        let (folder, ran) = (dir.0.join("f"), dir.0.join("ran"));
+        std::fs::create_dir_all(folder.join("go")).unwrap();
+        let mut child = touch(&ran, &dir, std::process::id()).spawn().unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(child.try_wait().unwrap().is_none() && !ran.exists());
+        std::fs::remove_dir(folder.join("go")).unwrap();
+        std::fs::write(folder.join("go"), "").unwrap();
+        assert!(child.wait().unwrap().success());
+        assert!(ran.exists() && !folder.exists());
+    }
+
+    #[test]
+    fn a_command_whose_holder_is_gone_never_runs() {
+        let dir = Dir::new("go-gone");
+        let (folder, ran) = (dir.0.join("f"), dir.0.join("ran"));
+        std::fs::create_dir(&folder).unwrap();
+        let mut holder = Command::new("true").spawn().unwrap();
+        holder.wait().unwrap();
+        let status = touch(&ran, &dir, holder.id()).status().unwrap();
+        assert_eq!(status.code(), Some(125));
+        assert!(!ran.exists() && !folder.exists());
     }
 }

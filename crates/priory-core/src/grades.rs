@@ -190,7 +190,9 @@ fn merged(
 fn pushed_after_review(tx: &Transaction, pull: &str) -> rusqlite::Result<Option<String>> {
     tx.query_row(
         "WITH events AS (SELECT time, type, data FROM inbox
-           WHERE 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1),
+           WHERE 'github:' || json_extract(data, '$.repo') || '#'
+             || coalesce(json_extract(data, '$.pull_request'), json_extract(data, '$.issue')) = ?1
+           AND json_extract(data, '$.pull_request') IS NOT NULL),
          reviewed AS (SELECT coalesce(json_extract(data, '$.commit'), json_extract(data, '$.head_sha')) AS head
            FROM events WHERE type = ?2 AND coalesce(json_extract(data, '$.actor'), '') NOT LIKE '%[bot]'
            AND coalesce(json_extract(data, '$.commit'), json_extract(data, '$.head_sha')) IS NOT NULL
@@ -214,12 +216,10 @@ fn merged_at(
     tx.prepare(
         "SELECT DISTINCT json_extract(data, '$.pull_request'), json_extract(data, '$.head_branch')
          FROM inbox
-         WHERE type = ?1 AND json_extract(data, '$.merged') = 1
-         AND json_extract(data, '$.repo') = ?2 AND json_extract(data, '$.merge_commit') = ?3",
+         WHERE type = 'github.pull_request.closed' AND json_extract(data, '$.merged') = 1
+         AND json_extract(data, '$.repo') = ?1 AND json_extract(data, '$.merge_commit') = ?2",
     )?
-    .query_map(params![PR_CLOSED, repo, head], |row| {
-        Ok((row.get(0)?, row.get(1)?))
-    })?
+    .query_map(params![repo, head], |row| Ok((row.get(0)?, row.get(1)?)))?
     .collect()
 }
 
@@ -240,6 +240,9 @@ fn reverts(
         data["body"].as_str().unwrap_or_default()
     )
     .to_lowercase();
+    if !text.contains("reverts ") {
+        return Ok(());
+    }
     let earlier: Vec<(i64, Option<String>, Option<String>)> = tx
         .prepare(
             "SELECT DISTINCT json_extract(data, '$.pull_request'), json_extract(data, '$.merge_commit'),
@@ -401,7 +404,7 @@ fn passed(
     id: u64,
 ) -> rusqlite::Result<Vec<Passed>> {
     // A crash may have stored the passing events of a commit and not the failing ones.
-    db.prepare(
+    db.prepare(&format!(
         "WITH landed AS MATERIALIZED (
            SELECT DISTINCT json_extract(data, '$.merge_commit') AS sha FROM inbox
            WHERE type = ?1 AND julianday(time) >= julianday(?2)
@@ -412,18 +415,18 @@ fn passed(
            SELECT json_extract(data, '$.head_sha') AS sha, json_extract(data, '$.github_id') AS id,
              json_extract(data, '$.conclusion') AS conclusion, json_extract(data, '$.url') AS url,
              json_extract(data, '$.pending') AS pending, json_extract(data, '$.failing') AS failing,
-             json_extract(data, '$.superseded_by') AS superseded,
+             {} AS counted,
              json_extract(data, '$.name') = ?6 AND json_extract(data, '$.app') IS ?7
                AND coalesce(json_extract(data, '$.github_id') > ?8, 1) AS later
-           FROM inbox WHERE type = ?9 AND julianday(time) >= julianday(?2)
+           FROM inbox AS red WHERE type = ?9 AND julianday(time) >= julianday(?2)
            AND json_extract(data, '$.repo') = ?3)
          SELECT sha, json_group_array(url) FILTER (WHERE later) FROM landed JOIN runs USING (sha)
          GROUP BY sha
          HAVING min(conclusion IS 'success' AND id IS NOT NULL) FILTER (WHERE later) = 1
-         AND min(CASE WHEN pending = 0 THEN failing END) <= sum(superseded IS NULL
-           AND coalesce(conclusion, '') NOT IN ('success', 'neutral', 'skipped'))
+         AND min(CASE WHEN pending = 0 THEN failing END) <= sum(counted)
          ORDER BY max(id) FILTER (WHERE later) DESC LIMIT 5",
-    )?
+        crate::route::COUNTED_RED
+    ))?
     .query_map(
         params![
             PR_CLOSED, since, repo, base, commit, name, app, id as i64, CHECKED

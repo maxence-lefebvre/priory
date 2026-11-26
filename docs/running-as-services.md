@@ -89,7 +89,7 @@ mkdir -p ~/.local/state/priory-acme/worktrees
 cd ~/.local/state/priory-acme/worktrees && claude   # accept the dialog, then /exit
 ```
 
-Trust each clone after Priory made it, in step 8.
+Trust each clone after Priory made it, in step 9.
 
 ## 5. Serve the web view over HTTPS
 
@@ -136,7 +136,26 @@ systemctl --user start priory-intake priory-daemon
 Check: `systemctl --user status` shows both `active (running)`. A unit that shows
 `start condition unmet` has no environment file at `~/.config/priory/env`.
 
-## 7. Keep them up after you log out
+## 7. Keep answers fast under load
+
+A busy machine delays the daemon, and with it the web view. Give its unit a larger CPU share than
+the other programs of your session:
+
+```sh
+mkdir -p ~/.config/systemd/user/priory-daemon.service.d
+printf '[Service]\nCPUWeight=1000\n' > ~/.config/systemd/user/priory-daemon.service.d/cpu.conf
+systemctl --user daemon-reload
+systemctl --user restart priory-daemon
+```
+
+The weight splits the CPU between the daemon and the other units of `app.slice`, whose default is
+100. It does nothing while the CPU has idle time. The agents are elsewhere: `priory.slice` has a
+weight of 20 against 100 for the whole of `app.slice`, as [agents slice](daemon/agents-slice.md)
+explains, so `app.slice` already gets 5 times the CPU of the agents when both want it.
+
+Check it with `systemctl --user show priory-daemon -p CPUWeight`.
+
+## 8. Keep them up after you log out
 
 Without lingering, user services stop when your last session ends. On an always-on machine, run this
 once. It changes the machine, so you run it yourself:
@@ -147,7 +166,7 @@ loginctl enable-linger "$USER"
 
 Check: `loginctl show-user "$USER" --property=Linger` prints `Linger=yes`.
 
-## 8. Read the first poll's backlog
+## 9. Read the first poll's backlog
 
 The intake's first poll of each stream is a baseline: it records the recent events it finds, and
 requests no task for them (see [Baseline](intake/github-polling.md#baseline)). On a busy repository,
@@ -174,9 +193,16 @@ them, `priory resume TASK` starts it again.
 To let the daemon do this by itself, follow
 [How to upgrade Priory automatically](upgrading-automatically.md).
 
-A newer release migrates the state database forward when it opens it. An older release then
-refuses it with `state schema N is newer than this priory knows (M)`. So back up both databases
-before every upgrade, to roll back:
+The daemon of a newer release migrates the state database forward when it starts. A command of that
+release that writes the state, such as `priory tasks` or `priory pause`, prints a line and waits up to
+30 seconds for this, once per process. Then it refuses with `the state is at schema N and this priory
+uses M`, and names the two ways out: restart the daemon on this binary, or run `priory daemon --once`
+when no daemon runs. A
+command that only reads, such as `priory memories` or `priory serve`, refuses at once. `priory
+answer`, `revive` and the other acts on another runner's `RUNNER:ID` go to that runner unchecked,
+as on a machine with no state file. After the migration, an older release refuses the database with
+`state schema N is newer than this priory knows (M)`. So back up both databases before every
+upgrade, to roll back:
 
 ```sh
 systemctl --user stop priory-daemon priory-intake
@@ -188,8 +214,8 @@ systemctl --user start priory-intake priory-daemon
 
 A live run keeps the `priory mcp` server its session started, on the old binary. That server only
 relays calls to the daemon's socket, so it keeps working on a migrated state. A tool call it makes
-while the daemon restarts waits up to 30 seconds for the new daemon. A call in flight when the
-daemon stops can still fail. A session started on 1.2.0 or earlier keeps a server that opens
+while the daemon restarts waits up to 30 seconds for the new daemon, and so does a command that writes.
+A call in flight when the daemon stops is answered first, unless the daemon is killed. A session started on 1.2.0 or earlier keeps a server that opens
 the state itself, so install over one only when `priory runs` shows no live run.
 
 Check: `priory --version` prints the new version and `systemctl --user status` shows both units
@@ -197,6 +223,9 @@ running. To roll back, stop both units, install the older binary and copy each b
 database.
 
 ## What a stop does to agents
+
+The daemon's lock is per `PRIORY_HOME`. Give each state database one home: a `priory daemon --once`
+with another home would migrate a database that a daemon of the first home runs on.
 
 The daemon unit sets `KillMode=process`. The default, `control-group`, would also kill the tmux server
 the daemon started on a stop or restart. tmux stays in the unit's cgroup, so every agent dies with it.

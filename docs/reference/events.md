@@ -501,7 +501,7 @@ The pull request fields, and:
 
 ### `github.check_run.completed`
 
-One message per check run completed on a pull request's head commit, or on its merge commit when a task's pull request merged, per pull request. On a merge commit, `head_sha` is that commit and `base_branch` the branch it merged into. Subject:
+One message per check run completed on a pull request's head commit that no newer run superseded at the poll, or on its merge commit when a task's pull request merged, per pull request. On a merge commit, `head_sha` is that commit and `base_branch` the branch it merged into. Subject:
 `owner/name#43`.
 Schema: [`github.check_run.completed.json`](../schemas/events/github.check_run.completed.json).
 
@@ -512,8 +512,9 @@ The pull request fields, and:
 | `name` | string or null | The check run's name, as branch protection names a required check |
 | `conclusion` | string or null | `success`, `failure`, `neutral`, `cancelled`, `skipped`, `timed_out`, `action_required`, `stale` or `startup_failure` |
 | `app` | string or null | The slug of the GitHub App that ran it |
-| `pending` | integer | Check runs on the same commit not completed at the poll, counting those past the first 100 |
-| `failing` | integer | Check runs on the same commit completed with a conclusion other than success, neutral or skipped, leaving out a cancelled run that `superseded_by` passed |
+| `origin` | string, optional | What started the run: `workflow:<id>:<event>` for a GitHub Actions workflow, on a merge commit only for a `push` run, with `:<branch>`, or else `suite:<id>`, its check suite, or else `run:<id>`. A run with a higher id of the same app, name and origin on the same commit supersedes it, unless it is skipped or neutral and this one is not. Absent from an older intake's event |
+| `pending` | integer | Check runs on the same commit not completed at the poll, counting those past the first 100 and leaving out superseded ones |
+| `failing` | integer | Check runs on the same commit completed with a conclusion other than success, neutral or skipped, leaving out superseded ones and a cancelled run that `superseded_by` passed |
 | `github_id` | integer | GitHub's check run id |
 | `superseded_by` | string, optional | For a cancelled run on a merge commit: the later commit of the base branch whose run of the same name succeeded, so the cancelled run counts as passing. Absent otherwise |
 
@@ -534,6 +535,7 @@ The pull request fields, and:
     "name": "test (ubuntu)",
     "conclusion": "success",
     "app": "github-actions",
+    "origin": "workflow:161335:pull_request",
     "pending": 1,
     "failing": 0,
     "time": "2026-11-17T16:12:37Z",
@@ -1939,6 +1941,8 @@ Schema: [`priory.memory.dropped.json`](../schemas/events/priory.memory.dropped.j
 A person turns autopilot on or off, in a factory of several runners. Each runner applies it in log
 order. It is recorded as `refused` in a factory of one runner, and when `until` is more than 7 days
 away, `level` is not `high` or `medium`, or `lanes` is missing. An empty `data` turns it off.
+An `on` dated at or before the last `off` is recorded as `ignored`, as is a setting the runner skips
+while its own is unread.
 Subject: `autopilot`.
 Schema: [`priory.autopilot.set.json`](../schemas/events/priory.autopilot.set.json).
 

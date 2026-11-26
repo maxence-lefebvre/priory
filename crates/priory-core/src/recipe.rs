@@ -217,7 +217,7 @@ fn start(
         Ok(mut child) => {
             db.execute(
                 "UPDATE recipes SET pid = ?2, pid_started = ?3 WHERE id = ?1",
-                params![id, child.pid(), memory::started(child.pid())],
+                params![id, child.pid(), memory::start_time(child.pid())],
             )?;
             child.release();
             running.0.push((id, child));
@@ -351,7 +351,7 @@ pub(crate) fn orphans(
         .collect::<rusqlite::Result<_>>()?;
     for (id, pid, started) in left {
         if let (Some(pid), Some(started)) = (pid, started)
-            && memory::started(pid) == Some(started)
+            && memory::started(pid) == Ok(Some(started))
         {
             script::kill(pid);
         }

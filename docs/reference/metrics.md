@@ -40,9 +40,9 @@ Every request carries these attributes on its resource.
 
 | Metric | Kind | Unit | Attributes | Value |
 | ------ | ---- | ---- | ---------- | ----- |
-| `priory.process.tick.duration` | gauge | `s` | `stat` = `avg`, `p95`, `max` | the loop ticks of the interval: the daemon's 1-second tick, the intake's poll, a server request. Absent from an interval with no tick |
-| `process.memory.usage` | gauge | `By` | | `VmRSS` in `/proc/self/status` |
-| `process.cpu.time` | counter | `s` | `cpu.mode` = `user`, `system` | `utime` and `stime` in `/proc/self/stat`, at 100 ticks a second |
+| `priory.process.tick.duration` | gauge | `s` | `stat` = `avg`, `p95`, `max` | the loop ticks of the interval: the daemon's 1-second tick, the intake's poll. No web request is a tick, and `priory serve` records none, so it never sends this metric. Absent from an interval with no tick |
+| `process.memory.usage` | gauge | `By` | | `VmRSS` in `/proc/self/status`. On macOS, `rss` of `ps` |
+| `process.cpu.time` | counter | `s` | `cpu.mode` = `user`, `system` | `utime` and `stime` in `/proc/self/stat`, at 100 ticks a second. On macOS, `utime` of `ps`, and its `time` less `utime` |
 | `process.uptime` | gauge | `s` | | since the process started |
 
 ## log
@@ -125,7 +125,7 @@ cannot be measured, the group sends only the grants, the promised memory and the
 | `` priory <process>: PRIORY_METRICS names `<group>`, which is not a metrics group: the groups are process, log, runs, intake, work, room, or none `` | `PRIORY_METRICS` names an unknown group. The process does not start |
 | `` priory <process>: metrics past metrics_cap = <n>: dropped <count> <kind> points `` | an interval had more points than the cap left room for |
 | `` priory <process>: sending metrics to <otlp> failed (<error>) `` | the endpoint refused a request or did not answer, logged once per error text |
-| `` priory <process>: metrics: cannot read the process's own use: <error> `` | the process could not read `/proc/self`, or `self` in `PRIORY_PROC`. The interval sends the rest |
+| `` priory <process>: metrics: cannot read the process's own use: <error> `` | the process could not read `/proc/self`, or `self` in `PRIORY_PROC`. On macOS, `ps` failed or printed a line it could not read. The interval sends the rest |
 | `` priory daemon: metrics: cannot read the log's state: <error> `` | the daemon's metrics thread could not read the state file. The interval sends the rest |
 | `` priory daemon: metrics: cannot read the runs' state: <error> `` | the same, for the `runs` group. The interval sends the rest |
 | `` priory daemon: metrics: cannot measure the room: <error> `` | the daemon could not read the machine's memory, load or disk. The interval sends the grants, the promised memory, the tasks waiting and the rest |

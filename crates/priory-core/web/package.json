@@ -4,13 +4,15 @@
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
-    "check": "node build.mjs --check"
+    "check": "node build.mjs --check && oxlint --deny-warnings . && node test.mjs"
   },
   "devDependencies": {
-    "esbuild": "0.28.2"
+    "esbuild": "0.28.2",
+    "oxlint": "1.94.0"
   },
   "dependencies": {
     "@tanstack/react-query": "5.107.1",
+    "@tanstack/react-router": "1.170.46",
     "react": "19.3.1",
     "react-dom": "19.3.1"
   }
