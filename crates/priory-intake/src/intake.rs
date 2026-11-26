@@ -338,12 +338,22 @@ pub struct Passed {
 /// succeeded, else its errors joined by `; `.
 pub type Outcomes<'a> = [(&'a str, Option<String>)];
 
+/// What the state file holds of this machine's runner: its name, in a factory of several, and what
+/// its intake would watch.
+pub struct Local {
+    pub runner: Option<String>,
+    pub watches: Vec<Watch>,
+}
+
+/// Reads this machine's state file, or `None` when the intake runs without one.
+pub type Watched = fn() -> Result<Option<Local>, String>;
+
 /// How many tasks with a key have ended: done, failed or dropped.
 pub type Ended = fn(&str) -> Result<u64, String>;
 
 /// Polls the sources until stopped, or once. On each poll it reads the waits, holds, subscriptions
-/// and task branches the runners post on the log, or `watched` reads them from the state file while
-/// no runner posted, so that the intake polls the Slack threads, Linear issues and pull request
+/// and task branches that `watched` reads from this machine's state file and the other runners post
+/// on the log, so that the intake polls the Slack threads, Linear issues and pull request
 /// repositories they name.
 /// `merged` reads the task pull requests merged since the time it is given, to read their merge
 /// commits' check runs.
@@ -356,7 +366,7 @@ pub type Ended = fn(&str) -> Result<u64, String>;
 pub fn run(
     factory: &Factory,
     once: bool,
-    watched: fn() -> Result<Vec<Watch>, String>,
+    watched: Watched,
     merged: fn(&str) -> Result<Vec<Merge>, String>,
     red: fn(&str) -> Result<Vec<Red>, String>,
     recovered: fn(i64) -> Result<(), String>,
@@ -605,21 +615,27 @@ fn since(now: Timestamp) -> String {
     )
 }
 
-/// What the runners posted on the log that their intake would watch, or what `watched` reads from
-/// the state file while no runner posted.
+/// What the intake watches: this machine's runner's watches from its state file, which is fresher
+/// than its posting, and every other runner's newest posting on the log. With no state file, as on
+/// a machine that runs no daemon, every runner's posting.
 fn watch_list(
     bus: &dyn Log,
     postings: &mut watches::Postings,
     runners: &BTreeSet<String>,
-    watched: fn() -> Result<Vec<Watch>, String>,
+    watched: Watched,
 ) -> Result<Vec<Watch>, String> {
     postings
         .read(bus, runners)
         .map_err(|error| format!("read the runners' watches: {error}"))?;
-    match postings.watches(runners, now()?) {
-        Some(watches) => Ok(watches),
-        None => watched(),
-    }
+    let now = now()?;
+    Ok(match watched()? {
+        None => postings.watches(runners, None, now),
+        Some(local) if runners.len() < 2 => local.watches,
+        Some(local) => {
+            let others = postings.watches(runners, local.runner.as_deref(), now);
+            local.watches.into_iter().chain(others).collect()
+        }
+    })
 }
 
 /// The repository of a pull request wait, `owner/name` from `github:owner/name#42`.

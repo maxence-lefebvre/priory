@@ -7,14 +7,25 @@ page explains how the intake learns about those waits and polls for them.
 ## Where the list comes from
 
 Each runner's daemon posts what its intake would watch on the log, as
-[`priory.watch.posted`](../reference/events.md#priorywatchposted). It posts on start, whenever the
-list changes and once a day, with its runner's name. So an intake on another machine, such as the
-diocese, watches every runner's waits without their state files.
+[`priory.watch.posted`](../reference/events.md#priorywatchposted), when another machine can read
+that log: in a factory of several runners, or with a Postgres log. It posts on start, whenever the
+list changes and once a day, with its runner's name, or its hostname in a factory of one runner. So
+an intake on another machine, such as the diocese, watches every runner's waits without their state
+files.
 
-The intake reads the log as its own consumer, `priory.intake`, on every poll, and watches the union
-of each runner's newest posting. On start, it reads the log back, at most 7 days, to each runner's
-newest posting. In a factory of fewer than two runner files, it watches the newest posting alone,
-whatever runner name it carries.
+The intake reads the log as its own consumer, `priory.intake`, on every poll, and keeps each
+runner's newest posting. On start, it reads the log back, at most 7 days, to each runner's newest
+posting. What it watches depends on the state file that `PRIORY_DB` names:
+
+| `PRIORY_DB` | Factory | Watches |
+| ----------- | ------- | ------- |
+| set | one runner | what the state file holds, as before |
+| set | several runners | what the state file holds of its own runner, and the other runners' newest postings |
+| unset, as on the diocese | one runner | the newest posting, whatever runner name it carries |
+| unset | several runners | every runner's newest posting |
+
+The state file is fresher than its runner's posting, which follows a daemon pass later. So a
+single-machine factory with a SQLite log works as before.
 
 - A runner that ends a task posts a list without it, so the intake stops watching it on its next
   poll.
@@ -24,8 +35,7 @@ whatever runner name it carries.
 - In a factory of several runners, a posting from a runner without a runner file is dropped, so
   removing a runner's file stops its watches at once.
 
-While no posting is on the log, as with a daemon older than this intake, the intake reads the state
-file that `PRIORY_DB` names instead. Without either, it watches none of them.
+Without a state file or a posting, the intake watches none of them.
 
 ## What it watches
 

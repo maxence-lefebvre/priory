@@ -17642,11 +17642,21 @@ fn posted(setup: &Setup, runner: &str, done: impl Fn(&[String]) -> bool) {
     }
 }
 
+/// Starts task 1 on runner `a` of two, whose first turn calls `wait(on)`, and returns once its run
+/// ended asleep.
+fn runner_asleep_on(test: &str, on: serde_json::Value) -> Setup {
+    let mut a = runner(test, "a", None);
+    a.calls(&[wait(on)]);
+    a.publish(&requested(42));
+    a.start();
+    a.until_own_tasks(|rows| rows.first().is_some_and(|row| row[4] == "asleep"));
+    a
+}
+
 #[test]
 fn a_pull_request_wait_reaches_an_intake_without_a_state_file_through_the_log() {
-    let setup = asleep_on("watch-from-log", on_pull_7("review"));
-    // A factory of one runner posts by its hostname.
-    posted(&setup, "runner", |resources| {
+    let setup = runner_asleep_on("watch-from-log", on_pull_7("review"));
+    posted(&setup, "a", |resources| {
         resources.contains(&"github:owner/repo#7".to_owned())
     });
     let log = fake_gh(&setup);
@@ -17677,12 +17687,12 @@ fn an_intake_with_no_posting_on_the_log_reads_the_state_file() {
 
 #[test]
 fn a_runner_that_ends_its_task_stops_the_intake_watching_its_thread() {
-    let setup = asleep_on(
+    let setup = runner_asleep_on(
         "watch-ended",
         json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
     );
     let thread = format!("slack:C0123:{THREAD}");
-    posted(&setup, "runner", |resources| resources.contains(&thread));
+    posted(&setup, "a", |resources| resources.contains(&thread));
     setup.answer_slack(&[]);
     setup.intake_from_log();
     let args = fs::read_to_string(setup.dir.join("curl-args")).unwrap();
@@ -17690,7 +17700,7 @@ fn a_runner_that_ends_its_task_stops_the_intake_watching_its_thread() {
 
     let cancelled = setup.priory(&["cancel", "1"]);
     assert!(cancelled.status.success(), "{cancelled:?}");
-    posted(&setup, "runner", |resources| !resources.contains(&thread));
+    posted(&setup, "a", |resources| !resources.contains(&thread));
     fs::remove_file(setup.dir.join("curl-args")).unwrap();
     setup.intake_from_log();
 
@@ -27662,13 +27672,9 @@ fn a_runner_several_ticks_behind_applies_no_line_before_it_read_the_whole_log() 
 
 #[test]
 fn a_runners_wait_reaches_the_intake_through_the_log_and_its_reply_wakes_only_that_runner() {
-    let mut a = runner("watch-route", "a", None);
-    let mut b = runner("watch-route", "b", Some(&a));
     let on = json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD });
-    a.calls(&[wait(on)]);
-    a.publish(&requested(42));
-    a.start();
-    a.until_own_tasks(|rows| rows.first().is_some_and(|row| row[4] == "asleep"));
+    let a = runner_asleep_on("watch-route", on);
+    let mut b = runner("watch-route", "b", Some(&a));
     b.start();
     let thread = format!("slack:C0123:{THREAD}");
     posted(&a, "a", |resources| resources.contains(&thread));

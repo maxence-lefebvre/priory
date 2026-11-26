@@ -114,18 +114,22 @@ impl Postings {
             .insert(runner.to_owned(), (message.time, watches));
     }
 
-    /// The watches of every runner's posting younger than `KEEP`, or of the newest posting alone
-    /// in a factory of fewer than two runners. `None` when no runner posted, so the intake reads
-    /// the state file instead.
-    pub(super) fn watches(&self, runners: &BTreeSet<String>, now: Timestamp) -> Option<Vec<Watch>> {
-        if self.newest.is_empty() {
-            return None;
-        }
+    /// The watches of each runner's posting younger than `KEEP`, but `except`'s, or of the newest
+    /// posting alone in a factory of fewer than two runners.
+    pub(super) fn watches(
+        &self,
+        runners: &BTreeSet<String>,
+        except: Option<&str>,
+        now: Timestamp,
+    ) -> Vec<Watch> {
         let live = self
             .newest
-            .values()
-            .filter(|(time, _)| now.duration_since(*time) <= KEEP);
-        let watches = match runners.len() {
+            .iter()
+            .filter(|(runner, (time, _))| {
+                Some(runner.as_str()) != except && now.duration_since(*time) <= KEEP
+            })
+            .map(|(_, posting)| posting);
+        match runners.len() {
             0 | 1 => live
                 .max_by_key(|(time, _)| *time)
                 .map(|(_, watches)| watches.clone())
@@ -133,8 +137,7 @@ impl Postings {
             _ => live
                 .flat_map(|(_, watches)| watches.iter().cloned())
                 .collect(),
-        };
-        Some(watches)
+        }
     }
 }
 
@@ -153,12 +156,8 @@ mod tests {
         Message::new(WATCH_POSTED, data).time(at(time))
     }
 
-    fn resources(watches: Option<Vec<Watch>>) -> Vec<String> {
-        let mut resources: Vec<String> = watches
-            .unwrap_or_default()
-            .into_iter()
-            .map(|watch| watch.resource)
-            .collect();
+    fn resources(watches: Vec<Watch>) -> Vec<String> {
+        let mut resources: Vec<String> = watches.into_iter().map(|watch| watch.resource).collect();
         resources.sort();
         resources
     }
@@ -182,25 +181,31 @@ mod tests {
 
         let now = at("2026-11-26T11:00:00Z");
         assert_eq!(
-            resources(postings.watches(&runners, now)),
+            resources(postings.watches(&runners, None, now)),
             ["github:o/n#2", "github:o/n#3"]
         );
     }
 
     #[test]
-    fn a_runner_without_a_runner_file_is_dropped_and_no_posting_reads_the_state_file() {
+    fn a_runner_without_a_runner_file_and_the_state_files_own_runner_are_left_out() {
         let runners = BTreeSet::from(["a".to_owned(), "b".to_owned()]);
         let mut postings = Postings::default();
         postings.take(
-            &posting("c", "2026-11-26T10:00:00Z", "github:o/n#1"),
+            &posting("a", "2026-11-26T10:00:00Z", "github:o/n#1"),
+            &runners,
+        );
+        postings.take(
+            &posting("b", "2026-11-26T10:00:00Z", "github:o/n#2"),
+            &runners,
+        );
+        postings.take(
+            &posting("c", "2026-11-26T10:00:00Z", "github:o/n#3"),
             &runners,
         );
 
-        assert!(
-            postings
-                .watches(&runners, at("2026-11-26T11:00:00Z"))
-                .is_none()
-        );
+        let now = at("2026-11-26T11:00:00Z");
+        let watches = postings.watches(&runners, Some("a"), now);
+        assert_eq!(resources(watches), ["github:o/n#2"]);
     }
 
     #[test]
@@ -217,7 +222,10 @@ mod tests {
         );
 
         let now = at("2026-11-26T11:00:00Z");
-        assert_eq!(resources(postings.watches(&runners, now)), ["github:o/n#2"]);
+        assert_eq!(
+            resources(postings.watches(&runners, None, now)),
+            ["github:o/n#2"]
+        );
     }
 
     #[test]
@@ -234,6 +242,9 @@ mod tests {
         );
 
         let now = at("2026-11-26T11:00:00Z");
-        assert_eq!(resources(postings.watches(&runners, now)), ["github:o/n#2"]);
+        assert_eq!(
+            resources(postings.watches(&runners, None, now)),
+            ["github:o/n#2"]
+        );
     }
 }
