@@ -1,6 +1,6 @@
 // The Asks panel's view model: `priory asks --all --json` in, rows and states out. No drawing, no IO.
 
-import { age, ago, answeredBy, askBody, askHeading, autolink, checkState, planCut, planParts, planUnread, planWait, plansFirst, plural, stateWords, prStack, routedMark, routedNote, runnerOf, seenAgo, sentNote, submitted } from "./priory.js";
+import { age, ago, answeredBy, askBody, askHeading, autolink, checkState, planCut, planParts, planUnread, planWait, plural, stateWords, prStack, routedMark, routedNote, runnerOf, seenAgo, sentNote, submitted } from "./priory.js";
 
 /** @typedef {{ pattern: string, url: string }[]} Links the rules `priory links` lists */
 
@@ -231,10 +231,9 @@ export function askDetail(ask, { now, armed, task = null, taskError = null, link
   const request = task?.brief?.request;
   const groomed = task?.brief?.result;
   const brief = request || groomed ? { request, text: groomed?.summary ?? null, from: groomed ? `${groomed.step}, run ${groomed.run}` : null } : null;
-  // An ask that approves a plan shows only the one its revision approves, first and by default.
+  // An ask that approves a plan shows only the one its revision approves.
   const locked = planUnread(ask, task);
   const planned = task && !locked ? plan(task) : null;
-  const first = plansFirst(ask) ? "plan" : "why";
   const pr = pullRequest(task?.pull_request, task?.stack);
   const runs = trace(task?.runs ?? [], now);
   // A long untitled question heads the detail with a short title and reads whole in Why.
@@ -260,10 +259,10 @@ export function askDetail(ask, { now, armed, task = null, taskError = null, link
       dimmed: arming !== null && arming !== index,
     })),
     chips: /** @type {[string, string][]} */ ([
-      first === "plan" && planned && ["plan", "Plan"], ["why", "Why"], brief && ["brief", "Brief"], first === "why" && planned && ["plan", "Plan"], pr && ["pr", "PR"],
+      ["why", "Why"], planned && ["plan", "Plan"], brief && ["brief", "Brief"], pr && ["pr", "PR"],
       runs.length > 0 && ["trace", "Trace"], ["history", "History"], ask.command && ["command", "Command"],
     ].filter(Boolean)),
-    first,
+    first: "why",
     locked,
     wait: locked ? planWait(ask, taskError) : null,
     cut: planCut(ask, task),
@@ -271,7 +270,7 @@ export function askDetail(ask, { now, armed, task = null, taskError = null, link
     plan: planned,
     pr,
     trace: runs,
-    why: { question: body, questionSpans: body ? autolink(body, links, ask.repo ?? null) : [], text: why, textSpans: why ? autolink(why, links, ask.repo ?? null) : [], run: ask.run, tradeoff: ask.tradeoff, whatWaits: ask.what_waits },
+    why: { question: body, text: why, run: ask.run, tradeoff: ask.tradeoff, whatWaits: ask.what_waits },
     ...(routedNote(ask) && { routed: routedNote(ask) }),
     ...(owner && {
       // A closed ask still says why its runner refused an answer sent to it.

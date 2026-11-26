@@ -358,7 +358,6 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .keys span { display: inline-flex; gap: 6px; align-items: center; }
 .drawer { background: var(--surface); display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 .drawer .jump { background: var(--surface); }
-.asked { margin: 0; font: 400 var(--type-read) var(--font-ui); max-width: var(--measure); white-space: pre-wrap; overflow-wrap: anywhere; }
 .drawer .question { font: var(--display-weight) var(--type-question-wide) var(--font-display); font-stretch: var(--display-stretch); }
 .drawer .opts { flex-direction: row; flex-wrap: wrap; }
 .drawer .opt { flex: 1 1 0; min-width: 140px; min-height: 52px; font-size: 15px; padding: 6px 12px; }

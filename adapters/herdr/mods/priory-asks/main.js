@@ -1,7 +1,7 @@
 import { View, div, svg } from "gpui-kit";
-import { h_flex, v_flex, Button, Popover, ScrollHandle, Textarea, TextareaState } from "gpui-base";
+import { h_flex, v_flex, Button, Popover, ScrollHandle, Textarea, TextareaState, TextView } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile, setShared, shared } from "herdr";
-import { follow, planUnread, priory, runnerOf } from "./priory.js";
+import { follow, markdownHtml, planUnread, priory, runnerOf } from "./priory.js";
 import { selectable, stateTile } from "./ui.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
 import { ARM_MS, askDetail, asksList, press, refusal, tomorrowAt } from "./view.js";
@@ -737,16 +737,18 @@ export default class PrioryAsks extends View {
     }
     /** @param {string} key @param {string} text */
     const body = (key, text) => div().whitespace_normal().text_size(TYPE.body[0]).line_height("22px").child(selectable(`${key}-${ask.id}`, text));
+    // Agent text draws as DESIGN.md's Markdown subset, every other character escaped, as in the Tasks panel.
+    /** @param {string} key @param {string} text */
+    const prose = (key, text) => div().whitespace_normal().text_size(TYPE.body[0]).line_height("22px").child(TextView.html(`${key}-${ask.id}`, markdownHtml(text, this.links, ask.repo ?? null)).selectable(true));
     /** @param {string} text */
     const caption = (text) => div().whitespace_normal().text_size(TYPE.caption[0]).text_color(t["text-3"]).child(text);
-    // Briefs, plans and results are agent text: they draw as plain text, never as Markdown or HTML.
     if (id === "brief" && detail.brief) {
       return v_flex().gap(S["space-2"]).child(head("message-text", "Brief", detail.brief.from ?? ""))
         .when(Boolean(detail.brief.request), (el) => el.child(caption("The request")).child(body("request", detail.brief.request)))
-        .when(Boolean(detail.brief.text), (el) => el.child(body("brief", detail.brief.text)));
+        .when(Boolean(detail.brief.text), (el) => el.child(prose("brief", detail.brief.text)));
     }
     if (id === "plan" && detail.plan) {
-      return v_flex().gap(S["space-2"]).children(detail.plan.flatMap((part, index) => [head("check", "Plan", part.from), body(`plan-${index}`, part.text)]));
+      return v_flex().gap(S["space-2"]).children(detail.plan.flatMap((part, index) => [head("check", "Plan", part.from), prose(`plan-${index}`, part.text)]));
     }
     if (id === "pr" && detail.pr) {
       return v_flex().gap(S["space-2"]).child(head("terminal", detail.pr.title, detail.pr.review ?? ""))
@@ -770,11 +772,10 @@ export default class PrioryAsks extends View {
     if (id === "command" && detail.command) {
       return v_flex().gap(S["space-2"]).child(head("terminal", detail.command.title)).child(this.commandBlock(detail.command, t, "section"));
     }
-    // Agent text is untrusted, so it draws as plain text, never as Markdown or HTML.
     return v_flex().gap(S["space-2"])
       .child(head("message-text", "What the agent says", detail.why.run ? `run ${detail.why.run}` : ""))
-      .when(Boolean(detail.why.question), (el) => el.child(div().whitespace_normal().text_size(TYPE.body[0]).line_height("22px").child(selectable(`asked-${ask.id}`, detail.why.questionSpans))))
-      .when(Boolean(detail.why.text), (el) => el.child(div().whitespace_normal().text_size(TYPE.body[0]).line_height("22px").child(selectable(`why-${ask.id}`, detail.why.textSpans))))
+      .when(Boolean(detail.why.question), (el) => el.child(prose("asked", detail.why.question)))
+      .when(Boolean(detail.why.text), (el) => el.child(prose("why", detail.why.text)))
       .when(Boolean(detail.why.tradeoff), (el) => el.child(fact("scale", "Trade-off.", detail.why.tradeoff)))
       .when(Boolean(detail.why.whatWaits), (el) => el.child(fact("hourglass", "What waits.", detail.why.whatWaits)));
   }

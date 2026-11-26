@@ -124,9 +124,7 @@ test("an open command ask's detail puts the decision first, then Why, History an
   assert.deepEqual(detail.chips, [["why", "Why"], ["history", "History"], ["command", "Command"]]);
   assert.deepEqual(detail.why, {
     question: null,
-    questionSpans: [],
     text: "I read the diff of #212 and ran `gh pr checks 212`: fmt, clippy and test are green.\n<b>not html</b>",
-    textSpans: [{ text: "I read the diff of #212 and ran `gh pr checks 212`: fmt, clippy and test are green.\n<b>not html</b>" }],
     run: null,
     tradeoff: "Merging now ships the exporter today. A second review may still ask for changes.",
     whatWaits: "PRI-64 rebases on this merge.",
@@ -236,7 +234,7 @@ test("Brief, Plan, PR and Trace come from the task's detail, each left out when 
   const [ask] = fixture("asks-history.json").asks;
   const task = fixture("task.json");
   const detail = askDetail(ask, { now, armed: null, task });
-  assert.deepEqual(detail.chips, [["why", "Why"], ["brief", "Brief"], ["plan", "Plan"], ["pr", "PR"], ["trace", "Trace"], ["history", "History"]]);
+  assert.deepEqual(detail.chips, [["why", "Why"], ["plan", "Plan"], ["brief", "Brief"], ["pr", "PR"], ["trace", "Trace"], ["history", "History"]]);
   assert.deepEqual(detail.brief, {
     request: "Export the board as CSV.\n\nKeep the column order.",
     text: "## Goal\nExport the board as CSV.\n\n## Scope\nOne CSV per board.",
@@ -277,21 +275,19 @@ const approval = () => {
   return { answered, step, plan_file, task: { ...fixture("task.json"), plan_file } };
 };
 
-test("Plan shows the plan an open approval ask approves, and leads it", () => {
+test("Plan shows the plan an open approval ask approves, right after Why", () => {
   const { answered, step, plan_file, task } = approval();
   const detail = askDetail(step, { now, armed: null, task });
   assert.deepEqual(detail.plan, [{ text: "## Decisions\nD1: cursor", from: ".priory/brief.md" }]);
-  assert.equal(detail.first, "plan");
+  assert.equal(detail.first, "why");
   assert.equal(detail.locked, false);
-  assert.deepEqual(detail.chips.slice(0, 2), [["plan", "Plan"], ["why", "Why"]]);
+  assert.deepEqual(detail.chips.map(([id]) => id), ["why", "plan", "brief", "pr", "trace", "history"]);
 
   const [file] = plan_file.files;
   const two = askDetail(step, { now, armed: null, task: { ...task, plan_file: { ...plan_file, files: [{ ...file, path: "/w/.priory/plan.md", text: "P" }, { ...file, truncated: true }] } } });
   assert.deepEqual(two.plan, [{ text: "P", from: ".priory/plan.md" }, { text: `${file.text}\n\nShowing the first 64 KB. Read the rest at ${file.path}.`, from: ".priory/brief.md" }]);
   assert.equal(two.cut, `The plan is cut at 64 KB. Read the rest at ${file.path} before you answer.`);
   assert.equal(detail.cut, null);
-  // An ask that approves no plan, or one already answered, keeps Why first.
-  assert.equal(askDetail({ ...step, approves_plan: false }, { now, armed: null, task }).first, "why");
   assert.equal(askDetail({ ...answered, kind: "step", approves_plan: true }, { now, armed: null, task }).chips[0][0], "why");
 });
 
@@ -303,7 +299,7 @@ test("an approval ask shows no plan and takes no answer until the plan of its re
   assert.equal(raised.plan, null, "the plan of the earlier revision is not shown");
 });
 
-test("next and previous below 720 px open an approval ask on its plan, and an option waits for the plan", async () => {
+test("next and previous below 720 px open an approval ask on Why, and an option waits for the plan", async () => {
   const { context, draw, herdr, press: tap, settle } = await import("./kit.js");
   const { default: Asks } = await import("../mods/priory-asks/main.js");
   const { step, task } = approval();
@@ -319,7 +315,7 @@ test("next and previous below 720 px open an approval ask on its plan, and an op
   panel.select(901, cx);
   panel.reading = "why";
   tap(draw(panel, cx), "next");
-  assert.deepEqual([panel.selected, panel.reading], [902, "plan"]);
+  assert.deepEqual([panel.selected, panel.reading], [902, "why"]);
   panel.task = null;
   panel.choose(approving, 0, cx);
   assert.equal(panel.armed, null, "no plan was read");
@@ -329,7 +325,7 @@ test("next and previous below 720 px open an approval ask on its plan, and an op
   tap(draw(panel, cx), "next");
   assert.deepEqual([panel.selected, panel.reading], [903, "why"]);
   tap(draw(panel, cx), "previous");
-  assert.deepEqual([panel.selected, panel.reading], [902, "plan"]);
+  assert.deepEqual([panel.selected, panel.reading], [902, "why"]);
 });
 
 test("History keeps entries of the same second newest first", () => {
@@ -342,13 +338,28 @@ test("History keeps entries of the same second newest first", () => {
   ]);
 });
 
-test("an ask's question in its detail, and its text under Why, turn the factory's keys into link spans", () => {
+test("an ask's question in its detail turns the factory's keys into link spans", () => {
   const { links } = fixture("links.json");
-  const ask = { ...asks[0], repo: "acme/app", text: "Fixes ENG-7." };
+  const ask = { ...asks[0], repo: "acme/app" };
   const pr = [{ text: "Merge " }, { text: "#212", url: "https://github.com/acme/app/issues/212" }, { text: " into main? Checks are green at a1f3c9e." }];
-  const detail = askDetail(ask, { now, armed: null, links });
-  assert.deepEqual(detail.questionSpans, pr);
-  assert.deepEqual(detail.why.textSpans, [{ text: "Fixes " }, { text: "ENG-7", url: "https://linear.app/acme/issue/ENG-7" }, { text: "." }]);
+  assert.deepEqual(askDetail(ask, { now, armed: null, links }).questionSpans, pr);
+});
+
+test("Why draws the agent's text as escaped Markdown, with the factory's links and the ask's repository", async () => {
+  const { context, draw, find, herdr, settle } = await import("./kit.js");
+  const { default: Asks } = await import("../mods/priory-asks/main.js");
+  const { links } = fixture("links.json");
+  const ask = { ...asks[0], repo: "acme/app", text: "Fixes ENG-7 and #3.\n\n- one\n- <b>two</b>" };
+  herdr.reset();
+  herdr.replies = { asks: { revision: 1, bands: [], asks: [ask] }, links: { links } };
+  const panel = new Asks();
+  const cx = context();
+  panel.init({}, cx);
+  await settle();
+  panel.select(ask.id, cx);
+  panel.reading = "why";
+  assert.equal(find(draw(panel, cx), `why-${ask.id}`).html,
+    '<p>Fixes <a href="https://linear.app/acme/issue/ENG-7">ENG-7</a> and <a href="https://github.com/acme/app/issues/3">#3</a>.</p><ul><li>one</li><li>&lt;b&gt;two&lt;/b&gt;</li></ul>');
 });
 
 test("a task's stack of pull requests lists bottom first in PR, each with its state, the checks it has and the next to merge", () => {
@@ -610,9 +621,6 @@ test("an untitled ask with a 12-line question heads its row and detail with a sh
   assert.equal(detail.question, "FND-2434 asks at approve-implementation");
   assert.deepEqual(detail.questionSpans, [{ text: "FND-2434 asks at approve-implementation" }]);
   assert.equal(detail.why.question, LONG);
-  assert.equal(detail.why.questionSpans.map((span) => span.text).join(""), LONG);
-  // The bare URL links whole, so the `pull/N` rule does not split it.
-  assert.deepEqual(detail.why.questionSpans.filter((span) => span.url), [{ text: "https://github.com/acme/app/pull/812", url: "https://github.com/acme/app/pull/812" }]);
   assert.equal(detail.why.text, null);
   const row = asksList([long], { view: "all", now }).sections.flatMap((section) => section.rows)[0];
   assert.equal(row.text, "FND-2434 asks at approve-implementation");
