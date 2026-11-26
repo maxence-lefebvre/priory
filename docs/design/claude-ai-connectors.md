@@ -1,7 +1,10 @@
 # claude.ai connectors
 
 A person connects an MCP server once in claude.ai, under Settings, Connectors, and it follows their
-Claude login to every machine and cloud session. Slack refused the local MCP server a factory used,
+Claude login to every machine where Claude Code runs. A cloud session that `claude --cloud` starts
+loads none of them: tested on 2026-11-26, a fresh one listed only its built-in remote tools. A cloud
+run reaches Priory through an HTTP MCP server in the cloud environment's settings instead
+([diocese.md](diocese.md#sign-in-and-tokens)). Slack refused the local MCP server a factory used,
 so a run needs the person's connectors. Priory starts every Claude Code run with
 `--strict-mcp-config`, and under that flag Claude Code loads no connector. This note keeps how a
 run gets the connectors its agent names, and no other.

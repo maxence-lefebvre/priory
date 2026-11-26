@@ -1,0 +1,94 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/events/priory.run.granted.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Link": {
+      "additionalProperties": false,
+      "description": "A link for people.",
+      "properties": {
+        "label": {
+          "description": "`issue` or `pull_request`.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "type": "object"
+    },
+    "RunGranted": {
+      "additionalProperties": false,
+      "description": "A runner made a run grant: a token that signs a cloud run in at the diocese's gateway. The token\nitself never reaches the log. Published by `priory gateway grant`.",
+      "properties": {
+        "grant": {
+          "description": "The grant's id.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "hash": {
+          "description": "The token's SHA-256, in lowercase hex.",
+          "type": "string"
+        },
+        "seconds": {
+          "description": "How long the grant lasts, in seconds from when the log took this message.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "grant",
+        "hash",
+        "seconds"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "A runner made a run grant: a token that signs a cloud run in at the diocese's gateway. The token\nitself never reaches the log. Published by `priory gateway grant`.",
+  "properties": {
+    "data": {
+      "$ref": "#/definitions/RunGranted"
+    },
+    "id": {
+      "description": "A UUIDv5 of the message's name, so a retried publish keeps its id.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "links": {
+      "description": "GitHub and Linear events carry one link to the event's page.",
+      "items": {
+        "$ref": "#/definitions/Link"
+      },
+      "type": "array"
+    },
+    "subject": {
+      "description": "A short line for listings, such as `owner/name#42`.",
+      "type": "string"
+    },
+    "time": {
+      "description": "When the event happened, RFC 3339.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "type": {
+      "const": "priory.run.granted",
+      "description": "The message type, such as `github.issues.labeled`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "subject",
+    "time",
+    "data",
+    "links"
+  ],
+  "title": "priory.run.granted",
+  "type": "object"
+}

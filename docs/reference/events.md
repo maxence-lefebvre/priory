@@ -1844,7 +1844,7 @@ Schema: [`priory.task.dropped.json`](../schemas/events/priory.task.dropped.json)
 
 `priory gateway grant` and `priory gateway revoke` publish these on `factory.intake`. The diocese's
 gateway reads them as the consumer `priory.gateway`. See
-[the diocese design](../design/hosted-hub.md#sign-in-and-tokens).
+[the diocese design](../design/diocese.md#sign-in-and-tokens).
 
 ### `priory.run.granted`
 

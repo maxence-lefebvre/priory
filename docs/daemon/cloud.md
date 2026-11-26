@@ -217,7 +217,7 @@ local run.
 | Staged triggers | A cloud step's task blocks before its push |
 | Step effects | `none` and `read` are refused by `priory check`: a start pushes the task's branch |
 | Sandbox | Refused by `priory check`, and at the start: Priory cannot jail a session |
-| `ask`, `wait`, `remember`, `progress` and MCP servers | None |
+| `ask`, `wait`, `remember`, `progress` and MCP servers | None: the session loads neither the agent's MCP servers nor the account's claude.ai connectors (tested on 2026-11-26). The [diocese's gateway](../design/diocese.md#sign-in-and-tokens) plans an HTTP MCP server in the cloud environment's settings instead |
 | Proofs, gates, `plan_requires`, `budget`, `model` and `effort` | Refused by `priory check` |
 | Trust grants | Apply with `trust_worktrees`, for the folder `claude --cloud` runs in |
 | Tokens and cost | Unknown: see Cost |
