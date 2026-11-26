@@ -128,26 +128,6 @@ export async function sayLine(post, task, text) {
   return { said: false, note };
 }
 
-// Each row element's markup as last written.
-const painted = new WeakMap();
-
-/**
- * Makes `pre` hold one span per row of `rows`, each row's markup, and writes only the rows that
- * changed: a person's selection in the others stays, since a poll leaves their text alone.
- * @param {HTMLElement} pre
- * @param {string[]} rows
- */
-export function paintRows(pre, rows) {
-  [...pre.children].slice(rows.length).forEach((row) => row.remove());
-  rows.forEach((markup, at) => {
-    let row = pre.children[at];
-    if (!row) pre.append((row = pre.ownerDocument.createElement("span")));
-    if (painted.get(row) === markup) return;
-    row.innerHTML = markup;
-    painted.set(row, markup);
-  });
-}
-
 // The keys the server sends, each with its label and whether it interrupts; null splits groups.
 export const KEYS = [["Escape", "Esc", true], ["C-c", "⌃C", true], null, ["Enter", "⏎ Enter"], ["Tab", "Tab"], ["BTab", "⇧Tab"], null,
   ["Up", "↑"], ["Down", "↓"], ["Left", "←"], ["Right", "→"], ["PageUp", "PgUp"], ["PageDown", "PgDn"], null,

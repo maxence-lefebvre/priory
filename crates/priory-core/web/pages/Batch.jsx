@@ -2,11 +2,11 @@
 // closes and splits. A go ask draws the same graph, whose entries a person can move or drop.
 import { memo, useLayoutEffect, useRef, useState } from "react";
 import { editBody, issueName, laneLayout, momentWords, stages, successors } from "../batches.js";
-import { refresh } from "../data.js";
+import { asked, refresh } from "../data.js";
 import { plural } from "../desk.js";
 import { role } from "../icons.js";
 import { backTo } from "../pages.js";
-import { onSignOut, post } from "../session.js";
+import { onSignOut, post, writeRefusal } from "../session.js";
 import { store } from "../store.js";
 import { taskLabel } from "../tasks.js";
 import { age, ago } from "../times.js";
@@ -17,8 +17,6 @@ import { useBatch } from "../hooks/useBatch.js";
 import { useStore, useTasks } from "../hooks/useData.js";
 import { useKeptScroll } from "../hooks/useKeptScroll.js";
 import { useOlder } from "../hooks/useOlder.js";
-import { asked } from "../legacy/data.js";
-import { writeRefusal } from "../legacy/shared.js";
 import { listClass, usePlace } from "./place.js";
 
 // The go ask's plan edits: the entry whose menu is open and the drop armed by its first tap, both for

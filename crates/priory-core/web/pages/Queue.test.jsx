@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClientProvider } from "@tanstack/react-query";
 
-// The legacy modules these pages import touch the page as they load.
+// The data modules these pages import read the device's storage and the page as they load.
 const sheet = { addEventListener() {}, open: false };
 Object.assign(globalThis, {
   localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
@@ -40,7 +40,7 @@ const QUEUE = {
   lanes: [{ lane: "web", running: 2, cap: 2, max_running: 2, window: null, max_running_outside: null }],
 };
 
-test("the Queue draws Up next, lane caps, bands and Move menus as the legacy page did", (t) => {
+test("the Queue draws Up next, lane caps, bands and Move menus as before React", (t) => {
   const html = draw(t, QueueList, { href: "/queue", data: { [K("queue")]: QUEUE } });
   assert.match(html, /<div class="scroll"><div class="sec">Up next<span>next 3 runs<\/span><\/div><div class="strip"><ol><li><time [^>]*>now, when a runner has room<\/time><a href="\/tasks\/5" title="task 5"><span class="mono">ENG-5<\/span> first in the queue<\/a><\/li><\/ol><\/div>/);
   assert.match(html, /<div class="sec">Lane caps<span>runs per lane on this runner<\/span><\/div><ul class="strip caps"><li><span class="mono">web<\/span><span class="t-warn">2 of 2 running<\/span><span class="cap">max_running 2<\/span><\/li><\/ul>/);

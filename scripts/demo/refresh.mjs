@@ -378,9 +378,9 @@ await hooked("a queue that cannot be read again says so on its page, and the app
   await until('!document.querySelector(".stale")', "the note to go");
   return found.conn === "live" && found.said.startsWith("Could not read the queue again: /api/queue answered 500.") && kept ? true : { ...found, kept };
 });
-// land() keeps a failed listing's last read and lands the others: a tasks list that fails holds no queue back.
-// The Desk's Queue view draws the queue's titles; the Queue page is React and reads no tasks there.
-await hooked("a legacy page draws the listing that read while another one fails", "/?view=queue", 'document.querySelector(".list .scroll .row, .list .scroll tr[data-href]")', {}, async () => {
+// A listing that fails keeps its last read and holds no other back: the Desk's Queue view draws the
+// queue's new titles while the tasks list fails.
+await hooked("the Desk's Queue view draws the listing that read while another one fails", "/?view=queue", 'document.querySelector(".list .scroll .row, .list .scroll tr[data-href]")', {}, async () => {
   await sleep(1500);
   await evaluate('hook.fails = ["/api/tasks"]');
   execFileSync("sqlite3", [join(dir, "state.db"), "UPDATE tasks SET tldr = 'Landed beside a failure' WHERE id = 4; UPDATE revision SET value = value + 1;"]);

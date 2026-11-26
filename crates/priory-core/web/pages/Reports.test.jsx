@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClientProvider } from "@tanstack/react-query";
 import fixture from "../../../../adapters/herdr/test/fixtures/report.json";
 
-// The legacy pages, whose store of what to read this page shares, read these as they load.
+// The data modules, whose store of what to read this page shares, read these as they load.
 const element = { addEventListener() {}, open: false };
 Object.assign(globalThis, {
   localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
@@ -13,7 +13,7 @@ Object.assign(globalThis, {
 });
 const { client, keyOf } = await import("../queries.js");
 const { setFailed } = await import("../session.js");
-const { askFor } = await import("../legacy/data.js");
+const { askFor } = await import("../data.js");
 const { Place } = await import("./place.js");
 const { Reports } = await import("./Reports.jsx");
 
