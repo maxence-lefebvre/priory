@@ -34,7 +34,7 @@ const NO_REPORT = "no task has a report";
 /** @typedef {ReturnType<typeof dossier>} Dossier */
 /** @typedef {Dossier["sections"][number]} Section */
 /** @typedef {Section["rows"][number]} Row */
-/** @typedef {{ task: number, row: string, pick: string, option: string, from: string | null, revision: number, timer: import("gpui-kit").Task | null }} Pending */
+/** @typedef {{ task: number, row: string, pick: string, option: string, from: string | null, revision: number, timer: import("gpui-kit").Task | null, batch?: string }} Pending */
 /** @typedef {["greeting"] | ["empty"] | ["section", Section] | ["row", Row] | ["more", Section, number]} Item */
 
 // settings.json's "priory" object: { binary, machine, factory, theme }, each optional. Mirrors priory-tabs.
@@ -102,8 +102,10 @@ export default class PrioryBonjour extends View {
     this.models = new Map();
     /** @type {Set<string>} the sections Show more unfolded */
     this.unfolded = new Set();
-    /** @type {Map<string, Pending>} each row's pick waiting out its Undo, then in flight */
+    /** @type {Map<string, Pending>} each row's pick waiting out its Undo, then in flight; a batch's picks share one timer */
     this.pending = new Map();
+    /** @type {Record<string, import("./view.js").Filter>} each section's chips, by its id */
+    this.filters = {};
     /** @type {string | null} the row whose agreed pick Change reopened */
     this.changing = null;
     /** @type {Map<string, string>} why a pick on a row was refused */
@@ -195,7 +197,8 @@ export default class PrioryBonjour extends View {
       const still = read?.report.task === pending.task && rows.some((row) => row.id === pending.row && row.pick?.id === pending.pick
         && row.pick.state !== "applied" && row.pick.chosen === pending.from);
       if (still) continue;
-      pending.timer?.cancel();
+      // A batch's timer still sends the rest of it.
+      if (pending.batch == null) pending.timer?.cancel();
       this.pending.delete(pending.row);
       this.flash = `${pending.option} was not sent: the report changed before it went.`;
     }
@@ -212,10 +215,10 @@ export default class PrioryBonjour extends View {
    * @param {Read} data @param {string} view @param {string} query @param {number} now
    */
   dossier(data, view, query, now) {
-    const key = [data, query, this.links, Math.floor(now / 60_000)];
+    const key = [data, query, this.links, this.filters, Math.floor(now / 60_000)];
     const known = this.models.get(view);
     if (known?.key.every((part, at) => part === key[at])) return known.model;
-    const model = dossier(data, { now, view, links: this.links, query });
+    const model = dossier(data, { now, view, links: this.links, query, filters: this.filters });
     this.models.set(view, { key, model });
     return model;
   }
@@ -316,12 +319,42 @@ export default class PrioryBonjour extends View {
     cx.notify();
   }
 
-  /** @param {string | null} row @param {import("gpui-kit").Context} cx */
+  /** Picks the recommended option on every open row `section` shows, behind one Undo. @param {Dossier} model @param {Section} section @param {import("gpui-kit").Context} cx */
+  pickAll(model, section, cx) {
+    if (this.error) return;
+    /** @type {Pending[]} */
+    const batch = section.recommended.filter((each) => !this.pending.has(each.row))
+      .map((each) => ({ task: model.task, row: each.row, pick: each.pick, option: each.option, from: null, revision: model.revision, timer: null, batch: section.id }));
+    if (!batch.length) return;
+    this.flash = null;
+    const timer = cx.timer.after(UNDO_MS, (cx) => {
+      for (const pending of batch) {
+        // A row that Undo or a new read took out of the batch stays.
+        if (this.pending.get(pending.row) !== pending) continue;
+        pending.timer = null;
+        this.send(pending, cx);
+      }
+    });
+    for (const pending of batch) {
+      pending.timer = timer;
+      this.pending.set(pending.row, pending);
+      this.notices.delete(pending.row);
+    }
+    cx.notify();
+  }
+
+  /** Cancels `row`'s pick while it waits out its Undo, with the rest of its batch. @param {string | null} row @param {import("gpui-kit").Context} cx */
   undo(row, cx) {
     const pending = row == null ? undefined : this.pending.get(row);
     if (!pending?.timer) return;
     pending.timer.cancel();
-    this.pending.delete(pending.row);
+    for (const each of [...this.pending.values()]) if (each.timer === pending.timer) this.pending.delete(each.row);
+    cx.notify();
+  }
+
+  /** @param {string} section @param {import("./view.js").Filter} part @param {import("gpui-kit").Context} cx */
+  filter(section, part, cx) {
+    this.filters = { ...this.filters, [section]: { ...this.filters[section], ...part } };
     cx.notify();
   }
 
@@ -432,6 +465,10 @@ export default class PrioryBonjour extends View {
     if (event.key === "j" || event.key === "down") return this.move(model, 1, cx);
     if (event.key === "k" || event.key === "up") return this.move(model, -1, cx);
     if (event.key === "n") return this.select(model, nextPick(model, this.selected) ?? this.selected, cx);
+    if (event.key === "a") {
+      const section = model.sections.find((each) => each.rows.some((candidate) => candidate.id === this.selected));
+      return section && this.pickAll(model, section, cx);
+    }
     const row = this.rows(model).find((candidate) => candidate.id === this.selected);
     const option = row?.pick?.options.find((candidate) => candidate.key === event.key);
     if (row && option) this.choose(model, row, option.label, cx);
@@ -582,10 +619,7 @@ export default class PrioryBonjour extends View {
         if (item[0] === "empty") return div().text_color(t["text-2"]).child(model.found != null
           ? `Nothing in this report holds “${this.query.value().trim()}”.`
           : this.view === "picks" ? "Every pick is agreed." : "This report has no sections.");
-        if (item[0] === "section") {
-          return h_flex().max_w(DOCUMENT).pt(S["space-3"]).gap(S["space-2"]).items_center().text_size(S["type-small"][0]).font_weight(650)
-            .child(item[1].title).child(div().font_weight(400).text_color(t["text-3"]).child(String(item[1].count)));
-        }
+        if (item[0] === "section") return this.section(model, item[1], t);
         if (item[0] === "more") {
           const section = item[1];
           return div().max_w(DOCUMENT).child(this.secondary(`more-${section.id}`, `Show ${plural(item[2], "more row")}`, (cx) => {
@@ -700,8 +734,8 @@ export default class PrioryBonjour extends View {
         .when(commentable && !pending, (el) => el.child(this.secondary(`comment-${row.id}`, "Comment", (cx) => this.select(model, row.id, cx), t)))
         .when(reopened && !pending, (el) => el.child(this.secondary("change-cancel", "Keep", (cx) => { this.changing = null; cx.notify(); }, t)))
         .when(Boolean(pending), (el) => el.child(h_flex().flex_1().gap(S["space-2"]).items_center().justify_end().text_size(S["type-small"][0])
-          .child(div().child(pending?.timer ? `Picking ${pending.option}` : `Sending ${pending?.option}…`))
-          .when(Boolean(pending?.timer), (el) => el.child(this.secondary(`undo-${row.id}`, "Undo", (cx) => this.undo(row.id, cx), t))))));
+          .child(div().child(pending?.batch != null && pending.timer ? "With the batch" : pending?.timer ? `Picking ${pending.option}` : `Sending ${pending?.option}…`))
+          .when(Boolean(pending?.timer) && pending?.batch == null, (el) => el.child(this.secondary(`undo-${row.id}`, "Undo", (cx) => this.undo(row.id, cx), t))))));
   }
 
   /** A row's threads under it, a resolved one folded to one line, then the comment field on the selected row. */
@@ -738,6 +772,39 @@ export default class PrioryBonjour extends View {
             .child(Input.new(this.draft).h_full().w_full().text_size(S["type-small"][0]).text_color(t.text)))
           .child(this.secondary("comment-send", this.replyTo == null ? "Comment" : "Reply", (cx) => this.post(cx), t))
           .when(this.replyTo != null, (el) => el.child(this.secondary("comment-cancel", "Cancel", (cx) => { this.replyTo = null; cx.notify(); }, t))))));
+  }
+
+  /**
+   * A section's title and count, then its chips, Pick all recommended and, while one waits, its
+   * batch with one Undo.
+   * @param {Dossier} model @param {Section} section @param {Palette} t
+   */
+  section(model, section, t) {
+    const head = h_flex().pt(S["space-3"]).gap(S["space-2"]).items_center().text_size(S["type-small"][0]).font_weight(650)
+      .child(section.title).child(div().font_weight(400).text_color(t["text-3"]).child(String(section.count)));
+    const { chips, filter } = section;
+    if (!chips) return v_flex().max_w(DOCUMENT).child(head);
+    const batch = [...this.pending.values()].filter((pending) => pending.batch === section.id);
+    const left = section.recommended.filter((each) => !this.pending.has(each.row)).length;
+    const toggle = (/** @type {string | null} */ option) => (filter.recommends.includes(option) ? filter.recommends.filter((each) => each !== option) : [...filter.recommends, option]);
+    const states = /** @type {const} */ ({ all: "All", open: "Open", picked: "Picked" });
+    return v_flex().max_w(DOCUMENT).gap(S["space-2"]).child(head)
+      .child(h_flex().flex_wrap().gap(S["space-1"]).items_center()
+        .children(chips.state.map(({ id, count }) => this.chip(`filter-${section.id}-${id}`, `${states[id]} ${count}`, filter.state === id, (cx) => this.filter(section.id, { state: id }, cx), t)))
+        .when(chips.recommends.length > 0, (el) => el.child(div().px(S["space-2"]).text_size(S["type-caption"][0]).text_color(t["text-3"]).child("Recommends")))
+        .children(chips.recommends.map(({ option, count }) => this.chip(`recommends-${section.id}-${option ?? "none"}`, `${option ?? "None"} ${count}`, filter.recommends.includes(option),
+          (cx) => this.filter(section.id, { recommends: toggle(option) }, cx), t)))
+        .when(left > 0 && !batch.length && !this.error, (el) => el.child(this.secondary(`pick-all-${section.id}`, `Pick all recommended ${left}`, (cx) => this.pickAll(model, section, cx), t))))
+      .when(batch.length > 0, (el) => el.child(h_flex().gap(S["space-2"]).items_center().px(S["space-3"]).py(S["space-1"]).rounded(S["radius-md"]).bg(t.raised).text_size(S["type-small"][0])
+        .child(div().flex_1().child(batch.some((pending) => !pending.timer) ? `Sending ${plural(batch.length, "pick")}…` : `Picking the recommended option on ${plural(batch.length, "row")} in ${section.title}`))
+        .when(batch.every((pending) => pending.timer), (el) => el.child(this.secondary(`undo-batch-${section.id}`, `Undo all ${batch.length}`, (cx) => this.undo(batch[0].row, cx), t)))));
+  }
+
+  /** @param {string} id @param {string} label @param {boolean} on @param {(cx: import("gpui-kit").Context) => void} action @param {Palette} t */
+  chip(id, label, on, action, t) {
+    return Button.new(id).h(S["control-fine"] - 6).px(S["space-2"]).flex().flex_none().items_center().rounded(S["radius-md"]).border(1).border_color(on ? t.emph : t.line)
+      .selected(on).bg(on ? t.emph : t.surface).text_color(on ? t["on-emph"] : t["text-2"]).text_size(S["type-caption"][0]).font_weight(600)
+      .focus((s) => s.border(2).border_color(t["action-text"])).on_click((_event, cx) => action(cx)).child(label);
   }
 
   /** @param {string} id @param {string} label @param {(cx: import("gpui-kit").Context) => void} action @param {Palette} t */

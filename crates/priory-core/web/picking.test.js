@@ -44,3 +44,24 @@ test("cancel drops only the waiting picks that fail its test", (t) => {
   t.mock.timers.tick(UNDO_MS);
   assert.deepEqual(sent, ["a"]);
 });
+
+test("a batch waits out one Undo, sends every pick in it, and skips rows already pending", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const sent = [];
+  const picks = picking({ send: async (pick) => sent.push(pick.row), changed() {} });
+  picks.start({ row: "a", option: "In" });
+  assert.equal(picks.batch("sentry", [{ row: "a", option: "Out" }, { row: "b", option: "Out" }, { row: "c", option: "Out" }]), 2);
+  t.mock.timers.tick(UNDO_MS);
+  assert.deepEqual(sent, ["a", "b", "c"]);
+});
+
+test("undo of one row of a batch undoes the whole batch and leaves a single pick", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const sent = [];
+  const picks = picking({ send: async (pick) => sent.push(pick.row), changed() {} });
+  picks.start({ row: "a", option: "In" });
+  picks.batch("sentry", [{ row: "b", option: "Out" }, { row: "c", option: "Out" }]);
+  assert.equal(picks.undo("c"), true);
+  t.mock.timers.tick(UNDO_MS);
+  assert.deepEqual(sent, ["a"]);
+});

@@ -1,5 +1,6 @@
 // Picks waiting out their Undo, then in flight, one per row. A pick wakes the report's agent, so
-// nothing leaves before its Undo time passes, and a pick never waits on another row's.
+// nothing leaves before its Undo time passes, and a pick never waits on another row's. A batch, such
+// as a section's Pick all recommended, shares one Undo.
 export const UNDO_MS = 4000;
 
 /**
@@ -14,6 +15,8 @@ export function picking({ send, changed }) {
     changed(new Map(rows));
   };
   const go = async (entry) => {
+    // A pick that Undo or a new read took out of its batch stays.
+    if (rows.get(entry.row) !== entry) return;
     put(entry.row, { ...entry, sending: true });
     try {
       await send(entry);
@@ -21,32 +24,42 @@ export function picking({ send, changed }) {
       put(entry.row, null);
     }
   };
+  const drop = (entries) => {
+    for (const entry of entries) rows.delete(entry.row);
+    if (entries.length) changed(new Map(rows));
+    return entries;
+  };
   return {
     /** Starts `pick`'s Undo, unless its row already has a pick pending. */
     start(pick) {
-      if (rows.has(pick.row)) return false;
-      const entry = { ...pick, sending: false };
-      entry.timer = setTimeout(() => go(entry), UNDO_MS);
-      put(pick.row, entry);
-      return true;
+      return this.batch(null, [pick]) === 1;
     },
-    /** Cancels `row`'s pick while it waits out its Undo; true when there was one. */
+    /**
+     * Starts one Undo for every pick of `picks` whose row has none pending, as batch `key`; a null
+     * key is a single pick. Returns how many it started.
+     */
+    batch(key, picks) {
+      const entries = picks.filter((pick) => !rows.has(pick.row)).map((pick) => ({ ...pick, batch: key, sending: false, timer: null }));
+      if (!entries.length) return 0;
+      const timer = setTimeout(() => entries.forEach(go), UNDO_MS);
+      for (const entry of entries) {
+        entry.timer = timer;
+        rows.set(entry.row, entry);
+      }
+      changed(new Map(rows));
+      return entries.length;
+    },
+    /** Cancels `row`'s pick, and every other pick of its batch, while it waits out its Undo. */
     undo(row) {
       const entry = rows.get(row);
       if (!entry || entry.sending) return false;
       clearTimeout(entry.timer);
-      put(row, null);
+      drop([...rows.values()].filter((each) => each.timer === entry.timer && !each.sending));
       return true;
     },
     /** Cancels every pick still waiting whose `keep` is false, and returns them. */
     cancel(keep = () => false) {
-      const gone = [...rows.values()].filter((entry) => !entry.sending && !keep(entry));
-      for (const entry of gone) {
-        clearTimeout(entry.timer);
-        rows.delete(entry.row);
-      }
-      if (gone.length) changed(new Map(rows));
-      return gone;
+      return drop([...rows.values()].filter((entry) => !entry.sending && !keep(entry)));
     },
   };
 }

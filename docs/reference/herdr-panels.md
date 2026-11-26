@@ -319,6 +319,16 @@ its visual rules; this section says how it works.
   made in a row ([reports](../daemon/reports.md#pick-an-option)). When the report stops offering a
   pick during its Undo, because another task wrote a report or someone picked first, the panel
   cancels that pick and says so.
+- **Section chips.** A section with a pick has chips under its title: All, Open and Picked, each
+  with its count, then one Recommends chip per option its picks recommend, and None for picks with
+  no recommendation. A state chip keeps the section's rows in that state. Recommends chips keep the
+  rows that recommend any pressed option, and count the rows the state chip keeps.
+- **Pick all recommended.** A section's Pick all recommended, or `A` on one of its rows, picks the
+  recommended option on every open row the section shows that has one, after one 4 s Undo for the
+  whole batch. Rows without a recommendation stay open, and rows the chips or a search hide are
+  left out. A strip under the chips says `Picking the recommended option on 9 rows in Sentry` with
+  "Undo all 9", and each row in it says "With the batch". The panel then sends each pick as a
+  single pick does, and the daemon wakes the agent once. A refused row says why under itself.
 - **Refused picks.** When `report pick` fails, the panel reads the report again and says why on the
   row: someone already picked, the report changed to another revision, the report no longer holds
   the pick, or the CLI's error. When the row has left the view, the reason shows in a strip under
@@ -337,7 +347,8 @@ its visual rules; this section says how it works.
   holds the row, so an older report offers Reply, Resolve and Reopen but no new thread. A refused comment says why under the row and keeps the text
   in the field. Rows that share an id share their threads.
 - **Keys.** `J` and `K` move between rows, `N` goes to the next pick, `1` to `9` press an option of
-  the selected pick, and `Esc` undoes the selected row's pick while it waits out its Undo.
+  the selected pick, `A` picks all recommended in the selected row's section, and `Esc` undoes the
+  selected row's pick, or its whole batch, while it waits out its Undo.
 - **Agent text.** Every row's meta, owner and the greeting draw as plain text. Its text draws with
   its [links](#links). A press on linked text stays there, so a link opens without selecting the
   row; the rest of the row still selects it.
