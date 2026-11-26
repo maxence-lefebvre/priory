@@ -1,10 +1,15 @@
 // The add page's legacy drawing and actions.
 import { addBody, addOutcome, swapLine, withDefaults } from "../add.js";
 import { taskLabel, workStep } from "../tasks.js";
-import { keyOf } from "../queries.js";
-import { api, cache, land, refresh, signOut } from "./data.js";
-import { focusKey, html, icon, post, raw, state, tile } from "./shared.js";
+import { cache } from "../data.js";
+import { keyOf, newest } from "../queries.js";
+import { request } from "../reads/request.js";
+import { api, refresh, signOut } from "./data.js";
+import { focusKey, html, icon, post, raw, tile } from "./shared.js";
+import { state } from "./state.js";
 
+// The sheet's draft and chips, the server's defaults, and where the last send got to.
+Object.assign(state, { add: { phase: "empty", error: null, defaults: null, task: null, draft: { text: "" }, ...JSON.parse(localStorage.getItem("priory.add") || "{}") } });
 
 export const addButton = (kind) => html`<button class="${kind}" data-action="add-open" aria-label="Add a task" aria-keyshortcuts="N" aria-haspopup="dialog">${icon("plus", "s20")}${kind === "addtop" ? "Add" : ""}</button>`;
 
@@ -15,21 +20,19 @@ export const addSheet = () => document.getElementById("add");
 // Only an unsent draft keeps its phase across a reload, so it still asks before it sends.
 export const keepDraft = () => localStorage.setItem(DRAFT_KEY, JSON.stringify({ draft: state.add.draft, phase: ["offline", "unsure"].includes(state.add.phase) ? state.add.phase : "empty" }));
 // Lanes have no list of their own: the chip offers each lane a listed task carries.
-const knownLanes = () => [...new Set([...state.data.tasks, ...state.data.queue.waiting].map((task) => task.lane).filter(Boolean))].sort();
+const knownLanes = () => [...new Set([...(newest(cache, "tasks")?.tasks ?? []), ...(newest(cache, "queue")?.waiting ?? [])].map((task) => task.lane).filter(Boolean))].sort();
 
 // The factory may reload while the page is open; a read that fails keeps the last one.
 export async function readAddDefaults() {
-  state.add.defaults = await api("/api/request").catch(() => state.add.defaults);
+  state.add.defaults = await cache.fetchQuery({ ...request(), staleTime: 0 }).catch(() => state.add.defaults);
 }
 
 export async function openAdd() {
-  // A page in React lands nothing for the legacy pages.
-  if (!state.data) land();
-  if (!state.data || addSheet().open) return;
+  if (!newest(cache, "desk") || addSheet().open) return;
   if (state.add.phase === "added") Object.assign(state.add, { phase: "empty", task: null });
   const before = state.add.defaults;
   // The Lane chip offers the lanes these two list, which the page may not show.
-  const read = Promise.all([readAddDefaults(), ...["tasks", "queue"].map((name) => cache.ensureQueryData({ queryKey: keyOf(name) }).catch(() => {}))]).then(land);
+  const read = Promise.all([readAddDefaults(), ...["tasks", "queue"].map((name) => cache.ensureQueryData({ queryKey: keyOf(name) }).catch(() => {}))]);
   if (!before) await read;
   const { defaults } = state.add;
   if (addSheet().open) return renderAdd();
@@ -90,8 +93,8 @@ export function renderAdd() {
     <input id="add-text" name="text" autocomplete="off" enterkeyhint="send" placeholder="What should the factory do?" value="${draft.text}" ${sending ? raw("readonly") : ""} ${status || swapped ? raw('aria-describedby="add-status add-swapped"') : ""}>
     ${status}${swapped ? html`<p class="warnline" id="add-swapped">${icon("circle-alert", "s15")}<span>${swapLine(swapped, defaults?.workflow)}</span></p>` : ""}
     <div class="chips">${chip("workflow", "Workflow", draft.workflow, defaults?.workflows || [], defaults?.workflow ? `default (${defaults.workflow})` : "pick one")}
-      ${chip("band", "Band", draft.band, defaults?.bands || state.data?.bands || [], "default")}
-      ${chip("lane", "Lane", draft.lane, state.data ? knownLanes() : [], "routed")}</div>
+      ${chip("band", "Band", draft.band, defaults?.bands || newest(cache, "asks")?.bands || [], "default")}
+      ${chip("lane", "Lane", draft.lane, knownLanes(), "routed")}</div>
     <div class="acts">${phase === "empty" || sending ? "" : html`<button type="button" class="ghost" data-action="add-discard">Discard draft</button>`}<span class="sp"></span>
       <button class="btn primary" aria-disabled="${empty || sending ? "true" : "false"}">${label}</button></div></form>`;
   const focused = document.activeElement?.closest?.("#add") ? focusKey(document.activeElement) : null;
@@ -155,6 +158,11 @@ export function addClick(action) {
     document.getElementById("add-text")?.focus();
   } else return false;
   return true;
+}
+
+// The sheet draws again when the connection drops or comes back under it.
+export function addSheetBefore() {
+  if (addSheet().open && state.add.shownOffline !== Boolean(state.failed)) renderAdd();
 }
 
 export function addInput(target) {

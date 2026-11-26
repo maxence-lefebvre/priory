@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 123;
+const VERSION: i64 = 125;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -2204,6 +2204,32 @@ CREATE INDEX IF NOT EXISTS inbox_merges ON inbox (json_extract(data, '$.repo'),
 PRAGMA user_version = 123;
 ";
 
+// When the last autopilot `off` was made, and when the setting this runner has not read back was, so
+// an older `on` read late is dropped. Text dates sort right without their `Z`; one ahead counts as now.
+const SCHEMA_124: &str = "
+CREATE TABLE IF NOT EXISTS autopilot_times (
+  id        INTEGER PRIMARY KEY CHECK (id = 1),
+  off       TEXT,
+  unread_at TEXT
+);
+INSERT OR IGNORE INTO autopilot_times (id) VALUES (1);
+UPDATE autopilot_times SET off = (
+  SELECT max(min(rtrim(time, 'Z'), strftime('%Y-%m-%dT%H:%M:%f', 'now'))) || 'Z' FROM inbox
+  WHERE type = 'priory.autopilot.set' AND data = '{}' AND outcome = 'noted');
+PRAGMA user_version = 124;
+";
+
+// The writes that applied, by the id of the press that sent them: a resend gets the same reply.
+const SCHEMA_125: &str = "
+CREATE TABLE IF NOT EXISTS calls (
+  id      TEXT PRIMARY KEY,
+  write   TEXT NOT NULL,
+  reply   TEXT NOT NULL,
+  created TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+PRAGMA user_version = 125;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -2221,7 +2247,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
     SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112, SCHEMA_113,
     SCHEMA_114, SCHEMA_115, SCHEMA_116, SCHEMA_117, SCHEMA_118, SCHEMA_119, SCHEMA_120, SCHEMA_121,
-    SCHEMA_122, SCHEMA_123,
+    SCHEMA_122, SCHEMA_123, SCHEMA_124, SCHEMA_125,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -3456,7 +3482,7 @@ pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String, u8)>> {
 /// merge commit and merge time, merged since `since` and with no check run event at the merge
 /// commit that saw every check complete: the commits the intake still reads check runs at.
 pub fn merges(db: &Connection, since: &str) -> rusqlite::Result<Vec<priory_intake::intake::Merge>> {
-    db.prepare(
+    db.prepare(&format!(
         "SELECT DISTINCT json_extract(data, '$.repo'), json_extract(data, '$.pull_request'),
            json_extract(data, '$.head_branch'), json_extract(data, '$.base_branch'),
            json_extract(data, '$.merge_commit'), time
@@ -3475,10 +3501,10 @@ pub fn merges(db: &Connection, since: &str) -> rusqlite::Result<Vec<priory_intak
            AND json_extract(data, '$.failing') <= (SELECT count(*) FROM inbox AS red
              WHERE red.type = ?3 AND json_extract(red.data, '$.repo') = json_extract(closed.data, '$.repo')
              AND json_extract(red.data, '$.head_sha') = json_extract(closed.data, '$.merge_commit')
-             AND json_extract(red.data, '$.conclusion') NOT IN ('success', 'neutral', 'skipped')
-             AND json_extract(red.data, '$.superseded_by') IS NULL))
+             AND {}))
          ORDER BY time",
-    )?
+        crate::route::COUNTED_RED
+    ))?
     .query_map(params![CLOSED, since, CHECKED], |row| {
         Ok(priory_intake::intake::Merge {
             repo: row.get(0)?,
@@ -5428,6 +5454,67 @@ mod push_kinds {
             )
             .unwrap();
         assert_eq!(row, ("e".to_owned(), None));
+    }
+}
+
+#[cfg(test)]
+mod autopilot_times {
+    use super::*;
+
+    #[test]
+    fn an_upgrade_from_123_keeps_an_unread_setting_and_the_last_off_it_applied() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.execute_batch(&MIGRATIONS[..123].concat()).unwrap();
+        db.execute_batch(
+            "UPDATE autopilot_state SET unread = 'mine';
+             INSERT INTO inbox (id, type, time, data, links, outcome) VALUES
+               ('1', 'priory.autopilot.set', '2026-01-01T00:00:01.5Z', '{}', '[]', 'noted'),
+               ('2', 'priory.autopilot.set', '2026-01-01T00:00:01.52Z', '{}', '[]', 'noted'),
+               ('3', 'priory.autopilot.set', '2026-01-01T00:00:01Z', '{}', '[]', 'noted'),
+               ('4', 'priory.autopilot.set', '2026-01-02T00:00:00Z', '{}', '[]', 'refused'),
+               ('5', 'priory.autopilot.set', '2026-01-02T00:00:00Z', '{}', '[]', 'outsider'),
+               ('6', 'priory.autopilot.set', '2026-01-02T00:00:00Z', '{\"level\":\"high\"}', '[]', 'noted'),
+               ('7', 'priory.task.requested.cli', '2026-01-02T00:00:00Z', '{}', '[]', 'noted');",
+        )
+        .unwrap();
+
+        apply(&mut db, false).unwrap();
+
+        let row: (String, String, Option<String>) = db
+            .query_row(
+                "SELECT unread, off, unread_at FROM autopilot_state, autopilot_times",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            (
+                "mine".to_owned(),
+                "2026-01-01T00:00:01.52Z".to_owned(),
+                None
+            )
+        );
+    }
+
+    #[test]
+    fn an_upgrade_counts_an_off_dated_ahead_as_made_now() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.execute_batch(&MIGRATIONS[..123].concat()).unwrap();
+        db.execute(
+            "INSERT INTO inbox (id, type, time, data, links, outcome)
+             VALUES ('1', 'priory.autopilot.set', '2099-01-01T00:00:00Z', '{}', '[]', 'noted')",
+            [],
+        )
+        .unwrap();
+
+        apply(&mut db, false).unwrap();
+
+        let off: String = db
+            .query_row("SELECT off FROM autopilot_times", [], |row| row.get(0))
+            .unwrap();
+        let off: jiff::Timestamp = off.parse().unwrap();
+        assert!(off <= jiff::Timestamp::now(), "{off}");
     }
 }
 

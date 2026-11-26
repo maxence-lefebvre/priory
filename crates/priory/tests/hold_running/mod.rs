@@ -560,23 +560,11 @@ fn a_hold_before_the_first_prompt_waits_for_that_prompts_turn() {
 #[test]
 fn a_raised_cap_leaves_a_marked_task_held_with_its_hold_s_reason() {
     let mut setup = Setup::new("hold-cap");
-    setup.caps(&format!(
-        "[caps]\ntask = 50.0\n\n{}",
-        URGENT_TYPE.split_once("\n\n").unwrap().1
-    ));
+    cap(&setup);
     mid_turn(&mut setup, requested(42));
     setup.hold_keyboard("1");
     hold(&setup, &[]);
-    setup.release("hold-stop");
-    setup.until("runs", |_| {
-        setup.sql("SELECT idle FROM runs WHERE id = 1") == Some("1".to_owned())
-    });
-    // The cap's check comes before the hold's on a tick, so a whole tick must see the grant end.
-    setup.crash();
-    let_keyboards_go(&setup);
-    setup.go();
-    until_state(&setup, "held");
-    assert!(held_as(&setup, "1")[1].starts_with("held: spent $"));
+    held_at_cap(&mut setup);
 
     person(&setup, "answer", &["1", "raise", "--revision", "1"]);
 
@@ -622,4 +610,205 @@ fn hold_now_while_a_gate_grades_says_the_process_goes_on() {
 
     fs::write(&go, "").unwrap();
     until_state(&setup, "done");
+}
+
+/// Two model steps of the implementer with a command between them, which ends once
+/// `home/worktrees/owner/repo/go` exists.
+const COMMAND: &str = r#"
+start = "implement"
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the issue."
+effect = "reversible"
+next = { passed = "measure", failed = "stop" }
+
+[[steps]]
+id = "measure"
+decides = "code"
+action = "run"
+run = "while [ ! -e ../go ]; do sleep 0.1; done"
+effect = "reversible"
+next = { ok = "check", failed = "stop" }
+
+[[steps]]
+id = "check"
+decides = "model"
+agent = "implementer"
+prompt = "Check the change."
+effect = "reversible"
+next = { passed = "done", failed = "stop" }
+"#;
+
+const ONCE_READY: &str = "holds once it is ready: room for task 2, until a person releases it";
+
+/// Marks task 1 with `flags`, then holds it at its spend cap: `before` happens in between.
+fn capped_while_marked(setup: &mut Setup, flags: &[&str], before: &Message) {
+    setup.hold_keyboard("1");
+    hold(setup, flags);
+    setup.publish(before);
+    setup.until("runs", |_| {
+        setup.sql(&format!(
+            "SELECT count(*) FROM inbox WHERE id = '{}'",
+            before.id
+        )) == Some("1".to_owned())
+    });
+    held_at_cap(setup);
+}
+
+/// Ends task 1's turn while a person holds its keyboard, then lets its spend cap hold it.
+fn held_at_cap(setup: &mut Setup) {
+    setup.release("hold-stop");
+    // A daemon killed before it acknowledges the `Stop` gets it again, and would hold the run on it.
+    setup.until("runs", |_| {
+        let screen = setup
+            .command("tmux")
+            .args(["capture-pane", "-p", "-t", "=priory-1:"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&screen.stdout).contains("fake turn 1 ended")
+    });
+    // The cap's check comes before the hold's on a tick, so a whole tick must see the grant end.
+    setup.crash();
+    let_keyboards_go(setup);
+    setup.go();
+    until_state(setup, "held");
+    let held = held_as(setup, "1");
+    assert!(held[1].starts_with("held: spent $"), "{held:?}");
+}
+
+fn cap(setup: &Setup) {
+    setup.caps(&format!(
+        "[caps]\ntask = 50.0\n\n{}",
+        URGENT_TYPE.split_once("\n\n").unwrap().1
+    ));
+}
+
+#[test]
+fn a_merge_seen_while_a_capped_task_was_marked_releases_it_once_the_cap_is_raised() {
+    let mut setup = Setup::new("hold-cap-merge");
+    cap(&setup);
+    mid_turn(&mut setup, requested(42));
+    capped_while_marked(&mut setup, &["--merge", "7"], &closed_7(true, 400));
+
+    person(&setup, "answer", &["1", "raise", "--revision", "1"]);
+
+    setup.until("runs", |rows| rows.len() == 2);
+}
+
+#[test]
+fn a_task_left_held_before_its_met_merge_was_judged_is_released_once_the_cap_is_raised() {
+    let mut setup = Setup::new("hold-cap-merge-left");
+    cap(&setup);
+    mid_turn(&mut setup, requested(42));
+    capped_while_marked(&mut setup, &["--merge", "7"], &closed_7(true, 400));
+    // As a daemon that judged nothing at the cap stored it.
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute("UPDATE holds SET met = NULL, met_as = NULL", [])
+        .unwrap();
+
+    person(&setup, "answer", &["1", "raise", "--revision", "1"]);
+
+    setup.until("runs", |rows| rows.len() == 2);
+}
+
+#[test]
+fn blockers_gone_while_a_capped_task_was_marked_release_it_once_the_cap_is_raised() {
+    let mut setup = Setup::new("hold-cap-blockers");
+    cap(&setup);
+    let source = linear_7("linear.issue.blockers", &["ENG-4"]);
+    let mut request = requested(42);
+    request.data["key"] = json!("linear:ENG-7");
+    request.data["source"] = json!(source.id.to_string());
+    setup.publish(&source);
+    mid_turn(&mut setup, request);
+    let unblocked = linear_7("linear.issue.blockers", &[]);
+    capped_while_marked(&mut setup, &["--blockers"], &unblocked);
+
+    person(&setup, "answer", &["1", "raise", "--revision", "1"]);
+
+    setup.until("runs", |rows| rows.len() == 2);
+}
+
+#[test]
+fn hold_now_after_an_ask_says_the_hold_still_applies_and_the_task_keeps_its_reason() {
+    let mut setup = Setup::new("hold-now-ask");
+    setup.calls(&[ask()]);
+    mid_turn(&mut setup, requested(42));
+    setup.until("asks", |rows| rows.len() == 1);
+
+    assert_eq!(
+        hold(&setup, &["--now"]),
+        "task 1 is asleep; the hold still applies\n"
+    );
+
+    assert_eq!(held_as(&setup, "1"), ["asleep", ONCE_READY]);
+    person(&setup, "answer", &["1", "sqlite", "--revision", "1"]);
+    until_state(&setup, "held");
+}
+
+#[test]
+fn hold_now_after_the_last_result_says_the_hold_no_longer_applies() {
+    let mut setup = Setup::new("hold-now-done");
+    setup.calls(&[result("passed")]);
+    mid_turn(&mut setup, requested(42));
+    setup.until("runs", |_| {
+        setup.sql("SELECT count(*) FROM results") == Some("1".to_owned())
+    });
+
+    assert_eq!(
+        hold(&setup, &["--now"]),
+        "task 1 is done; the hold no longer applies\n"
+    );
+}
+
+#[test]
+fn a_marked_task_carried_into_its_next_step_keeps_its_reason() {
+    let mut setup = Setup::new("hold-carry-reason");
+    fs::write(setup.dir.join("factory/factory.toml"), URGENT_TYPE).unwrap();
+    setup.workflow("two", SAME_AGENT);
+    setup.calls(&[result("passed")]);
+    mid_turn(&mut setup, on("two", requested(42)));
+    setup.hold_keyboard("1");
+    hold(&setup, &[]);
+
+    setup.release("hold-stop");
+
+    setup.until("tasks", |rows| rows[0][3] == "check");
+    assert_eq!(held_as(&setup, "1"), ["running", MARK]);
+    person(&setup, "release", &["1"]);
+    assert_eq!(held_as(&setup, "1"), ["running", "-"]);
+}
+
+#[test]
+fn a_task_running_a_steps_command_is_held_before_its_next_step() {
+    let mut setup = Setup::new("hold-command");
+    setup.workflow("command", COMMAND);
+    setup.calls(&[result("passed")]);
+    setup.publish(&on("command", requested(42)));
+    setup.go();
+    setup.until("tasks", |rows| {
+        rows.first()
+            .is_some_and(|row| row[3] == "measure" && row[4] == "running")
+    });
+
+    assert_eq!(
+        refused(&setup, &["--now"]),
+        "priory hold: task 1 has no live run to interrupt: leave out --now to hold it once its command ends\n"
+    );
+    assert_eq!(hold(&setup, &[]), format!("task 1 {ONCE_READY}\n"));
+
+    assert_eq!(held_as(&setup, "1"), ["running", ONCE_READY]);
+    assert_eq!(on_desk(&setup), ["holds once it is ready: room for task 2"]);
+    person(&setup, "release", &["1"]);
+    assert_eq!(held_as(&setup, "1"), ["running", "-"]);
+    hold(&setup, &[]);
+    fs::write(setup.dir.join("home/worktrees/owner/repo/go"), "").unwrap();
+    until_state(&setup, "held");
+    assert_eq!(setup.rows("tasks")[0][3], "check");
+    assert_eq!(held_as(&setup, "1")[1], HELD);
+    assert_eq!(setup.rows("runs").len(), 1);
 }

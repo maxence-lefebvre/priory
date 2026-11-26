@@ -11,7 +11,18 @@ import { acceptAsk, refresh, signOut } from "./data.js";
 import { fold, openAsks } from "./desk.js";
 import { connection } from "./frame.js";
 import { taskOf, taskSections } from "./sections.js";
-import { age, ago, autolinked, clock, date, facet, facetPicks, facetQuery, faceted, focusKey, html, icon, layout, listSearch, loadOlder, md, olderRow, post, raw, savedViews, selectedAsk, shownFacets, state, stateWord, tile, timeTag, today } from "./shared.js";
+import { age, ago, autolinked, clock, date, facet, facetPicks, facetQuery, faceted, focusKey, html, icon, layout, listSearch, loadOlder, md, olderRow, post, raw, savedViews, selectedAsk, shownFacets, stateWord, tile, timeTag, today } from "./shared.js";
+import { state } from "./state.js";
+
+Object.assign(state, {
+  // The answer in flight: { id, text }.
+  pending: null,
+  // The option the first tap armed, until the second tap sends it or 4 s pass: { id, revision, text, at, timer }.
+  armed: null,
+  drafts: new Map(),
+  notices: new Map(),
+  writing: new Set(),
+});
 
 // The open asks the list shows, so previous, next and the ask after an answer stay in its facets.
 const listedAsks = () => faceted(openAsks(), facetPicks());
@@ -244,7 +255,9 @@ export function askDetail(id, wide) {
         : html`<span>${recommended}</span><small>${[recommended === ask.recommendation ? "Recommended" : "First option", runsCommand(ask, recommended) && "Runs a command"].filter(Boolean).join(". ")}</small>`}</button>
       ${locked === "offline" ? html`<p class="note">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>` : locked ? html`<p class="note">${icon("layers", "s15")}<span>${planWait(ask, planError)}</span></p>` : cutNote(ask)}</div>`
     : "";
-  const reading = read.map(([, , section]) => section);
+  // A task read again that failed keeps its last read, and says so (DESIGN.md, Error).
+  const unread = task && state.task?.id === ask.task && state.task.error ? html`<p class="note" role="status">Could not read task ${ask.task} again: ${state.task.error}. This is its last read.</p>` : "";
+  const reading = [unread, ...read.map(([, , section]) => section)];
   const plan = [...planned, ...lead].map(([, , section]) => section);
   if (wide) return html`<div class="pinned">${header}${top}${sending}</div><div class="scroll" data-sections>${jump}${plan}${why}${reading}${history}${command}</div>`;
   return html`${header}<div class="scroll" data-sections>${top}${jump}${plan}${why}${reading}${history}${command}</div>${bar}${sending}`;
@@ -440,10 +453,19 @@ export function asksPhone() {
     <div class="panel" role="region" aria-label="Asks"><div class="scroll">${views}${rows}</div></div>`;
 }
 
-export function drawer(wide, panels) {
-  const id = selectedAsk();
+export function drawer(id, wide, panels) {
   const body = id ? askDetail(id, wide) : html`<p class="empty">${emptyDetail(panels)}</p>`;
   return html`<aside class="drawer" aria-label="Ask">${body}</aside>`;
+}
+
+// A new revision is a new question: a tap armed on the old one must not run it.
+export function asksBefore() {
+  if (state.armed && (selectedAsk() !== String(state.armed.id) || askOnScreen()?.revision !== state.armed.revision)) disarm();
+}
+
+export function asksLeft() {
+  disarm();
+  answerSheet().close();
 }
 
 export function asksClick(action, target) {

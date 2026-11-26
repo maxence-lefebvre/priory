@@ -48,34 +48,47 @@ pub(super) fn pages<T: DeserializeOwned>(
 
 /// The waits before each retry of a call GitHub failed with a 5xx or its GraphQL timeout: a busy
 /// repository's query can time out once and answer the next time.
-const BACKOFF: [Duration; 2] = [Duration::from_secs(1), Duration::from_secs(3)];
+pub(super) const BACKOFF: [Duration; 2] = [Duration::from_secs(1), Duration::from_secs(3)];
 
 pub(super) fn gh<T: DeserializeOwned>(path: &str, fields: &[&str]) -> Result<T, String> {
-    let mut waits = BACKOFF.iter();
+    gh_within(path, fields, &BACKOFF).map_err(Failed::text)
+}
+
+/// What `gh` answers, tried again after each of `waits` while it fails with a transient error.
+pub(super) fn gh_within<T: DeserializeOwned>(
+    path: &str,
+    fields: &[&str],
+    waits: &[Duration],
+) -> Result<T, Failed> {
+    let mut waits = waits.iter();
     loop {
         match call(path, fields) {
             Err(Failed::Transient(error)) => match waits.next() {
                 Some(wait) => std::thread::sleep(*wait),
-                None => return Err(error),
+                None => return Err(Failed::Transient(error)),
             },
-            Err(Failed::Other(error)) => return Err(error),
-            Ok(stdout) => {
-                return serde_json::from_slice(&stdout)
-                    .map_err(|error| format!("gh api {path}: {error}"));
-            }
+            answer => return answer,
         }
     }
 }
 
-enum Failed {
-    /// A 5xx or GitHub's GraphQL timeout: worth another try.
+pub(super) enum Failed {
+    /// A 5xx, GitHub's GraphQL timeout or a truncated answer: worth another try.
     Transient(String),
     /// Any other failure, a call past `command_timeout` among them: retrying it could hold the
     /// poll for minutes.
     Other(String),
 }
 
-fn call(path: &str, fields: &[&str]) -> Result<Vec<u8>, Failed> {
+impl Failed {
+    pub(super) fn text(self) -> String {
+        match self {
+            Failed::Transient(error) | Failed::Other(error) => error,
+        }
+    }
+}
+
+fn call<T: DeserializeOwned>(path: &str, fields: &[&str]) -> Result<T, Failed> {
     let output = output_within(Command::new("gh").args(["api", path]).args(fields))
         .map_err(|error| Failed::Other(format!("gh api {path}: {error}")))?
         .ok_or_else(|| {
@@ -91,11 +104,17 @@ fn call(path: &str, fields: &[&str]) -> Result<Vec<u8>, Failed> {
             Failed::Other(error)
         });
     }
-    Ok(output.stdout)
+    serde_json::from_slice(&output.stdout).map_err(|error| {
+        let text = format!("gh api {path}: {error}");
+        match error.is_eof() {
+            true => Failed::Transient(text),
+            false => Failed::Other(text),
+        }
+    })
 }
 
-/// Whether `gh`'s `stderr` says GitHub failed on its side: an HTTP 5xx, or the GraphQL error it
-/// returns when a query runs out of time.
+/// Whether `gh`'s `stderr` says GitHub failed on its side: an HTTP 5xx, the GraphQL error it
+/// returns when a query runs out of time, or an answer cut short.
 fn transient(stderr: &str) -> bool {
     let server = stderr.match_indices("HTTP 5").any(|(at, _)| {
         let code = &stderr.as_bytes()[at + 6..];
@@ -103,7 +122,14 @@ fn transient(stderr: &str) -> bool {
             && code[..2].iter().all(u8::is_ascii_digit)
             && code.get(2).is_none_or(|next| !next.is_ascii_digit())
     });
-    server || stderr.contains("Something went wrong while executing your query")
+    server
+        || [
+            "Something went wrong while executing your query",
+            "unexpected end of JSON input",
+            "unexpected EOF",
+        ]
+        .iter()
+        .any(|text| stderr.contains(text))
 }
 
 #[cfg(test)]
@@ -112,7 +138,11 @@ mod tests {
     use proptest::prelude::*;
 
     #[test]
-    fn a_5xx_and_a_graphql_timeout_are_transient_and_a_4xx_is_not() {
+    fn a_5xx_a_graphql_timeout_and_a_cut_answer_are_transient_and_a_4xx_is_not() {
+        assert!(transient("unexpected end of JSON input"));
+        assert!(transient(
+            "Post \"https://api.github.com/graphql\": unexpected EOF"
+        ));
         assert!(transient("gh: HTTP 504"));
         assert!(transient(
             "HTTP 502: Bad Gateway (https://api.github.com/graphql)"

@@ -47,7 +47,9 @@ crates/priory-core/web/
   components/, hooks/      # what several pages draw, and the hooks that read
   dist/app.js              # the built bundle, committed
   *.js, *.test.js          # view models and their tests: unchanged, same place
-  app.js, legacy/<page>.js # the legacy drawing, one file per page, inside LegacyPage
+  registry.js, entries/<page>.js   # each page's entry: what fills its slots, and its events
+  reads/<read>.js          # the keys and reads beside the listings, each with its hook in hooks/
+  app.js, legacy/<page>.js # the legacy drawing, one file per page, inside a legacy slot
   app.css, sw.js, boot.js  # served as files, as before
 ```
 
@@ -137,8 +139,8 @@ Rejected:
    or behaviour.
 2. **Slice 2a, the shell and the query layer.** Built, then replaced by the foundation.
 3. **The foundation.** Built. It holds what each port needs:
-   - `routes.jsx` is the route tree. Every legacy page is a child of one route that renders
-     `LegacyPage`, so it stays mounted from one page to the next. `router.js` holds the history, and
+   - `routes.jsx` is the route tree. Every page is a child of one route that renders `PageGrid`, so a
+     slot stays mounted from one page to the next. `router.js` holds the history, and
      the one click handler for plain `<a href>` links: modified clicks and other sites are the
      browser's, and a hash of this page scrolls without changing the address. A search string keeps
      its own text, since the router's default codec would rewrite `?view=` links as JSON.
@@ -146,37 +148,60 @@ Rejected:
      opened from. A history entry keeps that list, so Back restores it.
    - `queries.js` holds the cache rules of section 7, and `hooks/useData.js` one hook per listing and
      per detail. The frame reads `/api/views`, `/api/links` and `/api/desk`. A page reads its own.
-   - `LegacyPage` draws with `innerHTML` in an element with `display: contents`, inside the React
+   - `PageGrid` draws one slot per panel and one for the drawer. A slot holds a React part or a legacy
+     one, as the page's entry says. A legacy slot draws with `innerHTML` in an element with `display: contents`, inside the React
      frame. Its listings land together, once none of them is being read, so a legacy draw never mixes
      two reads. A draw that throws is reported and leaves the page as it was.
    - The frame, the sign-in and the task page are React.
 4. Then one pull request per page: Asks with the answer sheet, Desk, Tasks, Runs, Queue, Inbox,
    Costs, Reports, Flows, Batch, Terminal, Settings, the Add sheet. Each port deletes that page's
    file under `legacy/`.
-5. **Last:** delete `LegacyPage`, `html`, `raw`, `render()` and its restore code, and the document
+5. **Last:** delete the legacy slot, `html`, `raw`, `render()` and its restore code, and the document
    event delegation. Lower the bundle budget.
 
-There are no islands and no `[data-island]` event contract. Inside `LegacyPage` the legacy handlers
+There are no islands and no `[data-island]` event contract. Inside a legacy slot the legacy handlers
 keep working as they do today, on `document`. Controls React draws use React handlers.
 
 ### How to port one page
 
-Two ports touch few of the same lines: each page has its own file under `legacy/` and `pages/`.
+Two ports touch no common line but the bundle's: a port edits `entries/<page>.js`,
+`scripts/demo/pages/<page>.mjs` and files of its own. Every other file names no page or stays as it
+is. `registry.js` says what an entry holds.
 
-1. Write `pages/<Page>.jsx` and `pages/<Page>.test.jsx`. Read with the hooks of `hooks/useData.js`, add
-   one there for a detail that has none, and keep a detail's read in `read()` of `queries.js`.
-2. Draw the same elements, classes, ids and ARIA as the legacy file. On a wide screen the page returns
-   its `.list` (and `.drawer`), on a phone its `.top` and what follows. `usePlace()` gives the size.
+1. Write `pages/<Page>.jsx` and `pages/<Page>.test.jsx`. Read with a hook of `hooks/`: the listings' in
+   `useData.js`, then `useBatch`, `useCosts`, `useFlows`, `useInbox` and `useRequest`. A new read is
+   a file of its own in `reads/`: it exports a function that answers the query's key and, in `meta`, its
+   `read`, and `kept` or `once`. No list names it. Its failure is the page's to say.
+2. Draw the same elements, classes, ids and ARIA as the legacy file: `List` returns its `.list` beside
+   other panels, `Page` what stands alone, `Detail` one task or batch, `Drawer` the ask's `.drawer`.
+   `usePlace()` gives the size.
    Return one tree for every size, with `listClass(size, "list page")` on the list: on a phone `.flat`
-   gives it no box, so a rotation keeps the page's fields, focus and caret.
-3. Move the page's routes in `routes.jsx` from `legacy` to the root, with your component.
-4. Delete `legacy/<page>.js`, its lines in `app.js` (imports, `page()`, the event lists), its fields
-   of `state` in `legacy/shared.js` and its id in `TYPED_FIELDS`.
-5. A list that a drawer or another panel still draws in a legacy page stays in `legacy/` until that
-   page's port. So does what the ask drawer shares with the task page, in `legacy/sections.js`.
+   gives it no box, so a rotation keeps the page's fields, focus and caret. `components/` holds the
+   saved views' chips (`SavedViews`) and a phone's top and panel (`PhonePage`). A theme preview is
+   `LegacyPreview` of `PageGrid.jsx`, which brings the listings the Desk needs.
+3. In the page's entry, put the components in place of the legacy `list`, `page`, `detail` or `drawer`.
+   Delete the `needs`, `fields`, `kept`, `older` and events those served.
+4. Delete `legacy/<page>.js`, unless the list below keeps it. Its part of `state` goes with it.
    Pass an action the revision of the read it is drawn from, and keep it off until there is one.
-6. Run `corepack pnpm web:build`, `web:check` and `scripts/demo/refresh.mjs`. Add the page's reads to
-   the list in `refresh.mjs`, and a `hooked` check for what can fail, come late or open cold. With `WEB=crates/priory-core/web` it needs no Rust build.
+5. Add the page's reads to `scripts/demo/pages/<page>.mjs`, and a `check` there for what it keeps
+   through a refresh, and for what can fail, come late or open cold.
+6. Run `corepack pnpm web:build`, `web:check` and `scripts/demo/refresh.mjs`. With
+   `WEB=crates/priory-core/web` the last one needs no Rust build.
+
+No port deletes these files:
+
+| File under `legacy/` | Until |
+|---|---|
+| `state.js`, `shared.js`, `data.js`, `frame.js` | the last port: every legacy part draws with them |
+| `terminal.js` | the Terminal and the task page's pane are both in React |
+| `sections.js` | Asks is ported: its drawer draws a task's sections |
+| `taskacts.js` | Desk, Tasks and Inbox are ported |
+| `desk.js` | Desk is ported: Settings' theme previews draw the legacy Desk until then. Asks and Queue use its model |
+| `asks.js` | Desk is ported: it draws ask rows |
+| `batch.js` | Asks is ported: a go ask draws the plan's lanes |
+| `add.js` | Desk and Inbox are ported, and the Add sheet is in React |
+
+Such a port deletes only what no other file imports.
 
 When `dist/app.js` conflicts, merge `main`, run `corepack pnpm web:build` and commit.
 
@@ -240,6 +265,8 @@ Rules, each with a test:
    loading state. A ported page's query uses `placeholderData: keepPreviousData`, and structural sharing keeps
    the objects that did not change, so their components do not redraw. Only a first visit to an id
    draws "Loading". A failed re-read keeps the last data and shows the error beside it.
+   Only a failed read of the views, the Desk or the asks, which an answer depends on, says Reconnecting
+   and locks the answers. Another listing's says so in a strip of its own, and a detail's in its page.
    A listing not read yet draws from the snapshot, with no stale sign while its read runs, and its
    asks can be answered: the answer carries the revision drawn, and the server refuses one whose ask
    closed or moved. An action that takes the state's revision stays off, since a snapshot names none.
@@ -300,6 +327,6 @@ The person approved it on 2026-11-24: https://claude.ai/artifact/DJzXheB2nzY27bS
 
 ## Later slices
 
-1. The page ports of section 4, one pull request each.
+1. The page ports of section 4, one pull request each. Costs, Flows, Reports, Tasks, Runs and Queue are in React.
 2. The GitHub extension in the workspace.
-3. Deleting `LegacyPage` and the legacy drawing.
+3. Deleting the legacy slot and the legacy drawing.

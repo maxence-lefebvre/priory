@@ -1,6 +1,7 @@
 //! A small HTTP/1.1 server: bearer token for reads and writes, a bounded body for writes and for
 //! hook paths that authenticate themselves, one request per connection.
 
+use std::borrow::Cow;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -19,15 +20,39 @@ const FIRST_BYTE: Duration = Duration::from_secs(1);
 const BODY: usize = 1024 * 1024;
 /// The largest body a `POST` with the token reads.
 const WRITE: usize = 16 * 1024;
-/// The handlers run at once; a request read while all are busy waits for one.
-pub const WORKERS: usize = 8;
+
+/// Where a request is handled, so a slow kind of request holds no worker of another kind.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Lane {
+    /// A person's write: its worker waits on the daemon and computes nothing.
+    Write,
+    /// A listing, the costly read: `LISTINGS` are computed at once.
+    Listing,
+    /// Any other read, and a webhook.
+    Read,
+    /// A long poll, on its connection's own thread.
+    Wait,
+}
+
+/// How long a request waits for a worker of its lane before it gets `503`.
+const QUEUED: Duration = Duration::from_secs(10);
+/// The requests each lane holds for its workers, first come first served.
+const QUEUE: usize = 64;
+
+fn busy() -> Reply {
+    Reply::error(503, "every worker of this kind is busy: retry in a second")
+}
+/// The handlers run at once in each lane; a request read while its lane's are busy waits for one.
+const WRITES: usize = 8;
+const LISTINGS: usize = 2;
+const READS: usize = 6;
 
 pub struct Reply {
     pub status: u16,
     pub kind: &'static str,
     /// Further header lines, each ending in `\r\n`.
-    pub headers: &'static str,
-    pub body: Vec<u8>,
+    pub headers: Cow<'static, str>,
+    pub body: Arc<[u8]>,
 }
 
 impl Reply {
@@ -35,8 +60,8 @@ impl Reply {
         Reply {
             status,
             kind: "application/json",
-            headers: "",
-            body: body.into_bytes(),
+            headers: Cow::Borrowed(""),
+            body: body.into_bytes().into(),
         }
     }
 
@@ -52,9 +77,22 @@ pub struct Request<'a> {
     headers: &'a [httparse::Header<'a>],
     /// Empty except on a `POST`.
     pub body: &'a [u8],
+    /// When its head was read, before it waited for a worker.
+    pub arrived: Instant,
 }
 
-impl Request<'_> {
+impl<'a> Request<'a> {
+    /// A `GET` of `path` with no header.
+    pub fn get(path: &'a str, arrived: Instant) -> Self {
+        Request {
+            method: "GET",
+            path,
+            headers: &[],
+            body: &[],
+            arrived,
+        }
+    }
+
     /// The value of the first header called `name`, in any case.
     pub fn header(&self, name: &str) -> Option<&[u8]> {
         self.headers
@@ -65,23 +103,27 @@ impl Request<'_> {
 }
 
 /// Serves `listener`: one thread accepts, a thread per connection reads the request and writes
-/// the reply, each within its deadline, and a fixed pool of workers runs the handlers. So a slow
-/// client holds only its own connection's thread, never a worker. Each worker calls `make` once
-/// for its own handler, which gets each request that carries `token`, and each `POST` to one of
+/// the reply, each within its deadline, and a fixed pool of workers per `lane` runs the handlers. So
+/// a slow client holds only its own connection's thread, never a worker. `wait` handles `Lane::Wait`
+/// on that thread. Each worker calls `make` once for its own handler, which gets each request that carries `token`, and each `POST` to one of
 /// `hooks` with its body and no token: the handler authenticates those itself. A request to a
 /// `public` path needs no token either. A `POST` from a page of another origin gets 403, unless
 /// that origin is one of `origins`, exactly.
-pub fn serve<M, H>(
+#[allow(clippy::too_many_arguments)]
+pub fn serve<M, H, W>(
     listener: TcpListener,
     token: String,
     origins: Vec<String>,
     hooks: &'static [&'static str],
     public: fn(&str) -> bool,
+    lane: fn(&Request) -> Lane,
+    wait: W,
     make: M,
 ) -> io::Result<Vec<JoinHandle<()>>>
 where
     M: Fn() -> H + Send + Sync + 'static,
     H: FnMut(&Request) -> Reply,
+    W: Fn(&Request) -> Reply + Send + Sync + 'static,
 {
     let gate = Arc::new(Gate {
         token,
@@ -89,14 +131,15 @@ where
         hooks,
         public,
     });
-    let (jobs, queue) = mpsc::sync_channel::<Job>(0);
-    let queue = Arc::new(Mutex::new(queue));
     let make = Arc::new(make);
-    let mut threads = (0..WORKERS)
-        .map(|_| {
+    let mut threads = Vec::new();
+    let mut pool = |workers: usize| -> io::Result<mpsc::SyncSender<Job>> {
+        let (jobs, queue) = mpsc::sync_channel::<Job>(QUEUE);
+        let queue = Arc::new(Mutex::new(queue));
+        for _ in 0..workers {
             let queue = Arc::clone(&queue);
             let make = Arc::clone(&make);
-            std::thread::Builder::new()
+            let worker = std::thread::Builder::new()
                 .name("priory-http".to_owned())
                 .spawn(move || {
                     let mut handle = make();
@@ -107,11 +150,25 @@ where
                         let Ok(job) = job else {
                             return;
                         };
-                        let _ = job.reply.send(work(&job, &mut handle));
+                        // A job that waited past its time gets 503, so a pile of reads drains fast.
+                        let reply = match job.arrived.elapsed() < QUEUED {
+                            true => work(&job, &mut handle),
+                            false => busy(),
+                        };
+                        let _ = job.reply.send(reply);
                     }
-                })
-        })
-        .collect::<io::Result<Vec<_>>>()?;
+                })?;
+            threads.push(worker);
+        }
+        Ok(jobs)
+    };
+    let lanes = Lanes {
+        of: lane,
+        write: pool(WRITES)?,
+        listing: pool(LISTINGS)?,
+        read: pool(READS)?,
+        wait: Arc::new(wait),
+    };
     let live = Arc::new(AtomicUsize::new(0));
     let accept = std::thread::Builder::new()
         .name("priory-http-accept".to_owned())
@@ -122,12 +179,12 @@ where
                     continue;
                 }
                 let slot = Slot(Arc::clone(&live));
-                let (gate, jobs) = (Arc::clone(&gate), jobs.clone());
+                let (gate, lanes) = (Arc::clone(&gate), lanes.clone());
                 let _ = std::thread::Builder::new()
                     .name("priory-http-connection".to_owned())
                     .spawn(move || {
                         let _slot = slot;
-                        let _ = answer(stream, &gate, &jobs);
+                        let _ = answer(stream, &gate, &lanes);
                     });
             }
         })?;
@@ -147,10 +204,33 @@ impl Drop for Slot {
     }
 }
 
+/// The workers of each lane.
+struct Lanes<W> {
+    of: fn(&Request) -> Lane,
+    write: mpsc::SyncSender<Job>,
+    listing: mpsc::SyncSender<Job>,
+    read: mpsc::SyncSender<Job>,
+    wait: Arc<W>,
+}
+
+// Derived, it would ask `W: Clone`.
+impl<W> Clone for Lanes<W> {
+    fn clone(&self) -> Self {
+        Lanes {
+            of: self.of,
+            write: self.write.clone(),
+            listing: self.listing.clone(),
+            read: self.read.clone(),
+            wait: Arc::clone(&self.wait),
+        }
+    }
+}
+
 /// A request a connection read, for a worker to handle: its head and body, and where the reply goes.
 struct Job {
     head: Vec<u8>,
     body: Vec<u8>,
+    arrived: Instant,
     reply: mpsc::Sender<Reply>,
 }
 
@@ -167,9 +247,15 @@ fn work(job: &Job, handle: &mut impl FnMut(&Request) -> Reply) -> Reply {
         path,
         headers: parsed.headers,
         body: &job.body,
+        arrived: job.arrived,
     };
-    // A handler bug answers 500 instead of ending the worker, so none can drain the pool.
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handle(&request)))
+    caught(|| handle(&request))
+}
+
+/// What `handle` returns. A handler bug answers 500 instead of ending its thread, so none can drain
+/// a pool.
+fn caught(handle: impl FnOnce() -> Reply) -> Reply {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(handle))
         .unwrap_or_else(|_| Reply::error(500, "the request failed inside Priory"))
 }
 
@@ -181,21 +267,47 @@ struct Gate {
     public: fn(&str) -> bool,
 }
 
-fn answer(mut stream: TcpStream, gate: &Gate, jobs: &mpsc::SyncSender<Job>) -> io::Result<()> {
+fn answer<W: Fn(&Request) -> Reply>(
+    mut stream: TcpStream,
+    gate: &Gate,
+    lanes: &Lanes<W>,
+) -> io::Result<()> {
     let deadline = Instant::now() + TIMEOUT;
     let reply = match read_head(&mut stream, deadline) {
         Ok((read, end)) => {
             let mut pooled = |request: &Request| {
+                let jobs = match (lanes.of)(request) {
+                    Lane::Write => &lanes.write,
+                    Lane::Listing => &lanes.listing,
+                    Lane::Read => &lanes.read,
+                    Lane::Wait => return caught(|| (lanes.wait)(request)),
+                };
                 let (reply, replied) = mpsc::channel();
                 let job = Job {
                     head: read[..end].to_vec(),
                     body: request.body.to_vec(),
+                    arrived: request.arrived,
                     reply,
                 };
-                jobs.send(job)
-                    .ok()
-                    .and_then(|()| replied.recv().ok())
-                    .unwrap_or_else(|| Reply::error(500, "the request failed inside Priory"))
+                // A request that finds no room in its lane in time frees its connection for others.
+                let deadline = request.arrived + QUEUED;
+                let mut job = job;
+                loop {
+                    match jobs.try_send(job) {
+                        Ok(()) => break,
+                        Err(mpsc::TrySendError::Full(back)) if Instant::now() < deadline => {
+                            job = back;
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(mpsc::TrySendError::Full(_)) => return busy(),
+                        Err(mpsc::TrySendError::Disconnected(_)) => {
+                            return Reply::error(500, "the request failed inside Priory");
+                        }
+                    }
+                }
+                replied
+                    .recv()
+                    .unwrap_or_else(|_| Reply::error(500, "the request failed inside Priory"))
             };
             respond(&mut stream, deadline, &read, end, gate, &mut pooled)
         }
@@ -204,6 +316,7 @@ fn answer(mut stream: TcpStream, gate: &Gate, jobs: &mpsc::SyncSender<Job>) -> i
     let reason = match reply.status {
         200 => "OK",
         202 => "Accepted",
+        304 => "Not Modified",
         400 => "Bad Request",
         401 => "Unauthorized",
         403 => "Forbidden",
@@ -386,6 +499,7 @@ fn respond(
         path,
         headers: parsed.headers,
         body: &[],
+        arrived: Instant::now(),
     };
     let bare = path.split_once('?').map_or(path, |(path, _)| path);
     if method == "POST" && !same_origin(&request, &gate.origins) {
@@ -396,8 +510,8 @@ fn respond(
         return Reply {
             status: 200,
             kind: "text/plain",
-            headers: "",
-            body: Vec::new(),
+            headers: Cow::Borrowed(""),
+            body: Arc::new([]),
         };
     }
     if method == "POST" && gate.hooks.contains(&bare) {
@@ -498,14 +612,62 @@ mod tests {
             Vec::new(),
             &[],
             |_| false,
+            |_| Lane::Read,
+            |_| Reply::error(404, "nothing waits"),
             handler,
         )
         .unwrap();
 
-        for _ in 0..=WORKERS {
+        for _ in 0..=READS {
             assert_eq!(status(address, "/panic"), "500");
         }
         assert_eq!(status(address, "/fine"), "200");
+    }
+
+    #[test]
+    fn a_lane_with_every_worker_busy_holds_no_other_lane() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (release, held) = mpsc::channel::<()>();
+        let held = Arc::new(Mutex::new(held));
+        let handler = move || {
+            let held = Arc::clone(&held);
+            move |request: &Request| {
+                if request.path.starts_with("/slow") {
+                    let _ = held.lock().map(|held| held.recv());
+                }
+                Reply::json(200, "{}".to_owned())
+            }
+        };
+        serve(
+            listener,
+            "t".to_owned(),
+            Vec::new(),
+            &[],
+            |_| false,
+            |request| match request.path {
+                "/slow-listing" => Lane::Listing,
+                "/write" => Lane::Write,
+                "/wait" => Lane::Wait,
+                _ => Lane::Read,
+            },
+            |_| Reply::json(202, "{}".to_owned()),
+            handler,
+        )
+        .unwrap();
+        let slow: Vec<_> = ["/slow-listing", "/slow"]
+            .into_iter()
+            .flat_map(|path| std::iter::repeat_n(path, 8))
+            .map(|path| std::thread::spawn(move || status(address, path)))
+            .collect();
+        std::thread::sleep(Duration::from_millis(300));
+
+        assert_eq!(status(address, "/write"), "200");
+        assert_eq!(status(address, "/wait"), "202");
+        drop(release);
+        for slow in slow {
+            assert_eq!(slow.join().unwrap(), "200");
+        }
     }
 
     use proptest::prelude::*;
@@ -543,6 +705,8 @@ mod tests {
             Vec::new(),
             &["/hook"],
             |_| false,
+            |_| Lane::Read,
+            |_| Reply::error(404, "nothing waits"),
             || |_: &Request| Reply::json(200, "{}".to_owned()),
         )
         .unwrap();
@@ -563,7 +727,7 @@ mod tests {
             let _ = stream.read_to_end(&mut response);
             prop_assert!(response.starts_with(b"HTTP/1.1 "), "no status line");
             prop_assert!(!response.starts_with(b"HTTP/1.1 500"), "a panic inside Priory");
-            for _ in 0..WORKERS {
+            for _ in 0..READS {
                 prop_assert_eq!(status(address, "/fine"), "200");
             }
         }

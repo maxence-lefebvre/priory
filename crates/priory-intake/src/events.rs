@@ -387,10 +387,17 @@ pub struct CheckRunCompleted {
     pub conclusion: Option<String>,
     /// The slug of the GitHub App that ran the check.
     pub app: Option<String>,
-    /// Check runs on the same commit not completed at the poll, counting those past the first 100.
+    /// What started the run: `workflow:<id>:<event>` for a GitHub Actions workflow, with `:<branch>`
+    /// on a merge commit, or else `suite:<id>`, its check suite, or else `run:<id>`. A run with a
+    /// higher id of the same app, name and origin on the same commit supersedes it, unless it is
+    /// skipped or neutral and this one is not. Absent from an older intake's event.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    /// Check runs on the same commit not completed at the poll, counting those past the first 100
+    /// and leaving out superseded ones.
     pub pending: u64,
     /// Check runs on the same commit completed with a conclusion other than success, neutral or
-    /// skipped, leaving out a cancelled run that `superseded_by` passed.
+    /// skipped, leaving out superseded ones and a cancelled run that `superseded_by` passed.
     pub failing: u64,
     /// GitHub's check run id.
     pub github_id: u64,

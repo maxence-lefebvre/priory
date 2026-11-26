@@ -939,3 +939,24 @@ fn a_newer_state_opens_only_from_its_floor_on() {
         assert_eq!(version(&setup), schema + 5);
     }
 }
+
+#[test]
+fn a_reader_of_a_newer_state_is_told_to_run_the_newer_priory() {
+    let setup = Setup::new("read-newer");
+    succeeded(&setup.priory(&["tasks"]));
+    let schema = version(&setup);
+    header(&setup, "user_version", schema + 1);
+
+    let refused = in_home(&setup, &["memories"]).output().unwrap();
+
+    let error = String::from_utf8_lossy(&refused.stderr);
+    assert!(!refused.status.success());
+    assert!(
+        error.contains(&format!(
+            "state schema {} is newer than this priory knows",
+            schema + 1
+        )),
+        "{error}"
+    );
+    assert!(error.contains("run the newer priory"), "{error}");
+}

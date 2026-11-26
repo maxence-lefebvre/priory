@@ -10,16 +10,17 @@ use priory_intake::intake::{
     IntercomWebhook, LinearWebhook, SentryWebhook,
 };
 use priory_intake::log;
-use priory_runtime::http::{self, Reply, Request};
+use priory_runtime::http::{self, Lane, Reply, Request};
 use priory_runtime::runtime;
 use rusqlite::{Connection, OptionalExtension};
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::net::{SocketAddr, TcpListener};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const GITHUB: &str = "/hooks/github";
 const LINEAR: &str = "/hooks/linear";
@@ -31,8 +32,8 @@ const INTERCOM: &str = "/hooks/intercom";
 const INDEX: &[u8] = include_bytes!("../web/index.html");
 /// How long `/api/events` holds a request without a change, at most and by default.
 const WAIT: u64 = 25;
-/// Requests `/api/events` holds at once: half the workers, so listings always find a free one.
-const WAITERS: usize = http::WORKERS / 2;
+/// Requests `/api/events` holds at once: half the connections `http` takes.
+const WAITERS: usize = 128;
 /// Screens read at once, so a hung tmux server holds at most this many workers.
 const SNAPSHOTS: usize = 2;
 
@@ -298,7 +299,8 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Server, String> {
     .collect::<Vec<_>>()
     // One small list per server, which lives as long as the process.
     .leak();
-    let waiters = Arc::new(AtomicUsize::new(0));
+    let waiting = Waiting::new();
+    let shared = Arc::new(crate::shared::Shared::default());
     let public = |path: &str| !path.starts_with("/api") && !path.starts_with("/hooks");
     let event_log = factory.log().clone();
     let remote = Arc::new(Remote {
@@ -306,9 +308,10 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Server, String> {
         runners: factory.runners.keys().cloned().collect(),
     });
     let origins = config.extension_origins.clone();
-    let workers = http::serve(listener, token, origins, hooks, public, move || {
+    let wait = move |request: &Request| waiting.events(request);
+    let make = move || {
         let db = state::read_only();
-        let waiters = Arc::clone(&waiters);
+        let shared = Arc::clone(&shared);
         let home = runtime::home();
         let live = served.clone();
         let remote = remote.clone();
@@ -389,19 +392,18 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Server, String> {
                     intercom.receive(bus, request)
                 }
                 _ if request.method == "POST" => write(&db, &home, &served, &remote, request),
-                _ => route(
-                    &db,
-                    &home,
-                    &served,
-                    web,
-                    &waiters,
-                    request.method,
-                    request.path,
-                ),
+                _ => {
+                    let read = || route(&db, &home, &served, web, request.method, request.path);
+                    match (&db, shares(request)) {
+                        (Ok(db), true) => shared.read(db, &served, request, read),
+                        _ => read(),
+                    }
+                }
             }
         }
-    })
-    .map_err(|error| format!("start the server threads: {error}"))?;
+    };
+    let workers = http::serve(listener, token, origins, hooks, public, lane, wait, make)
+        .map_err(|error| format!("start the server threads: {error}"))?;
     eprintln!("priory: serving on http://{bound}");
     Ok(Server {
         workers,
@@ -508,12 +510,47 @@ impl Served {
     }
 }
 
+/// The listings `http` computes in their own lane.
+const LISTED: [&str; 12] = [
+    "/api/desk",
+    "/api/asks",
+    "/api/inbox",
+    "/api/queue",
+    "/api/tasks",
+    "/api/runs",
+    "/api/reports",
+    "/api/reports/latest",
+    "/api/costs",
+    "/api/grades",
+    "/api/attention",
+    "/api/flows",
+];
+
+/// The lane a request waits in. Webhooks stay beside the reads: each publishes on the log.
+fn lane(request: &Request) -> Lane {
+    let (path, query) = request.path.split_once('?').unwrap_or((request.path, ""));
+    match path {
+        _ if request.method == "POST" && path.starts_with("/api/") => Lane::Write,
+        "/api/events" => Lane::Wait,
+        "/api/tasks" if query.starts_with("pr=") => Lane::Read,
+        _ if LISTED.contains(&path) => Lane::Listing,
+        _ => Lane::Read,
+    }
+}
+
+/// Whether requests for the same path share one computed body: the listings, and one task's detail.
+fn shares(request: &Request) -> bool {
+    let path = request.path.split('?').next().unwrap_or_default();
+    let detail = |rest: &str| rest.parse::<i64>().is_ok();
+    request.method == "GET"
+        && (LISTED.contains(&path) || path.strip_prefix("/api/tasks/").is_some_and(detail))
+}
+
 fn route(
     db: &Result<Connection, String>,
     home: &Path,
     served: &Served,
     web: bool,
-    waiters: &AtomicUsize,
     method: &str,
     path: &str,
 ) -> Reply {
@@ -535,7 +572,7 @@ fn route(
     }
     if Write::of(path).is_some() || Typing::of(path).is_some() {
         return Reply {
-            headers: "Allow: POST\r\n",
+            headers: Cow::Borrowed("Allow: POST\r\n"),
             ..Reply::error(405, "only POST is served")
         };
     }
@@ -570,7 +607,6 @@ fn route(
         return evidence(db, home, id);
     }
     let read = match path {
-        "/api/events" => return events(db, query, waiters),
         "/api/batches" => return batches(db, None),
         "/api/desk" => {
             let person = match query.split_once('=') {
@@ -715,7 +751,7 @@ fn route(
         },
     };
     match read {
-        Ok(Some(body)) => Reply::json(200, body.to_string()),
+        Ok(Some(body)) => crate::shared::tagged(body),
         Ok(None) if path.starts_with("/api/reports/") => Reply::error(404, "no such report"),
         Ok(None) => Reply::error(404, "no such task"),
         Err(error) => Reply::error(500, &error.to_string()),
@@ -736,11 +772,11 @@ fn evidence(db: &Connection, home: &Path, id: &str) -> Reply {
         Ok(Some((sniffed, body))) => Reply {
             status: 200,
             kind: sniffed.media,
-            headers: match sniffed.kind {
+            headers: Cow::Borrowed(match sniffed.kind {
                 "cast" => EVIDENCE,
                 _ => EVIDENCE_INLINE,
-            },
-            body,
+            }),
+            body: body.into(),
         },
         Ok(None) => Reply::error(404, "no such evidence"),
         Err(error) => Reply::error(500, &error.to_string()),
@@ -784,7 +820,7 @@ fn terminal(db: &Connection, served: &Served, run: &str, query: &str) -> Reply {
     }
 }
 
-/// A screen being read, given back when its request ends, even by a panic.
+/// A place among those counted, such as a screen being read, given back when its request ends, even by a panic.
 struct Slot<'a>(&'a AtomicUsize);
 
 impl Drop for Slot<'_> {
@@ -910,12 +946,15 @@ struct AnswerBody {
     revision: i64,
     #[serde(default)]
     run: bool,
+    /// The same for each send of one press, so a resend applies once.
+    call: Option<uuid::Uuid>,
 }
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DismissBody {
     revision: i64,
+    call: Option<uuid::Uuid>,
 }
 
 /// What a desk action takes: `say` its text, `revive` an optional step and `cancel` the optional
@@ -1076,7 +1115,16 @@ fn write(
             Reply::json(if repeated { 409 } else { 200 }, added)
         }
         Ok(Ok(subscribed)) if matches!(write, Write::Subscribe) => Reply::json(200, subscribed),
-        Ok(Ok(done)) => Reply::json(200, serde_json::json!({ "ok": done }).to_string()),
+        Ok(Ok(done)) => {
+            let mut body = serde_json::json!({ "ok": done });
+            // The stored ask, so the client shows it without reading a listing again.
+            if let Sent::Ask(id, _) = sent
+                && let Ok(Some(ask)) = listing::ask(db, id)
+            {
+                body["ask"] = ask;
+            }
+            Reply::json(200, body.to_string())
+        }
         Ok(Err(refused)) => refusal(db, sent, &refused),
         Err(error) => Reply::error(500, &format!("unreadable reply {reply:?}: {error}")),
     }
@@ -1270,7 +1318,7 @@ fn remote_write(db: &Connection, remote: &Remote, write: &Write, body: &[u8]) ->
         }
         let gone = || Reply::error(404, &format!("there is no ask {ask}"));
         let id: i64 = id.parse().map_err(|_| gone())?;
-        let (kind, revision, data) = match write {
+        let (kind, revision, data, call) = match write {
             Write::Answer(_) => {
                 let body: AnswerBody = serde_json::from_slice(body).map_err(bad)?;
                 let text = match (body.option, body.text) {
@@ -1285,14 +1333,31 @@ fn remote_write(db: &Connection, remote: &Remote, write: &Write, body: &[u8]) ->
                     by: "serve".to_owned(),
                 };
                 let data = serde_json::to_value(&answer).expect("an answer serializes");
-                (ASK_ANSWERED, body.revision, data)
+                (ASK_ANSWERED, body.revision, data, body.call)
             }
             _ => {
                 let body: DismissBody = serde_json::from_slice(body).map_err(bad)?;
                 let data = serde_json::json!({ "ask": id, "revision": body.revision });
-                (ASK_DISMISSED, body.revision, data)
+                (ASK_DISMISSED, body.revision, data, body.call)
             }
         };
+        // A resend of a write this machine already sent gets the first reply, whatever the ask says now.
+        if let Some(call) = call {
+            let submission =
+                runners::called(call, kind, &format!("{runner}:{id}"), &data).to_string();
+            let sent = db
+                .query_row(
+                    "SELECT 1 FROM remote_submissions WHERE submission = ?1",
+                    [&submission],
+                    |_| Ok(()),
+                )
+                .optional()
+                .map_err(|error| Reply::error(500, &error.to_string()))?;
+            if sent.is_some() {
+                let sent = serde_json::json!({ "sent": runner, "submission": submission });
+                return Ok(Reply::json(202, sent.to_string()));
+            }
+        }
         let mirrored = runners::mirrored(db, runner, id)
             .map_err(|error| Reply::error(500, &error.to_string()))?
             .ok_or_else(gone)?;
@@ -1310,7 +1375,7 @@ fn remote_write(db: &Connection, remote: &Remote, write: &Write, body: &[u8]) ->
             );
             return Err(Reply::error(422, &refused));
         }
-        let submission = runners::submit(&remote.log, kind, runner, id, data)
+        let submission = runners::submit(&remote.log, kind, runner, id, data, call)
             .map_err(|why| unsent(why, "ask"))?;
         let sent = serde_json::json!({ "sent": runner, "submission": submission });
         Ok(Reply::json(202, sent.to_string()))
@@ -1464,6 +1529,10 @@ fn write_line(
                 run: body.run,
                 by: "serve".to_owned(),
             };
+            let answer = tools::Called {
+                write: answer,
+                call: body.call,
+            };
             Ok((line(&answer), Sent::Ask(ask, revision)))
         }
         Write::Dismiss(ask) => {
@@ -1472,6 +1541,10 @@ fn write_line(
             let dismiss = tools::Dismiss {
                 dismiss: ask,
                 revision: Some(body.revision),
+            };
+            let dismiss = tools::Called {
+                write: dismiss,
+                call: body.call,
             };
             Ok((line(&dismiss), Sent::Ask(ask, body.revision)))
         }
@@ -1979,48 +2052,97 @@ fn web_file(path: &str) -> Reply {
     Reply {
         status: 200,
         kind,
-        headers: WEB_HEADERS,
-        body: body.to_vec(),
+        headers: Cow::Borrowed(WEB_HEADERS),
+        body: body.into(),
     }
 }
 
-/// `/api/events?since=REV[&timeout=SECONDS]`: the revision once it differs from `since`, or the
-/// same one after the timeout. Refuses a request that would wait past `WAITERS` held at once with
-/// `503`.
-fn events(db: &Connection, query: &str, waiters: &AtomicUsize) -> Reply {
-    let (mut since, mut timeout) = (None, Some(WAIT));
-    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
-        match pair.split_once('=') {
-            Some(("since", value)) => since = value.parse::<i64>().ok(),
-            Some(("timeout", value)) => {
-                timeout = value.parse().ok().filter(|seconds| *seconds <= WAIT)
-            }
-            _ => return Reply::error(400, "events takes since=REV and timeout=SECONDS"),
+/// The requests `/api/events` holds, which share one connection: each reads the revision alone.
+struct Waiting {
+    db: Mutex<Result<Connection, String>>,
+    /// The last revision read, and when: a read serves every request that waits.
+    last: Mutex<Option<(Instant, i64)>>,
+    held: AtomicUsize,
+}
+
+/// How often the requests that wait read the revision.
+const LOOK: Duration = Duration::from_millis(100);
+
+impl Waiting {
+    fn new() -> Self {
+        Waiting {
+            db: Mutex::new(state::read_only()),
+            last: Mutex::new(None),
+            held: AtomicUsize::new(0),
         }
     }
-    let (Some(since), Some(timeout)) = (since, timeout) else {
-        return Reply::error(
-            400,
-            "events needs since=REV, and timeout=SECONDS of at most 25",
-        );
-    };
-    let answer = |revision: rusqlite::Result<i64>| match revision {
-        Ok(revision) => Reply::json(200, serde_json::json!({ "revision": revision }).to_string()),
-        Err(error) => Reply::error(500, &error.to_string()),
-    };
-    match state::revision(db) {
-        Ok(revision) if revision == since && timeout > 0 => {}
-        ready => return answer(ready),
+
+    /// The revision, as read at `after` or later.
+    fn revision(&self, after: Instant) -> Result<i64, String> {
+        let mut last = self.last.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((_, revision)) = last.filter(|(at, _)| *at >= after) {
+            return Ok(revision);
+        }
+        let now = Instant::now();
+        let db = self.db.lock().unwrap_or_else(PoisonError::into_inner);
+        let db = db.as_ref().map_err(Clone::clone)?;
+        let revision = state::revision(db).map_err(|error| error.to_string())?;
+        *last = Some((now, revision));
+        Ok(revision)
     }
-    let held = waiters.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |held| {
-        (held < WAITERS).then_some(held + 1)
-    });
-    if held.is_err() {
-        return Reply::error(503, "too many requests wait on events: retry in a second");
+
+    /// `/api/events?since=REV[&timeout=SECONDS]`: the revision once it differs from `since`, or the
+    /// same one after the timeout. Refuses a request that would wait past `WAITERS` held at once
+    /// with `503`.
+    fn events(&self, request: &Request) -> Reply {
+        if request.method != "GET" {
+            return Reply::error(405, "only GET is served");
+        }
+        let query = request.path.split_once('?').map_or("", |(_, query)| query);
+        let (mut since, mut timeout) = (None, Some(WAIT));
+        for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+            match pair.split_once('=') {
+                Some(("since", value)) => since = value.parse::<i64>().ok(),
+                Some(("timeout", value)) => {
+                    timeout = value.parse().ok().filter(|seconds| *seconds <= WAIT)
+                }
+                _ => return Reply::error(400, "events takes since=REV and timeout=SECONDS"),
+            }
+        }
+        let (Some(since), Some(timeout)) = (since, timeout) else {
+            return Reply::error(
+                400,
+                "events needs since=REV, and timeout=SECONDS of at most 25",
+            );
+        };
+        let answer = |revision: Result<i64, String>| match revision {
+            Ok(revision) => {
+                Reply::json(200, serde_json::json!({ "revision": revision }).to_string())
+            }
+            Err(error) => Reply::error(500, &error),
+        };
+        let deadline = Instant::now() + Duration::from_secs(timeout);
+        match self.revision(request.arrived) {
+            Ok(revision) if revision == since && timeout > 0 => {}
+            ready => return answer(ready),
+        }
+        let held = self
+            .held
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |held| {
+                (held < WAITERS).then_some(held + 1)
+            });
+        if held.is_err() {
+            return Reply::error(503, "too many requests wait on events: retry in a second");
+        }
+        let _slot = Slot(&self.held);
+        loop {
+            std::thread::sleep(LOOK);
+            match self.revision(Instant::now() - LOOK / 2) {
+                Ok(revision) if revision == since && Instant::now() < deadline => {}
+                ready => return answer(ready),
+            }
+        }
     }
-    let waited = state::wait(db, since, Duration::from_secs(timeout));
-    waiters.fetch_sub(1, Ordering::SeqCst);
-    answer(waited)
 }
 
 #[cfg(test)]
@@ -2043,6 +2165,23 @@ mod tests {
                 let line: crate::state::MoveLine = serde_json::from_str(&line).unwrap();
                 prop_assert!(line.r#move.band.is_some() || line.r#move.place.is_some());
                 prop_assert_eq!(line.r#move.task, 2);
+            }
+        }
+
+        #[test]
+        fn an_answer_body_keeps_the_id_of_its_call_or_is_refused(
+            call in "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}|.{0,60}"
+        ) {
+            let body = serde_json::json!({ "option": "a", "revision": 1, "call": call }).to_string();
+            let written = DB.with(|db| {
+                db.execute("INSERT OR IGNORE INTO asks (id, kind, name, question, options)
+                    VALUES (1, 'outside', '1', 'q', '[]')", []).unwrap();
+                write_line(db, &Write::Answer("1"), body.as_bytes(), &[])
+            });
+            if let Ok((line, _)) = written {
+                let line: crate::tools::Called<crate::tools::Answer> = serde_json::from_str(&line).unwrap();
+                prop_assert_eq!(line.call, Some(call.parse::<uuid::Uuid>().unwrap()));
+                prop_assert_eq!(line.write.ask, 1);
             }
         }
 
