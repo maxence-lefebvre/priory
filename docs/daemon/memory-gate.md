@@ -54,11 +54,10 @@ there by pid and the start time `ps` prints, to the second. When `ps` cannot run
 5 seconds, the daemon keeps the grant. It then refuses a new `acquire`, or the hand-over of step 3,
 whose process it cannot check, and that `acquire` exits 125 and never runs the command.
 
-`acquire` exits 125 and never runs the command when no daemon listens to its first request
-within 30 seconds, when
+`acquire` exits 125 and never runs the command when no daemon listens to its first request, when
 the daemon cannot measure the room or refuses the grant, or when the grant still waits after
-`--timeout`, 1 hour by default. No daemon listens when its socket refuses the first request, and `acquire` does
-not wait for a restart then. A grant of a run that stops waiting, because it timed out or its
+`--timeout`, 1 hour by default. No daemon listens when its socket refuses the first request. `acquire` waits for
+a daemon that [stopped](home.md#socket-spool-and-lock) to restart, within `--timeout`. A grant of a run that stops waiting, because it timed out or its
 `acquire` was killed, leaves its request time behind for an hour. The daemon records it even when
 it only sees that the process is gone. When the same task acquires the same command with the same
 GB again within that hour, the new grant

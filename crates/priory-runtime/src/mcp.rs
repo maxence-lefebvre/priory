@@ -180,8 +180,8 @@ fn call(session: &str, params: &Value) -> Value {
         "session": session,
         "arguments": params["arguments"],
     });
-    let reply = runtime::call_through_restart(&runtime::home(), &line.to_string(), TOOL_WAIT)
-        .and_then(|reply| {
+    let reply =
+        runtime::call_for_run(&runtime::home(), &line.to_string(), TOOL_WAIT).and_then(|reply| {
             serde_json::from_str::<Result<String, String>>(&reply)
                 .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
         });
@@ -213,12 +213,11 @@ pub fn serve_outside(session: Option<&str>) -> Result<(), String> {
             "session": session,
             "arguments": params["arguments"],
         } });
-        let reply =
-            runtime::call_through_restart(&runtime::home(), &line.to_string(), runtime::REPLY)
-                .and_then(|reply| {
-                    serde_json::from_str::<Result<String, String>>(&reply)
-                        .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
-                });
+        let reply = runtime::call_for_run(&runtime::home(), &line.to_string(), runtime::REPLY)
+            .and_then(|reply| {
+                serde_json::from_str::<Result<String, String>>(&reply)
+                    .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
+            });
         let reply = match reply {
             Ok(text) if READS.contains(&name) => Ok(format!("{DATA}\n{text}")),
             reply => reply,
