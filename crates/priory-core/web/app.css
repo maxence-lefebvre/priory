@@ -420,7 +420,7 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 /* A legacy page, and a phone's frame and page, draw in an element with no box: its children lay out as #app's own. */
 .legacy, .flat { display: contents; }
 #app > *, #app > .flat > *, #app > .flat > :is(.legacy, .flat) > * { order: 2; }
-#app > .wtop, #app > .top, #app > .flat > :is(.legacy, .flat) > :is(.top, .ahead) { order: 0; }
+#app > .wtop, #app > .top, #app > .flat > .top, #app > .flat > :is(.legacy, .flat) > :is(.top, .ahead) { order: 0; }
 #app > .stale { order: 1; }
 .rec .then { display: flex; gap: 6px; color: var(--text-2); }
 .rec .then .ico { margin-top: 2px; color: var(--text-3); }

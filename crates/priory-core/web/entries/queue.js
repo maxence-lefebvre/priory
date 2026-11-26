@@ -1,11 +1,3 @@
-import { rowsList, rowsPage } from "../legacy/frame.js";
-import { queueBody, queueClick, queueKey } from "../legacy/queue.js";
+import { QueueList, QueuePage, queueKey } from "../pages/Queue.jsx";
 
-export const queue = {
-  name: "queue",
-  needs: ["queue", "tasks"],
-  list: (wide) => rowsList("Queue", queueBody(wide)),
-  page: () => rowsPage("Queue", queueBody(false)),
-  click: queueClick,
-  key: queueKey,
-};
+export const queue = { name: "queue", List: QueueList, Page: QueuePage, key: queueKey };
