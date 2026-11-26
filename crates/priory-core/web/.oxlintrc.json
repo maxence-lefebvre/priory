@@ -18,6 +18,8 @@
     "import/no-self-import": "error",
     // The port keeps the elements and roles the page had before React.
     "jsx-a11y/prefer-tag-over-role": "off",
+    // A push kind's label holds its name three elements down.
+    "jsx-a11y/label-has-associated-control": ["error", { "depth": 3 }],
     "import/named": "error",
     "import/namespace": "error"
   },

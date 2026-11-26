@@ -1,5 +1,5 @@
 // Every page of the app. A port changes its own entry, never this list.
-// The order is the events' and the countdowns': memories and taskacts come before asks.
+// The order is the events' and the countdowns': taskacts comes before asks.
 import { register } from "../registry.js";
 import { add } from "./add.js";
 import { asks } from "./asks.js";
