@@ -112,6 +112,25 @@ export async function check({ hooked, evaluate, until, sleep, change, page, scre
     await evaluate('document.querySelector("#answer [aria-label=Close]").click()');
     return kept && sheet === 2 ? true : { kept, sheet };
   });
+  await hooked("on a phone, a refused answer keeps the sheet open with its note, and the bar shows the note too", "/asks/1", 'document.querySelector("#app .opts")', { reply: refused }, async () => {
+    await sleep(1500);
+    await evaluate('document.querySelector("#app .scroll").scrollTop = 600');
+    await until('document.querySelector("#app .abar")?.hidden === false', "the answer bar");
+    await evaluate('document.querySelector("#app .abar .btn.secondary").click()');
+    await until('document.getElementById("answer").open', "the answer sheet");
+    await evaluate('document.querySelectorAll("#answer .opt")[1].click()');
+    await sleep(300);
+    await evaluate('document.querySelectorAll("#answer .opt")[1].click()');
+    await until("posts.length", "the answer");
+    await until('document.querySelector("#answer .warnline")', "the sheet's note");
+    // Focus stays in the sheet, where the person pressed.
+    const sheet = await evaluate('({ open: document.getElementById("answer").open, note: document.querySelector("#answer .warnline").innerText, off: document.querySelectorAll("#answer .opt")[1].getAttribute("aria-disabled"), focus: document.getElementById("answer").contains(document.activeElement) })');
+    await evaluate('document.querySelector("#answer [aria-label=Close]").click()');
+    await until('!document.getElementById("answer").open', "the sheet to close");
+    const bar = await evaluate('document.querySelector("#app .abar .warnline")?.innerText ?? null');
+    const note = "Could not send: refused by the check.";
+    return sheet.open && sheet.note === note && sheet.off === "false" && bar === note && (await evaluate("posts.length")) === 1 ? true : { sheet, bar };
+  });
   await hooked("an open answer sheet stays closed after Back, and the next ask opens without it", "/asks", 'document.querySelector("#app nav")', {}, async () => {
     const go = (href) => evaluate(`{ const link = Object.assign(document.createElement("a"), { href: "${href}" }); document.body.append(link); link.click(); link.remove(); }`);
     await go("/asks/1");

@@ -771,13 +771,15 @@ Ask states:
 | State     | What the person sees                                                                      |
 | --------- | ----------------------------------------------------------------------------------------- |
 | open      | As above.                                                                                 |
-| sending   | The chosen option shows a check; the others dim. A bar at the bottom says `Sending "Merge"` while the request is in flight. It has no Undo. |
+| sending   | The pressed option shows the loading state on itself: a spinning ring and "Sending…" under its label, which stays at full strength. The other options dim and take no press. Send under a written answer, and the bar's answer button on a phone, do the same. An open answer sheet stays open until the reply. It has no Undo. |
 | answered  | The card collapses to the question, the answer, who answered and when. No buttons.        |
 | refused   | A `--warn-text` banner: "The question changed. Read revision 3 and answer again." The detail reloads the new revision; the old answer stays in the text field and in the history. |
 | taken     | "Already answered 2 min ago: Merge." Shown when another answer came first.                |
 | withdrawn | Muted: "Withdrawn: the task was revived." No buttons.                                     |
 | offline   | Options stay visible but disabled, with "Reconnect to answer".                            |
 | unsent    | A `--warn-text` line says why the answer did not go, such as "no priory daemon runs beside this server". The draft stays in the text field. |
+| stored    | The next open ask opens as soon as the server says stored, drawn from its reply, while the lists read again behind it. |
+| lost      | A dropped connection, or a reply that never came, gives the choice back with a `--warn-text` line: "The connection dropped before Priory confirmed this. It may be stored: send it again, and it is stored once." The draft stays. Sending the same answer again carries the same call id. |
 
 A **command ask** (R6.8) binds one option to a command. Its answer runs the command, so:
 

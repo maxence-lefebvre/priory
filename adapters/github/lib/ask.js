@@ -1,9 +1,7 @@
-// One ask's answer, as the web view does it: a 4 s Undo, the revision guard, an armed command option.
+// One ask's answer, as the web view does it: a first press arms an option and a second sends it,
+// the revision guard, an armed command option.
 
-export const UNDO_MS = 4000;
 export const ARM_MS = 4000;
-
-const BUSY = new Set(["waiting", "posting"]);
 
 /** Whether a person may dismiss an ask: a step's or a hold's ask needs an answer. @param {any} ask */
 export const dismissable = (ask) => ask?.dismissable !== false;
@@ -24,47 +22,36 @@ export function age(iso, now) {
 }
 
 /**
- * The draft after the person chooses an option or sends `text`. Nothing changes while one waits
- * or posts, nor after a lost write unless the person sends again (`again`).
+ * The draft after the person chooses an option or sends `text`. A first press on an option arms
+ * it (`confirm`); a second press on it within ARM_MS sends it (`posting`). Written text, and a send
+ * again after a lost write (`again`), send at once. A command option arms for its side panel.
+ * Nothing changes while one posts, nor after a lost write unless the person sends again.
  */
 export function choose(draft, ask, { option, text, again = false }, now) {
-  if (draft && (BUSY.has(draft.phase) || (draft.phase === "unknown" && !again))) return draft;
+  if (draft && (draft.phase === "posting" || (draft.phase === "unknown" && !again))) return draft;
   const answer = option === undefined ? { text } : { option };
-  const phase = option !== undefined && runsCommand(ask, option) ? "armed" : "waiting";
-  return { id: ask.id, revision: ask.revision, ...answer, phase, at: now };
+  // A resend of the same choice keeps its call, so the daemon stores it once.
+  const same = draft?.id === ask.id && draft.revision === ask.revision && draft.option === answer.option && draft.text === answer.text;
+  const call = same && draft.call ? draft.call : crypto.randomUUID();
+  const base = { id: ask.id, revision: ask.revision, ...answer, at: now, call };
+  if (option !== undefined && runsCommand(ask, option)) return { ...base, phase: "armed" };
+  const confirmed = text !== undefined || again || (same && draft.phase === "confirm" && now - draft.at < ARM_MS);
+  return { ...base, phase: confirmed ? "posting" : "confirm" };
 }
 
-/** Undo drops a waiting answer; nothing else can be undone. */
-export const undo = (draft) => (draft?.phase === "waiting" ? null : draft);
-
-/** The call to send once the Undo time passed, with the draft now posting, else null. */
-export function due(draft, now) {
-  if (draft?.phase !== "waiting" || now - draft.at < UNDO_MS) return null;
-  return { draft: { ...draft, phase: "posting" }, path: answerPath(draft.id), body: answerBody(draft) };
-}
-
-/**
- * The draft the panel keeps for its next mount: an answer still waiting on Undo comes back unsent,
- * for the person to send or discard, since a page change ends its timer. Else null.
- */
-export function leftUnsent(draft) {
-  if (draft?.restored) return draft;
-  if (draft?.phase !== "waiting") return null;
-  return { ...draft, phase: "unsent", restored: true, notice: `Not sent: "${draft.option ?? draft.text}". The page changed before its 4 s Undo passed.` };
-}
-
-export const answerPath =(id) => `/api/asks/${encodeURIComponent(id)}/answer`;
+export const answerPath = (id) => `/api/asks/${encodeURIComponent(id)}/answer`;
 
 export const answerBody = (draft, run = false) => ({
   ...(draft.option === undefined ? { text: draft.text } : { option: draft.option }),
   revision: draft.revision,
+  ...(draft.call ? { call: draft.call } : {}),
   ...(run ? { run: true } : {}),
 });
 
 /** What a refused or lost write says, in the panel's words, and the phase it leaves. */
 export function refusal(result, now) {
   const { status, body } = result;
-  if (result.unknown) return ["unknown", "This may have reached Priory. Check the task, then send again if it is missing."];
+  if (result.unknown) return ["unknown", "The connection dropped before Priory confirmed this. It may be stored: send it again, and it is stored once."];
   if (status === 401) return ["signin", "The daemon refused this token. Paste the current one."];
   if (status === 403) return ["unsent", "Priory refused this extension's origin. Add it to [serve] extension_origins."];
   if (status === 503) return ["unsent", "The daemon is not running: nothing was sent."];
@@ -83,14 +70,13 @@ export function reply(draft, result, now) {
 }
 
 /**
- * The draft once a fresh read shows its ask: an armed command disarms at a new revision or after
- * 4 s, a restored draft drops at a new revision, since its choice was made on the old one, and a
- * lost write counts as sent once the ask shows it answered.
+ * The draft once a fresh read shows its ask, or once its time passed: an armed option or command
+ * disarms at a new revision or after 4 s, and a lost write counts as sent once the ask shows it
+ * answered.
  */
 export function observe(draft, ask, now) {
   if (!draft || draft.id !== ask.id) return draft;
-  if (draft.restored && ask.revision !== draft.revision) return null;
-  if (draft.phase === "armed") return ask.revision === draft.revision && ask.state === "open" && now - draft.at < ARM_MS ? draft : null;
+  if (draft.phase === "armed" || draft.phase === "confirm") return ask.revision === draft.revision && ask.state === "open" && now - draft.at < ARM_MS ? draft : null;
   if (draft.phase === "unknown" && ask.state !== "open") return { ...draft, phase: "sent", notice: null };
   return draft;
 }

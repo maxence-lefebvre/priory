@@ -1,7 +1,7 @@
 // The strip, the docked panel and the side panel: every daemon call and all agent text live here.
-import { ARM_MS, UNDO_MS, age, answerBody, answerPath, choose, due, leftUnsent, observe, optionKey, refusal, reply, runsCommand, dismissable, undo } from "./lib/ask.js";
+import { ARM_MS, age, answerBody, answerPath, choose, observe, optionKey, refusal, reply, runsCommand, dismissable } from "./lib/ask.js";
 import { grade, parseGuide, scoreKey } from "./lib/guide.js";
-import { live } from "./lib/live.js";
+import { hidden, live } from "./lib/live.js";
 import { parsePr } from "./lib/pr.js";
 import { blank, connectForm as sharedForm } from "./lib/connect.js";
 import { call } from "./lib/request.js";
@@ -109,6 +109,37 @@ const openAsks = () => (S.task?.asks ?? []).filter((ask) => ask.state === "open"
 const waiting = () => openAsks().filter((ask) => !(ask.snoozed_until && Date.parse(ask.snoozed_until) > Date.now()));
 const api = (path, body, timeout) => call(fetch, S.config.origin, S.config.token, path, body, timeout);
 
+// One read at a time and at most one queued, so a slow server gets no pile of reads; after a read
+// over 2 s the queued one waits as long. A hidden tab reads nothing until it shows.
+let reading = null;
+let queued = null;
+let stale = false;
+function read(quiet = false) {
+  if (hidden()) {
+    stale = true;
+    return Promise.resolve();
+  }
+  if (reading) {
+    queued = queued === null ? quiet : queued && quiet;
+    return reading;
+  }
+  const started = Date.now();
+  reading = readNow(quiet).finally(() => {
+    reading = null;
+    const took = Date.now() - started;
+    if (queued === null) return;
+    const next = queued;
+    queued = null;
+    setTimeout(() => read(next), took > 2000 ? took : 0);
+  });
+  return reading;
+}
+globalThis.document?.addEventListener?.("visibilitychange", () => {
+  if (hidden() || !stale) return;
+  stale = false;
+  read(true);
+});
+
 // Only an answer the daemon gave says no task holds the pull request: the cache or a failed read never does.
 const noTask = () => S.confirmed && !S.unreachable && S.holders?.length === 0;
 const lookup = () => (S.unreachable ? "Cannot reach Priory. Retrying…" : "Reading Priory…");
@@ -124,7 +155,7 @@ function failed() {
 }
 
 // `quiet`, for a revision from the poller: a read that changed nothing leaves the view as it is.
-async function read(quiet = false) {
+async function readNow(quiet = false) {
   clearTimeout(retryTimer);
   if (!S.config || !S.pr) return render();
   const found = await api(`/api/tasks?pr=${encodeURIComponent(S.pr.resource)}`);
@@ -143,7 +174,7 @@ async function read(quiet = false) {
   if (seen === S.seen && !S.unreachable) return quiet ? undefined : render();
   Object.assign(S, { seen, holders, task: detail.body, confirmed: true, unreachable: false });
   for (const ask of S.task?.asks ?? []) S.draft = observe(S.draft, ask, Date.now());
-  if ((S.draft?.phase === "sent" || S.draft?.restored) && !S.task?.asks?.some((ask) => ask.id === S.draft.id && ask.state === "open")) S.draft = null;
+  if (S.draft?.phase === "sent" && !S.task?.asks?.some((ask) => ask.id === S.draft.id && ask.state === "open")) S.draft = null;
   put(`last:${S.pr.resource}`, { holders, task: S.task, flows: S.flows, readAt: S.readAt });
   wakeAtSnoozeEnd();
   render();
@@ -170,23 +201,45 @@ async function signedOut(share = true) {
 const send = (type, extra = {}) => S.tabId != null && chrome.tabs.sendMessage(S.tabId, { type, ...extra }).catch(() => {});
 
 
-let undoTimer = 0;
+let armTimer = 0;
 function pick(ask, answer) {
   const before = S.draft;
   S.draft = choose(S.draft, ask, answer, Date.now());
   if (S.draft === before) return;
   if (S.draft.phase === "armed") return openCommand(ask, answer.option);
-  clearTimeout(undoTimer);
-  undoTimer = setTimeout(post, UNDO_MS);
+  if (S.draft.phase === "posting") return post();
+  // The first press arms the option until ARM_MS pass.
+  clearTimeout(armTimer);
+  armTimer = setTimeout(() => {
+    S.draft = observe(S.draft, ask, Date.now());
+    render();
+  }, ARM_MS);
+  render();
+}
+
+// The strip, a frame of its own, shows the answer sending too.
+const sharing = (text) => S.pr && channel.postMessage({ sending: text === null ? null : { pr: S.pr.resource, text } });
+globalThis.addEventListener?.("pagehide", () => S.draft?.phase === "posting" && sharing(null));
+// A panel closed mid-send may not say it ended, so the strip also forgets it after the call's timeout.
+const SENDING_MS = 20000;
+let sendingTimer = 0;
+function heardSending(sending) {
+  clearTimeout(sendingTimer);
+  S.sending = sending?.pr === S.pr.resource ? sending.text : null;
+  if (S.sending) sendingTimer = setTimeout(() => heardSending(null), SENDING_MS);
   render();
 }
 
 async function post() {
-  const next = due(S.draft, Date.now());
-  if (!next) return;
-  S.draft = next.draft;
+  clearTimeout(armTimer);
+  const path = answerPath(S.draft.id);
+  const body = answerBody(S.draft);
   render();
-  const result = await api(next.path, next.body);
+  sharing(S.draft.option ?? S.draft.text);
+  let result = await api(path, body);
+  // A server older than call ids refuses the field: the answer goes once more, without it.
+  if (result.status === 400 && /unknown field `call`/.test(result.body.error ?? "")) result = await api(path, { ...body, call: undefined });
+  sharing(null);
   S.draft = reply(S.draft, result, Date.now());
   if (S.draft.phase === "signin") return signedOut();
   if (S.draft.phase === "sent") S.written = "";
@@ -256,7 +309,8 @@ function strip() {
   const asks = waiting();
   return h("div", { class: "strip" }, brand, tile(S.task, asks.length > 0), h("span", { class: "mono" }, `task ${S.task.id}`),
     h("span", { class: "t2" }, `${S.task.state} at `, h("b", {}, S.task.step)),
-    asks.length ? h("button", { class: "waitpill", onclick: () => send("open", { tab: "ask" }) }, icon("ask", "s14"), `${asks.length} ${asks.length > 1 ? "asks wait" : "ask waits"} on you`) : null,
+    S.sending ? h("span", { class: "t2", role: "status" }, h("span", { class: "busy", "aria-hidden": "true" }), `Sending "${S.sending}"…`)
+      : asks.length ? h("button", { class: "waitpill", onclick: () => send("open", { tab: "ask" }) }, icon("ask", "s14"), `${asks.length} ${asks.length > 1 ? "asks wait" : "ask waits"} on you`) : null,
     stale ?? (S.task.since ? h("span", { class: "t3" }, age(S.task.since, Date.now())) : null), h("span", { class: "sp" }), toggle(asks.length ? "ask" : "task"));
 }
 
@@ -291,16 +345,19 @@ function askTab(asks) {
   if (!asks.length) return h("div", { class: "read" }, `No open asks. Task ${S.task.id}'s agent asks here when it needs you.`);
   const ask = asks[Math.min(S.index, asks.length - 1)];
   const draft = S.draft?.id === ask.id ? S.draft : null;
-  const busy = S.draft && ["waiting", "posting"].includes(S.draft.phase);
+  const busy = S.draft?.phase === "posting";
   const blocked = S.unreachable || busy || draft?.phase === "unknown";
+  // The pressed option shows its answer sending on itself; the others take no press meanwhile.
   const options = h("div", { class: "opts" }, ask.options.map((option, i) => {
     const recommended = option === ask.recommendation;
     const command = runsCommand(ask, option);
-    const armed = draft?.phase === "armed" && draft.option === option;
-    const chosen = draft && ["waiting", "posting"].includes(draft.phase) && draft.option === option;
-    const sub = armed ? "Opened in the side panel: run it there" : [recommended ? "Recommended" : null, command ? "Runs a command" : null].filter(Boolean).join(". ");
+    const armed = (draft?.phase === "armed" || draft?.phase === "confirm") && draft.option === option;
+    const chosen = busy && draft?.option === option;
+    const sub = chosen ? "Sending…" : draft?.phase === "armed" && armed ? "Opened in the side panel: run it there" : armed ? "Press again to send"
+      : [recommended ? "Recommended" : null, command ? "Runs a command" : null].filter(Boolean).join(". ");
     const cls = ["opt", recommended && !armed && !chosen ? "recd" : "", armed ? "armed" : "", chosen ? "chosen" : "", draft && !armed && !chosen && draft.phase !== "unknown" ? "dim" : ""].join(" ");
-    return h("button", { class: cls, disabled: blocked && !chosen, onclick: () => pick(ask, { option }) }, h("span", { class: "k" }, i + 1), h("span", {}, option, sub ? h("span", { class: "sub" }, sub) : null));
+    return h("button", { class: cls, disabled: blocked && !chosen, "aria-disabled": chosen ? "true" : false, "aria-busy": chosen ? "true" : false, onclick: () => pick(ask, { option }) },
+      chosen ? h("span", { class: "busy", "aria-hidden": "true" }) : h("span", { class: "k" }, i + 1), h("span", {}, option, sub ? h("span", { class: "sub" }, sub) : null));
   }));
   const position = asks.length > 1 ? h("div", { class: "row" }, h("span", { class: "t3" }, `${asks.indexOf(ask) + 1}/${asks.length}`),
     h("button", { class: "btn ghost", onclick: () => { S.index = Math.max(0, S.index - 1); render(); } }, "Previous"),
@@ -319,7 +376,9 @@ function askTab(asks) {
     S.writing
       ? h("form", { class: "field", onsubmit: (event) => { event.preventDefault(); if (S.written.trim()) pick(ask, { text: S.written.trim(), again: draft?.phase === "unknown" }); } },
         h("textarea", { id: "written", class: "input", rows: 3, "aria-label": "Your answer", value: S.written, oninput: (event) => { S.written = event.target.value; } }),
-        h("div", { class: "end" }, h("button", { class: "btn primary", type: "submit", disabled: blocked }, "Send")))
+        h("div", { class: "end" }, busy && draft?.text !== undefined
+          ? h("button", { class: "btn primary", type: "submit", "aria-disabled": "true", "aria-busy": "true" }, h("span", { class: "busy", "aria-hidden": "true" }), "Sending…")
+          : h("button", { class: "btn primary", type: "submit", disabled: blocked }, "Send")))
       : null,
     h("div", { class: "lowrow" },
       S.writing ? null : h("button", { class: "btn ghost", disabled: blocked, onclick: () => { S.writing = true; render(); } }, icon("pencil", "s14"), "Write an answer"),
@@ -327,10 +386,6 @@ function askTab(asks) {
       h("button", { class: "btn ghost", disabled: blocked, onclick: () => snooze(ask, snoozed) }, snoozed ? "Unsnooze" : "Snooze 1 h"),
       draft?.phase === "unknown"
         ? h("button", { class: "btn ghost", onclick: () => (draft.dismiss ? dismiss(ask) : pick(ask, { ...(draft.option === undefined ? { text: draft.text } : { option: draft.option }), again: true })) }, "Send again")
-        : null,
-      draft?.restored
-        ? [h("button", { class: "btn ghost", onclick: () => pick(ask, draft.option === undefined ? { text: draft.text } : { option: draft.option }) }, "Send"),
-          h("button", { class: "btn ghost", onclick: () => { S.draft = null; render(); } }, "Discard")]
         : null),
     draft?.notice ? h("div", { class: "notice", role: "alert" }, draft.notice) : null,
     h("div", { class: "hr" }),
@@ -338,9 +393,6 @@ function askTab(asks) {
     ask.tradeoff ? h("div", { class: "fact" }, icon("scale", "s14"), h("span", {}, h("b", {}, "Trade-off. "), ask.tradeoff)) : null,
     ask.what_waits ? h("div", { class: "fact" }, icon("hourglass", "s14"), h("span", {}, h("b", {}, "What waits. "), ask.what_waits)) : null,
     S.task.brief?.request ? h("div", { class: "sect" }, h("h3", {}, "Brief"), h("div", { class: "read" }, S.task.brief.request)) : null,
-    draft?.phase === "waiting" || draft?.phase === "posting"
-      ? h("div", { class: "undo", role: "status" }, `Sending "${draft.option ?? draft.text}"`, draft.phase === "waiting" ? h("button", { class: "btn", onclick: () => { clearTimeout(undoTimer); S.draft = undo(S.draft); render(); } }, "Undo") : null)
-      : null,
   ];
 }
 
@@ -535,19 +587,9 @@ function outcome(ran) {
 }
 
 
-// An answer waiting on Undo outlives the frame, which a page change removes with its timer.
-let keptDraft = "null";
-function keepDraft() {
-  const kept = leftUnsent(S.draft);
-  if (JSON.stringify(kept) === keptDraft) return;
-  keptDraft = JSON.stringify(kept);
-  (kept ? put(`draft:${S.pr.resource}`, kept) : remove(`draft:${S.pr.resource}`)).catch(() => {});
-}
-
 // A redraw keeps what the person was doing: the focused field, its selection and the scroll.
 function render() {
   if (VIEW === "command") return;
-  if (VIEW === "panel" && S.pr) keepDraft();
   const focused = document.activeElement;
   const { id, selectionStart, selectionEnd } = focused ?? {};
   const scroll = document.querySelector(".body")?.scrollTop ?? 0;
@@ -576,12 +618,14 @@ async function boot() {
   if (!S.pr) return;
   const last = await get(`last:${S.pr.resource}`);
   if (last) Object.assign(S, last, { unreachable: false });
-  if (VIEW === "panel") S.draft = (await get(`draft:${S.pr.resource}`)) ?? null;
+  // An earlier version kept an answer waiting on its Undo; press-twice sends at once, so none waits.
+  if (VIEW === "panel") remove(`draft:${S.pr.resource}`).catch(() => {});
   render();
   live((message) => {
     if (message.signedIn) get("config").then((config) => { S.config = config ?? null; read(); });
     else if (message.signedOut) signedOut(false);
     else if (message.unreachable) { S.unreachable = true; render(); }
+    else if ("sending" in message) heardSending(message.sending);
     else read(true);
   });
   if (VIEW === "panel") {
