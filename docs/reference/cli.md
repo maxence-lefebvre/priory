@@ -45,7 +45,8 @@ does and the page that describes it.
 - `priory log intake-role ROLE`: prints the SQL that creates the intake's Postgres role, `ROLE`,
   on a Postgres log. Pipe it into `psql` as the tables' owner, connected to the log's database
   with its `search_path` on the log's schema. Running it again changes nothing. It sets no
-  password: set one with `ALTER ROLE ROLE PASSWORD`. See [factory.md](factory.md#the-intakes-role).
+  password: set one with `ALTER ROLE ROLE PASSWORD`. `ROLE` is lowercase letters, digits and
+  underscores, at most 49 bytes, so the policy names stay under Postgres's 63. See [factory.md](factory.md#the-intakes-role).
 
 ## The processes
 

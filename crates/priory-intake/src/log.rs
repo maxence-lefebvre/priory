@@ -11,6 +11,9 @@ pub mod sql;
 /// tables, such as the intake's role on the diocese.
 pub const RESTRICTED_ENV: &str = "PRIORY_LOG_RESTRICTED";
 
+/// The counter of the rows a Postgres log's reader skipped, since they do not parse as a message.
+pub const SKIPPED: &str = "priory.log.skipped";
+
 pub type Error = Box<dyn std::error::Error>;
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 

@@ -251,45 +251,57 @@ impl Log for Postgres {
                 &[&output, &before.map(|seq| seq.0), &limit],
             )?)
         })?;
-        rows.iter().map(stored).collect()
+        // `read` reports a row that does not parse; a listing only leaves it out.
+        Ok(rows.iter().filter_map(|row| stored(row).ok()).collect())
     }
 
+    /// Skips a row that does not parse as a message, such as one a restricted role wrote with a
+    /// duplicate `type`: it reports the row once and moves `consumer`'s cursor past it, so one bad
+    /// row never stops a reader.
     fn read(&self, consumer: &str, output: &str, limit: usize) -> Result<Vec<Delivery>> {
-        let (consumer, output) = (consumer.to_owned(), output.to_owned());
-        let limit = i64::try_from(limit)?;
-        let rows = self.run(move |client| {
-            Ok(client.query(
-                "SELECT * FROM priory_log_messages WHERE output = $1 AND seq > COALESCE(
-                    (SELECT seq FROM priory_log_cursors WHERE consumer = $2 AND output = $1), 0)
-                 ORDER BY seq LIMIT $3",
-                &[&output, &consumer, &limit],
-            )?)
-        })?;
-        rows.iter()
-            .map(|row| {
-                let stored = stored(row)?;
-                Ok(Delivery {
-                    output: stored.output,
-                    seq: stored.seq,
-                    message: stored.message,
-                    logged: Some(stored.published),
-                })
-            })
-            .collect()
+        loop {
+            let (owned_consumer, owned_output) = (consumer.to_owned(), output.to_owned());
+            let query_limit = i64::try_from(limit)?;
+            let rows = self.run(move |client| {
+                Ok(client.query(
+                    "SELECT * FROM priory_log_messages WHERE output = $1 AND seq > COALESCE(
+                        (SELECT seq FROM priory_log_cursors WHERE consumer = $2 AND output = $1), 0)
+                     ORDER BY seq LIMIT $3",
+                    &[&owned_output, &owned_consumer, &query_limit],
+                )?)
+            })?;
+            let mut deliveries = Vec::new();
+            let mut skipped = None;
+            for row in &rows {
+                match stored(row) {
+                    Ok(stored) => deliveries.push(Delivery {
+                        output: stored.output,
+                        seq: stored.seq,
+                        message: stored.message,
+                        logged: Some(stored.published),
+                    }),
+                    // The next read meets it first, and skips it then.
+                    Err(_) if !deliveries.is_empty() => break,
+                    Err(error) => {
+                        let seq: i64 = row.get("seq");
+                        eprintln!("the log skips message {seq} of {output}: {error}");
+                        priory_runtime::ticks::count(super::SKIPPED, &[]);
+                        skipped = Some(seq);
+                    }
+                }
+            }
+            let Some(seq) = skipped else {
+                return Ok(deliveries);
+            };
+            self.advance(consumer, output, seq)?;
+            if !deliveries.is_empty() || rows.len() < limit {
+                return Ok(deliveries);
+            }
+        }
     }
 
     fn ack(&self, consumer: &str, delivery: &Delivery) -> Result<()> {
-        let (consumer, output, seq) =
-            (consumer.to_owned(), delivery.output.clone(), delivery.seq.0);
-        self.run(move |client| {
-            client.execute(
-                "INSERT INTO priory_log_cursors (consumer, output, seq) VALUES ($1, $2, $3)
-                 ON CONFLICT (consumer, output)
-                 DO UPDATE SET seq = GREATEST(priory_log_cursors.seq, EXCLUDED.seq)",
-                &[&consumer, &output, &seq],
-            )?;
-            Ok(())
-        })
+        self.advance(consumer, &delivery.output, delivery.seq.0)
     }
 
     fn backlog(&self, output: &str) -> Result<Vec<(String, u64)>> {
@@ -309,5 +321,21 @@ impl Log for Postgres {
                 (row.get("consumer"), u64::try_from(past).unwrap_or_default())
             })
             .collect())
+    }
+}
+
+impl Postgres {
+    /// Moves `consumer`'s cursor on `output` to `seq`, unless it is past it already.
+    fn advance(&self, consumer: &str, output: &str, seq: i64) -> Result<()> {
+        let (consumer, output) = (consumer.to_owned(), output.to_owned());
+        self.run(move |client| {
+            client.execute(
+                "INSERT INTO priory_log_cursors (consumer, output, seq) VALUES ($1, $2, $3)
+                 ON CONFLICT (consumer, output)
+                 DO UPDATE SET seq = GREATEST(priory_log_cursors.seq, EXCLUDED.seq)",
+                &[&consumer, &output, &seq],
+            )?;
+            Ok(())
+        })
     }
 }
