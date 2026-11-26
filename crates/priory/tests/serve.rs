@@ -4239,6 +4239,61 @@ fn a_write_body_over_16_kib_gets_413_and_one_not_json_415() {
 }
 
 #[test]
+fn snooze_takes_a_named_ask_and_refuses_a_name_for_another_kind() {
+    let mut setup = Setup::new("web-snooze-named", SERVE);
+    setup.seed_bands();
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let named = |desk: &Value| ranked(desk).contains(&(json!("ask"), json!("review-7")));
+    let until = || {
+        let asks = api(&address, "/api/asks");
+        let ask = asks["asks"].as_array().unwrap().iter();
+        ask.filter(|ask| ask["id"] == "review-7")
+            .map(|ask| ask["snoozed_until"].clone())
+            .next()
+    };
+    assert!(named(&json_of(&setup, "desk")));
+
+    let snoozed = post(
+        &address,
+        "/api/snooze",
+        "",
+        r#"{"kind": "ask", "id": "review-7", "for": "1h"}"#,
+    );
+
+    assert_eq!(snoozed.0, 200, "{}", snoozed.1);
+    assert!(until().unwrap().is_string());
+    assert!(!named(&json_of(&setup, "desk")));
+    let cleared = post(
+        &address,
+        "/api/snooze",
+        "",
+        r#"{"kind": "ask", "id": "review-7", "clear": true}"#,
+    );
+    assert_eq!(cleared.0, 200, "{}", cleared.1);
+    assert_eq!(until(), Some(Value::Null));
+    assert!(named(&json_of(&setup, "desk")));
+    let unknown = post(
+        &address,
+        "/api/snooze",
+        "",
+        r#"{"kind": "ask", "id": "review-8", "for": "1h"}"#,
+    );
+    assert_eq!(unknown.0, 404, "{}", unknown.1);
+    let blocked = post(
+        &address,
+        "/api/snooze",
+        "",
+        r#"{"kind": "blocked", "id": "x", "for": "1h"}"#,
+    );
+    assert_eq!(blocked.0, 400, "{}", blocked.1);
+    assert!(
+        blocked.1.contains("a blocked id is a number"),
+        "{}",
+        blocked.1
+    );
+}
+
+#[test]
 fn dismiss_and_snooze_through_their_endpoints_do_what_their_cli_verbs_do() {
     let mut setup = Setup::new("web-dismiss", SERVE);
     setup.asleep_on_ask();
