@@ -61,11 +61,27 @@ pub const INTAKE_TYPES: &[&str] = &[
 /// The consumer whose cursor the intake's role may move.
 pub const INTAKE_CONSUMER: &str = "priory.intake";
 
-/// The SQL an admin runs once on the log's database, in the schema the log's tables live in, to
-/// create `role` for the intake: it reads every message, publishes only `INTAKE_TYPES`, and moves
-/// only `INTAKE_CONSUMER`'s cursor. Every other role keeps what it had. Running it again changes
-/// nothing. It sets no password.
+/// The one message type the diocese's gateway publishes: a cloud run's tool call.
+pub const GATEWAY_TYPES: &[&str] = &["priory.run.called"];
+
+/// The consumer whose cursor the gateway's role may move.
+pub const GATEWAY_CONSUMER: &str = "priory.gateway";
+
+/// The SQL that creates `role` for the intake, as `restricted_role` says.
 pub fn intake_role(role: &str) -> Result<String, String> {
+    restricted_role(role, INTAKE_TYPES, INTAKE_CONSUMER)
+}
+
+/// The SQL that creates `role` for the diocese's gateway, as `restricted_role` says.
+pub fn gateway_role(role: &str) -> Result<String, String> {
+    restricted_role(role, GATEWAY_TYPES, GATEWAY_CONSUMER)
+}
+
+/// The SQL an admin runs once on the log's database, in the schema the log's tables live in, to
+/// create `role`: it reads every message, publishes only `types`, and moves only `consumer`'s
+/// cursor. Every other role keeps what it had. Running it again changes nothing. It sets no
+/// password.
+fn restricted_role(role: &str, types: &[&str], consumer: &str) -> Result<String, String> {
     let valid = role.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
         && role
             .chars()
@@ -75,7 +91,7 @@ pub fn intake_role(role: &str) -> Result<String, String> {
             "{role:?} is no role name: use lowercase letters, digits and underscores"
         ));
     }
-    let types = INTAKE_TYPES
+    let types = types
         .iter()
         .map(|kind| format!("'{kind}'"))
         .collect::<Vec<_>>()
@@ -103,10 +119,10 @@ CREATE POLICY {role}_publishes ON priory_log_messages AS RESTRICTIVE FOR INSERT 
     WITH CHECK ((message::jsonb ->> 'type') = ANY (ARRAY[{types}]));
 DROP POLICY IF EXISTS {role}_adds_cursor ON priory_log_cursors;
 CREATE POLICY {role}_adds_cursor ON priory_log_cursors AS RESTRICTIVE FOR INSERT TO {role}
-    WITH CHECK (consumer = '{INTAKE_CONSUMER}');
+    WITH CHECK (consumer = '{consumer}');
 DROP POLICY IF EXISTS {role}_moves_cursor ON priory_log_cursors;
 CREATE POLICY {role}_moves_cursor ON priory_log_cursors AS RESTRICTIVE FOR UPDATE TO {role}
-    USING (consumer = '{INTAKE_CONSUMER}') WITH CHECK (consumer = '{INTAKE_CONSUMER}');
+    USING (consumer = '{consumer}') WITH CHECK (consumer = '{consumer}');
 COMMIT;
 "
     ))

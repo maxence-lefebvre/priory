@@ -11,6 +11,7 @@ pub mod daemon;
 pub(crate) mod debate;
 pub mod decision;
 pub mod deliver;
+pub mod diocese;
 pub mod embed;
 mod enter;
 pub mod evidence;

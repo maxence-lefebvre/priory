@@ -1292,7 +1292,7 @@ fn type_in(db: &Connection, home: &Path, request: &Request, run: &str, typing: T
 }
 
 /// 128 random bits as hex, from the kernel.
-fn new_secret() -> Result<String, String> {
+pub(crate) fn new_secret() -> Result<String, String> {
     use std::io::Read;
     let mut bytes = [0u8; 16];
     std::fs::File::open("/dev/urandom")

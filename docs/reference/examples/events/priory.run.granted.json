@@ -1,0 +1,12 @@
+{
+  "id": "0196c0a2-7f3e-7b41-9a5d-2e6f8c1b4d70",
+  "type": "priory.run.granted",
+  "subject": "0196c0a2-7f3e-7b41-9a5d-2e6f8c1b4d6f",
+  "time": "2026-11-21T10:00:00Z",
+  "data": {
+    "grant": "0196c0a2-7f3e-7b41-9a5d-2e6f8c1b4d6f",
+    "hash": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+    "seconds": 1800
+  },
+  "links": []
+}

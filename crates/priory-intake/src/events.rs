@@ -1061,6 +1061,29 @@ pub struct TaskHeld {
     pub generation: Option<i64>,
 }
 
+/// A runner made a run grant: a token that signs a cloud run in at the diocese's gateway. The token
+/// itself never reaches the log. Published by `priory gateway grant`.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RunGranted {
+    /// The grant's id.
+    #[schemars(extend("format" = "uuid"))]
+    pub grant: String,
+    /// The token's SHA-256, in lowercase hex.
+    pub hash: String,
+    /// How long the grant lasts, in seconds from when the log took this message.
+    pub seconds: u64,
+}
+
+/// A run grant stops working: the gateway refuses its token from its next read of the log on.
+/// Published by `priory gateway revoke`.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RunRevoked {
+    /// The grant's id.
+    pub grant: String,
+}
+
 /// A runner renews its lease, once a minute while its daemon runs. Its lease ends 30 minutes after
 /// this message's `time`.
 #[derive(JsonSchema)]

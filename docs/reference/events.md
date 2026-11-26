@@ -36,6 +36,7 @@ Each type has a JSON Schema in [`docs/schemas/events/`](../schemas/events/), nam
   [`priory.runner.alive`](#prioryrunneralive), [`priory.ask.answered`](#prioryaskanswered),
   [`priory.ask.dismissed`](#prioryaskdismissed), [`priory.ask.posted`](#prioryaskposted),
   [`priory.ask.applied`](#prioryaskapplied), [`priory.task.dropped`](#priorytaskdropped)
+- Run grants: [`priory.run.granted`](#prioryrungranted), [`priory.run.revoked`](#prioryrunrevoked)
 - Memories: [`priory.memory.written`](#priorymemorywritten),
   [`priory.memory.accepted`](#priorymemoryaccepted), [`priory.memory.dropped`](#priorymemorydropped)
 - Autopilot: [`priory.autopilot.set`](#prioryautopilotset)
@@ -1835,6 +1836,63 @@ Schema: [`priory.task.dropped.json`](../schemas/events/priory.task.dropped.json)
   "subject": "github:acme/widgets#42",
   "time": "2026-11-24T10:22:00Z",
   "data": { "key": "github:acme/widgets#42", "by": "cli" },
+  "links": []
+}
+```
+
+## Run grants
+
+`priory gateway grant` and `priory gateway revoke` publish these on `factory.intake`. The diocese's
+gateway reads them as the consumer `priory.gateway`. See
+[the diocese design](../design/hosted-hub.md#sign-in-and-tokens).
+
+### `priory.run.granted`
+
+A runner made a run grant: a token that signs a cloud run in at the gateway. The token itself never
+reaches the log. Subject: the grant's id.
+Schema: [`priory.run.granted.json`](../schemas/events/priory.run.granted.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `grant` | UUID string | The grant's id |
+| `hash` | string | The token's SHA-256, in lowercase hex |
+| `seconds` | integer | How long the grant lasts, in seconds from when the log took this message |
+
+<!-- example: events/priory.run.granted.json -->
+```json
+{
+  "id": "0196c0a2-7f3e-7b41-9a5d-2e6f8c1b4d70",
+  "type": "priory.run.granted",
+  "subject": "0196c0a2-7f3e-7b41-9a5d-2e6f8c1b4d6f",
+  "time": "2026-11-21T10:00:00Z",
+  "data": {
+    "grant": "0196c0a2-7f3e-7b41-9a5d-2e6f8c1b4d6f",
+    "hash": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+    "seconds": 1800
+  },
+  "links": []
+}
+```
+
+### `priory.run.revoked`
+
+A run grant stops working: the gateway refuses its token from its next read of the log on. Subject:
+the grant's id. Schema: [`priory.run.revoked.json`](../schemas/events/priory.run.revoked.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `grant` | string | The grant's id |
+
+<!-- example: events/priory.run.revoked.json -->
+```json
+{
+  "id": "0196c0a9-1c2d-7e3f-8a4b-5c6d7e8f9a0b",
+  "type": "priory.run.revoked",
+  "subject": "0196c0a2-7f3e-7b41-9a5d-2e6f8c1b4d6f",
+  "time": "2026-11-21T10:05:00Z",
+  "data": {
+    "grant": "0196c0a2-7f3e-7b41-9a5d-2e6f8c1b4d6f"
+  },
   "links": []
 }
 ```

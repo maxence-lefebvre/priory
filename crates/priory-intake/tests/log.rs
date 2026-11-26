@@ -727,3 +727,49 @@ fn postgres_intake_role_publishes_only_the_intakes_types_and_moves_only_its_curs
     runner.ack("priory.runner", &second[0]).unwrap();
     assert_eq!(numbers(&*runner, "priory.runner"), [3]);
 }
+
+#[cfg(feature = "postgres")]
+#[test]
+fn postgres_gateway_role_publishes_only_run_calls_and_moves_only_its_cursor() {
+    use priory_intake::log::postgres::Postgres as Log;
+    let Some(store) = Postgres::new("gateway_role") else {
+        return;
+    };
+    let runner = declared(&store);
+    let role = Role {
+        url: store.url.clone(),
+        name: format!("priory_gateway_{}", std::process::id()),
+    };
+    let mut admin = ::postgres::Client::connect(&store.url(&store.url), ::postgres::NoTls).unwrap();
+    admin
+        .batch_execute(&log::sql::gateway_role(&role.name).unwrap())
+        .unwrap();
+    admin
+        .batch_execute(&format!("ALTER ROLE {} PASSWORD 'gateway'", role.name))
+        .unwrap();
+    let (credentials, host) = store.url.split_once('@').unwrap();
+    let (scheme, _) = credentials.split_once("://").unwrap();
+    let as_role = store.url(&format!("{scheme}://{}:gateway@{host}", role.name));
+    let gateway = Log::connect(&as_role, TIMEOUT, true).unwrap();
+
+    let called = Message::new("priory.run.called", serde_json::json!({ "n": 2 }));
+    gateway.publish(OUTPUT, &called).unwrap();
+    for refused in ["priory.ask.answered", "github.issues.labeled"] {
+        let message = Message::new(refused, serde_json::json!({ "n": 3 }));
+        let error = format!("{:?}", gateway.publish(OUTPUT, &message).unwrap_err());
+        assert!(error.contains("row-level security"), "{refused}: {error}");
+    }
+
+    let first = gateway.read("priory.gateway", OUTPUT, 10).unwrap();
+    assert_eq!(first.len(), 1);
+    let moved = format!("{:?}", gateway.ack("priory.intake", &first[0]).unwrap_err());
+    assert!(moved.contains("row-level security"), "{moved}");
+    gateway.ack("priory.gateway", &first[0]).unwrap();
+    assert!(
+        gateway
+            .read("priory.gateway", OUTPUT, 10)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(numbers(&*runner, "priory.runner"), [2]);
+}
