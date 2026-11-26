@@ -265,14 +265,11 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
             }
         }
         let cloud = &settings.value.cloud;
-        let url = cloud.gateway_url.as_deref();
-        if cloud.gateway
-            && !url.is_some_and(|url| url.starts_with("https://") || url.starts_with("http://"))
-        {
+        if cloud.gateway && !cloud.gateway_url.as_deref().is_some_and(secure) {
             problems.push(problem(
                 settings,
                 settings.lines.field("cloud"),
-                "`[cloud] gateway = true` needs `gateway_url`, the gateway's http or https MCP endpoint, which each cloud session connects to".to_owned(),
+                "`[cloud] gateway = true` needs `gateway_url`, the gateway's https MCP endpoint, which each cloud session connects to with its token; http is only for a loopback host".to_owned(),
             ));
         }
         if !cfg!(feature = "postgres") && settings.value.log.backend == Backend::Postgres {
@@ -1577,6 +1574,27 @@ fn check_codex(factory: &Factory, agent: &Loaded<Agent>, problems: &mut Vec<Prob
             ));
         }
     }
+}
+
+/// Whether `url` keeps a bearer token off the network in plain text: https, or http to loopback.
+fn secure(url: &str) -> bool {
+    if url.starts_with("https://") {
+        return true;
+    }
+    let Some(rest) = url.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = match authority.strip_prefix('[') {
+        Some(bracketed) => bracketed.split(']').next().unwrap_or_default(),
+        None => authority
+            .rsplit_once(':')
+            .map_or(authority, |(host, _)| host),
+    };
+    host == "localhost"
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 /// The outcomes a cloud step may route: the daemon stores the result, and has only these two.

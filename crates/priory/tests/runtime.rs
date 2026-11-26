@@ -42273,7 +42273,7 @@ struct Gateway {
 impl Gateway {
     fn start(setup: &Setup) -> Self {
         let factory = setup.dir.join("factory");
-        let mut child = setup
+        let child = setup
             .command(env!("CARGO_BIN_EXE_priory"))
             .args([
                 "gateway",
@@ -42284,7 +42284,12 @@ impl Gateway {
             .stderr(std::process::Stdio::piped())
             .spawn()
             .unwrap();
-        let mut stderr = std::io::BufReader::new(child.stderr.take().unwrap());
+        // The guard holds the child first, so a failed start still kills and reaps it.
+        let mut gateway = Gateway {
+            child,
+            address: String::new(),
+        };
+        let mut stderr = std::io::BufReader::new(gateway.child.stderr.take().unwrap());
         loop {
             let mut line = String::new();
             use std::io::BufRead;
@@ -42293,9 +42298,9 @@ impl Gateway {
                 "the gateway exited"
             );
             if let Some(address) = line.trim().strip_prefix("priory: serving on http://") {
-                let address = address.to_owned();
+                gateway.address = address.to_owned();
                 std::thread::spawn(move || std::io::copy(&mut stderr, &mut std::io::sink()));
-                return Gateway { child, address };
+                return gateway;
             }
         }
     }
@@ -42549,9 +42554,10 @@ fn a_grant_made_by_hand_and_a_task_claimed_by_another_runner_reach_no_tool() {
     assert_eq!(setup.on_log("priory.run.called"), 0);
 }
 
-#[test]
-fn a_pushed_commit_that_holds_the_run_grants_token_fails_the_step_and_revokes_the_grant() {
-    let mut setup = gateway_cloud("gateway-leak");
+/// Runs `commit` in a clone of the task's branch with the run grant's token, then pushes its
+/// branch where the session pushes, and checks that the push fails the step and revokes the grant.
+fn leaks(name: &str, commit: impl Fn(&Path, &str)) {
+    let mut setup = gateway_cloud(name);
     setup.publish(&requested(42));
     setup.start();
     setup.cloud_started();
@@ -42565,22 +42571,9 @@ fn a_pushed_commit_that_holds_the_run_grants_token_fails_the_step_and_revokes_th
         .arg(&bare)
         .arg(&work);
     assert!(cloned.status().unwrap().success());
-    fs::write(work.join("config.txt"), format!("token = {token}\n")).unwrap();
-    for args in [
-        &["add", "config.txt"][..],
-        &[
-            "-c",
-            "user.name=t",
-            "-c",
-            "user.email=t@t",
-            "commit",
-            "-qm",
-            "Add the config",
-        ],
-        &["push", "-q", "origin", &format!("HEAD:refs/heads/{branch}")],
-    ] {
-        assert!(git(&work).args(args).status().unwrap().success());
-    }
+    commit(&work, &token);
+    let push = ["push", "-q", "origin", &format!("HEAD:refs/heads/{branch}")];
+    assert!(git(&work).args(push).status().unwrap().success());
 
     setup.until("runs", |rows| rows.first().is_some_and(|row| row[7] != "-"));
 
@@ -42597,6 +42590,62 @@ fn a_pushed_commit_that_holds_the_run_grants_token_fails_the_step_and_revokes_th
         assert!(Instant::now() < deadline, "no revocation");
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// Runs git in `work` as the test's committer, and checks that it succeeded.
+fn session_git(work: &Path, args: &[&str]) {
+    let mut command = git(work);
+    command
+        .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+        .args(args);
+    assert!(command.status().unwrap().success(), "git {args:?}");
+}
+
+#[test]
+fn a_pushed_commit_that_holds_the_run_grants_token_fails_the_step_and_revokes_the_grant() {
+    leaks("gateway-leak", |work, token| {
+        fs::write(work.join("config.txt"), format!("token = {token}\n")).unwrap();
+        session_git(work, &["add", "config.txt"]);
+        session_git(work, &["commit", "-qm", "Add the config"]);
+    });
+}
+
+#[test]
+fn a_pushed_token_in_a_file_that_git_does_not_diff_still_fails_the_step() {
+    leaks("gateway-leak-nodiff", |work, token| {
+        fs::write(work.join(".gitattributes"), "* -diff\n").unwrap();
+        fs::write(work.join("config.txt"), format!("token = {token}\n")).unwrap();
+        session_git(work, &["add", ".gitattributes", "config.txt"]);
+        session_git(work, &["commit", "-qm", "Add the config"]);
+    });
+}
+
+#[test]
+fn a_pushed_token_that_only_a_merge_commit_adds_still_fails_the_step() {
+    leaks("gateway-leak-merge", |work, token| {
+        session_git(work, &["checkout", "-qb", "side"]);
+        fs::write(work.join("side.txt"), "side\n").unwrap();
+        session_git(work, &["add", "side.txt"]);
+        session_git(work, &["commit", "-qm", "Side"]);
+        session_git(work, &["checkout", "-q", "priory/1"]);
+        fs::write(work.join("main.txt"), "main\n").unwrap();
+        session_git(work, &["add", "main.txt"]);
+        session_git(work, &["commit", "-qm", "Main"]);
+        session_git(work, &["merge", "-q", "--no-ff", "--no-commit", "side"]);
+        fs::write(work.join("config.txt"), format!("token = {token}\n")).unwrap();
+        session_git(work, &["add", "config.txt"]);
+        session_git(work, &["commit", "-qm", "Merge side"]);
+    });
+}
+
+#[test]
+fn a_pushed_token_in_a_commits_author_still_fails_the_step() {
+    leaks("gateway-leak-author", |work, token| {
+        fs::write(work.join("plain.txt"), "plain\n").unwrap();
+        session_git(work, &["add", "plain.txt"]);
+        let author = format!("--author=t <{token}@example.com>");
+        session_git(work, &["commit", "-qm", "Add a file", &author]);
+    });
 }
 
 #[test]
@@ -42662,4 +42711,106 @@ fn a_cloud_task_given_to_another_runner_gets_a_new_grant_and_the_old_one_is_refu
         a.rows("asks").iter().all(|row| row[0].contains(':')),
         "a applied no call"
     );
+}
+
+impl Setup {
+    /// The data of each message of `kind` on the log, in order.
+    fn data_on_log(&self, kind: &str) -> Vec<serde_json::Value> {
+        self.bus()
+            .messages(&herdr_bus::MessageQuery {
+                output: Some(OUTPUT.into()),
+                limit: 10_000,
+                ..herdr_bus::MessageQuery::default()
+            })
+            .unwrap()
+            .into_iter()
+            .filter(|stored| stored.message.kind == kind)
+            .map(|stored| stored.message.data)
+            .collect()
+    }
+
+    /// Waits until the fake file `file` exists.
+    fn until_faked(&self, file: &str) {
+        let deadline = Instant::now() + Duration::from_secs(120);
+        while !self.dir.join("fake").join(file).exists() {
+            assert!(Instant::now() < deadline, "no {file}");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
+#[test]
+fn a_result_reported_while_a_poll_from_before_the_push_runs_still_takes_the_push() {
+    let mut setup = gateway_cloud("gateway-race");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.cloud_started();
+    let token = setup.cloud_tokens().remove(0);
+    let gateway = Gateway::start(&setup);
+    gateway.until_granted(&token);
+    let hold = setup.dir.join("fake/git-hold-ls");
+    fs::write(&hold, "").unwrap();
+    setup.until_faked("git-ls-held");
+    setup.cloud_push(0);
+
+    let (_, reported) = gateway.call(
+        &token,
+        "result",
+        json!({ "outcome": "pushed", "summary": "Add the widget" }),
+    );
+    fs::remove_file(&hold).unwrap();
+
+    assert_eq!(reported["isError"], false, "{reported}");
+    setup.until("runs", |rows| rows.first().is_some_and(|row| row[7] != "-"));
+    let task = task_json(&setup, "1");
+    let result = &task["results"][0];
+    assert_eq!(result["outcome"], "pushed", "{task}");
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+    let head = git(&worktree).args(["rev-parse", "HEAD"]).output().unwrap();
+    let head = String::from_utf8(head.stdout).unwrap().trim().to_owned();
+    assert_eq!(result["commit_sha"], head.as_str(), "{task}");
+    assert!(worktree.join("cloud.txt").exists());
+}
+
+#[test]
+fn a_runner_refuses_a_call_of_its_ended_run_and_leaves_a_grant_it_never_made() {
+    let mut setup = gateway_cloud("gateway-ended");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.cloud_started();
+    let granted = setup.data_on_log("priory.run.granted");
+    assert_eq!(granted.len(), 1);
+    assert_eq!(granted[0]["task"], "github:owner/repo#42");
+    let grant = granted[0]["grant"].as_str().unwrap().to_owned();
+    assert!(setup.priory(&["cancel", "1"]).status.success());
+    setup.until("runs", |rows| rows.first().is_some_and(|row| row[7] != "-"));
+
+    for (call, grant) in [
+        ("call-unknown", "a-grant-of-another-runner"),
+        ("call-ended", &*grant),
+    ] {
+        setup.publish(&Message::new(
+            "priory.run.called",
+            json!({ "call": call, "grant": grant, "run": 1, "runner": null, "tool": "ask",
+                "arguments": an_ask() }),
+        ));
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let replied = loop {
+        let replied = setup.data_on_log("priory.run.replied");
+        if !replied.is_empty() {
+            break replied;
+        }
+        assert!(Instant::now() < deadline, "no reply");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert_eq!(replied.len(), 1, "{replied:?}");
+    assert_eq!(replied[0]["call"], "call-ended");
+    assert_eq!(replied[0]["error"], true);
+    assert!(
+        replied[0]["text"].as_str().unwrap().contains("is revoked"),
+        "{replied:?}"
+    );
+    assert!(setup.rows("asks").is_empty());
 }

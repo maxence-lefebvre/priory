@@ -43,8 +43,11 @@
           "type": "integer"
         },
         "runner": {
-          "description": "The runner the grant names.",
-          "type": "string"
+          "description": "The runner the grant names; none on a factory with no runner files.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "tool": {
           "description": "`ask`, `wait` or `result`.",
@@ -55,7 +58,6 @@
         "call",
         "grant",
         "run",
-        "runner",
         "tool",
         "arguments"
       ],

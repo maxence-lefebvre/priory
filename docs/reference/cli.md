@@ -69,7 +69,8 @@ does and the page that describes it.
   serves `whoami`, which names the grant and acts on nothing, and `ask`, `wait` and `result` to a
   grant a runner made for a cloud run. It hands each of those to that runner as
   `priory.run.called`, refuses it once the task's claim names another runner, and answers with the
-  runner's `priory.run.replied`, or that the runner is away after 40 seconds. It reads grants, claims
+  runner's `priory.run.replied`, or that the runner is away after 40 seconds. At most 2 calls of one
+  grant, and 128 in all, wait for a reply at once; past that, a call is refused at once. It reads grants, claims
   and replies from the
   log as the consumer `priory.gateway` into `$PRIORY_HOME/diocese-gateway.db`, each second, and
   answers `503` to every request while its last full read is over 10 seconds old. It skips a grant

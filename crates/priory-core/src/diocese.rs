@@ -48,6 +48,9 @@ const REPLY: Duration = Duration::from_secs(40);
 // shortcut: the server has 8 handler threads, so past 8 waiting calls the rest queue; raise its
 // threads for this lane if a factory runs more cloud sessions at once.
 const WAITING: usize = 128;
+/// How many calls of one grant wait for a reply at once, so one session whose runner is away cannot
+/// hold every handler thread.
+const GRANT_WAITING: usize = 2;
 
 /// Makes a grant that lasts `span`, such as `30m`, publishes its hash on the log, and returns the
 /// grant's id and its token as JSON. The token reaches nothing else.
@@ -101,7 +104,7 @@ pub fn serve(factory: &Factory, listen: SocketAddr) -> Result<(), String> {
         calls: Mutex::new(Window::default()),
         refusals: Mutex::new(Window::default()),
         synced: Mutex::new(Instant::now()),
-        waiting: std::sync::atomic::AtomicUsize::new(0),
+        waiting: Mutex::new(HashMap::new()),
     });
     gate.sync(&*log, &db)?;
     let listener =
@@ -237,8 +240,44 @@ struct Gate {
     refusals: Mutex<Window>,
     /// When the gateway last read the log to its end.
     synced: Mutex<Instant>,
-    /// How many calls wait for a runner's reply.
-    waiting: std::sync::atomic::AtomicUsize,
+    /// How many calls of each grant wait for a runner's reply.
+    waiting: Mutex<HashMap<String, usize>>,
+}
+
+/// One call that waits for its runner's reply, counted while it lives.
+struct Waiting<'g> {
+    gate: &'g Gate,
+    grant: String,
+}
+
+impl<'g> Waiting<'g> {
+    /// Counts a call of `grant`, unless as many wait as may.
+    fn begin(gate: &'g Gate, grant: &str) -> Option<Self> {
+        let mut waiting = gate.waiting.lock().ok()?;
+        let all: usize = waiting.values().sum();
+        let mine = waiting.entry(grant.to_owned()).or_default();
+        if all >= WAITING || *mine >= GRANT_WAITING {
+            return None;
+        }
+        *mine += 1;
+        Some(Waiting {
+            gate,
+            grant: grant.to_owned(),
+        })
+    }
+}
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut waiting) = self.gate.waiting.lock()
+            && let Some(count) = waiting.get_mut(&self.grant)
+        {
+            *count -= 1;
+            if *count == 0 {
+                waiting.remove(&self.grant);
+            }
+        }
+    }
 }
 
 impl Gate {
@@ -359,13 +398,15 @@ impl Gate {
         tool: &str,
         arguments: &Value,
     ) -> Result<String, String> {
-        let (Some(run), Some(runner)) = (grant.run, grant.runner.as_deref()) else {
+        let Some(run) = grant.run else {
             return Err(format!(
                 "run grant {} names no cloud run, so it reaches whoami only",
                 grant.id
             ));
         };
-        if let Some(task) = &grant.task {
+        let runner = grant.runner.as_deref();
+        // With no runner files, one runner owns every task and no claim names it.
+        if let (Some(task), Some(runner)) = (&grant.task, runner) {
             let owner: Option<String> = db
                 .query_row("SELECT runner FROM claims WHERE key = ?1", [task], |row| {
                     row.get(0)
@@ -379,46 +420,43 @@ impl Gate {
                 ));
             }
         }
+        let owner = runner.map_or_else(
+            || "its runner".to_owned(),
+            |runner| format!("runner {runner}"),
+        );
         let key = hash(&format!("{}\n{tool}\n{arguments}", grant.id));
-        let call = db
-            .query_row(
-                "SELECT call FROM calls WHERE key = ?1 AND NOT delivered",
-                [&key],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
+        // The call is stored before it is published, and a call with no reply yet is the same call
+        // again, so two requests or a crash between the two never make a second call.
+        let mine = uuid::Uuid::now_v7().to_string();
+        db.execute(
+            "INSERT INTO calls (key, call) VALUES (?1, ?2)
+             ON CONFLICT (key) DO UPDATE SET call = ?2, delivered = 0 WHERE delivered",
+            params![key, mine],
+        )
+        .map_err(|error| error.to_string())?;
+        let call: String = db
+            .query_row("SELECT call FROM calls WHERE key = ?1", [&key], |row| {
+                row.get(0)
+            })
             .map_err(|error| error.to_string())?;
-        let call = match call {
-            Some(call) => call,
-            None => {
-                let call = uuid::Uuid::now_v7().to_string();
-                let data = json!({ "call": call, "grant": grant.id, "run": run, "runner": runner,
-                    "tool": tool, "arguments": arguments });
-                let message = Message::new(CALLED, data).subject(&call);
-                let message = message.time(intake::now()?);
-                log.publish(OUTPUT, &message)
-                    .map_err(|error| format!("hand the call to runner {runner}: {error}"))?;
-                db.execute(
-                    "INSERT INTO calls (key, call) VALUES (?1, ?2)
-                     ON CONFLICT (key) DO UPDATE SET call = ?2, delivered = 0",
-                    params![key, call],
-                )
-                .map_err(|error| error.to_string())?;
-                call
-            }
-        };
-        use std::sync::atomic::Ordering;
-        if self.waiting.fetch_add(1, Ordering::SeqCst) >= WAITING {
-            self.waiting.fetch_sub(1, Ordering::SeqCst);
+        let data = json!({ "call": call, "grant": grant.id, "run": run, "runner": runner,
+            "tool": tool, "arguments": arguments });
+        // The log keeps the first message of an id, so publishing the same call again adds nothing.
+        let id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, call.as_bytes());
+        let message = Message::new(CALLED, data)
+            .id(id)
+            .subject(&call)
+            .time(intake::now()?);
+        log.publish(OUTPUT, &message)
+            .map_err(|error| format!("hand the call to {owner}: {error}"))?;
+        let Some(_waiting) = Waiting::begin(self, &grant.id) else {
             return Err(format!(
-                "over {WAITING} calls wait on their runners: call again in a minute"
+                "over {GRANT_WAITING} calls of this grant, or {WAITING} in all, wait on their runners: call again in a minute"
             ));
-        }
-        let replied = self.reply(db, &call);
-        self.waiting.fetch_sub(1, Ordering::SeqCst);
-        let Some(reply) = replied? else {
+        };
+        let Some(reply) = self.reply(db, &call)? else {
             return Err(format!(
-                "runner {runner} is away: it applies the call once it reads the log. Call the tool again with the same arguments for its reply"
+                "{owner} is away: it applies the call once it reads the log. Call the tool again with the same arguments for its reply"
             ));
         };
         db.execute("UPDATE calls SET delivered = 1 WHERE key = ?1", [&key])
@@ -563,10 +601,10 @@ fn record(db: &Connection, delivery: &priory_intake::log::Delivery) -> Result<()
             // The log's clock when it has one, so a runner's clock decides no deadline.
             let from = delivery.logged.unwrap_or(delivery.message.time);
             db.execute(
+                // A grant is made once: a later message with its id changes nothing, and one revoked
+                // before its grant was read stays revoked.
                 "INSERT INTO grants (id, hash, deadline, task, run, runner)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                 ON CONFLICT (id) DO UPDATE SET hash = ?2, deadline = ?3, task = ?4, run = ?5,
-                   runner = ?6",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT (id) DO NOTHING",
                 params![
                     id,
                     hash,
@@ -680,7 +718,7 @@ mod tests {
             calls: Mutex::new(Window::default()),
             refusals: Mutex::new(Window::default()),
             synced: Mutex::new(Instant::now()),
-            waiting: std::sync::atomic::AtomicUsize::new(0),
+            waiting: Mutex::new(HashMap::new()),
         };
         let request = Request::get(PATH, Instant::now());
         assert!(gate.sync(&Down, &db).is_err());

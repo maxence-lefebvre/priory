@@ -257,6 +257,12 @@ pub(crate) fn deadline(step: &Step) -> Duration {
     step.timeout.unwrap_or(DEADLINE)
 }
 
+/// How long a cloud run of `step` may stay live: its deadline, the grace as long again that a
+/// poll after it may take, and one poll more.
+pub(crate) fn lifetime(step: &Step) -> Duration {
+    2 * deadline(step) + POLL
+}
+
 /// `text` without the first whole lines that are `part`: a person's later words may quote it.
 pub(crate) fn without(text: &str, part: &str) -> String {
     let found = text.match_indices(part).find(|(at, _)| {
@@ -730,10 +736,11 @@ fn follow(
                 " It started from an upload, so the Claude GitHub App may not be on the repository: {upload}."
             ));
         }
-        summary.push_str(&format!(
-            " A cloud run cannot ask, so open the session to see why: {}",
-            link(cloud)
-        ));
+        let why = match run.hash {
+            Some(_) => "Open the session to see why",
+            None => "A cloud run cannot ask, so open the session to see why",
+        };
+        summary.push_str(&format!(" {why}: {}", link(cloud)));
         fail(
             db,
             trace,
@@ -841,7 +848,19 @@ fn look(
     }
     if let Some(hash) = hash {
         let range = format!("{head}..{commit}");
-        let log = ["log", "-p", "--format=commit %H%n%B", &range];
+        // Every change in full: a merge's against each parent, binary and `-diff` files as text,
+        // and no diff driver or textconv of the repository's.
+        let log = [
+            "log",
+            "-p",
+            "-m",
+            "--text",
+            "--no-textconv",
+            "--no-ext-diff",
+            "--no-color",
+            "--format=commit %H%nAuthor: %an <%ae>%nCommitter: %cn <%ce>%n%B",
+            &range,
+        ];
         let shown = runtime::run(runtime::git(worktree).args(log)).map_err(NotTaken::Later)?;
         if crate::diocese::holds_token(&shown, &hash) {
             return Err(NotTaken::Never(

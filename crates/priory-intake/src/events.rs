@@ -1096,8 +1096,8 @@ pub struct RunCalled {
     pub grant: String,
     /// The cloud run the grant names.
     pub run: i64,
-    /// The runner the grant names.
-    pub runner: String,
+    /// The runner the grant names; none on a factory with no runner files.
+    pub runner: Option<String>,
     /// `ask`, `wait` or `result`.
     pub tool: String,
     /// The tool's arguments, as the session sent them.

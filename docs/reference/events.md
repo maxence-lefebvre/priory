@@ -1987,7 +1987,7 @@ Subject: the call's id. Schema: [`priory.run.called.json`](../schemas/events/pri
 | `call` | UUID string | The call's id. The same arguments, sent again before a reply reached the session, make the same call |
 | `grant` | string | The grant the session signed in with |
 | `run` | integer | The cloud run the grant names |
-| `runner` | string | The runner the grant names |
+| `runner` | string, optional | The runner the grant names; none on a factory with no runner files |
 | `tool` | string | `ask`, `wait` or `result` |
 | `arguments` | object | The tool's arguments, as the session sent them |
 

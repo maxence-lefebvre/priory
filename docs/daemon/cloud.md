@@ -168,11 +168,13 @@ With `[cloud] gateway = true` in `factory.toml`, a cloud run also reaches `ask`,
 With it false, the default, everything else on this page holds as written.
 
 - **The grant.** Right after it records the run, the daemon makes a run grant: a random token that
-  lasts the step's `timeout`. It publishes `priory.run.granted` with the token's SHA-256, the
+  lasts twice the step's `timeout` and a minute, as long as the run may live with its grace. It publishes `priory.run.granted` with the token's SHA-256, the
   task's key, the run and the runner, and keeps only the hash. The token reaches the CLI once, as
   the `Authorization: Bearer` header of an HTTP MCP server named `priory` at `[cloud] gateway_url`,
   in a file only the daemon's user reads, passed as `claude --mcp-config FILE --cloud PROMPT`. The
-  file goes once the CLI exits. The token is in no prompt, argument, log line or trace.
+  file goes once the CLI exits, and a daemon that starts removes any such file a killed start left.
+  The token is in no prompt, argument, log line or trace. Nobody has yet checked that a real
+  `claude --cloud` passes `--mcp-config` on to the session.
 - **The rules.** The prompt still tells the session to push its branch, then to call `result`, and
   to call `ask` or `wait` and end its turn when it needs a person or an event.
 - **A call.** The gateway publishes `priory.run.called`. The runner that made the grant reads it on
@@ -182,14 +184,20 @@ With it false, the default, everything else on this page holds as written.
   same call, so a retry applies once.
 - **A wake.** Once an ask is answered, a wait fires or anything else is queued for the task after
   `ask` or `wait`, the daemon sends it to the session with `claude -p MSG --cloud SESSION`, which
-  starts the session's next turn. A failed wake is logged, and the desk still shows the answer.
+  starts the session's next turn. A failed wake is logged, and the desk still shows the answer. The
+  message is an argument of that command, so another user of the runner can read it with `ps`.
 - **The end.** `result` stores nothing yet: the daemon keeps it, looks for the push within 15
   seconds, and ends the step with that outcome, summary and evidence. It takes the pushed commit
-  as above, or ends the step without one when the branch has no new commit. A step's `next` may
+  as above, or ends the step without one when a look that began after the result finds no new
+  commit. A step's `next` may
   name any outcome, and a `result` naming one the step lacks is refused at once.
 - **The token in a push.** Before it takes a push, the daemon hashes every run of 32 hex digits in
-  the pushed commits' changes and messages, and fails the step when one is the grant's token. The
-  summary never holds the token.
+  the pushed commits' messages, authors, committers and changes, and fails the step when one is the
+  grant's token. It reads each change in full: a merge's against each parent, binary files and
+  files marked `-diff` as text, and no diff driver or textconv of the repository. The summary never
+  holds the token. It misses the token written in another form, such as base64 or split across
+  lines; on another branch or tag the session pushed; in a commit a later push replaced; and in a
+  file Git LFS stores outside the repository.
 - **The end of a grant.** The daemon publishes `priory.run.revoked` within a second of its run
   ending: by a result, a failure, a cancel, a move or a give. The gateway also refuses a call once
   the task's claim names another runner, so a task given away gets a new run with a new grant, and

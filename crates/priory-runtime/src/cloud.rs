@@ -179,6 +179,21 @@ fn servers(start: &Start) -> PathBuf {
         .join(format!("{}.mcp.json", start.tmux))
 }
 
+/// Removes the MCP server files a start left under `home`: a daemon killed during a start never
+/// removed its token. No start runs while the daemon starts.
+pub fn sweep_servers(home: &Path) {
+    let Ok(entries) = fs::read_dir(home.join("prompts")) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("priory-cloud-") && name.ends_with(".mcp.json") {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
 /// Sends cloud session `session` the message `text` with `claude -p TEXT --cloud SESSION`, which
 /// starts its next turn.
 pub fn wake(session: &str, text: &str) -> Result<(), String> {
@@ -186,6 +201,8 @@ pub fn wake(session: &str, text: &str) -> Result<(), String> {
     for variable in NESTED {
         command.env_remove(variable);
     }
+    // shortcut: the message is in argv, which another user of this machine can read with ps; send
+    // it on stdin once `claude -p --cloud ID` is known to read it there.
     command.args(["-p", text, "--cloud", session]);
     let output = fed_within(&mut command, None, command_timeout())
         .map_err(|error| format!("claude -p --cloud: {error}"))?
