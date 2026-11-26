@@ -782,11 +782,118 @@ fn a_command_waits_for_the_daemon_to_migrate_and_never_migrates() {
         let listing = scope.spawn(|| setup.priory(&["tasks"]));
         std::thread::sleep(std::time::Duration::from_secs(2));
         assert!(!listing.is_finished());
-        // What the daemon's migration leaves.
-        assert_eq!(header(&setup, "user_version", schema), schema - 1);
+        assert_eq!(version(&setup), schema - 1);
+        succeeded(&in_home(&setup, &["daemon", "--once"]).output().unwrap());
         listing.join().unwrap()
     });
     succeeded(&listing);
+    assert_eq!(version(&setup), schema);
+}
+
+/// `priory ARGS` on this setup's factory, state and log, with a home of its own.
+fn in_home(setup: &Setup, args: &[&str]) -> std::process::Command {
+    let mut command = harness::priory();
+    command
+        .args(args)
+        .env("PRIORY_FACTORY", setup.dir.join("factory"))
+        .env("PRIORY_HOME", setup.dir.join("home"))
+        .env("HERDR_BUS_DB", setup.dir.join("bus.db"))
+        .env("PRIORY_DB", setup.dir.join("priory.db"));
+    command
+}
+
+/// A state one schema behind this binary, which no daemon migrates.
+fn older(name: &str) -> (Setup, i64) {
+    let setup = Setup::new(name);
+    succeeded(&setup.priory(&["tasks"]));
+    let schema = version(&setup);
+    header(&setup, "user_version", schema - 1);
+    (setup, schema)
+}
+
+#[test]
+fn another_runners_ask_or_task_goes_to_it_unchecked_at_once_on_an_older_state() {
+    let (setup, schema) = older("remote-older");
+    for runner in ["a", "b"] {
+        let file = setup.dir.join(format!("factory/runners/{runner}.toml"));
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, "platform = { os = \"linux\" }\n").unwrap();
+    }
+    for args in [
+        &["answer", "--revision", "1", "a:5", "yes"][..],
+        &["revive", "a:github:owner/repo#1", "--generation", "1"],
+    ] {
+        let start = std::time::Instant::now();
+        let sent = in_home(&setup, args).output().unwrap();
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "{args:?}"
+        );
+        succeeded(&sent);
+        assert!(
+            String::from_utf8_lossy(&sent.stdout).contains("sent to a"),
+            "{sent:?}"
+        );
+    }
+    assert_eq!(version(&setup), schema - 1);
+}
+
+#[test]
+fn a_process_waits_for_a_migration_once_then_refuses_at_once() {
+    let (setup, _) = older("wait-once");
+    for args in [&["intake", "--once"][..], &["pause"]] {
+        let start = std::time::Instant::now();
+        let refused = in_home(&setup, args).output().unwrap();
+        let elapsed = start.elapsed().as_secs();
+        let error = String::from_utf8_lossy(&refused.stderr);
+        assert!(!refused.status.success(), "{args:?}");
+        assert!(
+            (30..40).contains(&elapsed),
+            "{args:?} took {elapsed} s: {error}"
+        );
+        assert_eq!(error.matches("waiting up to 30 s").count(), 1, "{error}");
+        assert!(error.contains("priory daemon --once"), "{error}");
+    }
+}
+
+#[test]
+fn a_migration_clears_the_floor_it_does_not_declare() {
+    let (setup, schema) = older("floor-cleared");
+    header(&setup, "application_id", 5);
+    succeeded(&in_home(&setup, &["daemon", "--once"]).output().unwrap());
+    assert_eq!(version(&setup), schema);
+    assert_eq!(header(&setup, "application_id", 0), 0);
+}
+
+#[test]
+fn a_daemon_once_during_an_upgrade_leaves_the_state_file_unopened() {
+    let (setup, _) = older("older-barrier");
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.pragma_update(None, "journal_mode", "DELETE").unwrap();
+    drop(db);
+    let home = setup.dir.join("home");
+    let journal = json!({
+        "op": "t", "phase": "installing", "from": "1", "to": "2", "schema_from": 1,
+        "schema_to": 2, "migrates_state": true, "exe": "x", "staged": "x", "sha256": "",
+        "asset": "x", "attestations": "x", "own": "x", "kept": "x", "factory": "x",
+        "state": "x", "bus": "x", "state_backup": "x", "bus_backup": "x",
+        "units": ["a", "b"], "answers_within": 1, "watch": 1,
+    });
+    fs::create_dir_all(home.join("upgrade")).unwrap();
+    fs::write(home.join("upgrade/journal.json"), journal.to_string()).unwrap();
+
+    let refused = in_home(&setup, &["daemon", "--once"]).output().unwrap();
+
+    let error = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        error.contains("upgrade of priory is in progress"),
+        "{error}"
+    );
+    let mode: String = rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .pragma_query_value(None, "journal_mode", |row| row.get(0))
+        .unwrap();
+    assert_eq!(mode, "delete");
 }
 
 #[test]
