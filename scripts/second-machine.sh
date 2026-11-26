@@ -15,6 +15,8 @@ usage: scripts/second-machine.sh [--run] <command> <ssh-host> [args...]
   tunnel-down         stop the reverse tunnel
   cut local|remote    cut that runner's link to the log only: the relay here, or the tunnel
   mend local|remote   restore that runner's link
+  diocese-up          start the diocese's heartbeat here: priory daemon --view-only --diocese
+  diocese-down        stop it
   start local|remote  start that machine's daemon
   stop local|remote   stop that machine's daemon
   priory local|remote ARGS...
@@ -197,6 +199,7 @@ plan() {
   say "ssh -N -o ExitOnForwardFailure=yes -R 127.0.0.1:<port>:127.0.0.1:<port> $host, then check it listens on 127.0.0.1 only"
   say "python3 relay 127.0.0.1:<relay port> to the log, this runner's own link"
   say "priory daemon ~/$name/factory here, then on $host"
+  say "priory daemon --view-only --diocese ~/$name/factory here, straight to the log"
 }
 
 up() {
@@ -233,6 +236,8 @@ up() {
   write_scratch "$dir" "$repo/target/debug/priory" "$local_runner" "$remote_runner"
   # This runner reaches the log through a relay of its own, so `cut local` spares the other runner.
   env_file "$password" "$relay_port" | (umask 077 && cat > "$dir/env")
+  # The diocese reaches the log without the relay, so `cut local` leaves its heartbeat going.
+  env_file "$password" "$port" | (umask 077 && cat > "$dir/diocese.env")
   local stage
   stage=$(mktemp -d)
   write_scratch "$stage/s" /nonexistent "$local_runner" "$remote_runner"
@@ -246,6 +251,7 @@ up() {
   relay_up
   start_daemon local
   start_daemon remote
+  diocese_up
   trap - ERR
 }
 
@@ -355,13 +361,49 @@ stop_daemon() {
     rm -f "$S/daemon.pid"'
 }
 
+diocese_up() {
+  $RUN || { say "priory daemon --view-only --diocese ~/$name/factory here, as the machine diocese"; return; }
+  [ -e "$dir/diocese.env" ] || fail "no ~/$name/diocese.env; run up first"
+  if [ -e "$dir/diocese.pid" ] && kill -0 "$(cat "$dir/diocese.pid")" 2> /dev/null; then
+    fail "the diocese runs already"
+  fi
+  # A view-only daemon refuses a machine with a runner file, so it reads its hostname, `diocese`,
+  # from a copy of /proc. It runs no task, so it needs no process folders there.
+  local proc="$dir/diocese/proc" entry
+  if [ ! -e "$proc" ]; then
+    mkdir -p "$proc/sys/kernel" "$dir/diocese/home"
+    for entry in /proc/*; do
+      case ${entry##*/} in sys | [0-9]*) continue ;; esac
+      ln -s "$entry" "$proc/${entry##*/}"
+    done
+    echo diocese > "$proc/sys/kernel/hostname"
+  fi
+  env -i S="$dir" bash -c '
+    . "$S/diocese.env"
+    export PRIORY_HOME="$S/diocese/home" PRIORY_DB="$S/diocese/priory.db" PRIORY_PROC="$S/diocese/proc"
+    nohup setsid priory daemon --view-only --diocese "$S/factory" >> "$S/diocese.log" 2>&1 < /dev/null &
+    echo $! > "$S/diocese.pid"'
+}
+
+diocese_down() {
+  $RUN || { say "stop the diocese, by the pid in ~/$name/diocese.pid"; return; }
+  [ -e "$dir/diocese.pid" ] || return 0
+  local pid
+  pid=$(cat "$dir/diocese.pid")
+  if tr '\0' ' ' < "/proc/$pid/cmdline" 2> /dev/null | grep -qF -- "--diocese $dir/factory"; then
+    kill "$pid"
+  fi
+  rm -f "$dir/diocese.pid"
+}
+
 # Stops and removes only what carries this script's marker, and carries on past each failure.
 down() {
   $RUN || {
-    say "stop both daemons, the tunnel and the $container container"
+    say "stop the diocese, both daemons, the tunnel, the relay and the $container container"
     say "kill each machine's scratch tmux server and remove ~/$name where it holds $marker"
     return
   }
+  diocese_down || echo "second-machine: could not stop the diocese" >&2
   stop_daemon local || echo "second-machine: could not stop the local daemon" >&2
   stop_daemon remote || echo "second-machine: could not stop the daemon on $host" >&2
   tunnel_down || echo "second-machine: could not stop the tunnel" >&2
@@ -387,6 +429,8 @@ case $command in
   down) down ;;
   tunnel-up) tunnel_up ;;
   tunnel-down) tunnel_down ;;
+  diocese-up) diocese_up ;;
+  diocese-down) diocese_down ;;
   cut) case ${1:?local or remote} in local) relay_down ;; remote) tunnel_down ;; *) usage >&2; exit 2 ;; esac ;;
   mend) case ${1:?local or remote} in local) relay_up ;; remote) tunnel_up ;; *) usage >&2; exit 2 ;; esac ;;
   start) start_daemon "${1:?local or remote}" ;;

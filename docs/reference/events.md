@@ -1603,7 +1603,9 @@ Schema: [`priory.runner.alive.json`](../schemas/events/priory.runner.alive.json)
 The diocese's view daemon, `priory daemon --view-only --diocese`, says the log is up, once a minute.
 A pause of more than 3 minutes between two of these is a gap: no runner's lease ends while the
 gap lasts, and each lease runs again for 30 minutes from the first message after it. A diocese
-silent for 24 hours counts as gone. Subject: the diocese's machine.
+silent for an hour while runners reach the log counts as gone, as
+[runners.md](../daemon/runners.md#a-log-outage-with-a-diocese) says. Subject: the diocese's
+machine.
 Schema: [`priory.diocese.alive.json`](../schemas/events/priory.diocese.alive.json).
 
 | Field | Type | Meaning |

@@ -2281,7 +2281,8 @@ const SCHEMA_129: &str = "
 CREATE TABLE IF NOT EXISTS diocese (
   id   INTEGER PRIMARY KEY CHECK (id = 1),
   last INTEGER NOT NULL,
-  back INTEGER NOT NULL
+  back INTEGER NOT NULL,
+  silent INTEGER
 );
 PRAGMA user_version = 129;
 ";

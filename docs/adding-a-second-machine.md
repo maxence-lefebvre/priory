@@ -92,6 +92,8 @@ each command unless you pass `--run`. Replace `me@second` with your ssh target.
 the other's: this machine's runner reaches the log through a relay of its own, and the second
 machine's through the tunnel. `tunnel-down` and `tunnel-up` do the same for the second machine.
 `stop local|remote` and `start local|remote` stop and start a runner on purpose.
+`up` also starts a diocese on this machine, `priory daemon --view-only --diocese`, which
+publishes the heartbeat straight to the log. `diocese-down` and `diocese-up` stop and start it.
 
 ## 2. Run your own factory on two machines
 
@@ -147,6 +149,8 @@ added this guide.
   it is back, as when the tunnel closes.
 - A runner's tasks move only 30 minutes after its last alive message, and only those that never
   started. Use `priory give --force` to move one sooner.
-- With a diocese, `priory daemon --view-only --diocese` on a third machine, no lease runs across a
-  gap in its heartbeats, so an outage of the log moves no task. See
-  [A log outage with a diocese](daemon/runners.md#a-log-outage-with-a-diocese).
+- With a diocese, `priory daemon --view-only --diocese` on the machine that holds the log, no
+  lease runs across a gap in its heartbeats, so a Postgres or machine outage moves no task. The
+  heartbeats prove only that Postgres is up: a runner cut off from it by the network still loses
+  its `waiting` tasks 30 minutes after its last alive message. Upgrade both runners before you start
+  the diocese. See [A log outage with a diocese](daemon/runners.md#a-log-outage-with-a-diocese).

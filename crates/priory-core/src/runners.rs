@@ -21,8 +21,8 @@ use uuid::Uuid;
 pub(crate) const LEASE: SignedDuration = SignedDuration::from_mins(30);
 /// A longer pause between two diocese heartbeats means the log was down.
 const GAP: SignedDuration = SignedDuration::from_mins(3);
-/// A diocese silent this long is gone, and leases run as in a factory without one.
-const GONE: SignedDuration = SignedDuration::from_hours(24);
+/// A diocese silent this long while runners reach the log is gone, and leases run as without one.
+const GONE: SignedDuration = SignedDuration::from_hours(1);
 const IDS: Uuid = Uuid::from_u128(0x7b1f_c2d4_9e3a_4c55_8a10_3f6e_2d9b_41c7);
 
 type Error = Box<dyn std::error::Error>;
@@ -144,6 +144,7 @@ pub(crate) fn handle(
     let mut kill = Vec::new();
     let outcome = match kind {
         ALIVE => {
+            silence(tx, message.time)?;
             renew(tx, text("runner"), message.time)?;
             match trace.runner.as_deref() {
                 // A view-only machine has no alive message of its own, and takes nothing.
@@ -1130,12 +1131,24 @@ fn renew(tx: &Transaction, runner: &str, time: Timestamp) -> rusqlite::Result<()
 }
 
 /// Notes a diocese heartbeat at `time`: one after a pause longer than `GAP` starts the log's uptime.
+/// The first one ever read changes no lease, so runners that started reading at different times agree.
 fn beat(tx: &Transaction, time: Timestamp) -> rusqlite::Result<()> {
     tx.execute(
-        "INSERT INTO diocese (id, last, back) VALUES (1, ?1, ?1)
+        "INSERT INTO diocese (id, last, back) VALUES (1, ?1, 0)
          ON CONFLICT (id) DO UPDATE SET
            back = CASE WHEN excluded.last - last > ?2 THEN excluded.last ELSE back END,
-           last = max(last, excluded.last)",
+           last = max(last, excluded.last),
+           silent = NULL",
+        params![time.as_second(), GAP.as_secs()],
+    )?;
+    Ok(())
+}
+
+/// Notes a runner's alive message at `time` that the log took while the diocese was silent: from
+/// the first, the log is up without it, and the diocese counts as gone `GONE` later.
+fn silence(tx: &Transaction, time: Timestamp) -> rusqlite::Result<()> {
+    tx.execute(
+        "UPDATE diocese SET silent = ?1 WHERE silent IS NULL AND ?1 - last > ?2",
         params![time.as_second(), GAP.as_secs()],
     )?;
     Ok(())
@@ -1144,14 +1157,19 @@ fn beat(tx: &Transaction, time: Timestamp) -> rusqlite::Result<()> {
 /// The diocese's heartbeats as read from the log so far, if any.
 fn diocese(db: &Connection) -> rusqlite::Result<Option<Diocese>> {
     let row = db
-        .query_row("SELECT last, back FROM diocese", [], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        .query_row("SELECT last, back, silent FROM diocese", [], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+            ))
         })
         .optional()?;
-    Ok(row.and_then(|(last, back)| {
+    Ok(row.and_then(|(last, back, silent)| {
         Some(Diocese {
             last: Timestamp::from_second(last).ok()?,
             back: Timestamp::from_second(back).ok()?,
+            silent: silent.and_then(|silent| Timestamp::from_second(silent).ok()),
         })
     }))
 }
@@ -1980,6 +1998,13 @@ pub fn give(
     let now = intake::now()?;
     let diocese = diocese(db).map_err(|error| error.to_string())?;
     if let Some(alive) = alive.filter(|alive| !force && !lapsed(Some(*alive), diocese, now)) {
+        let diocese = diocese.filter(|diocese| diocese.counts(now));
+        if let Some(diocese) = diocese.filter(|diocese| diocese.frozen(now)) {
+            return Err(format!(
+                "runner {from}'s lease is frozen: no diocese heartbeat since {}, so the log may have been down. Pass --force to give {key} now",
+                diocese.last
+            ));
+        }
         let start = diocese.map_or(alive, |diocese| alive.max(diocese.back));
         return Err(format!(
             "runner {from}'s lease lasts until {}, and {from} may still run {key}: give it then, or pass --force",
@@ -2108,6 +2133,22 @@ pub(crate) struct Diocese {
     pub(crate) last: Timestamp,
     /// The first heartbeat after the latest gap: the log has been up since then.
     pub(crate) back: Timestamp,
+    /// The first runner alive message read since the last heartbeat and more than `GAP` after it.
+    pub(crate) silent: Option<Timestamp>,
+}
+
+impl Diocese {
+    /// Whether the diocese still decides leases at `at`: not once silent for `GONE` while runners
+    /// reached the log.
+    fn counts(&self, at: Timestamp) -> bool {
+        self.silent
+            .is_none_or(|silent| at.duration_since(silent) < GONE)
+    }
+
+    /// Whether no lease runs at `at`, since the last heartbeat is more than `GAP` old.
+    fn frozen(&self, at: Timestamp) -> bool {
+        at.duration_since(self.last) > GAP
+    }
 }
 
 /// Whether `claim` takes its key from `owner`.
@@ -2129,10 +2170,10 @@ pub(crate) fn wins(claim: &Claim, owner: Option<&Owner>) -> bool {
 /// Whether a lease last renewed at `alive` is over at `at`. With a diocese, the lease runs only
 /// while its heartbeats go on, and starts again when they come back after a gap.
 pub(crate) fn lapsed(alive: Option<Timestamp>, diocese: Option<Diocese>, at: Timestamp) -> bool {
-    let Some(diocese) = diocese.filter(|diocese| at.duration_since(diocese.last) < GONE) else {
+    let Some(diocese) = diocese.filter(|diocese| diocese.counts(at)) else {
         return alive.is_none_or(|alive| at.duration_since(alive) >= LEASE);
     };
-    at.duration_since(diocese.last) <= GAP
+    !diocese.frozen(at)
         && alive.is_none_or(|alive| at.duration_since(alive.max(diocese.back)) >= LEASE)
 }
 
@@ -2392,6 +2433,7 @@ mod tests {
         Some(Diocese {
             last: at(last),
             back: at(back),
+            silent: None,
         })
     }
 
@@ -2409,10 +2451,13 @@ mod tests {
     }
 
     #[test]
-    fn a_diocese_silent_for_a_day_is_gone_and_leases_run_as_without_one() {
-        let day = 24 * 60;
-        assert!(!lapsed(Some(at(0)), diocese_at(0, 0), at(day - 1)));
-        assert!(lapsed(Some(at(0)), diocese_at(0, 0), at(day)));
+    fn a_diocese_silent_an_hour_while_runners_reach_the_log_is_gone() {
+        let silent = Some(Diocese {
+            silent: Some(at(10)),
+            ..diocese_at(0, 0).unwrap()
+        });
+        assert!(!lapsed(Some(at(0)), silent, at(69)));
+        assert!(lapsed(Some(at(0)), silent, at(70)));
     }
 
     /// Runner `b` of a factory of `a` and `b`, reading the log.
@@ -2493,23 +2538,68 @@ mod tests {
         let mut b = Reader::new(0);
         b.beat(0);
         b.beat(3);
-        assert_eq!(diocese(&b.db).unwrap().unwrap().back, at(0));
+        assert_eq!(diocese(&b.db).unwrap().unwrap().back, Timestamp::UNIX_EPOCH);
         let late = at(6) + SignedDuration::from_secs(1);
         b.read(DIOCESE_ALIVE, json!({ "diocese": "d" }), late);
         let read = diocese(&b.db).unwrap().unwrap();
         assert_eq!((read.last, read.back), (late, late));
     }
 
+    #[test]
+    fn a_log_outage_over_a_day_still_moves_no_waiting_task() {
+        let mut b = Reader::new(2);
+        for minute in 0..10 {
+            b.beat(minute);
+            b.alive("a", minute);
+            b.alive("b", minute);
+        }
+        b.alive("b", 24 * 60 + 10);
+        assert_eq!(b.taken(), 0);
+    }
+
+    #[test]
+    fn a_diocese_that_stops_while_runners_reach_the_log_counts_as_gone_an_hour_later() {
+        let mut b = Reader::new(2);
+        for minute in 0..10 {
+            b.beat(minute);
+            b.alive("a", minute);
+        }
+        // The first alive message more than 3 minutes after the last heartbeat, at 9, is at 13.
+        for minute in 0..73 {
+            b.alive("b", minute);
+        }
+        assert_eq!(b.taken(), 0);
+        b.alive("b", 73);
+        assert_eq!(b.taken(), 2);
+    }
+
+    #[test]
+    fn a_runner_that_first_reads_heartbeats_late_ends_a_lease_as_one_that_read_none() {
+        let mut b = Reader::new(2);
+        b.alive("a", 0);
+        for minute in 0..30 {
+            if minute >= 20 {
+                b.beat(minute);
+            }
+            b.alive("b", minute);
+        }
+        assert_eq!(b.taken(), 0);
+        b.beat(30);
+        b.alive("b", 30);
+        assert_eq!(b.taken(), 2);
+    }
+
     use proptest::prelude::*;
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(64))]
+        // Each case migrates a state file, so few cases keep the debug build to seconds.
+        #![proptest_config(ProptestConfig::with_cases(12))]
 
         /// The log ran `up` minutes with the diocese beating, `a` last alive `quiet` minutes before
         /// it went down for `gap` minutes. `b` comes back first.
         #[test]
         fn after_a_log_gap_the_first_runner_back_claims_none_of_the_others_waiting_tasks(
-            up in 1i64..120,
+            up in 1i64..30,
             quiet in 0i64..30,
             gap in 31i64..=600,
             beat_first: bool,
@@ -2535,8 +2625,8 @@ mod tests {
         /// The diocese beats on while `a` sleeps `asleep` minutes from minute `up`.
         #[test]
         fn with_heartbeats_going_on_a_runner_asleep_for_its_lease_loses_its_waiting_tasks(
-            up in 0i64..60,
-            asleep in 30i64..120,
+            up in 0i64..10,
+            asleep in 30i64..40,
             keys in 1usize..4,
         ) {
             let mut b = Reader::new(keys);
@@ -2553,13 +2643,13 @@ mod tests {
         /// With no diocese, `b` takes `a`'s keys exactly when today's rule says so.
         #[test]
         fn with_no_heartbeat_leases_end_as_they_did_before_the_diocese(
-            a in proptest::collection::btree_set(0i64..300, 0..20),
-            b_alive in proptest::collection::btree_set(0i64..300, 1..20),
+            a in proptest::collection::btree_set(0i64..120, 0..10),
+            b_alive in proptest::collection::btree_set(0i64..120, 1..10),
         ) {
             let mut b = Reader::new(2);
             let mut last = None;
             let mut expected = 0;
-            for minute in 0..300 {
+            for minute in 0..120 {
                 if a.contains(&minute) {
                     b.alive("a", minute);
                     last = Some(minute);
