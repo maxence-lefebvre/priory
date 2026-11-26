@@ -38,6 +38,33 @@ The daemon detects systemd once, by those calls. If one fails, as on a host with
 manager, the daemon logs `priory daemon: no systemd user manager, so runs start outside
 priory-agents.slice and only the room check caps them: <error>`, and starts runs as before.
 
+## What each run used
+
+The daemon reads each live run's scope at every tick, while it checks the room, and keeps the run's
+last values and its highest memory:
+
+- CPU time: `usage_usec`, `user_usec` and `system_usec` from `cpu.stat`.
+- Peak memory: `memory.peak`, or, on a kernel without it, the highest `anon + shmem` from
+  `memory.stat`. `memory.peak` also counts the file cache, so it reads higher than the memory the
+  room check counts.
+- IO: `rbytes` and `wbytes` from `io.stat`, summed over devices. A user manager delegates only `cpu`,
+  `memory` and `pids` by default, so these stay `null` until `Delegate=io` is added to
+  `user@.service`.
+
+It writes them to the `run_usage` table every 15 seconds and once more when the run ends. A daemon
+restart loses at most 15 seconds of them. `--collect` removes the scope as the agent exits, so a read
+after that fails and the last values stay.
+
+When a run ends, a background thread sums the bytes of every file and folder in the task's worktree,
+as `du -sb` does, without following links or crossing into another filesystem. It reads no file. A
+7.8 GB worktree of 294,000 entries takes about 10 seconds with a cold cache and 2 seconds with a warm
+one. A walk past 60 seconds, or one that cannot read a folder, as during a teardown, stores no disk.
+A file with several hard links counts once per link.
+
+A run with no scope, on a host with no systemd user manager, on macOS or in the cloud, stores `null`
+for every value it could not read. `priory runs --json` and `priory task TASK --json` show the values,
+and the [metrics](../reference/metrics.md#runs) export one histogram value per ended run.
+
 ## Which daemon sets the limits
 
 One daemon sets a slice's limits. Another daemon starts its runs in the slice and leaves the limits

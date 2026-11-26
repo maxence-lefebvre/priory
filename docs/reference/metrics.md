@@ -67,6 +67,10 @@ and as `<name>@<machine id>` when it reads on another.
 | `priory.run.starts.active` | gauge | `{run}` | `priory.harness` | the live runs with no `SessionStart` yet. Each harness the factory's agents use has a point, 0 with none |
 | `priory.run.start.oldest.age` | gauge | `s` | `priory.harness` | the oldest of those, since its `started`; 0 with none |
 | `priory.worktree.phase.duration` | histogram | `s` | `priory.phase` = `clone`, `fetch`, `checkout`, `setup`, `resume`, `teardown`; `outcome` = `ok`, `error`, `timeout` | `clone`, `fetch` and `checkout` timed around their `git` commands as a task's worktree is added. `setup`, `resume` and `teardown` from the recipe's start to its end, `ok` for `exit 0`. `timeout` is a command past `command_timeout`, or a recipe past its `timeout` |
+| `priory.run.cpu.time` | histogram | `s` | `priory.workflow`, `gen_ai.agent.name`, `priory.step` | a run's CPU time, from its scope's `cpu.stat` `usage_usec`. Bounds 1 s to 4 h. One value per run once its worktree is measured. See [agents-slice.md](../daemon/agents-slice.md#what-each-run-used) |
+| `priory.run.memory.peak` | histogram | `By` | as above | a run's peak memory: its scope's `memory.peak`, or its highest `anon + shmem`. Bounds 1 MiB to 64 GiB, by fours |
+| `priory.run.io.read`, `priory.run.io.write` | histogram | `By` | as above | the bytes a run's scope read and wrote, from `io.stat`. None where the user manager does not delegate the `io` controller |
+| `priory.run.disk` | histogram | `By` | as above | the size of the task's worktree when the run ended |
 | `priory.worktrees.active` | gauge | `{worktree}` | | the task folders under `worktrees/` in Priory home, as the sweep lists them |
 
 ## intake

@@ -316,8 +316,13 @@ thread), started, ended, how it ended, the hash and kit commit of the factory's 
 instructions and memories it got, the commit of the memories repository it got (see
 [skills.md](../daemon/skills.md#what-a-run-records)), and the sandbox its agent started in, or `-`
 (see [sandboxes.md](../daemon/sandboxes.md)).
-`priory runs --json` prints every run as `/api/runs?all=1` serves it, with its task, outcome, model
-and tokens.
+`priory runs --json` prints every run as `/api/runs?all=1` serves it, with its task, outcome, model,
+tokens and `usage`. `usage` holds what the run used: `cpu_usec`, `user_usec` and `system_usec` (CPU
+time in microseconds), `memory_peak`, `io_read`, `io_write` and `disk` (bytes). A value Priory did
+not measure is `null`, never 0: a run outside a scope has `null` for all but `disk`. See
+[agents-slice.md](../daemon/agents-slice.md#what-each-run-used). `priory task TASK --json` shows
+the same `usage` on each of its runs, and the task's own `usage`: CPU and IO summed over its runs,
+the highest `memory_peak`, and the `disk` of its last run that measured one.
 
 `priory outbox` prints each prompt: id, task, run, state and text, with newlines shown as `\n`.
 
