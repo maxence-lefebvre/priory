@@ -5,13 +5,13 @@ import { session } from "../session.js";
 import { useStore } from "../hooks/useData.js";
 
 // The countdown starts where the arming tap left it, and a redraw never restarts it.
-const Drain = memo(function Drain({ at }) {
+export const Drain = memo(function Drain({ at }) {
   const [delay] = useState(() => `-${Date.now() - at}ms`);
   return <span className="drain" aria-hidden="true" style={{ animationDelay: delay }} />;
 });
 
-/** The actions of a task in `state`, or the `only` ones given, such as the Inbox's Resume beside its Say. */
-export const TaskActs = memo(function TaskActs({ task, state, only, revision }) {
+/** The actions of a task in `state`, or the `only` ones given, such as the Inbox's Resume beside its Say. `prefix` keeps a second copy's ids apart. */
+export const TaskActs = memo(function TaskActs({ task, state, only, revision, prefix = "" }) {
   const { armed, busy, notices } = useStore(acts);
   const { failed } = useStore(session);
   const off = busy !== null || Boolean(failed) || revision === undefined;
@@ -21,7 +21,7 @@ export const TaskActs = memo(function TaskActs({ task, state, only, revision }) 
       <span className="task-acts">{(only ?? actsOf(state)).map((act) => {
         const on = armed?.task === task && armed.act === act;
         return (
-          <button key={act} type="button" id={`act-${task}-${act}`} className={`btn secondary act ${on ? "armed" : ""}`} aria-disabled={off ? "true" : "false"} onClick={() => { if (!off) pressTask(task, act, { revision }); }}>
+          <button key={act} type="button" id={`${prefix}act-${task}-${act}`} className={`btn secondary act ${on ? "armed" : ""}`} aria-disabled={off ? "true" : "false"} onClick={() => { if (!off) pressTask(task, act, { revision }); }}>
             {on ? <><span><small>{`Tap again to ${act}`}</small>{ACTS[act]}</span><Drain at={armed.at} /></> : ACTS[act]}
           </button>
         );

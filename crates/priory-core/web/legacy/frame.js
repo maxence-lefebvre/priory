@@ -1,5 +1,4 @@
 // What several legacy pages draw around their own part.
-import { sectionInView } from "../desk.js";
 import { PANELS } from "../pages.js";
 import { pageFailed } from "./data.js";
 import { html, loadOlder, state, track } from "./shared.js";
@@ -35,41 +34,9 @@ export function loading() {
     : html`<p class="empty" role="status">Loading…</p>`;
 }
 
-// The section chips mark the section in view; a list's last row loads its older rows.
-export function watchSections(app) {
+// A list's last row loads its older rows once it scrolls into view.
+export function watchOlder(app) {
   for (const row of app.querySelectorAll("[data-older]")) {
     track(new IntersectionObserver(([entry]) => { if (entry.isIntersecting) loadOlder(row.dataset.older); })).observe(row);
-  }
-  for (const scroller of app.querySelectorAll("[data-sections]")) {
-    const chips = [...scroller.querySelectorAll(".jump a")];
-    const sections = [...scroller.querySelectorAll(".sect")];
-    let shown = null;
-    const light = () => {
-      const top = scroller.getBoundingClientRect().top - scroller.scrollTop;
-      const tops = sections.map((section) => section.getBoundingClientRect().top - top);
-      // A chip lands its section under the chip bar, at the section's scroll-margin-top.
-      const bar = sections.length ? parseFloat(getComputedStyle(sections[0]).scrollMarginTop) || 0 : 0;
-      const lit = sections[sectionInView({ tops, scrollTop: scroller.scrollTop, height: scroller.clientHeight, scrollHeight: scroller.scrollHeight, bar })];
-      if (!lit || lit.id === shown) return;
-      shown = lit.id;
-      chips.forEach((chip) => chip.setAttribute("aria-current", String(chip.hash === `#${lit.id}`)));
-      // On a phone the chips scroll sideways: keep the lit one in view.
-      const chip = chips.find((each) => each.hash === `#${lit.id}`);
-      const strip = chip?.parentElement;
-      if (strip && strip.scrollWidth > strip.clientWidth) strip.scrollLeft = chip.offsetLeft - (strip.clientWidth - chip.offsetWidth) / 2;
-    };
-    if (chips.length) {
-      scroller.addEventListener("scroll", light, { passive: true });
-      light();
-    }
-    const options = scroller.querySelector(".opts");
-    const bar = app.querySelector(".abar");
-    const head = app.querySelector(".ahead:has(.aq)");
-    if (!options || !(bar || head)) continue;
-    track(new IntersectionObserver(([entry]) => {
-      if (bar) bar.hidden = entry.isIntersecting;
-      // Only options scrolled past shrink the header; options still below the fold leave it whole.
-      head?.classList.toggle("shrunk", !entry.isIntersecting && entry.boundingClientRect.bottom <= (entry.rootBounds?.top ?? 0));
-    }, { root: scroller })).observe(options);
   }
 }

@@ -1,11 +1,10 @@
 // The queue page's legacy drawing and actions.
 import { render } from "../app.js";
-import { actionNote } from "../desk.js";
+import { actionNote, onRoom } from "../desk.js";
 import { QUEUE_VIEWS, laneCap, moveOptions, queueBands, waitReason } from "../queue.js";
 import { taskLabel } from "../tasks.js";
 import { refresh, signOut } from "./data.js";
-import { deskModel, upNext } from "./desk.js";
-import { html, icon, listOrEmpty, listView, post, raw, savedViews, stateWord, tile, timeTag } from "./shared.js";
+import { clock, html, icon, listOrEmpty, listView, post, raw, savedViews, stateWord, tile, timeTag, today } from "./shared.js";
 import { state } from "./state.js";
 import { taskListRow } from "./tasks.js";
 
@@ -37,6 +36,22 @@ function queueTableRow(task, bands) {
 }
 
 // A daemon from before lane caps sends no `lanes`.
+// Up next: the next three runs, as the Desk shows them.
+function upNext(runs) {
+  const next = (runs || []).slice(0, 3);
+  const when = (run) => {
+    if (run.kind === "queued") return onRoom(run) ? "now, when a runner has room" : "now";
+    const time = clock(run.at);
+    return today(run.at) ? time : `${time} ${new Date(run.at).toLocaleDateString("en", { weekday: "short" })}`;
+  };
+  const what = (run) => html`<span class="mono">${run.key ? taskLabel(run.key) : run.trigger}</span> ${run.why}`;
+  const body = next.length
+    ? html`<ol>${next.map((run) => html`<li>${timeTag(run.at, when(run))}${run.task ? html`<a href="/tasks/${run.task}" title="task ${run.task}">${what(run)}</a>` : html`<span>${what(run)}</span>`}</li>`)}</ol>`
+    : null;
+  const shown = body ? html`<div class="strip">${body}</div>` : html`<p class="empty">Nothing is queued or scheduled to run next.</p>`;
+  return html`<div class="sec">Up next<span>next 3 runs</span></div>${shown}`;
+}
+
 function laneCaps(lanes = []) {
   if (!lanes.length) return "";
   const line = ({ lane, now, cap, full }) => html`<li><span class="mono">${lane}</span><span class="${full ? "t-warn" : ""}">${now}</span><span class="cap">${cap}</span></li>`;
@@ -52,7 +67,7 @@ export function queueBody(wide) {
   const views = savedViews([["waiting", "Waiting", waiting, current === "waiting"], ["held", "Held", held.length, current === "held"], ["ended", "Last day", queue.ended.length, current === "ended"]], "/queue");
   if (current === "held") return { views, rows: listOrEmpty(held.map((task) => taskListRow({ ...task, reason: task.reason || "held" })), "No task is held. A task waits here while a person or a condition holds it.") };
   if (current === "ended") return { views, rows: listOrEmpty(queue.ended.map((task) => taskListRow({ ...task, since: task.ended })), "No task ended in the last day.") };
-  const strip = html`${upNext(deskModel(), false)}${laneCaps(queue.lanes)}`;
+  const strip = html`${upNext(queue.up_next)}${laneCaps(queue.lanes)}`;
   if (!bands.length) return { views, rows: html`${strip}<p class="empty">The queue is empty. A task waits here for its turn once it is added.</p>` };
   if (wide) {
     const groups = bands.map((group) => html`<tr class="grp"><td colspan="5">Band ${group.band}<span>${group.tasks.length}</span></td></tr>${group.tasks.map((task) => queueTableRow(task, bands))}`);

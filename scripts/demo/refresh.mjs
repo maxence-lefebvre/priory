@@ -226,7 +226,8 @@ report(unseen === 0 && seen === TASKS, "a hidden tab reads nothing, and once whe
 async function holds(name, path, ready, script) {
   await open(path, ready);
   await sleep(2000);
-  report((await evaluate(script)) === true, name);
+  const found = await evaluate(script);
+  report(found === true, name, found === true ? "" : JSON.stringify(found));
 }
 const COUNT = `let draws = 0; const inner = Object.getOwnPropertyDescriptor(Element.prototype, "innerHTML");
   Object.defineProperty(Element.prototype, "innerHTML", { ...inner, set(text) { if (this.className === "legacy") { draws++; if (globalThis.failDraw) { globalThis.failDraw = false; throw new Error("a draw that throws"); } } inner.set.call(this, text); } });`;
@@ -264,8 +265,9 @@ await holds("a superseded refresh never draws", "/", ROW,
 // The list and the drawer draw apart, in one pass.
 await holds("a list keeps its scroll while the drawer's ask changes", "/asks/1", `location.pathname === "/asks/1" && document.querySelector('.drawer [aria-label="Next ask"][href]')`,
   `(async () => { const list = () => document.querySelector(".list .scroll"); const next = () => document.querySelector('.drawer [aria-label="Next ask"]'); const to = next().getAttribute("href");
-    list().scrollTop = 60; document.dispatchEvent(new Event("visibilitychange")); ${SETTLE(1500)} const kept = list().scrollTop === 60; next().click(); ${SETTLE(800)}
-    return kept && location.pathname === to && document.querySelectorAll("#app .legacy").length === 2; })()`);
+    list().scrollTop = 60; const drawn = list(); document.dispatchEvent(new Event("visibilitychange")); ${SETTLE(1500)} const kept = list().scrollTop === 60; next().click(); ${SETTLE(800)}
+    const found = { kept, to, at: location.pathname, same: list() === drawn, scroll: list().scrollTop };
+    return kept && found.at === to && found.same && found.scroll === 60 || found; })()`);
 await holds("the drawer keeps its scroll through a refresh of the list", "/asks/1", 'location.pathname === "/asks/1" && document.querySelector(".drawer #trace")',
   `(async () => { const part = () => document.querySelector(".drawer .scroll"); part().scrollTop = 60; const at = part().scrollTop; document.dispatchEvent(new Event("visibilitychange")); ${SETTLE(1500)} return at > 0 && part().scrollTop === at; })()`);
 
@@ -336,7 +338,7 @@ await hooked("a Cancel on a cold task page sends the revision of the task on scr
   const sent = await evaluate("posts");
   return sent.length === 1 && sent[0][0] === "/api/tasks/1/cancel" && sent[0][1].revision === 4242 ? true : sent;
 });
-const DESK_CANCEL = 'document.querySelector("[data-act=cancel]")';
+const DESK_CANCEL = 'document.querySelector(".recw [id$=-cancel]")';
 await open("/", DESK_CANCEL);
 await sleep(2000);
 await hooked("a Cancel on a Desk this device kept waits for the live read, then sends its revision", "/", DESK_CANCEL, { reply: refused, slow: { "/api/desk": 4000 }, revision: { "/api/desk": 4243 } }, async () => {
