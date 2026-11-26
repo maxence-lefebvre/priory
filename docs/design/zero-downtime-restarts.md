@@ -238,7 +238,9 @@ Each is useful alone, in this order:
    There, a runner would wait until each runner before it by name committed the version, and stop at
    the first rollback.
 6. **Split migrations.** A long backfill runs in batches from the daemon's loop.
-7. **Socket activation**, if the open question below says webhooks need it.
+7. **Additive migrations.** Built: each migration declares whether it only adds, and an additive
+   one installs beside live runs ([upgrades.md](../daemon/upgrades.md#additive-migrations)).
+8. **Socket activation**, if the open question below says webhooks need it.
 
 ## Open questions
 

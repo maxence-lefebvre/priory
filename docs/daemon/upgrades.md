@@ -63,8 +63,11 @@ Before anything stops, the old binary and then the new one run `priory check` on
 `priory upgrade probe` on copies of the state and the log. A release that fails where the old binary
 passes is refused. When the old one fails too, the fault is this machine's and the upgrade is put
 off.
-When the copies' version or tables changed, the release migrates. It then needs no live run at all,
-not only a quiet moment.
+When the copies' version or tables changed, the release migrates. A migration that only adds leaves
+the oldest schema that may still open the state in its floor (see
+[Additive migrations](#additive-migrations)). When the running binary is at least that old, the
+release installs like one that does not migrate. Otherwise it needs no live run at all, not only a
+quiet moment.
 
 ## The swap
 
@@ -105,11 +108,26 @@ passed, and the daemon goes on and the intake starts.
 Priory keeps the old binaries and backups of the last 3 upgrades, and removes older ones that it
 made itself.
 
+## Additive migrations
+
+Each migration after schema 123 declares its kind in `KINDS` in `state.rs`, and one without a
+declaration does not compile. An additive one creates tables, indexes and triggers on its own tables,
+and adds columns that are null or have a default. It refers to no old table, and its release writes
+no value into an old column that the release before it would misread. A test refuses a declared
+additive migration that does more, and one measures the write lock each holds on a 30,000 row inbox.
+
+The daemon keeps the oldest schema that may open the state in the file's `application_id`: the
+schema of its last migration that is not additive. Any binary at least that old opens the newer
+file and leaves it as it is. One of 1.3.8 or before knows no floor and refuses it.
+
+So an additive release starts the intake with the daemon, holds nothing back, and keeps the state on
+a rollback: the old binary opens it with what the new one wrote.
+
 ## Rollback
 
 When a step fails from step 6 on, the helper stops the services, puts the old binary back, and
 starts them. It first moves back the backup of each database whose own schema the release changes,
-and leaves the other as it is. A rollback only renames and unlinks, so a full disk does not stop it.
+unless the change is additive, and leaves the other as it is. A rollback only renames and unlinks, so a full disk does not stop it.
 Where the disk does not take the journal either, the helper removes the journal and starts the
 services without it.
 

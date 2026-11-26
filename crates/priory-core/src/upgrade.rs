@@ -3,7 +3,7 @@
 
 use crate::swap::{self, Fault};
 use crate::trace::{self, Trace};
-use crate::{memory, post, reload};
+use crate::{memory, post, reload, state};
 use jiff::Timestamp;
 use priory_factory::factory::{Channel, Factory, Upgrade};
 use priory_runtime::upgrade::{self as journal, Journal, Phase};
@@ -194,6 +194,13 @@ fn attestations(home: &Path) -> PathBuf {
 
 fn own_attestations(home: &Path) -> PathBuf {
     journal::dir(home).join("own.json")
+}
+
+/// Whether the release only adds to a state of schema `from`, left at schema `to` with the oldest
+/// schema `floor` that may open it. The running binary then reads it too, so nothing needs to wait for
+/// the live runs. A release that sets no floor is not additive.
+fn additive(own: i64, from: i64, to: i64, floor: i64) -> bool {
+    to > from && floor > 0 && floor <= own.min(from)
 }
 
 /// What the new binary does to copies of the databases.
@@ -863,7 +870,13 @@ fn rehearse_in(
     Ok(Rehearsal {
         schema_from: before.0.0,
         schema_to: after.0.0,
-        migrates_state: before.0 != after.0,
+        migrates_state: before.0 != after.0
+            && !additive(
+                state::VERSION,
+                before.0.0,
+                after.0.0,
+                floor(&state).map_err(machine)?,
+            ),
         migrates_bus: before.1 != after.1,
     })
 }
@@ -871,6 +884,13 @@ fn rehearse_in(
 /// `staged.json` beside the rehearsal's folder.
 fn staged_file_of(rehearsal: &Path) -> PathBuf {
     rehearsal.with_file_name("staged.json")
+}
+
+/// The oldest schema whose binaries may open the state `path`, or 0.
+fn floor(path: &Path) -> Result<i64, String> {
+    swap::read_only(path)?
+        .pragma_query_value(None, "application_id", |row| row.get(0))
+        .map_err(|error| format!("{}: {error}", path.display()))
 }
 
 /// A database's version, and its floor with every table, index and trigger it holds.
@@ -1064,7 +1084,6 @@ fn note_once(db: &Connection, home: &Path, key: &str, line: &str) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state;
 
     #[test]
     fn a_new_floor_alone_changes_the_schema() {
@@ -1136,6 +1155,23 @@ mod tests {
         proptest::proptest!(|(text in ".{0,200}")| {
             let _ = newest(text.as_bytes(), Channel::Minor, &Store::default());
         });
+    }
+
+    #[test]
+    fn a_release_is_additive_only_from_a_floor_the_running_binary_reaches() {
+        for (own, from, to, floor, expected) in [
+            (124, 124, 125, 124, true),
+            (124, 124, 126, 123, true),
+            (124, 124, 125, 125, false),
+            (124, 124, 125, 0, false),
+            (124, 124, 124, 124, false),
+            // After a rollback the file is newer than the binary.
+            (124, 125, 126, 125, false),
+            (124, 125, 126, 124, true),
+        ] {
+            let found = additive(own, from, to, floor);
+            assert_eq!(found, expected, "{own} {from} {to} {floor}");
+        }
     }
 
     #[test]

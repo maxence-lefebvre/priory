@@ -857,12 +857,14 @@ fn a_process_waits_for_a_migration_once_then_refuses_at_once() {
 }
 
 #[test]
-fn a_migration_clears_the_floor_it_does_not_declare() {
+fn a_migration_replaces_the_floor_it_found() {
     let (setup, schema) = older("floor-cleared");
+    // From before 124, which rebuilds: no binary before it may open the file after it.
+    header(&setup, "user_version", 123);
     header(&setup, "application_id", 5);
     succeeded(&in_home(&setup, &["daemon", "--once"]).output().unwrap());
     assert_eq!(version(&setup), schema);
-    assert_eq!(header(&setup, "application_id", 0), 0);
+    assert!((124..=schema).contains(&header(&setup, "application_id", 0)));
 }
 
 #[test]
@@ -946,6 +948,7 @@ fn a_reader_of_a_newer_state_is_told_to_run_the_newer_priory() {
     succeeded(&setup.priory(&["tasks"]));
     let schema = version(&setup);
     header(&setup, "user_version", schema + 1);
+    header(&setup, "application_id", 0);
 
     let refused = in_home(&setup, &["memories"]).output().unwrap();
 
