@@ -1,7 +1,3 @@
-import { morePage } from "../legacy/settings.js";
-import { html } from "../legacy/shared.js";
+import { More } from "../pages/More.jsx";
 
-export const more = {
-  name: "more",
-  page: (size) => (size === "compact" ? morePage() : html`<div class="list ">${morePage()}</div>`),
-};
+export const more = { name: "more", Page: More };
