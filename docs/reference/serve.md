@@ -519,7 +519,7 @@ an object: `answered` and `withdrawn`, the number of each left out, within `band
 | `state` | string | `open`, `answered` or `withdrawn` |
 | `withdrawn_reason` | string or null | Why a withdrawn ask closed, one of the [withdrawal reasons](../daemon/waits.md#why-an-ask-or-wait-was-withdrawn): `dismissed`, `sibling-fired`, `moved-on`, `revived` or `predecessor-revived` |
 | `withdrawn_at` | string or null | When the ask was withdrawn, in UTC. Null for an ask withdrawn before Priory kept the time, with no withdrawal on record |
-| `withdrawn_why` | string or null | `withdrawn_reason` in words: `dismissed`, `dismissed by session <session>` when a person's own session dismissed it, `a wait of its run fired first`, `a later run called another tool`, `its task was revived` or `the task it waits on was revived` |
+| `withdrawn_why` | string or null | `withdrawn_reason` in words: `dismissed`, `dismissed by session <session>` when a person's own session dismissed it, `a wait of its run fired first`, `a later run called another tool, or its task ended`, `its task was revived` or `the task it waits on was revived` |
 | `revision` | integer | The question's revision. `priory answer` and `priory dismiss` take it |
 | `question` | string | The question |
 | `options` | array of strings | The options |

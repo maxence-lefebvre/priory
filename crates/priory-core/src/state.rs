@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 125;
+const VERSION: i64 = 126;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -2230,6 +2230,20 @@ CREATE TABLE IF NOT EXISTS calls (
 PRAGMA user_version = 125;
 ";
 
+// A task that ends takes its open asks off the desk, whichever path ended it, and states where a
+// drop left one open heal.
+const SCHEMA_126: &str = "
+CREATE TRIGGER IF NOT EXISTS an_ended_task_withdraws_its_asks AFTER UPDATE OF state ON tasks
+  WHEN NEW.state IN ('dropped', 'done') AND OLD.state IS NOT NEW.state BEGIN
+  UPDATE asks SET withdrawn = 1, withdrawn_reason = 'moved-on'
+    WHERE task = NEW.id AND answer IS NULL AND withdrawn IS NULL;
+END;
+UPDATE asks SET withdrawn = 1, withdrawn_reason = 'moved-on'
+  WHERE answer IS NULL AND withdrawn IS NULL
+  AND task IN (SELECT id FROM tasks WHERE state IN ('dropped', 'done'));
+PRAGMA user_version = 126;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -2247,7 +2261,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
     SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112, SCHEMA_113,
     SCHEMA_114, SCHEMA_115, SCHEMA_116, SCHEMA_117, SCHEMA_118, SCHEMA_119, SCHEMA_120, SCHEMA_121,
-    SCHEMA_122, SCHEMA_123, SCHEMA_124, SCHEMA_125,
+    SCHEMA_122, SCHEMA_123, SCHEMA_124, SCHEMA_125, SCHEMA_126,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.

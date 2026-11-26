@@ -244,7 +244,7 @@ from their withdrawal log, and left it null for older waits, which have none. Th
 | `dismissed` | ask, wait | A person dismissed the ask. Its run's open waits go with it |
 | `answered-elsewhere` | wait | A person answered the ask of the wait's run |
 | `sibling-fired` | ask, wait | Another wait of the same run fired first, or another gate of the stack fired |
-| `moved-on` | ask, wait | A later run of the task called another tool |
+| `moved-on` | ask, wait | A later run of the task called another tool, or, for an ask, the task was dropped or done. Schema 126 withdraws the open asks a drop left before it |
 | `revived` | ask, wait | A person revived the task, or feedback reopened it, as its next generation |
 | `predecessor-revived` | ask | A person revived the task that a batch entry's condition waits on, so the condition waits again |
 | `asked` | wait | The daemon asked a person about the task's stack, or about a fix that failed the same way, which ends its gates |

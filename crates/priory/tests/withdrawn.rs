@@ -41,6 +41,8 @@ fn migrate(dir: &Path) {
 
 /// Sets the state file back to version 57: `withdrawn` holds the reason as a sentinel.
 fn as_version_57(db: &rusqlite::Connection) {
+    db.execute_batch("DROP TRIGGER an_ended_task_withdraws_its_asks;")
+        .unwrap();
     let added: bool = db
         .query_row(
             "SELECT count(*) FROM pragma_table_info('asks') WHERE name = 'withdrawn_reason'",
@@ -210,4 +212,31 @@ fn an_upgrade_names_the_answer_dismiss_or_stack_ask_that_withdrew_an_old_wait() 
             Value::from("asked"),
         ]
     );
+}
+
+#[test]
+fn an_upgrade_withdraws_the_open_asks_of_a_dropped_task_only() {
+    let dir = scratch("ended");
+    priory(&dir, &["tasks"]);
+    let db = rusqlite::Connection::open(dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "DROP TRIGGER an_ended_task_withdraws_its_asks;
+         INSERT INTO tasks (id, key, workflow, step, state, lane, trigger, source) VALUES
+           (1, 'issue-1', 'implement', 'work', 'dropped', 'lane', 'cli', 'cli-1'),
+           (2, 'issue-2', 'implement', 'work', 'running', 'lane', 'cli', 'cli-2');
+         INSERT INTO asks (task, step, kind, question, options) VALUES
+           (1, 'work', 'agent', 'A?', '[]'), (2, 'work', 'agent', 'B?', '[]');
+         PRAGMA user_version = 125;",
+    )
+    .unwrap();
+    drop(db);
+    migrate(&dir);
+
+    let reason = |task: &str| -> Value {
+        let task: Value =
+            serde_json::from_slice(&priory(&dir, &["task", task, "--json"]).stdout).unwrap();
+        task["asks"][0]["withdrawn_reason"].clone()
+    };
+    assert_eq!(reason("1"), "moved-on");
+    assert_eq!(reason("2"), Value::Null);
 }

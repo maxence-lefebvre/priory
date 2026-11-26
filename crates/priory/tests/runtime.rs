@@ -87,7 +87,7 @@ macro_rules! undo_scheduled_sweeps {
 /// pending requests.
 macro_rules! undo_pre {
     () => {
-        concat!(undo_labels!(), undo_scheduled_sweeps!(), "ALTER TABLE asks DROP COLUMN confidence; ALTER TABLE asks DROP COLUMN rationale;
+        concat!(undo_labels!(), undo_scheduled_sweeps!(), "DROP TRIGGER IF EXISTS an_ended_task_withdraws_its_asks; ALTER TABLE asks DROP COLUMN confidence; ALTER TABLE asks DROP COLUMN rationale;
   ALTER TABLE tasks DROP COLUMN auto_answer; ALTER TABLE tasks DROP COLUMN added_by; DROP VIEW task_text; CREATE VIEW task_text AS SELECT tasks.id AS task,
     coalesce(json_extract(inbox.data, '$.title'), '') AS title,
     coalesce(json_extract(inbox.data, '$.text'), json_extract(inbox.data, '$.body'),
@@ -20755,6 +20755,25 @@ fn a_removed_review_request_drops_its_running_task_and_ends_its_run() {
     assert_eq!(tasks[0][7], "review request removed");
     assert_eq!(setup.rows("runs")[0][7], "cancelled");
     setup.gone("priory-1");
+}
+
+#[test]
+fn a_removed_review_request_withdraws_its_tasks_open_agent_ask() {
+    let mut setup = reviews("review-withdrawn-ask");
+    setup.calls(&[ask()]);
+    setup.publish_all(&review_request(1));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+
+    setup.publish(&review_event(
+        "github.pull_request.review_request_removed",
+        2,
+    ));
+
+    setup.until("tasks", |rows| rows[0][4] == "dropped");
+    assert_eq!(withdrawn_reasons(&setup, "asks"), ["moved-on"]);
 }
 
 #[test]
