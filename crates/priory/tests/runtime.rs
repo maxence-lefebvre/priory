@@ -42430,7 +42430,7 @@ fn a_cloud_session_calls_ask_wait_and_result_through_the_gateway_and_each_applie
     assert_eq!(asked["isError"], false, "{asked}");
     let asks = setup.rows("asks");
     assert_eq!(asks.len(), 1, "{asks:?}");
-    let answered = setup.priory(&["answer", &asks[0][0], "yes"]);
+    let answered = setup.priory(&["answer", "--revision", "1", &asks[0][0], "yes"]);
     assert!(answered.status.success(), "{answered:?}");
     let deadline = Instant::now() + Duration::from_secs(60);
     while setup.cloud_wakes().is_empty() {
