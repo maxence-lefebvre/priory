@@ -143,7 +143,7 @@ const Inbox = memo(function Inbox({ task, tasks }) {
       <ol className="hist" aria-label="Events routed to this task, newest first">{task.inbox.slice(0, INBOX_SHOWN).map((event) => (
         <li key={event.id ?? `${event.time} ${event.type} ${event.subject}`}>
           <Tile state={INBOX_TILES[event.prompt] || (event.outcome === "kept" && event.task === task.id ? "asleep" : "ready")} size="sm" />
-          <span><b title={event.type}>{eventWords(event.type)}</b> {event.subject || ""}<span className="meta">{handled(event, task.id, nameOf)}</span></span><Time iso={event.time} />
+          <span><b title={event.type}>{eventWords(event.type)}</b>{` ${event.subject || ""}`}<span className="meta">{handled(event, task.id, nameOf)}</span></span><Time iso={event.time} />
         </li>
       ))}</ol>
       {task.inbox.length > INBOX_SHOWN ? <p className="meta">{`Latest ${INBOX_SHOWN} of ${task.inbox.length}. `}<code>{`priory task ${task.id}`}</code> lists every event.</p> : null}
@@ -176,8 +176,24 @@ const Trace = memo(function Trace({ task }) {
   );
 });
 
-/** `tasks` is the tasks listing, which names the other tasks and holds a stack the detail lacks. */
-export const TaskSections = memo(function TaskSections({ task, tasks }) {
-  const stack = task.stack ?? tasks?.find((each) => each.id === task.id)?.stack;
-  return <><Brief task={task} /><Progress task={task} /><Plan task={task} /><PullRequest task={task} stack={stack} /><Inbox task={task} tasks={tasks} /><Trace task={task} /></>;
+const stackOf = (task, tasks) => task.stack ?? tasks?.find((each) => each.id === task.id)?.stack;
+
+/** The sections a task draws, each [key, label], in their order. */
+export function sectionsOf(task, tasks) {
+  const pr = task.pull_request || prStack(stackOf(task, tasks)).label ? "PR" : task.triage?.length ? "Feedback" : null;
+  return [
+    (task.brief?.request || task.brief?.result) && ["brief", "Brief"],
+    progressView(task.progress) && ["progress", "Progress"],
+    (task.plan_file || task.plan) && ["plan", "Plan"],
+    pr && ["pr", pr],
+    task.inbox?.length > 0 && ["inbox", "Inbox"],
+    task.runs?.length > 0 && ["trace", "Trace"],
+  ].filter(Boolean);
+}
+
+/** `tasks` is the tasks listing, which names the other tasks and holds a stack the detail lacks. `only` keeps those keys. */
+export const TaskSections = memo(function TaskSections({ task, tasks, only }) {
+  const stack = stackOf(task, tasks);
+  const shows = (key) => !only || only.includes(key);
+  return <>{shows("brief") ? <Brief task={task} /> : null}{shows("progress") ? <Progress task={task} /> : null}{shows("plan") ? <Plan task={task} /> : null}{shows("pr") ? <PullRequest task={task} stack={stack} /> : null}{shows("inbox") ? <Inbox task={task} tasks={tasks} /> : null}{shows("trace") ? <Trace task={task} /> : null}</>;
 });
