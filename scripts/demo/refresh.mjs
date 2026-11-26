@@ -315,8 +315,9 @@ await hooked("on a phone, a refused answer from the answer sheet gives the bar's
   await sleep(300);
   await evaluate('document.querySelector("#answer .opt[aria-disabled=false]").click()');
   await until("posts.length", "the answer");
-  await sleep(1500);
-  const found = await evaluate('({ posts: posts.length, open: document.getElementById("answer").open, focus: document.activeElement.matches("#app .abar .btn.secondary"), on: document.activeElement.outerHTML.slice(0, 80) })');
+  const FOCUSED = 'document.activeElement.matches("#app .abar .btn.secondary")';
+  await until(FOCUSED, "the options button's focus").catch(() => {});
+  const found = await evaluate(`({ posts: posts.length, open: document.getElementById("answer").open, focus: ${FOCUSED}, on: document.activeElement.outerHTML.slice(0, 60), bar: document.querySelector("#app .abar")?.hidden })`);
   return found.posts === 1 && !found.open && found.focus ? true : found;
 });
 await hooked("a rotation keeps the Say field, its focus and caret", "/tasks/1", SAYS, {}, async () => {

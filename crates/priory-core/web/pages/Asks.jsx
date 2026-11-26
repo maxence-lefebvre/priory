@@ -247,7 +247,8 @@ function answer(ask, text, written, run = false) {
   if (answers.get().pending) return;
   const notices = new Map(answers.get().notices);
   notices.delete(ask.id);
-  set({ pending: { id: ask.id, text }, notices });
+  // The sheet's close event comes later: a quick refusal must not find the sheet still asked for and open it again.
+  set({ pending: { id: ask.id, text }, notices, sheet: false });
   send(ask, text, written, run);
 }
 
