@@ -373,7 +373,8 @@ Each slice ships alone and leaves the factory working.
 
 - **Operations.** A checkout of the factory on the VM, the read-only tokens, and `priory intake` as
   a service there. Stop the desktop's intake.
-- **Code.** The intake's database role, as Database roles says. Each runner publishes what its
+- **Code.** The intake's database role, as Database roles says: on `main`, as
+  `priory log intake-role` and `PRIORY_LOG_RESTRICTED`. Each runner publishes what its
   intake would watch: its open waits, holds, subscriptions and task branches, as
   `priory.watch.posted`. The intake reads them from the log as its own consumer, `priory.intake`,
   in place of a state file. A `pre` script then runs on the VM, so its tools must be there.

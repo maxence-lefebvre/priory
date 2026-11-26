@@ -8,34 +8,18 @@ use herdr_bus::{Message, Output, Seq, Stored, Timestamp};
 use postgres::{Client, Config, Row};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
+use super::sql::SCHEMA;
 use super::{Delivery, Log, NO_ANSWER, Result, Unreachable};
 
 /// The Postgres client, for the tests that set up the database a log lives in.
 pub use postgres as client;
 
-/// Creates the tables once per database, whichever process connects first.
-const SCHEMA: &str = "
-    SELECT pg_advisory_xact_lock(hashtext('priory_log_schema'));
-    CREATE TABLE IF NOT EXISTS priory_log_messages (
-        seq BIGSERIAL PRIMARY KEY,
-        output TEXT NOT NULL,
-        id TEXT NOT NULL,
-        published TIMESTAMPTZ NOT NULL,
-        message TEXT NOT NULL,
-        UNIQUE (output, id)
-    );
-    CREATE TABLE IF NOT EXISTS priory_log_cursors (
-        consumer TEXT NOT NULL,
-        output TEXT NOT NULL,
-        seq BIGINT NOT NULL,
-        PRIMARY KEY (consumer, output)
-    );
-";
-
 /// A connection to the database that holds the log, made again when the server drops it.
 pub struct Postgres {
     config: Config,
     timeout: Duration,
+    /// Connected as a role that may not create tables, so it skips creating them.
+    restricted: bool,
     client: Mutex<Option<Client>>,
     /// Set while a call runs, and left set by one that outlived its timeout until it ends.
     busy: Arc<AtomicBool>,
@@ -46,9 +30,10 @@ type Failure = Box<dyn std::error::Error + Send + Sync>;
 
 impl Postgres {
     /// Connects to `url`, a libpq connection string or URL, over TLS when the server offers it,
-    /// and creates the log's tables when they are missing. Each call waits on the database at most
-    /// `timeout`. A database it cannot reach yet is no error: a later call connects.
-    pub fn connect(url: &str, timeout: Duration) -> Result<Self> {
+    /// and creates the log's tables when they are missing, unless `restricted`. Each call waits on
+    /// the database at most `timeout`. A database it cannot reach yet is no error: a later call
+    /// connects.
+    pub fn connect(url: &str, timeout: Duration, restricted: bool) -> Result<Self> {
         let mut config: Config = url.parse()?;
         let options = format!(
             "{} -c statement_timeout={}",
@@ -66,6 +51,7 @@ impl Postgres {
         let log = Postgres {
             config,
             timeout,
+            restricted,
             client: Mutex::new(None),
             busy: Arc::new(AtomicBool::new(false)),
         };
@@ -97,9 +83,10 @@ impl Postgres {
             ))));
         }
         let (client, config, busy) = (slot.take(), self.config.clone(), Arc::clone(&self.busy));
+        let restricted = self.restricted;
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
-            let outcome = call(client, &config, &operation);
+            let outcome = call(client, &config, restricted, &operation);
             busy.store(false, Ordering::SeqCst);
             let _ = sender.send(outcome);
         });
@@ -122,11 +109,12 @@ const KEEPALIVE: Duration = Duration::from_secs(10);
 fn call<T>(
     client: Option<Client>,
     config: &Config,
+    restricted: bool,
     operation: &impl Fn(&mut Client) -> Result<T, Failure>,
 ) -> (Option<Client>, Result<T, Failure>) {
     let open = |client: Option<Client>| match client.filter(|client| !client.is_closed()) {
         Some(client) => Ok(client),
-        None => connected(config),
+        None => connected(config, restricted),
     };
     let mut client = match open(client) {
         Ok(client) => client,
@@ -178,7 +166,7 @@ fn lost(error: Failure) -> Failure {
     Box::new(Unreachable(detail))
 }
 
-fn connected(config: &Config) -> Result<Client, Failure> {
+fn connected(config: &Config, restricted: bool) -> Result<Client, Failure> {
     // No native roots, such as in a bare container: plain connections still work.
     let tls = MakeRustlsConnect::with_native_certs().map_or_else(
         |_| {
@@ -191,6 +179,9 @@ fn connected(config: &Config) -> Result<Client, Failure> {
         |(tls, _)| tls,
     );
     let mut client = config.connect(tls)?;
+    if restricted {
+        return Ok(client);
+    }
     let mut tx = client.transaction()?;
     tx.batch_execute(SCHEMA)?;
     tx.commit()?;
