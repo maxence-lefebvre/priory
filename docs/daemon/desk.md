@@ -315,10 +315,20 @@ prompts.
 - A `done` task whose pull request is open reopens as its next generation, with TEXT as the first
   prompt. Its step, session and branch are those of [feedback that reopens a done
   task](routing.md#feedback-reopens-a-done-task). It replies `task <id> reopened at <step>,
-  generation <n>`. It is refused, with the reason, when the task owns no pull request, when that
-  pull request merged or closed, when another active task holds its key or a resource it owns, or
-  when no agent runs the step it would reopen at. A merge the intake has not published yet does not
-  refuse it. A pick or comment on a done task's report reopens nothing.
+  generation <n>`. Its pull requests are those of its stack, else the one it opened or waited on
+  last, then those of its repository it subscribes to or waits on now. A pull request it only
+  subscribes to or waits on counts once an event read it open. The GitHub extension names the
+  pull request on screen, and the task reopens on that one. Otherwise it reopens on the first
+  open one in that order, the ones it subscribes to or waits on lowest number first. It is
+  refused, with the reason, when:
+
+  - it has no open pull request, or its own merged and none of its stack is open;
+  - the pull request named is not one of its pull requests, or is not open;
+  - another active task holds its key or any resource it owns, a pull request of its stack included;
+  - no agent runs the step it would reopen at. Set the workflow's `reopen` key for a task done at a
+    code or human step.
+
+  A merge the intake has not published yet does not refuse it. A pick or comment on a done task's report reopens nothing.
 
 Otherwise it replies `task <id> will hear it`. It refuses a `failed` or `dropped` task, a
 task at a human or code step with no open ask, and a task that has neither a run nor a queued

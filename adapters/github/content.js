@@ -63,7 +63,7 @@
   // A copy of a tab's own element, so the Guide tab takes GitHub's style, with none of its state.
   function guideLike(like, kind) {
     const tab = like.cloneNode(false);
-    for (const name of ["aria-current", "aria-selected", "aria-controls", "data-turbo-frame", "data-dd-action-name", "data-discover", "id", "tabindex"]) tab.removeAttribute(name);
+    for (const name of ["aria-current", "aria-selected", "aria-controls", "data-turbo-frame", "data-dd-action-name", "data-telemetry-action", "data-discover", "id", "tabindex"]) tab.removeAttribute(name);
     tab.classList.remove("selected");
     if (tab.localName === "a") tab.href = "#priory-guide";
     const label = `Guide ${guide.count}`;

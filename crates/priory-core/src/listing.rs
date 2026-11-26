@@ -831,11 +831,56 @@ fn tasks_since(
 /// `progress`, `conditions` and `waits` as the JSON they are stored or read as.
 /// The active tasks that hold pull request `number` of `repo`, each with how it holds it: `key`,
 /// `stack`, `wait`, `subscription`, `review`, or else `owns`, the ownership routing reads. Those
-/// that own its branch, by key or stack, come first, then by id. `repo` matches in any case, as
-/// GitHub's owner and repository names do.
+/// that own its branch, by key or stack, come first, then by id. With none, the done tasks that
+/// hold it and that `say` reopens, newest first. `repo` matches in any case, as GitHub's owner and
+/// repository names do.
 pub fn holding(db: &Connection, repo: &str, number: u64) -> rusqlite::Result<Value> {
     let mut tasks = rows(
         db,
+        &holders(
+            "state NOT IN ('done', 'failed', 'dropped')",
+            "min(rank) > 1, id",
+        ),
+        params![
+            format!("github:{repo}#{number}"),
+            format!("github:{repo}:pulls/{number}:review:*")
+        ],
+    )?;
+    if tasks.as_array().is_some_and(Vec::is_empty) {
+        tasks = done_holding(db, repo, number)?;
+    }
+    for task in tasks.as_array_mut().expect("rows are an array") {
+        let holds = task["holds"].as_str().unwrap_or("[]");
+        task["holds"] = serde_json::from_str(holds).unwrap_or(Value::Null);
+    }
+    Ok(tasks)
+}
+
+/// The done tasks that hold the open pull request `number` of `repo` and that `say` reopens.
+fn done_holding(db: &Connection, repo: &str, number: u64) -> rusqlite::Result<Value> {
+    let resource = format!("github:{repo}#{number}");
+    let done = rows(
+        db,
+        &holders(
+            "state = 'done' AND held.task NOT IN (SELECT task FROM named WHERE how = 'review')",
+            "min(rank) > 1, id DESC",
+        ),
+        params![resource, format!("github:{repo}:pulls/{number}:review:*")],
+    )?;
+    let done = done.as_array().cloned().unwrap_or_default();
+    let mut reopen = Vec::new();
+    for task in done {
+        let id = task["id"].as_i64().expect("a task has an id");
+        if crate::tools::says_reopens(db, id, None, Some(&resource))?.is_ok() {
+            reopen.push(task);
+        }
+    }
+    Ok(Value::Array(reopen))
+}
+
+/// The query of the tasks in `state` that hold a pull request, in `order`.
+fn holders(state: &str, order: &str) -> String {
+    format!(
         "WITH named (task, how, rank) AS (
            SELECT id, 'key', 0 FROM tasks WHERE key = ?1 COLLATE NOCASE
            UNION ALL SELECT task, 'stack', 1 FROM pull_requests WHERE resource = ?1 COLLATE NOCASE
@@ -851,18 +896,9 @@ pub fn holding(db: &Connection, repo: &str, number: u64) -> rusqlite::Result<Val
          )
          SELECT id, key, workflow, step, state, json_group_array(how) AS holds
          FROM (SELECT * FROM held ORDER BY rank) AS held JOIN tasks ON tasks.id = held.task
-         WHERE state NOT IN ('done', 'failed', 'dropped')
-         GROUP BY id ORDER BY min(rank) > 1, id",
-        params![
-            format!("github:{repo}#{number}"),
-            format!("github:{repo}:pulls/{number}:review:*")
-        ],
-    )?;
-    for task in tasks.as_array_mut().expect("rows are an array") {
-        let holds = task["holds"].as_str().unwrap_or("[]");
-        task["holds"] = serde_json::from_str(holds).unwrap_or(Value::Null);
-    }
-    Ok(tasks)
+         WHERE {state}
+         GROUP BY id ORDER BY {order}"
+    )
 }
 
 fn parse_json(task: &mut Value) {

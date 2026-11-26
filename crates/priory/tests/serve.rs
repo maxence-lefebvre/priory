@@ -1044,6 +1044,44 @@ fn seen_through_its_endpoint_records_the_visit_as_the_cli_verb_does() {
 }
 
 #[test]
+fn autopilot_off_through_its_endpoint_ends_it_as_the_cli_verb_does() {
+    let mut setup = Setup::new("web-autopilot-off", SERVE);
+    setup.seed();
+    succeeded(&setup.priory(&["autopilot", "on", &setup.factory(), "--for", "1h"]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+
+    let bad = post(&address, "/api/autopilot/off", "", r#"{"for": "1h"}"#);
+    assert_eq!(bad.0, 400, "{}", bad.1);
+    assert!(json_of(&setup, "desk")["autopilot"].is_object());
+    let off = post(&address, "/api/autopilot/off", "", "{}");
+    let again = post(&address, "/api/autopilot/off", "", "{}");
+
+    assert_eq!(off.0, 200, "{}", off.1);
+    assert_eq!(
+        serde_json::from_str::<Value>(&off.1).unwrap(),
+        json!({ "ok": "autopilot is off: see `priory autopilot report`", "untold": null })
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&again.1).unwrap()["ok"],
+        "autopilot was not on"
+    );
+    assert!(json_of(&setup, "desk")["autopilot"].is_null());
+}
+
+#[test]
+fn autopilot_off_without_a_daemon_gets_503_and_stays_on() {
+    let mut setup = Setup::new("web-autopilot-no-daemon", SERVE);
+    setup.seed();
+    succeeded(&setup.priory(&["autopilot", "on", &setup.factory(), "--for", "1h"]));
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let (status, body) = post(&address, "/api/autopilot/off", "", "{}");
+
+    assert_eq!(status, 503, "{body}");
+    assert!(json_of(&setup, "desk")["autopilot"].is_object());
+}
+
+#[test]
 fn the_asks_endpoint_leaves_out_asks_closed_over_a_week_ago_unless_asked_for_all() {
     let mut setup = Setup::new("asks-week", SERVE);
     setup.seed();
@@ -1285,6 +1323,62 @@ fn the_tasks_endpoint_finds_each_active_task_holding_a_pull_request_and_how_it_h
         let (status, body) = get(&address, &format!("/api/tasks?pr={bad}"), Some(TOKEN));
         assert_eq!(status, 400, "{bad}: {body}");
     }
+}
+
+#[test]
+fn the_tasks_endpoint_finds_the_done_tasks_say_reopens_once_no_active_task_holds_the_pull_request()
+{
+    let mut setup = Setup::new("tasks-pr-done", SERVE);
+    let db = setup.db();
+    db.execute_batch(
+        "INSERT INTO tasks (id, key, workflow, step, state, lane, trigger, source, repo) VALUES
+           (1, 'cli:docs-1', 'implement', 'implement', 'done', 'none/misc', 'cli', 'cli-1', 'owner/repo'),
+           (2, 'cli:docs-2', 'implement', 'implement', 'done', 'none/misc', 'cli', 'cli-2', 'owner/repo'),
+           (3, 'cli:docs-3', 'implement', 'implement', 'dropped', 'none/misc', 'cli', 'cli-3', 'owner/repo'),
+           (4, 'github:owner/repo:pulls/7:review:ana', 'implement', 'implement', 'done', 'none/misc', 'cli', 'cli-4', 'owner/repo'),
+           (5, 'cli:docs-5', 'implement', 'implement', 'asleep', 'none/misc', 'cli', 'cli-5', 'owner/repo'),
+           (6, 'github:owner/repo:pulls/7:review:bob', 'implement', 'implement', 'done', 'none/misc', 'cli', 'cli-6', 'owner/repo');
+         INSERT INTO subscriptions (task, resource) VALUES (1, 'github:owner/repo#7'),
+           (2, 'github:owner/repo#7'), (3, 'github:owner/repo#7'),
+           (5, 'github:owner/repo#8'), (6, 'github:owner/repo#7');
+         INSERT INTO inbox (id, type, subject, time, data, links, outcome) VALUES
+           ('seen', 'github.pull_request.opened', 'owner/repo#7', '2026-11-17T10:00:00Z',
+            '{\"repo\":\"owner/repo\",\"pull_request\":7,\"open\":true}', '[]', 'ignored');",
+    )
+    .unwrap();
+    let address = setup.start(&["serve", &setup.factory()]);
+    let ids = |number: u64| -> Vec<i64> {
+        api(
+            &address,
+            &format!("/api/tasks?pr=github%3Aowner%2Frepo%23{number}"),
+        )["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|task| task["id"].as_i64().unwrap())
+            .collect()
+    };
+
+    assert_eq!(
+        ids(7),
+        [2, 1],
+        "done, newest first, and no done reviewer, even one that subscribes"
+    );
+    assert_eq!(ids(8), [5], "an active holder hides the done ones");
+    db.execute(
+        "INSERT INTO inbox (id, type, subject, time, data, links, outcome) VALUES
+           ('closed', 'github.pull_request.closed', 'owner/repo#7', '2026-11-17T11:00:00Z',
+            '{\"repo\":\"owner/repo\",\"pull_request\":7,\"merged\":true}', '[]', 'ignored')",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        ids(7),
+        Vec::<i64>::new(),
+        "say reopens nothing once it merged"
+    );
+    let upper = api(&address, "/api/tasks?pr=github%3AOwner%2FRepo%237");
+    assert_eq!(upper["tasks"], json!([]), "a close counts in any case");
 }
 
 #[test]
@@ -6971,7 +7065,9 @@ impl Setup {
             if requests.len() >= count {
                 return requests;
             }
-            assert!(Instant::now() < deadline, "{requests:?}");
+            // What the server said so far, so a failure names its cause.
+            let said = fs::read_to_string(self.dir.join("server.log")).unwrap_or_default();
+            assert!(Instant::now() < deadline, "{requests:?}\nserver: {said}");
             std::thread::sleep(Duration::from_millis(20));
         }
     }
