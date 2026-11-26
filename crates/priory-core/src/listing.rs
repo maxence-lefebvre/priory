@@ -828,7 +828,7 @@ fn usage_total(runs: &Value) -> Value {
         "memory_peak": values("memory_peak").max(),
         "io_read": sum("io_read"),
         "io_write": sum("io_write"),
-        "disk": values("disk").last(),
+        "disk": values("disk").next_back(),
     })
 }
 

@@ -756,11 +756,7 @@ impl Exporter {
                     };
                     self.observe("runs", metric, attributes, ended.seconds.max(0.0));
                 }
-                for used in state.used {
-                    seen.insert(("usage", used.run));
-                    if self.seen.contains(&("usage", used.run)) {
-                        continue;
-                    }
+                for used in unseen(state.used, &self.seen, &mut seen) {
                     for (metric, attributes, value) in used.observations() {
                         self.observe("runs", metric, attributes, value);
                     }
@@ -1381,6 +1377,18 @@ impl Used {
     }
 }
 
+/// The runs of `used` not in `before`, the runs already counted, each added to `seen`, so a run read
+/// again in the next sample's overlap counts once.
+fn unseen(
+    used: Vec<Used>,
+    before: &HashSet<(&'static str, i64)>,
+    seen: &mut HashSet<(&'static str, i64)>,
+) -> Vec<Used> {
+    used.into_iter()
+        .filter(|used| seen.insert(("usage", used.run)) && !before.contains(&("usage", used.run)))
+        .collect()
+}
+
 /// What the state file says of the runs' starts and the recipes.
 struct RunState {
     /// The starts and recipes that ended at or after the time asked.
@@ -1687,6 +1695,20 @@ mod tests {
                 (MEMORY_PEAK, attributes.clone(), 2_147_483_648.0),
                 (DISK, attributes, 5_000_000.0),
             ]
+        );
+        // The next sample reads the run again in its overlap, and counts it once.
+        let mut seen = HashSet::new();
+        let first = unseen(
+            run_state(&db, since).unwrap().used,
+            &HashSet::new(),
+            &mut seen,
+        );
+        let mut again = HashSet::new();
+        let second = unseen(run_state(&db, since).unwrap().used, &seen, &mut again);
+        assert_eq!((first.len(), second.len()), (1, 0));
+        assert!(
+            again.contains(&("usage", 1)),
+            "the run stays seen while it is read"
         );
         let mut memory = Histogram::new(scale(MEMORY_PEAK).1);
         memory.observe(2_147_483_648.0);

@@ -65,9 +65,12 @@ pub(crate) fn memory(run: i64, tmux: &str, session: &str) -> Option<u64> {
 
 /// Forgets the pane of every run that is not in `live`, so an ended run's pid is never read again,
 /// and stores what each run used.
-pub(crate) fn keep(db: &Connection, live: &[(i64, String)]) -> rusqlite::Result<()> {
+pub(crate) fn keep(db: &Connection, live: &[(i64, String)]) {
     panes().retain(|key, _| live.contains(key));
-    ledger().keep(db, &live.iter().map(|(run, _)| *run).collect())
+    // A busy state file must not fail the room check: the next tick writes again.
+    if let Err(error) = ledger().keep(db, &live.iter().map(|(run, _)| *run).collect()) {
+        eprintln!("priory daemon: cannot store the runs' usage yet: {error}");
+    }
 }
 
 /// How often a live run's sample is written, so a daemon restart loses at most this much.
@@ -94,8 +97,11 @@ struct Kept {
 pub(crate) struct Ledger {
     kept: BTreeMap<i64, Kept>,
     live: BTreeSet<i64>,
-    walked: Arc<Mutex<Vec<(i64, Option<u64>)>>>,
+    walked: Arc<Mutex<Vec<Walked>>>,
 }
+
+/// An ended run and its worktree's size, once its walk finished.
+type Walked = (i64, Option<u64>);
 
 impl Ledger {
     /// Takes run `run`'s new sample: the last CPU and IO, and the highest memory. A failed read, as
@@ -119,16 +125,26 @@ impl Ledger {
 
     /// Writes each live run's sample every `WRITE_EVERY`, and an ended run's last one. Starts the
     /// walk of an ended run's worktree, and stores the walks that finished.
+    /// On an error it changes nothing it has not written, so the next call writes the rest.
     pub(crate) fn keep(&mut self, db: &Connection, live: &BTreeSet<i64>) -> rusqlite::Result<()> {
-        let walked = std::mem::take(&mut *self.walked.lock().unwrap_or_else(|p| p.into_inner()));
-        for (run, disk) in walked {
-            db.execute(
+        let mut walked =
+            std::mem::take(&mut *self.walked.lock().unwrap_or_else(|p| p.into_inner()));
+        while let Some(&(run, disk)) = walked.last() {
+            let written = db.execute(
                 &format!(
                     "INSERT INTO run_usage (run, disk, measured) VALUES (?1, ?2, {NOW})
                      ON CONFLICT (run) DO UPDATE SET disk = ?2, measured = {NOW}"
                 ),
-                params![run, disk.map(|disk| disk as i64)],
-            )?;
+                params![run, disk.and_then(|disk| i64::try_from(disk).ok())],
+            );
+            if let Err(error) = written {
+                self.walked
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .append(&mut walked);
+                return Err(error);
+            }
+            walked.pop();
         }
         for (run, kept) in &mut self.kept {
             let due = kept.written.is_none_or(|at| at.elapsed() >= WRITE_EVERY);
@@ -137,9 +153,8 @@ impl Ledger {
                 kept.written = Some(Instant::now());
             }
         }
-        let ended: Vec<i64> = self.live.difference(live).copied().collect();
-        self.kept.retain(|run, _| live.contains(run));
-        for run in ended {
+        let mut ended = Vec::new();
+        for &run in self.live.difference(live) {
             let worktree: Option<String> = db
                 .query_row(
                     "SELECT tasks.worktree FROM runs JOIN tasks ON tasks.id = runs.task
@@ -149,10 +164,14 @@ impl Ledger {
                 )
                 .optional()?
                 .flatten();
+            ended.push((run, worktree));
+        }
+        self.kept.retain(|run, _| live.contains(run));
+        for (run, worktree) in ended {
             let walked = Arc::clone(&self.walked);
             let worktree = worktree.map(PathBuf::from).filter(|path| path.is_dir());
             std::thread::spawn(move || {
-                let disk = worktree.and_then(|path| size(&path, Instant::now() + WALK_LIMIT));
+                let disk = worktree.and_then(|path| walk(&path, Instant::now() + WALK_LIMIT));
                 walked
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
@@ -186,10 +205,19 @@ fn write(db: &Connection, run: i64, sample: &cgroup::Sample) -> rusqlite::Result
     Ok(())
 }
 
-/// The bytes of every file under `root`, as `du -sb` counts them, on `root`'s filesystem, without
-/// following links. None past `deadline`, or when a folder cannot be read, as one a teardown
-/// removes during the walk.
-fn size(root: &Path, deadline: Instant) -> Option<u64> {
+/// `size` of the worktree `path`, past the mounts in it, as a recipe's. None when the mount table
+/// cannot be read.
+fn walk(path: &Path, deadline: Instant) -> Option<u64> {
+    let real = std::fs::canonicalize(path).ok()?;
+    let mounts = priory_runtime::worktrees::mounts_under(&real).ok()?;
+    size(&real, &mounts, deadline)
+}
+
+/// The bytes of every file and folder under `root`, as `du -sb` counts them, on `root`'s filesystem,
+/// without following links or entering `mounts`. An entry the next run in the worktree removes or
+/// locks during the walk counts as absent. None past `deadline`, or once `root` is gone.
+fn size(root: &Path, mounts: &[PathBuf], deadline: Instant) -> Option<u64> {
+    use std::io::ErrorKind::{NotFound, PermissionDenied};
     use std::os::unix::fs::MetadataExt;
     let device = std::fs::symlink_metadata(root).ok()?.dev();
     let mut total = 0u64;
@@ -198,12 +226,23 @@ fn size(root: &Path, deadline: Instant) -> Option<u64> {
         if Instant::now() > deadline {
             return None;
         }
-        for entry in std::fs::read_dir(&folder).ok()? {
-            let entry = entry.ok()?;
-            let metadata = entry.metadata().ok()?;
+        let entries = match std::fs::read_dir(&folder) {
+            Ok(entries) => entries,
+            Err(error) if folder != root && matches!(error.kind(), NotFound | PermissionDenied) => {
+                continue;
+            }
+            Err(_) => return None,
+        };
+        for entry in entries {
+            let metadata = match entry.and_then(|entry| Ok((entry.path(), entry.metadata()?))) {
+                Ok(found) => found,
+                Err(error) if matches!(error.kind(), NotFound | PermissionDenied) => continue,
+                Err(_) => return None,
+            };
+            let (path, metadata) = metadata;
             total = total.saturating_add(metadata.len());
-            if metadata.is_dir() && metadata.dev() == device {
-                folders.push(entry.path());
+            if metadata.is_dir() && metadata.dev() == device && !mounts.contains(&path) {
+                folders.push(path);
             }
         }
     }
@@ -404,6 +443,90 @@ mod tests {
             stored(&db),
             Some((None, None, None, None, None, None, None))
         );
+    }
+
+    fn later() -> Instant {
+        Instant::now() + Duration::from_secs(60)
+    }
+
+    #[test]
+    fn the_walk_counts_files_and_folders_without_links_or_mounts() {
+        let tree = Tree::new("walk");
+        let worktree = tree.0.join("worktree");
+        std::fs::write(worktree.join("src/main.rs"), [0u8; 1000]).unwrap();
+        // A large file outside the worktree, reached only by a link.
+        std::fs::write(tree.0.join("outside"), vec![0u8; 1 << 20]).unwrap();
+        std::os::unix::fs::symlink(tree.0.join("outside"), worktree.join("link")).unwrap();
+        std::os::unix::fs::symlink(&tree.0, worktree.join("up")).unwrap();
+        let mounted = worktree.join("mounted");
+        std::fs::create_dir(&mounted).unwrap();
+        std::fs::write(mounted.join("big"), vec![0u8; 1 << 20]).unwrap();
+
+        let total = size(&worktree, &[mounted.clone()], later()).unwrap();
+
+        assert!(total >= 1000, "{total}");
+        assert!(total < 1 << 20, "a link or a mount was followed: {total}");
+        assert!(size(&worktree, &[], later()).unwrap() > 1 << 20);
+    }
+
+    #[test]
+    fn the_walk_past_its_deadline_or_without_its_root_measures_nothing() {
+        let tree = Tree::new("deadline");
+        let worktree = tree.0.join("worktree");
+
+        assert_eq!(
+            size(&worktree, &[], Instant::now() - Duration::from_secs(1)),
+            None
+        );
+        assert_eq!(size(&tree.0.join("gone"), &[], later()), None);
+    }
+
+    #[test]
+    fn a_folder_the_walk_cannot_read_counts_as_absent() {
+        use std::os::unix::fs::PermissionsExt;
+        let tree = Tree::new("locked");
+        let worktree = tree.0.join("worktree");
+        std::fs::write(worktree.join("src/main.rs"), [0u8; 1000]).unwrap();
+        let locked = worktree.join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::write(locked.join("big"), vec![0u8; 1 << 20]).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0)).unwrap();
+
+        let total = size(&worktree, &[], later());
+
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // As root, the folder reads anyway.
+        assert!(total.is_some_and(|total| total >= 1000), "{total:?}");
+    }
+
+    #[test]
+    fn a_file_removed_during_the_walk_counts_as_absent() {
+        let tree = Tree::new("removed");
+        let worktree = tree.0.join("worktree");
+        let churn = worktree.join("target");
+        std::fs::create_dir(&churn).unwrap();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer = {
+            let (churn, stop) = (churn.clone(), Arc::clone(&stop));
+            std::thread::spawn(move || {
+                // A build beside the walk: files and folders appear and vanish.
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    for name in 0..50 {
+                        let folder = churn.join(name.to_string());
+                        let _ = std::fs::create_dir(&folder);
+                        let _ = std::fs::write(folder.join("o"), b"x");
+                    }
+                    let _ = std::fs::remove_dir_all(&churn);
+                    let _ = std::fs::create_dir(&churn);
+                }
+            })
+        };
+
+        let walks: Vec<_> = (0..200).map(|_| size(&worktree, &[], later())).collect();
+
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        writer.join().unwrap();
+        assert!(walks.iter().all(Option::is_some), "{walks:?}");
     }
 
     #[test]

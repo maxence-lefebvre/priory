@@ -56,10 +56,12 @@ restart loses at most 15 seconds of them. `--collect` removes the scope as the a
 after that fails and the last values stay.
 
 When a run ends, a background thread sums the bytes of every file and folder in the task's worktree,
-as `du -sb` does, without following links or crossing into another filesystem. It reads no file. A
-7.8 GB worktree of 294,000 entries takes about 10 seconds with a cold cache and 2 seconds with a warm
-one. A walk past 60 seconds, or one that cannot read a folder, as during a teardown, stores no disk.
-A file with several hard links counts once per link.
+as `du -sb` does. It follows no link and enters no mount, such as a recipe's bind mount, that
+`/proc/self/mountinfo` lists under the worktree. It reads no file. A 7.8 GB worktree of 294,000
+entries takes about 10 seconds with a cold cache and 2 seconds with a warm one. The next run in the
+same worktree can add and remove files during the walk: an entry that vanishes or cannot be read
+counts as absent. A walk past 60 seconds, or one whose worktree is gone, stores no disk. A file with
+several hard links counts once per link.
 
 A run with no scope, on a host with no systemd user manager, on macOS or in the cloud, stores `null`
 for every value it could not read. `priory runs --json` and `priory task TASK --json` show the values,

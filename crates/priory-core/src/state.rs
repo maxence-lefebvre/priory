@@ -4277,7 +4277,7 @@ pub(crate) fn promised(db: &Connection, factory: &Factory) -> rusqlite::Result<r
         live.push((run, session.to_owned()));
         crate::usage::memory(run, tmux, session)
     })?;
-    crate::usage::keep(db, &live)?;
+    crate::usage::keep(db, &live);
     Ok(promised)
 }
 
