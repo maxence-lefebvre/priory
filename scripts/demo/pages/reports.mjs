@@ -23,14 +23,14 @@ export async function check({ hooked, page, evaluate, until, sleep, change, scre
     await until('document.activeElement?.id === "report-query"', "the search field's focus");
     await page("Input.insertText", { text: "cache" });
     await until('document.querySelector(".rsearch [role=status]")?.textContent === "1 found"', "one row found");
-    await evaluate('globalThis.field = document.getElementById("report-query")');
+    await evaluate('globalThis.field = document.getElementById("report-query"); true');
     await refresh();
     const search = await evaluate('document.getElementById("report-query") === field && document.activeElement === field && field.value === "cache" && document.querySelectorAll("#app .rrow").length === 1');
     await evaluate('document.querySelector("[aria-label=\\"Search this report\\"]").click()');
     await evaluate(CLICK("Comment", ".rrow .racts"));
     await until('document.activeElement?.id === "report-draft"', "the comment field's focus");
     await page("Input.insertText", { text: "a draft" });
-    await evaluate('globalThis.field = document.getElementById("report-draft")');
+    await evaluate('globalThis.field = document.getElementById("report-draft"); true');
     await refresh();
     const draft = await evaluate('document.getElementById("report-draft") === field && document.activeElement === field && field.value === "a draft"');
     await evaluate(CLICK("Cancel"));
