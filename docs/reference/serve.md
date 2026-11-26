@@ -63,6 +63,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `POST /api/todos` | `priory todo add TEXT [--band B] [--due TIME]` | See [Writes](#writes) |
 | `POST /api/todos/{id}/done` | `priory todo done ID` | See [Writes](#writes) |
 | `POST /api/seen` | `priory seen --at TIME` | See [Writes](#writes) |
+| `POST /api/autopilot/off` | `priory autopilot off` | `{"ok", "untold"}`. See [Writes](#writes) |
 | `POST /api/push/subscribe`, `POST /api/push/unsubscribe` | | See [Notifications](#notifications) |
 | `POST /api/batches/{id}/edit` | `priory batch edit ID --expected N ...` | as above |
 | `POST /api/reports/pick` | `priory report pick PICK OPTION --expected N` | `{"ok": "<what the CLI prints>"}` |
@@ -219,6 +220,7 @@ application/json` and a JSON body of at most 16 KiB with exactly the fields belo
 | `POST /api/todos` | `text`, one line, then optionally `band`, one of the factory's bands, and `due`, an RFC 3339 time, as `priory todo add`. The reply's `ok` is the new to-do's id |
 | `POST /api/todos/{id}/done` | `{}`, as `priory todo done`. A to-do already done gets `422` |
 | `POST /api/seen` | `at`, an RFC 3339 time: the visit to the desk to record for `me`, as `priory seen --at` records it, to the second |
+| `POST /api/autopilot/off` | `{}`. Ends [autopilot](../daemon/waits.md#autopilot) here first, then tells the other runners, as `priory autopilot off` does. A view-only machine takes it too. The reply's `ok` is what the CLI prints, and `untold` is null, or why no other runner was told, such as a log it cannot reach |
 
 In `/api/asks/{id}`, `{id}` is the ask's `id` as `/api/asks` lists it: its number, an outside
 ask's name, or `<runner>:<ask>` for another runner's ask, and `revision` is the ask's `revision` the

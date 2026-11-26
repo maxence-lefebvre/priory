@@ -31,11 +31,11 @@ const ASKS = [{ id: 3, task: 3, key: "ENG-3", step: "implement", state: "open", 
 const QUEUE = { running: [], waiting: [], asleep: [], up_next: [{ kind: "queued", task: 8, key: "ENG-8", why: "first in the queue", at: "2026-11-25T10:00:00Z" }] };
 const TASKS = [{ id: 7, key: "ENG-7", state: "blocked", repo: "acme/shop" }];
 
-function draw(t, Part, { size = "wide", search = "" } = {}) {
+function draw(t, Part, { size = "wide", search = "", desk = DESK } = {}) {
   const cache = client({ api: async () => ({}) });
   cache.setQueryData(keyOf("links"), LINKS);
   cache.setQueryData(keyOf("views"), { factory: "shop", views: { default: { layout: { tabs: [] } } } });
-  cache.setQueryData(keyOf("desk"), DESK);
+  cache.setQueryData(keyOf("desk"), desk);
   cache.setQueryData(keyOf("asks"), { asks: ASKS, bands: [], older: { answered: 0, withdrawn: 0 } });
   cache.setQueryData(keyOf("queue"), QUEUE);
   cache.setQueryData(keyOf("tasks"), { tasks: TASKS, older: 0 });
@@ -72,4 +72,11 @@ test("a saved view draws its own rows, and a preview has no capsule", (t) => {
   const preview = draw(t, DeskPreview);
   assert.match(preview, /^<div><div class="top">/);
   assert.doesNotMatch(preview, /capsule/);
+});
+
+test("a Desk with autopilot on draws its banner above the others, with Turn off", (t) => {
+  const autopilot = { window: 4, since: "2026-11-25T22:00:00Z", until: "2026-11-26T08:00:00Z", level: "high", lanes: [], answered: 3, left: 1 };
+  const html = draw(t, DeskPage, { size: "phone", desk: { ...DESK, autopilot, paused: "paused since 2026-11-25T09:00:00Z: deploy" } });
+  assert.match(html, /<div class="banner pilot" role="status"><svg[^>]*>.*?<\/svg><div><span>Autopilot is on until \d\d:\d\d \(high, every lane\)\. It answered 3 and left 1\.<\/span><br\/><button type="button" id="autopilot-off" class="btn secondary" aria-disabled="false">Turn off<\/button><\/div><\/div><div class="banner" role="status">/);
+  assert.doesNotMatch(draw(t, DeskPage, { size: "phone" }), /autopilot-off/, "no banner while autopilot is off");
 });

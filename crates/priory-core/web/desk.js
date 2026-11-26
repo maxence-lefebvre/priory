@@ -185,6 +185,42 @@ export function deskBanners(desk, ago) {
   ].filter((banner) => banner.text);
 }
 
+/**
+ * The autopilot banner's sentence (DESIGN.md, Desk): until when, its level and lanes, and what it
+ * answered and left here. Offline, the last read and how old it is; off here with no other runner
+ * told, why.
+ * @param {any} autopilot the desk's `autopilot` @param {{ untold?: string | null, readAt?: string | null }} state
+ * @param {{ clock: (iso: string) => string, ago: (iso: string) => string }} times
+ */
+export function autopilotWords(autopilot, { untold = null, readAt = null }, { clock, ago }) {
+  if (untold !== null) return `Autopilot is off here, and no other runner was told: ${untold.replace(/\.$/, "")}.`;
+  const scope = `${autopilot.level}, ${autopilot.lanes.length ? autopilot.lanes.join(", ") : "every lane"}`;
+  if (readAt) return `Autopilot was on ${ago(readAt)}, until ${clock(autopilot.until)} (${scope}).`;
+  return `Autopilot is on until ${clock(autopilot.until)} (${scope}). It answered ${autopilot.answered} and left ${autopilot.left}.`;
+}
+
+/**
+ * What the autopilot banner draws, or null for none: its sentence, its button's label, whether the
+ * button waits, and whether the sentence is an error. `off` is the page's last off: the window it
+ * ended, whether it is in flight, and why no other runner was told. That window stays off until a read
+ * shows another, even before the desk is read again.
+ * @param {any} autopilot the desk's `autopilot`
+ * @param {{ window: number | null, sending: boolean, untold: string | null }} off
+ * @param {string | null} offline when the desk was last read, while the page is offline
+ * @param {{ clock: (iso: string) => string, ago: (iso: string) => string }} times
+ */
+export function autopilotView(autopilot, off, offline, times) {
+  const ended = off.window !== null && (!autopilot || autopilot.window === off.window);
+  if (ended ? off.untold === null : !autopilot) return null;
+  const untold = ended ? off.untold : null;
+  return {
+    words: autopilotWords(autopilot, { untold, readAt: offline }, times),
+    label: off.sending ? "Turning off" : untold !== null ? "Tell them again" : "Turn off",
+    busy: off.sending || offline !== null,
+    error: untold !== null,
+  };
+}
+
 const STOPPED = ["blocked", "failed", "prompt", "command"];
 
 /**

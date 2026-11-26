@@ -3,11 +3,11 @@
 import { memo, useEffect, useRef } from "react";
 import { askHeading, routedMark, runnerOf } from "../asks.js";
 import { asked, cache, deskReadAt, refresh } from "../data.js";
-import { actionNote, batchParts, capsuleWords, countHead, countWords, deskModel, dueParts, mergeSince, nextLink, onRoom, plural, rowAction, sinceGroups, taskRepo } from "../desk.js";
+import { actionNote, autopilotView, batchParts, capsuleWords, countHead, countWords, deskModel, dueParts, mergeSince, nextLink, onRoom, plural, rowAction, sinceGroups, taskRepo } from "../desk.js";
 import { DESK_VIEWS } from "../frame.js";
 import { role } from "../icons.js";
 import { droppedNote, sinceWords, unheardNote, unroutedNote } from "../inbox.js";
-import { post, refuse, session } from "../session.js";
+import { post, refuse, session, writeRefusal } from "../session.js";
 import { prStack } from "../stack.js";
 import { store } from "../store.js";
 import { taskLabel, workStep } from "../tasks.js";
@@ -152,6 +152,41 @@ const TodoDone = memo(function TodoDone({ id, place = "row", prefix = "" }) {
       <span className="task-acts"><button type="button" id={`${prefix}todo-${place}-${id}`} className="btn secondary act" aria-disabled={busy ? "true" : "false"} onClick={() => { if (!busy) markDone(id); }}>Done</button></span>
       {notice ? <p className="note acts-note" role="status">{notice}</p> : null}
     </>
+  );
+});
+
+// Autopilot's off (DESIGN.md, Desk): the window it turned off, whether it is in flight, why no other
+// runner was told, and why the last one did not go.
+const pilot = store({ window: null, sending: false, untold: null, notice: null });
+
+async function turnOff(window) {
+  pilot.set({ ...pilot.get(), sending: true, notice: null });
+  let reply;
+  try {
+    reply = await post("/api/autopilot/off", {});
+  } catch {
+    reply = { status: 0, body: {} };
+  }
+  const { status, body } = reply;
+  if (status === 401) {
+    pilot.set({ window: null, sending: false, untold: null, notice: null });
+    return refuse();
+  }
+  pilot.set(status === 200 ? { window, sending: false, untold: body.untold ?? null, notice: null }
+    : { ...pilot.get(), sending: false, notice: writeRefusal(status, body) });
+  refresh();
+}
+
+const Autopilot = memo(function Autopilot({ autopilot }) {
+  const off = useStore(pilot);
+  const failed = Boolean(useStore(session).failed);
+  const readAt = useDesk().dataUpdatedAt;
+  const view = autopilotView(autopilot, off, failed && readAt ? new Date(readAt).toISOString() : null, { clock, ago });
+  if (!view) return null;
+  return (
+    <div className="banner pilot" role="status"><Icon name="bot" size="s20" /><div><span className={view.error ? "t-danger" : undefined}>{view.words}</span><br />
+      <button type="button" id="autopilot-off" className="btn secondary" aria-disabled={view.busy ? "true" : "false"} onClick={() => { if (!view.busy) turnOff(off.window ?? autopilot.window); }}>{view.label}</button>
+      {off.notice ? <p className="note acts-note" role="status">{off.notice}</p> : null}</div></div>
   );
 });
 
@@ -368,7 +403,7 @@ function useDeskBody({ model, data, olderTasks }, wide) {
       { key: "all", label: "All", count: wide ? model.tasks.length + olderTasks : null, on: current === "all" },
     ]} />
   );
-  const banner = model.banners.map(({ text, icon, intake }) => <div key={text} className="banner" role="status" id={intake ? "intake" : undefined}><Icon name={icon} size="s20" /><span>{text}</span></div>);
+  const banner = [<Autopilot key="autopilot" autopilot={data.desk.autopilot} />, ...model.banners.map(({ text, icon, intake }) => <div key={text} className="banner" role="status" id={intake ? "intake" : undefined}><Icon name={icon} size="s20" /><span>{text}</span></div>)];
   const { tasks } = data;
   let rows;
   if (current === "running") rows = model.running.length ? model.running.map((run) => <RunRow key={run.run} run={run} />) : <Empty>No run is live. Runs show here while an agent works.</Empty>;

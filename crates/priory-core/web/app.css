@@ -112,6 +112,8 @@ a.facet[aria-current="true"] { background: var(--action-soft); color: var(--acti
 /* Room banner */
 .banner { margin: 6px var(--gutter); padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--surface); display: grid; grid-template-columns: 20px 1fr; gap: 10px; font: 400 var(--type-small) var(--font-ui); }
 .banner .ico { color: var(--warn-text); }
+.banner.pilot .ico { color: var(--text); }
+.banner.pilot .btn { margin-top: 10px; }
 
 /* Rows */
 .sec { display: flex; justify-content: space-between; align-items: baseline; padding: 16px var(--gutter) 6px; font: 600 var(--type-caption) var(--font-ui); color: var(--text-2); }

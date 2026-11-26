@@ -2,7 +2,8 @@
 //! GitHub webhook its signed deliveries.
 
 use crate::{
-    grades, keyboard, listing, push, report, runners, screen, sections, snooze, state, todo, tools,
+    autopilot, grades, keyboard, listing, push, report, runners, screen, sections, snooze, state,
+    todo, tools,
 };
 use priory_factory::factory::{Factory, Price, Terminal, Trigger};
 use priory_intake::intake::{
@@ -857,6 +858,7 @@ enum Write<'a> {
     TodoAdd,
     TodoDone(i64),
     Seen,
+    AutopilotOff,
     Read(i64),
     BatchEdit(&'a str),
     Move(&'a str),
@@ -880,6 +882,7 @@ impl<'a> Write<'a> {
             "/api/unsubscribe" => return Some(Write::Unfollow),
             "/api/todos" => return Some(Write::TodoAdd),
             "/api/seen" => return Some(Write::Seen),
+            "/api/autopilot/off" => return Some(Write::AutopilotOff),
             _ => {}
         }
         if let Some(id) = path
@@ -1115,6 +1118,7 @@ fn write(
             Reply::json(if repeated { 409 } else { 200 }, added)
         }
         Ok(Ok(subscribed)) if matches!(write, Write::Subscribe) => Reply::json(200, subscribed),
+        Ok(Ok(off)) if matches!(write, Write::AutopilotOff) => Reply::json(200, off),
         Ok(Ok(done)) => {
             let mut body = serde_json::json!({ "ok": done });
             // The stored ask, so the client shows it without reading a listing again.
@@ -1762,6 +1766,13 @@ fn write_line(
                 at: body.at,
             };
             Ok((line(&state::SeenLine { seen }), Sent::Nothing))
+        }
+        Write::AutopilotOff => {
+            let Empty {} = serde_json::from_slice(body).map_err(bad)?;
+            let off = autopilot::OffLine {
+                autopilot: autopilot::OffVerb::Off,
+            };
+            Ok((line(&off), Sent::Nothing))
         }
     }
 }

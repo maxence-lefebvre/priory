@@ -242,6 +242,47 @@ pub fn tell(
     }
 }
 
+/// What a person's `off` did: the line it prints, and why no other runner was told, if none was.
+#[derive(serde::Serialize)]
+pub struct Off {
+    pub ok: &'static str,
+    pub untold: Option<String>,
+}
+
+/// The socket line of `POST /api/autopilot/off`: `{"autopilot": "off"}`.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OffLine {
+    pub autopilot: OffVerb,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OffVerb {
+    Off,
+}
+
+/// Ends autopilot in this state file first, whatever the factory or the log, then tells the other
+/// runners of `factory` from `host`. `None` is a factory that does not load.
+pub fn off(
+    db: &mut Connection,
+    factory: Option<&Factory>,
+    host: Option<&str>,
+) -> Result<Off, String> {
+    let on = status(db).map_err(|error| error.to_string())?;
+    let message = message(None);
+    set(db, None, &message, false)?;
+    let ok = match on.is_null() {
+        true => "autopilot was not on",
+        false => "autopilot is off: see `priory autopilot report`",
+    };
+    let untold = factory
+        .ok_or_else(|| "the factory does not load".to_owned())
+        .and_then(|factory| tell(db, factory, role(factory, host)?, &message))
+        .err();
+    Ok(Off { ok, untold })
+}
+
 /// Sends `message` to the runners from a machine that runs no task.
 fn publish(factory: &Factory, message: &Message) -> Result<(), String> {
     runners::publish(factory.log(), message).map_err(String::from)

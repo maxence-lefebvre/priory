@@ -192,6 +192,11 @@ await evaluate("history.back()");
 await until('document.getElementById("say")', "Back to the task");
 report((await evaluate('document.getElementById("say").value')) === "hello", "the Say draft outlives its page");
 
+// The Desk draws autopilot's banner with Turn off, and keeps it through a refresh.
+await check("the Desk keeps autopilot's Turn off", "/", 'document.querySelector("#app nav")',
+  '() => document.getElementById("autopilot-off")?.textContent ?? null',
+  (label) => (label === "Turn off" ? null : `the button reads ${JSON.stringify(label)}`));
+
 // What each page reads once the revision moves.
 // Each page's own file says it, so two ports touch no common line.
 const folder = new URL("./pages/", import.meta.url);
