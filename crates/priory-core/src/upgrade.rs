@@ -884,16 +884,19 @@ fn floor(path: &Path) -> Result<i64, String> {
         .map_err(|error| format!("{}: {error}", path.display()))
 }
 
-/// A database's version and every table, index and trigger it holds.
+/// A database's version, and its floor with every table, index and trigger it holds.
 fn schema(path: &Path) -> Result<(i64, Vec<String>), String> {
     let db = swap::read_only(path)?;
     let read = || -> rusqlite::Result<_> {
         let version = db.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        let floor: i64 = db.pragma_query_value(None, "application_id", |row| row.get(0))?;
         let mut statement =
             db.prepare("SELECT coalesce(sql, name) FROM sqlite_schema ORDER BY type, name")?;
-        let objects = statement
+        let mut objects: Vec<String> = statement
             .query_map([], |row| row.get(0))?
             .collect::<Result<_, _>>()?;
+        // Older binaries read a new floor as a change of schema, so it migrates too.
+        objects.push(format!("application_id {floor}"));
         Ok((version, objects))
     };
     read().map_err(|error| format!("{}: {error}", path.display()))
@@ -1072,6 +1075,26 @@ fn note_once(db: &Connection, home: &Path, key: &str, line: &str) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_floor_alone_changes_the_schema() {
+        let dir = std::env::temp_dir().join(format!("priory-floor-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.db");
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch("CREATE TABLE t (a); PRAGMA user_version = 3;")
+            .unwrap();
+        let before = schema(&path).unwrap();
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .pragma_update(None, "application_id", 2)
+            .unwrap();
+
+        assert_ne!(schema(&path).unwrap(), before);
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn a_channel_takes_only_its_own_newer_releases() {

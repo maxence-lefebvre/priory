@@ -294,3 +294,43 @@ pub(crate) fn satisfies(
     };
     kind == expected && names && checked
 }
+
+/// Whether the check event `later` is a newer run of the check of `event`, at the same commit: the
+/// same app, name and origin. A run that did not really run, see `ran`, supersedes none that did. An
+/// older intake's event holds no origin, so only another such one supersedes it. Each comes with its
+/// seq, which orders events without a run id.
+pub(crate) fn supersedes(
+    later: (i64, &serde_json::Value),
+    event: (i64, &serde_json::Value),
+) -> bool {
+    let ((later_seq, later), (seq, event)) = (later, event);
+    let same = |field: &str| later[field] == event[field];
+    let newer = match (later["github_id"].as_u64(), event["github_id"].as_u64()) {
+        (Some(later), Some(id)) => later.cmp(&id),
+        _ => later_seq.cmp(&seq),
+    };
+    let ran = |data: &serde_json::Value| priory_intake::intake::ran(data["conclusion"].as_str());
+    ran(later).cmp(&ran(event)).then(newer).is_gt()
+        && ["repo", "head_sha", "app", "name", "origin"]
+            .into_iter()
+            .all(same)
+}
+
+/// Whether the inbox row `red` is a red check that counts in its `failing`: no stored run of a known
+/// origin superseded it, as `supersedes` tells. The pull request's expression is the one of the index
+/// `inbox_by_pull`.
+pub(crate) const COUNTED_RED: &str = "(coalesce(json_extract(red.data, '$.conclusion'), '')
+      NOT IN ('success', 'neutral', 'skipped')
+  AND json_extract(red.data, '$.superseded_by') IS NULL
+  AND NOT EXISTS (SELECT 1 FROM inbox AS later
+    WHERE 'github:' || json_extract(later.data, '$.repo') || '#'
+        || coalesce(json_extract(later.data, '$.pull_request'), json_extract(later.data, '$.issue'))
+      = 'github:' || json_extract(red.data, '$.repo') || '#'
+        || coalesce(json_extract(red.data, '$.pull_request'), json_extract(red.data, '$.issue'))
+    AND later.type = red.type
+    AND json_extract(later.data, '$.head_sha') = json_extract(red.data, '$.head_sha')
+    AND json_extract(later.data, '$.name') IS json_extract(red.data, '$.name')
+    AND json_extract(later.data, '$.app') IS json_extract(red.data, '$.app')
+    AND json_extract(later.data, '$.origin') = json_extract(red.data, '$.origin')
+    AND json_extract(later.data, '$.github_id') > json_extract(red.data, '$.github_id')
+    AND coalesce(json_extract(later.data, '$.conclusion'), '') NOT IN ('neutral', 'skipped')))";

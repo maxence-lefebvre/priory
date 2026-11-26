@@ -12,7 +12,7 @@ use priory_intake::intake::{
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 type Workflows = BTreeMap<String, Loaded<Workflow>>;
@@ -41,6 +41,56 @@ pub struct Answer {
     /// session through `priory mcp --outside`.
     #[serde(default)]
     pub by: String,
+}
+
+/// A write of a person's with the id of the press that made it, which each resend carries.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct Called<T> {
+    #[serde(flatten)]
+    pub write: T,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call: Option<uuid::Uuid>,
+}
+
+impl<T: serde::Serialize> Called<T> {
+    /// What this call got when it applied before, or why it is refused as another write's. None
+    /// when it has no id or never applied.
+    fn before(&self, tx: &Transaction) -> rusqlite::Result<Option<Result<String, String>>> {
+        let Some(call) = self.call else {
+            return Ok(None);
+        };
+        let held = tx
+            .query_row(
+                "SELECT write, reply FROM calls WHERE id = ?1",
+                [call.to_string()],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?;
+        Ok(held.map(|(write, reply)| match write == self.written() {
+            true => Ok(reply),
+            false => Err(format!("call {call} already made another write")),
+        }))
+    }
+
+    /// Records that this call applied with `reply`, and forgets the calls no client resends.
+    fn applied(&self, tx: &Transaction, reply: &str) -> rusqlite::Result<()> {
+        let Some(call) = self.call else {
+            return Ok(());
+        };
+        tx.execute(
+            "DELETE FROM calls WHERE created < strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-7 days')",
+            [],
+        )?;
+        tx.execute(
+            "INSERT INTO calls (id, write, reply) VALUES (?1, ?2, ?3)",
+            params![call.to_string(), self.written(), reply],
+        )?;
+        Ok(())
+    }
+
+    fn written(&self) -> String {
+        serde_json::to_string(&self.write).expect("a write serializes")
+    }
 }
 
 /// A live run with its task's workflow.
@@ -137,11 +187,7 @@ fn branches(value: &Value, own: Option<&str>) -> Result<Option<Vec<String>>, Str
         own.and_then(|own| branch.strip_prefix(own)?.strip_prefix('-'))
             .is_some_and(|name| !name.is_empty())
     };
-    let unique = branches
-        .iter()
-        .collect::<std::collections::BTreeSet<_>>()
-        .len()
-        == branches.len();
+    let unique = branches.iter().collect::<BTreeSet<_>>().len() == branches.len();
     if Some(top.as_str()) != own || !lower.iter().all(named) || !unique {
         return Err(wrong());
     }
@@ -1754,6 +1800,15 @@ impl Seen {
             && !PASSING.contains(&self.data["conclusion"].as_str().unwrap_or("none"))
             && self.data["superseded_by"].is_null()
     }
+
+    /// Whether the check is red and no later run of it, among `events`, superseded it.
+    fn red_among<'a>(&self, mut events: impl Iterator<Item = &'a Seen>) -> bool {
+        let supersedes = |later: &Seen| {
+            later.kind == CHECKED
+                && route::supersedes((later.seq, &later.data), (self.seq, &self.data))
+        };
+        self.red() && !events.any(supersedes)
+    }
 }
 
 /// Judges the daemon's checks wait `wait` on every event the inbox kept, ignored or woke on about its pull
@@ -1860,9 +1915,9 @@ fn judge(tx: &Transaction, wait: i64, factory: &Factory) -> rusqlite::Result<Fir
     };
     let failing = check.data["failing"].as_u64();
     let red = match failing {
-        _ if check.red() => Some(check),
+        _ if check.red_among(seen.iter()) => Some(check),
         // The red check counted here came earlier, or its event follows from the same poll.
-        Some(1..) => checks.find(|event| event.red()),
+        Some(1..) => checks.find(|event| event.red_among(seen.iter())),
         _ => None,
     };
     if let Some(red) = red {
@@ -1897,24 +1952,23 @@ fn judge(tx: &Transaction, wait: i64, factory: &Factory) -> rusqlite::Result<Fir
     done(tx, wait, task, check.seq, factory)
 }
 
-/// The failure's signature at `commit`: each check's newest event in `seen` up to the event
-/// `upto`, kept when red, as `name (conclusion)` sorted by name.
+/// The failure's signature at `commit`: each red check in `seen` up to the event `upto` that no
+/// later run superseded by then, as `name (conclusion)` sorted by name.
 fn signature(seen: &[Seen], commit: &str, upto: i64) -> Vec<String> {
-    let mut newest = BTreeMap::new();
-    for event in seen {
-        if event.kind == CHECKED && event.head == commit && event.seq <= upto {
+    let known: Vec<&Seen> = seen
+        .iter()
+        .filter(|event| event.head == commit && event.seq <= upto)
+        .collect();
+    let red: BTreeSet<String> = known
+        .iter()
+        .filter(|event| event.red_among(known.iter().copied()))
+        .map(|event| {
             let name = event.data["name"].as_str().unwrap_or("-");
-            newest.entry(name).or_insert(event);
-        }
-    }
-    newest
-        .into_iter()
-        .filter(|(_, event)| event.red())
-        .map(|(name, event)| {
             let conclusion = event.data["conclusion"].as_str().unwrap_or("none");
             format!("{name} ({conclusion})")
         })
-        .collect()
+        .collect();
+    red.into_iter().collect()
 }
 
 /// Stops the fix loop of `task` when its gate `wait` turns red at `commit` with the signature of
@@ -2982,14 +3036,14 @@ fn hold_now(
         .optional()?;
     if state.as_deref() == Some("running") {
         let refused = match &live {
-            None => Some(format!("task {task} has no live run to interrupt")),
-            Some((run, _)) => crate::hold::guarded(tx, *run, trace.factory)?,
+            None => Some(format!(
+                "task {task} has no live run to interrupt: leave out --now to hold it once its command ends"
+            )),
+            Some((run, _)) => crate::hold::guarded(tx, *run, trace.factory)?
+                .map(|why| format!("{why}: leave out --now to hold it after its turn")),
         };
         if let Some(why) = refused {
-            return Ok((
-                Err(format!("{why}: leave out --now to hold it after its turn")),
-                None,
-            ));
+            return Ok((Err(why), None));
         }
     }
     let marked = crate::hold::hold(tx, task, hold, trace.factory)?;
@@ -3016,7 +3070,10 @@ fn hold_now(
     )?;
     let reply = match (state.as_str(), reason) {
         ("held", Some(reason)) => format!("task {task} {reason}"),
-        _ => format!("task {task} is {state}"),
+        _ if crate::hold::is_marked(tx, task)? => {
+            format!("task {task} is {state}; the hold still applies")
+        }
+        _ => format!("task {task} is {state}; the hold no longer applies"),
     };
     Ok((Ok(reply), kill))
 }
@@ -3170,6 +3227,7 @@ pub(crate) fn sleep(tx: &Transaction, run: i64) -> rusqlite::Result<Option<Strin
         "UPDATE tasks SET state = 'asleep' WHERE id = ?1 AND state = 'running'",
         [task],
     )?;
+    crate::hold::show_mark(tx, task)?;
     Ok(Some(tmux))
 }
 
@@ -3324,6 +3382,7 @@ pub(crate) fn settle(
     // `running`, so the sweep leaves its worktree alone.
     if commanding(tx, run.task)? {
         end(tx, run.id, "asleep")?;
+        crate::hold::show_mark(tx, run.task)?;
         return Ok(Some(Some(run.tmux.clone())));
     }
     let asked = tx
@@ -3742,8 +3801,11 @@ fn set(
          entered = iif(?3 IS NULL, entered, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
          tokens = iif(?3 IS NULL, tokens, NULL), model = iif(?3 IS NULL, model, NULL) WHERE id = ?1",
         params![task, state, step, reason],
-    )
-    .map(drop)
+    )?;
+    if reason.is_some() {
+        return Ok(());
+    }
+    crate::hold::show_mark(tx, task)
 }
 
 /// The first line of `text` with no tab, for a task's reason or a question: a tab would split it
@@ -4040,12 +4102,18 @@ fn has_result(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
 /// Applies a person's answer, or records why it was refused on the ask it names.
 pub(crate) fn answer(
     db: &mut Connection,
-    answer: &Answer,
+    answer: &Called<Answer>,
     trace: &Trace,
     head: &dyn Fn(&Path, &str) -> Option<String>,
 ) -> rusqlite::Result<Result<String, String>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let applied = answer_in_tx(&tx, answer, trace, head)?;
+    if let Some(before) = answer.before(&tx)? {
+        return Ok(before);
+    }
+    let applied = answer_in_tx(&tx, &answer.write, trace, head)?;
+    if let Ok(reply) = &applied {
+        answer.applied(&tx, reply)?;
+    }
     tx.commit()?;
     Ok(applied)
 }
@@ -4780,12 +4848,16 @@ pub struct Dismiss {
 /// ask, which only its options move on, is refused.
 pub(crate) fn dismiss(
     db: &mut Connection,
-    dismiss: &Dismiss,
+    dismiss: &Called<Dismiss>,
     factory: &priory_factory::factory::Factory,
 ) -> rusqlite::Result<Result<String, String>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let dismissed = dismiss_in_tx(&tx, dismiss, factory, None)?;
-    if dismissed.is_ok() {
+    if let Some(before) = dismiss.before(&tx)? {
+        return Ok(before);
+    }
+    let dismissed = dismiss_in_tx(&tx, &dismiss.write, factory, None)?;
+    if let Ok(reply) = &dismissed {
+        dismiss.applied(&tx, reply)?;
         tx.commit()?;
     }
     Ok(dismissed)

@@ -89,7 +89,7 @@ mkdir -p ~/.local/state/priory-acme/worktrees
 cd ~/.local/state/priory-acme/worktrees && claude   # accept the dialog, then /exit
 ```
 
-Trust each clone after Priory made it, in step 8.
+Trust each clone after Priory made it, in step 9.
 
 ## 5. Serve the web view over HTTPS
 
@@ -136,7 +136,26 @@ systemctl --user start priory-intake priory-daemon
 Check: `systemctl --user status` shows both `active (running)`. A unit that shows
 `start condition unmet` has no environment file at `~/.config/priory/env`.
 
-## 7. Keep them up after you log out
+## 7. Keep answers fast under load
+
+A busy machine delays the daemon, and with it the web view. Give its unit a larger CPU share than
+the other programs of your session:
+
+```sh
+mkdir -p ~/.config/systemd/user/priory-daemon.service.d
+printf '[Service]\nCPUWeight=1000\n' > ~/.config/systemd/user/priory-daemon.service.d/cpu.conf
+systemctl --user daemon-reload
+systemctl --user restart priory-daemon
+```
+
+The weight splits the CPU between the daemon and the other units of `app.slice`, whose default is
+100. It does nothing while the CPU has idle time. The agents are elsewhere: `priory.slice` has a
+weight of 20 against 100 for the whole of `app.slice`, as [agents slice](daemon/agents-slice.md)
+explains, so `app.slice` already gets 5 times the CPU of the agents when both want it.
+
+Check it with `systemctl --user show priory-daemon -p CPUWeight`.
+
+## 8. Keep them up after you log out
 
 Without lingering, user services stop when your last session ends. On an always-on machine, run this
 once. It changes the machine, so you run it yourself:
@@ -147,7 +166,7 @@ loginctl enable-linger "$USER"
 
 Check: `loginctl show-user "$USER" --property=Linger` prints `Linger=yes`.
 
-## 8. Read the first poll's backlog
+## 9. Read the first poll's backlog
 
 The intake's first poll of each stream is a baseline: it records the recent events it finds, and
 requests no task for them (see [Baseline](intake/github-polling.md#baseline)). On a busy repository,

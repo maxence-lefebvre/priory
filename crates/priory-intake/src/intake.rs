@@ -75,6 +75,16 @@ pub const CHECKED: &str = "github.check_run.completed";
 pub const CHECK_RUNS: &str = "github.pull_request.check_runs";
 /// The check run conclusions that count as green, lowercase as a check event carries them.
 pub const PASSING: [&str; 3] = ["success", "neutral", "skipped"];
+
+/// Whether a check run of `conclusion`, none while it runs, says something about the commit. A
+/// skipped or neutral one does not, so it supersedes no run that does, unlike in `gh pr checks`.
+pub fn ran(conclusion: Option<&str>) -> bool {
+    !conclusion.is_some_and(|conclusion| {
+        ["neutral", "skipped"]
+            .iter()
+            .any(|quiet| conclusion.eq_ignore_ascii_case(quiet))
+    })
+}
 /// The streams of a repo: the message type each is named after.
 const STREAMS: [&str; 4] = [LABELED, OPENED, REVIEWED, CHECKED];
 pub(crate) const TASK_REQUESTED: &str = "factory.task.requested";
