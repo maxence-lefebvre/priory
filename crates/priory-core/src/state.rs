@@ -2246,6 +2246,7 @@ CREATE TRIGGER ask_withdrawn AFTER UPDATE OF withdrawn ON asks
   INSERT INTO ask_withdrawals (ask, revision, withdrawn, reason)
     VALUES (NEW.id, NEW.revision, NEW.withdrawn, NEW.withdrawn_reason);
 END;
+DROP TRIGGER IF EXISTS an_ended_task_withdraws_its_asks;
 CREATE TRIGGER an_ended_task_withdraws_its_asks AFTER UPDATE OF state ON tasks
   WHEN NEW.state IN ('done', 'failed', 'dropped') AND OLD.state IS NOT NEW.state BEGIN
   UPDATE asks SET withdrawn = 1, withdrawn_reason = 'task-ended'
