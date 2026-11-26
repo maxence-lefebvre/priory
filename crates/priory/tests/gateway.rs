@@ -292,8 +292,7 @@ fn gateway_answers_429_past_60_calls_of_a_grant_and_10_refusals_a_minute() {
         .collect();
     assert_eq!(over.len(), 1, "{audit:#?}");
 
-    let mut long = "a".repeat(300);
-    long.insert_str(0, "x");
+    let long = format!("x{}", "a".repeat(300));
     let tool = json!({ "jsonrpc": "2.0", "id": 1, "method": long });
     let (_, valid) = setup.grant("2026-11-26T12:00:00Z", "1h");
     // The new grant reaches the gateway on its next read of the log, within a second.
