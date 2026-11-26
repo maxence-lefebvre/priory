@@ -501,8 +501,10 @@ ends its turn:
 
 - If the run reaches `Stop` with no result, it takes over the task's open asks and agent waits, so
   the task sleeps on them again.
-- If the run calls `result`, `ask` or `wait` instead, it moves on. The call withdraws the open asks
-  and agent waits of earlier runs with the reason `moved-on`.
+- If the run calls `result` or `ask` instead, it moves on. The call withdraws the open asks and
+  agent waits of earlier runs with the reason `moved-on`.
+- If the run calls `wait`, it withdraws only the agent waits of earlier runs. The open asks stay
+  open, and at `Stop` the run takes them over, so an answer still wakes the task.
 
 When a firing finds the task in any other state, the inbox records it as `coalesced` and nothing is
 typed. That covers a running task, a task asleep at a human step, and a task asleep on the daemon's
