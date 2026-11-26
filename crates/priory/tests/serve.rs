@@ -6971,7 +6971,9 @@ impl Setup {
             if requests.len() >= count {
                 return requests;
             }
-            assert!(Instant::now() < deadline, "{requests:?}");
+            // What the server said so far, so a failure names its cause.
+            let said = fs::read_to_string(self.dir.join("server.log")).unwrap_or_default();
+            assert!(Instant::now() < deadline, "{requests:?}\nserver: {said}");
             std::thread::sleep(Duration::from_millis(20));
         }
     }
