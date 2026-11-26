@@ -300,6 +300,7 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Server, String> {
     // One small list per server, which lives as long as the process.
     .leak();
     let waiting = Waiting::new();
+    let shared = Arc::new(crate::shared::Shared::default());
     let public = |path: &str| !path.starts_with("/api") && !path.starts_with("/hooks");
     let event_log = factory.log().clone();
     let remote = Arc::new(Remote {
@@ -310,6 +311,7 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Server, String> {
     let wait = move |request: &Request| waiting.events(request);
     let make = move || {
         let db = state::read_only();
+        let shared = Arc::clone(&shared);
         let home = runtime::home();
         let live = served.clone();
         let remote = remote.clone();
@@ -390,7 +392,13 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Server, String> {
                     intercom.receive(bus, request)
                 }
                 _ if request.method == "POST" => write(&db, &home, &served, &remote, request),
-                _ => route(&db, &home, &served, web, request.method, request.path),
+                _ => {
+                    let read = || route(&db, &home, &served, web, request.method, request.path);
+                    match (&db, shares(request)) {
+                        (Ok(db), true) => shared.read(db, &served, request, read),
+                        _ => read(),
+                    }
+                }
             }
         }
     };
@@ -528,6 +536,14 @@ fn lane(request: &Request) -> Lane {
         _ if LISTED.contains(&path) => Lane::Listing,
         _ => Lane::Read,
     }
+}
+
+/// Whether requests for the same path share one computed body: the listings, and one task's detail.
+fn shares(request: &Request) -> bool {
+    let path = request.path.split('?').next().unwrap_or_default();
+    let detail = |rest: &str| rest.parse::<i64>().is_ok();
+    request.method == "GET"
+        && (LISTED.contains(&path) || path.strip_prefix("/api/tasks/").is_some_and(detail))
 }
 
 fn route(
@@ -735,7 +751,7 @@ fn route(
         },
     };
     match read {
-        Ok(Some(body)) => Reply::json(200, body.to_string()),
+        Ok(Some(body)) => crate::shared::tagged(body),
         Ok(None) if path.starts_with("/api/reports/") => Reply::error(404, "no such report"),
         Ok(None) => Reply::error(404, "no such task"),
         Err(error) => Reply::error(500, &error.to_string()),
