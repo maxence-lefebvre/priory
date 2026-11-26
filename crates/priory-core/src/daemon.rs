@@ -1730,6 +1730,10 @@ fn tend(
     }
     starting.retain(|id, _| live.iter().any(|run| run.id == *id && !run.ready));
     for mut run in live {
+        // Each run can cost a tmux call, so a stop does not wait for them all.
+        if runtime::stopping() {
+            return Ok(());
+        }
         if !run.ready && !scope.is_empty() {
             starting
                 .entry(run.id)
@@ -1857,6 +1861,9 @@ fn tend(
             }
         }
     }
+    if runtime::stopping() {
+        return Ok(());
+    }
     state::due(db, factory, &|worktree, branch| {
         runtime::kept_head(home, Path::new(worktree), branch)
     })?;
@@ -1910,6 +1917,10 @@ fn tend(
             &checking,
         )?;
         last = measured.into_inner().or(last);
+        // A stopping daemon starts no run: the start would only race its stop.
+        if runtime::stopping() {
+            break (pass.promised, None);
+        }
         let Some(admission) = pass.admission else {
             break (pass.promised, Some(pass.waiting));
         };
@@ -1954,7 +1965,9 @@ fn tend(
         }
     }
     // Enter goes on a later tick, so the agent never reads it as part of the paste.
-    while let Some(attempt) = state::attempt(db)? {
+    while !runtime::stopping()
+        && let Some(attempt) = state::attempt(db)?
+    {
         let pasted = runtime::pane(&attempt.tmux, &attempt.session)
             .ok_or_else(|| "its pane is gone".to_owned())
             .and_then(|pane| runtime::paste(&pane, &attempt.text).map(|()| pane));
