@@ -17555,6 +17555,12 @@ fn a_grant_is_released_when_its_command_fails_or_is_killed_or_its_holder_dies() 
 
 /// A socket in front of the daemon's that forwards every line but the pid hand-off of a grant,
 /// which it holds back and reports on `handoffs`.
+/// The line a client sent on the daemon's socket, without its call id.
+fn inner(sent: &str) -> String {
+    let sent: serde_json::Value = serde_json::from_str(sent).unwrap();
+    sent["line"].as_str().unwrap().to_owned()
+}
+
 fn withholding_handoffs(setup: &Setup) -> (PathBuf, std::sync::mpsc::Receiver<()>) {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::{UnixListener, UnixStream};
@@ -17574,7 +17580,7 @@ fn withholding_handoffs(setup: &Setup) -> (PathBuf, std::sync::mpsc::Receiver<()
                 if reader.read_line(&mut line).unwrap_or(0) == 0 {
                     return;
                 }
-                if line.contains("\"memory\":\"run\"") {
+                if inner(&line).contains("\"memory\":\"run\"") {
                     sender.send(()).unwrap();
                     // Held until the client goes.
                     let _ = reader.read_line(&mut String::new());
@@ -17677,7 +17683,7 @@ fn scripted(
             std::io::BufReader::new(&stream)
                 .read_line(&mut line)
                 .unwrap();
-            let line: serde_json::Value = serde_json::from_str(&line).unwrap();
+            let line: serde_json::Value = serde_json::from_str(&inner(&line)).unwrap();
             lines.push([line["memory"].clone(), line["grant"].clone()]);
             if let Some(reply) = reply {
                 writeln!(stream, "{}", json!({ "Ok": reply })).unwrap();
@@ -17736,13 +17742,9 @@ fn a_gated_command_runs_once_after_the_daemon_drops_any_message() {
             String::from_utf8_lossy(&done.stderr)
         );
         assert_eq!(String::from_utf8_lossy(&done.stdout), "ran\n");
+        // The call sends a dropped message again by itself, with the same call id.
         let stderr = String::from_utf8_lossy(&done.stderr);
-        let said = stderr.matches("grant 7 waits to start its command: the daemon closed");
-        assert_eq!(
-            said.count(),
-            usize::from(name == "gate-dropped-run"),
-            "{name}: {stderr}"
-        );
+        assert!(!stderr.contains("the daemon closed"), "{name}: {stderr}");
         let expected = messages.map(|message| {
             let grant = if message == "acquire" {
                 json!(null)

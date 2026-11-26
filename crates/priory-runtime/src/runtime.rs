@@ -3658,7 +3658,9 @@ mod tests {
         let reply = call_at(&path, "hello", Duration::from_secs(2), RESTART);
 
         assert_eq!(reply, Ok("done".to_owned()));
-        assert_eq!(daemon.join().unwrap().as_deref(), Some("hello\n"));
+        let sent: serde_json::Value =
+            serde_json::from_str(&daemon.join().unwrap().unwrap()).unwrap();
+        assert_eq!(sent["line"], "hello");
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
