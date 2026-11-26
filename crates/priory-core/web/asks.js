@@ -41,7 +41,7 @@ export const routedNote = (ask) => (routedMark(ask) ? `${ask.routed_to} is answe
 /** A plan file's path from its worktree, such as `.priory/brief.md`. @param {string} path */
 export const planName = (path) => path.slice(path.lastIndexOf("/.priory/") + 1);
 
-/** Whether an open ask of this runner approves its task's plan. Its Plan section then leads. @param {any} ask */
+/** Whether an open ask of this runner approves its task's plan. Its answer waits until that plan is read. @param {any} ask */
 export const plansFirst = (ask) => ask.state === "open" && Boolean(ask.approves_plan) && !runnerOf(ask);
 
 /** Whether `task`, as last read, lacks the plan this revision of the ask approves: no answer goes until it is read. @param {any} ask @param {any} task */

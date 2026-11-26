@@ -4,7 +4,7 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ARM_MS, ASK_VIEWS, answeredBy, askBody, askGroups, askHeading, dismissable, optionKey, planCut, planUnread, planWait, plansFirst, press, routedMark, routedNote, runnerOf, runsCommand, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, submitted, writeNote, writeShown } from "../asks.js";
+import { ARM_MS, ASK_VIEWS, answeredBy, askBody, askGroups, askHeading, dismissable, optionKey, planCut, planUnread, planWait, press, routedMark, routedNote, runnerOf, runsCommand, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, submitted, writeNote, writeShown } from "../asks.js";
 import { acceptAsk, asked, cache, loadOlder, refresh } from "../data.js";
 import { deskModel, plural, sectionInView } from "../desk.js";
 import { searchOf, where } from "../frame.js";
@@ -480,7 +480,7 @@ const Why = memo(function Why({ ask }) {
   const body = askBody(ask);
   return (
     <section className="sect" id="why"><div className="sh"><Icon name="message-text" size="s15" />What the agent asks<span className="meta">{ask.run ? <>run <span className="mono">{ask.run}</span></> : null}</span></div>
-      {body ? <p className="asked"><Linked text={body} repo={ask.repo} /></p> : null}
+      {body ? <Markdown text={body} repo={ask.repo} /> : null}
       {ask.text || !body ? <Markdown text={ask.text || ask.question} repo={ask.repo} /> : null}
       {ask.tradeoff ? <p className="fact"><Icon name="scale" size="s15" /><span><b>Trade-off.</b>{` ${ask.tradeoff}`}</span></p> : null}
       {ask.what_waits ? <p className="fact"><Icon name="hourglass" size="s15" /><span><b>What waits.</b>{` ${ask.what_waits}`}</span></p> : null}</section>
@@ -648,10 +648,11 @@ const AskBody = memo(function AskBody({ ask, id, wide, compact, list, listUrl, l
     if (now && (now.id !== ask.id || now.revision !== ask.revision)) disarm();
   }, [ask.id, ask.revision]);
   const sectionsRead = (task ? sectionsOf(task, tasks) : []).filter(([key]) => key !== "plan" || (!batch && !planUnread(ask, task)));
-  const lead = batch || !plansFirst(ask) ? [] : sectionsRead.filter(([key]) => key === "plan");
+  // Why leads, then the plan, then what the task's page reads.
+  const lead = sectionsRead.filter(([key]) => key === "plan");
   const read = sectionsRead.filter((section) => !lead.includes(section));
   const planned = batch ? [["batchplan", "Plan"], ...(batch.closes?.length ? [["closes", "Closes"]] : []), ...(splitsOf(batch).length ? [["splits", "Splits"]] : [])] : [];
-  const chips = [...planned, ...lead, ["why", "Why"], ...read, ["history", "History"], ...(ask.command ? [["command", "Command"]] : [])];
+  const chips = [["why", "Why"], ...planned, ...lead, ...read, ["history", "History"], ...(ask.command ? [["command", "Command"]] : [])];
   const lit = useLit(scroll, chips.length);
   // A resize moves the options in or out of the scroll.
   useBar(part, scroll, `${wide} ${options.length}`);
@@ -711,7 +712,7 @@ const AskBody = memo(function AskBody({ ask, id, wide, compact, list, listUrl, l
   const unread = task && taskError && !offline() ? <p className="note" role="status">{`Could not read task ${ask.task} again: ${taskError.message}. This is its last read.`}</p> : null;
   const sections = (
     <>
-      {jump}{plan}{lead.length ? <TaskSections task={task} tasks={tasks} only={["plan"]} /> : null}<Why ask={ask} />{unread}
+      {jump}<Why ask={ask} />{plan}{unread}{lead.length ? <TaskSections task={task} tasks={tasks} only={["plan"]} /> : null}
       {task ? <TaskSections task={task} tasks={tasks} only={read.map(([key]) => key)} /> : null}<AskHistory ask={ask} /><Command ask={ask} owner={owner} />
     </>
   );

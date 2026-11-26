@@ -24,13 +24,13 @@ const ask = (id, more = {}) => ({
 const ASKS = [ask(3, { tradeoff: "<b>older</b> index" }), ask(5, { since: "2026-11-25T11:00:00Z" }), ask(7, { state: "answered", answer: "skip", answered_at: "2026-11-25T09:00:00Z", answered_by: "serve" })];
 const TASK = { id: 3, key: "ENG-3", repo: "acme/shop", brief: { request: "Run the search tests." }, runs: [{ id: 9, step: "implement", started: "2026-11-25T09:00:00Z" }] };
 
-function draw(t, Part, { size = "wide", ask: at = null, list = "asks", props = {} } = {}) {
+function draw(t, Part, { size = "wide", ask: at = null, list = "asks", props = {}, task = TASK } = {}) {
   const cache = client({ api: async () => ({}) });
   cache.setQueryData(keyOf("links"), LINKS);
   cache.setQueryData(keyOf("desk"), { revision: 4, items: ASKS.filter((each) => each.state === "open").map((each) => ({ kind: "ask", id: each.id, what: each.question })), counts: {} });
   cache.setQueryData(keyOf("asks"), { asks: ASKS, bands: [], older: { answered: 0, withdrawn: 0 } });
   cache.setQueryData(keyOf("tasks"), { tasks: [], older: 0 });
-  cache.setQueryData(["task", 3], TASK);
+  cache.setQueryData(["task", 3], task);
   t.after(() => cache.clear());
   const place = { size, href: at ? `/asks/${at}` : "/asks", at: { here: "asks", ask: at }, trail: { list, listUrl: "/asks" }, entry: {} };
   return renderToStaticMarkup(<QueryClientProvider client={cache}><Place.Provider value={place}><Part {...props} /></Place.Provider></QueryClientProvider>);
@@ -56,6 +56,14 @@ test("an ask reads top to bottom: title, recommendation, options, the action row
   assert.match(html, /<a href="#why" aria-current="true">Why<\/a><a href="#brief" aria-current="false">Brief<\/a><a href="#trace" aria-current="false">Trace<\/a><a href="#history" aria-current="false">History<\/a>/);
   assert.match(html, /<div class="abar" hidden="">/, "the bar waits for the options to scroll away");
   assert.match(html, /<button type="button" id="bar-answer" class="btn primary " data-answer="0" aria-disabled="false"><span>staging-b<\/span><small>Recommended<\/small><\/button>/);
+});
+
+test("Why leads, then the plan, then the brief, and the plan reads as Markdown paragraphs", (t) => {
+  const html = draw(t, AskPage, { size: "compact", ask: "3", props: { id: "3" }, task: { ...TASK, plan: { step: "plan", run: 8, summary: "Adds one file.\n\n- infra/readonly.tf" } } });
+  assert.match(html, /<a href="#why" aria-current="true">Why<\/a><a href="#plan" aria-current="false">Plan<\/a><a href="#brief" aria-current="false">Brief<\/a>/);
+  const at = (part) => html.indexOf(part);
+  assert.ok(at('<section class="sect" id="why">') < at('id="plan"') && at('id="plan"') < at('<section class="sect" id="brief">'));
+  assert.match(html, /<p>Adds one file\.<\/p><ul><li>infra\/readonly\.tf<\/li><\/ul>/);
 });
 
 test("an armed option says what its second press does, and only for the revision it armed", (t) => {
