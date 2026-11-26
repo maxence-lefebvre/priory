@@ -124,6 +124,31 @@
       ],
       "type": "string"
     },
+    "Cloud": {
+      "additionalProperties": false,
+      "description": "`[cloud]`: the bounds of cloud runs, which take no room and whose cost Priory cannot read.",
+      "properties": {
+        "max": {
+          "description": "How many cloud runs a runner has at once, 4 when unset. Past it, a task waits to start one.",
+          "format": "uint32",
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "sessions": {
+          "description": "How many cloud sessions one task may start, 10 when unset. Past it, the task blocks.",
+          "format": "uint32",
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "CloudwatchWebhook": {
       "additionalProperties": false,
       "description": "CloudWatch alarm state changes, from an EventBridge API destination at `POST /hooks/cloudwatch`.",
@@ -733,6 +758,18 @@
           },
           "type": [
             "array",
+            "null"
+          ]
+        },
+        "cloud": {
+          "default": false,
+          "description": "Whether a task of the repository may start Claude cloud sessions, which push its branch to\nGitHub before a person approves `open-pr`.",
+          "type": "boolean"
+        },
+        "cloud_setup": {
+          "description": "A script in the repository that installs what its checks need in a Claude cloud session.\n`priory cloud setup-script` copies it into the cloud environment's setup script. It holds\nno secret: anyone who uses the environment can read it.",
+          "type": [
+            "string",
             "null"
           ]
         },
@@ -1351,6 +1388,9 @@
         }
       ],
       "description": "Spend caps in dollars for every task, and for each lane by its name."
+    },
+    "cloud": {
+      "$ref": "#/definitions/Cloud"
     },
     "command_timeout": {
       "default": null,

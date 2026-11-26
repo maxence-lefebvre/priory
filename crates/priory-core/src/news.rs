@@ -132,7 +132,7 @@ fn agree(
         return elsewhere
             .map(|runner| {
                 let text = format!(
-                    "A task on runner {runner} works on {of}. Priory pairs only tasks of one runner, so neither can message the other: ask the person with the ask tool which one continues."
+                    "A task on runner {runner} works on {of}. Priory pairs only tasks of one runner, {ELSEWHERE} which one continues."
                 );
                 let waits = later(tx, task, None, &text)?;
                 Ok((text, waits))
@@ -214,10 +214,119 @@ pub(crate) fn expire(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// What a pair's line holds when it tells an agent to use a tool. A cloud session has none of them.
+const AGREE: &str = "Agree with task ";
+const TALK: &str = " which of you continues: send it a message with the message tool";
+const ELSEWHERE: &str = "so neither can message the other: ask the person with the ask tool";
+/// The answer to a peer's message, with its task's id after it.
+pub(crate) const ANSWER: &str = "Answer it with the message tool, giving task ";
+
+/// Whether `line` tells an agent to talk to a paired task or ask which of the two continues.
+fn instructs(line: &str) -> bool {
+    !line.starts_with("> ")
+        && [TALK, ELSEWHERE, ANSWER]
+            .iter()
+            .any(|text| line.contains(text))
+}
+
+/// `text` without the lines that tell an agent to talk to a paired task.
+pub(crate) fn untold(text: &str) -> String {
+    let kept: Vec<_> = text.lines().filter(|line| !instructs(line)).collect();
+    kept.join("\n")
+}
+
+/// The task a pair's line names, if any.
+fn named(line: &str) -> Option<i64> {
+    [AGREE, ANSWER].iter().find_map(|text| {
+        let rest = line.split_once(text)?.1;
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        rest[..end].parse::<i64>().ok()
+    })
+}
+
+/// The pair's lines of `text` that `untold` drops, an answer's with the message it answers.
+pub(crate) fn pair_texts(text: &str) -> Vec<String> {
+    let lines: Vec<_> = text.lines().collect();
+    let mut found = Vec::new();
+    for (at, line) in lines.iter().enumerate().filter(|(_, line)| instructs(line)) {
+        let quoted = lines[..at]
+            .iter()
+            .rev()
+            .take_while(|line| line.starts_with("> "))
+            .count();
+        // The quote stands under two lines: who said it, and that it is data.
+        let message = line.starts_with(ANSWER) && quoted > 0 && at >= quoted + 2;
+        let from = if message { at - quoted - 2 } else { at };
+        found.push(lines[from..=at].join("\n"));
+    }
+    found
+}
+
+/// Holds the `pair_texts` of what cloud run `run` claimed for the next ask and agent run of `task`,
+/// and takes them out of it, so a claim that is queued again holds no second copy.
+pub(crate) fn hold_back(tx: &Transaction, task: i64, run: i64) -> rusqlite::Result<()> {
+    let claimed: Vec<(i64, String)> = tx
+        .prepare("SELECT id, text FROM outbox WHERE run = ?1 AND state = 'attempted' ORDER BY id")?
+        .query_map([run], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (id, text) in claimed {
+        let held = pair_texts(&text);
+        if held.is_empty() {
+            continue;
+        }
+        let left = held
+            .iter()
+            .fold(text, |text, held| crate::cloud::without(&text, held));
+        // One with nothing left has nothing to queue again.
+        tx.execute(
+            "UPDATE outbox SET text = ?2, state = iif(?2 = '', 'confirmed', state),
+             confirmed = iif(?2 = '', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), confirmed)
+             WHERE id = ?1",
+            params![id, left],
+        )?;
+        hold(tx, task, held)?;
+    }
+    Ok(())
+}
+
+fn hold(tx: &Transaction, task: i64, texts: Vec<String>) -> rusqlite::Result<()> {
+    for held in texts {
+        let pair = match held.lines().last().and_then(named) {
+            Some(other) if paired(tx, task, other)? => Some(other),
+            _ => None,
+        };
+        later(tx, task, pair, &held)?;
+    }
+    Ok(())
+}
+
+/// Whether a step ask of `task` already shows `text`, held for its pair with `pair`. An ask before
+/// that pair was made showed an earlier duplicate.
+pub(crate) fn shown(
+    tx: &Transaction,
+    task: i64,
+    pair: Option<i64>,
+    text: &str,
+) -> rusqlite::Result<bool> {
+    if pair_texts(text).is_empty() {
+        return Ok(false);
+    }
+    tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM asks WHERE task = ?1 AND kind = 'step' AND withdrawn IS NULL
+           AND instr(text, ?3) > 0 AND unixepoch(created) >= coalesce(
+             (SELECT max(unixepoch(created)) FROM pairs
+              WHERE (task = ?1 AND other = ?2) OR (task = ?2 AND other = ?1)), 0))",
+        params![task, pair, text],
+        |row| row.get(0),
+    )
+}
+
 /// How two tasks on the same work agree which continues, for the agent whose pair is `other`.
 fn agreement(other: i64) -> String {
     format!(
-        "Agree with task {other} which of you continues: send it a message with the message tool. Unless you two agree otherwise, the duplicate's task stops: it pushes its branch, then calls hand_over, whose summary says what it found and what is left. If you disagree, do not go on: ask the person with the ask tool."
+        "{AGREE}{other}{TALK}. Unless you two agree otherwise, the duplicate's task stops: it pushes its branch, then calls hand_over, whose summary says what it found and what is left. If you disagree, do not go on: ask the person with the ask tool."
     )
 }
 
@@ -362,8 +471,81 @@ pub fn held(lines: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::line;
+    use super::*;
+    use proptest::prelude::*;
     use serde_json::json;
+
+    #[test]
+    fn a_message_for_a_cloud_run_keeps_its_text_and_its_answer_line_is_held() {
+        let mut db = crate::state::memory();
+        db.execute_batch(
+            "INSERT INTO tasks (id, key, workflow, step, state, trigger, source)
+               VALUES (1, 'a', 'w', 's', 'ready', 't', 's'), (2, 'b', 'w', 's', 'ready', 't', 't');
+             INSERT INTO pairs (task, other, created)
+               VALUES (1, 2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));",
+        )
+        .unwrap();
+        let said = format!(
+            "Task 2 (b) says:\n{}\n> {ANSWER}7.\n> Yours.",
+            crate::consult::DATA
+        );
+        let text = format!("{said}\n{ANSWER}2.\nAna moved it. {}", agreement(3));
+        let tx = db.transaction().unwrap();
+        for (run, claimed) in [(1, text.clone()), (2, format!("Fix it.\n{text}"))] {
+            tx.execute(
+                "INSERT INTO runs (id, task, step, tmux, session, ended) VALUES (?1, 1, 's', 't', ?1, 'now')",
+                [run],
+            )
+            .unwrap();
+            tx.execute(
+                "INSERT INTO outbox (task, run, text, state) VALUES (1, ?1, ?2, 'attempted')",
+                params![run, claimed],
+            )
+            .unwrap();
+        }
+
+        hold_back(&tx, 1, 1).unwrap();
+        hold_back(&tx, 1, 2).unwrap();
+        // What an uncertain start does with the claims.
+        for run in [1, 2] {
+            crate::state::requeue_unready(&tx, run).unwrap();
+        }
+
+        let queued: Vec<String> = tx
+            .prepare("SELECT text FROM outbox WHERE state = 'queued' ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(queued, ["Fix it."]);
+
+        assert_eq!(untold(&text), said);
+        let held: Vec<(String, Option<i64>)> = tx
+            .prepare("SELECT text, pair FROM outbox WHERE task = 1 AND state = 'held' ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let unanswered = format!("{said}\n{ANSWER}2.");
+        // Task 3 is no pair of task 1, so no pair's end withdraws its line.
+        let agree = format!("Ana moved it. {}", agreement(3));
+        assert_eq!(held, [(unanswered, Some(2)), (agree, None)]);
+    }
+
+    proptest! {
+        #[test]
+        fn only_a_pairs_lines_leave_a_cloud_prompt(
+            said in "(> )?[a-zé0-9 ]{1,20}", other in 0..9i64, text in "(.|\n){0,60}"
+        ) {
+            let queued = format!("{said}\n{}\n{ANSWER}{other}.\n{said}", agreement(other));
+            prop_assert_eq!(untold(&queued), format!("{said}\n{said}"));
+            prop_assert_eq!(pair_texts(&queued).len(), 2);
+            let _ = pair_texts(&format!("{text}\n{ANSWER}{text}"));
+            let _ = named(&format!("{AGREE}{text}"));
+        }
+    }
 
     #[test]
     fn a_duplicate_is_news_and_a_move_to_in_review_is_not() {

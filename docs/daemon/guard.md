@@ -139,7 +139,8 @@ A hit denies the call with each rule's label and location, such as
 `rule ticket-id: commit 1a2b3c4 src/x.rs:40`, and tells the agent to rewrite it. The denial never
 holds the term. Nothing grants the call. It is on the trace as `factory.tool.denied` with the guard
 `private-terms` and the call's name without its arguments. An `open-pr` step screens the same way
-before it pushes any branch, and fails on a hit.
+before it pushes any branch, and fails on a hit. So does a start of a
+[cloud run](cloud.md), which blocks its task on a hit.
 
 A `gh api graphql` call whose `query` is literal text without the word `mutation` writes nothing, so it
 is not screened. `gh pr create` and `open-pr` leave out what the stated base already holds on the

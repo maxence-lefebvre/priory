@@ -268,11 +268,15 @@ pub(crate) fn call(
             None,
         ));
     }
-    // News refuses the call once and is then read, so this refusal commits.
-    if matches!(
-        call.tool.as_str(),
-        "result" | "ask" | "wait" | "consult" | "hand_over"
-    ) && run.debate.is_none()
+    let cloud = crate::cloud::is_cloud_run(&tx, run.id)?;
+    // News refuses the call once and is then read, so this refusal commits. No cloud session reads
+    // it, so the ask its step leads to shows it.
+    if !cloud
+        && matches!(
+            call.tool.as_str(),
+            "result" | "ask" | "wait" | "consult" | "hand_over"
+        )
+        && run.debate.is_none()
         && let Some(held) = crate::news::refusal(&tx, &run.session)?
     {
         tx.commit()?;
@@ -293,7 +297,10 @@ pub(crate) fn call(
             Some("an answer or event for this run is queued: end your turn to read it".to_owned())
         }
         // A result, ask or wait would end or sleep the task over feedback it has not read yet.
-        ("result" | "ask" | "wait" | "consult" | "hand_over", ..) if kept(&tx, run.task)? => {
+        // A cloud run reads nothing after its start: its next step does.
+        ("result" | "ask" | "wait" | "consult" | "hand_over", ..)
+            if !cloud && kept(&tx, run.task)? =>
+        {
             Some("feedback for this run is queued: end your turn to read it".to_owned())
         }
         // A hand-over drops the task, and what a person said to it.
@@ -311,7 +318,10 @@ pub(crate) fn call(
         return Ok((Err(refused), None));
     }
     // A result moves the task, maybe to another agent's conversation, before the compact is typed.
-    if matches!(call.tool.as_str(), "result" | "hand_over") && compact_queued(&tx, run.task)? {
+    if !cloud
+        && matches!(call.tool.as_str(), "result" | "hand_over")
+        && compact_queued(&tx, run.task)?
+    {
         return Ok((
             Err(format!(
                 "a compact is queued for this run; end your turn and call {} after the compaction",
@@ -384,6 +394,32 @@ pub(crate) fn call(
     Ok((stored, None))
 }
 
+/// The scorers that would read `outcome` of the live run of `session` before it is stored, were it
+/// local: those of its gate, and the pre-review.
+pub(crate) fn graders(
+    tx: &Transaction,
+    session: &str,
+    outcome: &str,
+    factory: &Factory,
+    kit: crate::kit::Current<'_>,
+) -> rusqlite::Result<Vec<String>> {
+    let Some(run) = run(tx, session)? else {
+        return Ok(Vec::new());
+    };
+    let Some(step) = step(&factory.workflows, &run.workflow, &run.step) else {
+        return Ok(Vec::new());
+    };
+    let (id, task, workflow) = (run.id, run.task, run.workflow.as_str());
+    let mut names = crate::gates::scorers(tx, task, workflow, step, outcome, factory)?;
+    let reviews = crate::gates::pre_review(tx, id, task, workflow, step, outcome, factory, kit)?;
+    names.extend(
+        reviews
+            .map(|(name, _)| name)
+            .filter(|name| !names.contains(name)),
+    );
+    Ok(names)
+}
+
 /// Stores the result `arguments` of `run`, or, when `hold` names the kit runs get and a gate grades
 /// its outcome, holds it for the gate and stores nothing.
 fn result(
@@ -429,7 +465,9 @@ fn result(
         Ok(merge_risk) => merge_risk,
         Err(error) => return Ok(Err(error)),
     };
-    let triage = match crate::triage::sorted(tx, run.task, &arguments["feedback"])? {
+    // A cloud session has no `result` tool to class its feedback with.
+    let cloud = crate::cloud::is_cloud_run(tx, run.id)?;
+    let triage = match crate::triage::sorted(tx, run.task, &arguments["feedback"], !cloud)? {
         Ok(triage) => triage,
         Err(error) => return Ok(Err(error)),
     };
@@ -470,7 +508,8 @@ fn result(
     {
         return Ok(Err(refused));
     }
-    if let Some(kit) = hold {
+    // A gate's refusal needs a turn to fix it, which a cloud session has not: its ask says so.
+    if let Some(kit) = hold.filter(|_| !cloud) {
         let mut scorers =
             crate::gates::scorers(tx, run.task, &run.workflow, step, &outcome, factory)?;
         let lessons = crate::gates::pre_review(
@@ -639,7 +678,7 @@ fn plan_text(tx: &Transaction, task: i64) -> rusqlite::Result<Option<String>> {
 }
 
 /// The prompt that entering `step` queues: the step's own, then the verification the plan promised.
-fn entry_prompt(tx: &Transaction, task: i64, step: &Step) -> rusqlite::Result<String> {
+pub(crate) fn entry_prompt(tx: &Transaction, task: i64, step: &Step) -> rusqlite::Result<String> {
     let verification: Option<String> = tx.query_row(
         "SELECT verification FROM tasks WHERE id = ?1",
         [task],
@@ -3992,7 +4031,12 @@ fn step_in(
                     && step.effect != Effect::Irreversible
                     && run.debate.is_none()
             };
-            let Some(run) = from.filter(carry) else {
+            // A cloud run has no process to carry on: each step starts its own session.
+            let cloud = match from {
+                Some(run) => crate::cloud::is_cloud_run(tx, run.id)?,
+                None => false,
+            };
+            let Some(run) = from.filter(carry).filter(|_| !cloud) else {
                 set(tx, task, "ready", Some(target), None)?;
                 return finish("moved");
             };
@@ -5026,8 +5070,10 @@ pub(crate) fn act_in_tx(
             Ok((Err(format!("task {} is already {state}", act.task)), None))
         }
         "cancel" => {
+            let still = crate::cloud::left(tx, act.task)?;
             let tmux = cancel(tx, act.task, "cancelled from the desk")?;
-            Ok((Ok(format!("task {} dropped", act.task)), tmux))
+            let still = still.map_or_else(String::new, |still| format!("; {still}"));
+            Ok((Ok(format!("task {} dropped{still}", act.task)), tmux))
         }
         "revive" => Ok((revive(tx, act, factory)?, None)),
         other => Ok((Err(format!("unknown action {other}")), None)),
@@ -5041,6 +5087,7 @@ pub(crate) fn cancel(
     task: i64,
     reason: &str,
 ) -> rusqlite::Result<Option<String>> {
+    let left = crate::cloud::left(tx, task)?;
     let tmux = tx
         .query_row(
             "SELECT tmux FROM runs WHERE task = ?1 AND ended IS NULL",
@@ -5061,7 +5108,11 @@ pub(crate) fn cancel(
         ),
         [task],
     )?;
-    set(tx, task, "dropped", None, Some(reason))?;
+    let reason = match left {
+        Some(left) => format!("{reason}; {left}"),
+        None => reason.to_owned(),
+    };
+    set(tx, task, "dropped", None, Some(&reason))?;
     Ok(tmux)
 }
 

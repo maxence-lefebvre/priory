@@ -101,6 +101,12 @@ pub(crate) fn soon_raw(command: &mut Command) -> Result<Vec<u8>, String> {
     fed_raw_within(command, None, loop_left())
 }
 
+/// As `soon`, with `input` on the command's stdin.
+pub(crate) fn fed_soon(command: &mut Command, input: Vec<u8>) -> Result<String, String> {
+    fed_raw_within(command, Some(input), loop_left())
+        .map(|out| String::from_utf8_lossy(&out).into_owned())
+}
+
 pub(crate) fn within(command: &mut Command, timeout: Duration) -> Result<String, String> {
     fed_raw_within(command, None, timeout).map(|out| String::from_utf8_lossy(&out).into_owned())
 }
@@ -229,7 +235,7 @@ pub fn run(command: &mut Command) -> Result<String, String> {
 }
 
 /// As `run`, with `input` on the command's stdin.
-pub(crate) fn fed(command: &mut Command, input: Option<Vec<u8>>) -> Result<String, String> {
+fn fed(command: &mut Command, input: Option<Vec<u8>>) -> Result<String, String> {
     fed_raw(command, input).map(|out| String::from_utf8_lossy(&out).into_owned())
 }
 
@@ -457,7 +463,7 @@ fn recover(path: &Path, branch: &str, from: Option<String>) -> Result<Recovery, 
 
 /// The staged, unstaged and untracked files of `git status --porcelain=v1`, in words, or an empty
 /// string when there are none.
-fn changes(status: &str) -> String {
+pub(crate) fn changes(status: &str) -> String {
     let (mut staged, mut unstaged, mut untracked) = (0, 0, 0);
     for line in status.lines() {
         let mut codes = line.chars();
@@ -697,13 +703,15 @@ pub fn mounted_orphan(home: &Path, repo: &str, name: &str) -> Option<String> {
 /// own clone of `repo` (`owner/name`), else from its default branch. The clone has no checkout: a person trusts it and the worktrees
 /// folder once in Claude, which covers its worktrees. A worktree of that clone left on that branch by an interrupted
 /// start is reused. `vouch` reads the default branch's head from GitHub outside the clone, for a base
-/// that no agent chose. The third value says whether the folder was kept, added back, or new.
+/// that no agent chose. `keep_branches` keeps each branch that `origin`
+/// deletes in the clone. The third value says whether the folder was kept, added back, or new.
 pub fn worktree(
     home: &Path,
     repo: &str,
     name: &str,
     from: Option<&str>,
     vouch: bool,
+    keep_branches: bool,
 ) -> Result<(PathBuf, String, Added), String> {
     check_repo(repo)?;
     let clone = home.join("repos").join(repo);
@@ -725,6 +733,9 @@ pub fn worktree(
                 .arg(&partial))
         })?;
         fs::rename(&partial, &clone).map_err(|error| error.to_string())?;
+    }
+    if keep_branches {
+        as_one(|| never_prune(&clone));
     }
     if let Some(reason) = mounted_orphan(home, repo, name) {
         return Err(reason);
@@ -821,6 +832,25 @@ pub fn worktree(
     })?;
     // Not the branch's head: every worktree shares the clone's refs, so an agent can have moved it.
     Ok((path, branch, Added::New(start)))
+}
+
+/// Turns off a person's `fetch.prune` in `clone`, which would drop a merged branch, whose commits
+/// then look never pushed. Best effort.
+fn never_prune(clone: &Path) {
+    const PRUNE: &str = "remote.origin.prune";
+    let config = || {
+        let mut command = git(clone);
+        command.args(["config", "--local"]);
+        command
+    };
+    match soon(config().args(["--get", PRUNE])) {
+        Ok(set) if set.trim() == "false" => {}
+        // A write killed midway leaves a lock file, so a slow disk gets none.
+        Err(error) if timed_out(&error) => {}
+        _ => {
+            let _ = soon(config().args(["--replace-all", PRUNE, "false"]));
+        }
+    }
 }
 
 /// How a task's reason starts while its worktree waits for a fetch that timed out.
@@ -1199,6 +1229,23 @@ pub fn is_ancestor(worktree: &Path, below: &str, commit: &str) -> Result<bool, S
     }
 }
 
+/// As `is_ancestor`, with an error when git could not tell.
+pub(crate) fn descends(worktree: &Path, below: &str, commit: &str) -> Result<bool, String> {
+    let mut command = git(worktree);
+    command.args(["merge-base", "--is-ancestor", below, commit]);
+    let output = fed_within(&mut command, None, command_timeout())
+        .map_err(|error| format!("{command:?}: {error}"))?
+        .ok_or_else(|| format!("{command:?}: timed out"))?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(format!(
+            "{command:?}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )),
+    }
+}
+
 /// The origin branches, as last pushed or fetched, that hold every commit of the local branch
 /// `branch` of `worktree`'s clone, or the other way round. A branch already in the trunk has none.
 /// `None` when git cannot say.
@@ -1342,7 +1389,7 @@ pub fn open_issue(repo: &str, title: &str, body: &str, mark: &str) -> Result<u64
         .ok_or_else(|| format!("gh issue create printed {url:?}, not an issue URL"))
 }
 
-fn tmux() -> Command {
+pub(crate) fn tmux() -> Command {
     Command::new("tmux")
 }
 
@@ -1828,7 +1875,7 @@ impl From<String> for NotStarted {
 
 /// The socket a tmux client of this process uses: the one `TMUX` names, else
 /// `$TMUX_TMPDIR/tmux-<uid>/default`, with `/tmp` when `TMUX_TMPDIR` is unset.
-fn tmux_socket() -> PathBuf {
+pub(crate) fn tmux_socket() -> PathBuf {
     let set = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
     if let Some(socket) = set("TMUX").and_then(|tmux| {
         let tmux = tmux.to_string_lossy().into_owned();
@@ -1846,7 +1893,7 @@ pub fn tmux_socket_in(dir: &Path) -> PathBuf {
 
 /// Refuses a tmux socket path that cannot be bound, before tmux fails on it at the end of a long
 /// error.
-fn tmux_socket_fits(socket: &Path) -> Result<(), String> {
+pub(crate) fn tmux_socket_fits(socket: &Path) -> Result<(), String> {
     let length = socket.as_os_str().len();
     if length < 108 {
         return Ok(());
@@ -2096,6 +2143,12 @@ pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), NotStarted> 
     } else {
         format!("tmux new-session failed: {stderr}")
     }))
+}
+
+/// The bytes of `path` on the default branch of Priory's clone of `repo`.
+pub fn repo_file(home: &Path, repo: &str, path: &str) -> Result<Vec<u8>, String> {
+    let clone = home.join("repos").join(repo);
+    soon_raw(git(&clone).args(["show", &format!("origin/HEAD:{path}")]))
 }
 
 /// Writes `files`, by their paths inside the plugin, into `<dir>/plugin` unless that folder holds
@@ -4069,7 +4122,7 @@ mod tests {
         }
 
         fn again(&self) -> Result<Added, String> {
-            worktree(&self.home(), "o/n", "1", None, true).map(|(_, _, added)| added)
+            worktree(&self.home(), "o/n", "1", None, true, false).map(|(_, _, added)| added)
         }
     }
 
@@ -4205,6 +4258,85 @@ mod tests {
         assert_eq!(capped(&mut Command::new("yes"), later, 1000), Ok(None));
         let echo = capped(Command::new("printf").arg("ab"), later, 2);
         assert_eq!(echo, Ok(Some(b"ab".to_vec())));
+    }
+
+    /// What `work` gives within 20 s: a red test must not hang, since the runner stops none.
+    fn in_time<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+        let (sender, ended) = mpsc::channel();
+        std::thread::spawn(move || sender.send(work()));
+        ended
+            .recv_timeout(Duration::from_secs(20))
+            .expect("the work ends in time")
+    }
+
+    #[test]
+    fn a_hung_prune_setting_ends_within_its_limit() {
+        let home = Home::new("prune");
+        home.tree();
+        let clone = home.home().join("repos/o/n");
+        let config = clone.join(".git/config");
+        fs::remove_file(&config).unwrap();
+        run(Command::new("mkfifo").arg(&config)).unwrap();
+
+        in_time(move || as_one_within(Duration::from_secs(1), || never_prune(&clone)));
+    }
+
+    #[test]
+    fn a_hung_repository_file_is_an_error() {
+        let home = Home::new("repo-file");
+        home.tree();
+        let head = home.home().join("repos/o/n/.git/refs/remotes/origin/HEAD");
+        let dir = home.home();
+        assert_eq!(repo_file(&dir, "o/n", "README.md").unwrap(), b"one\n");
+        fs::remove_file(&head).unwrap();
+        run(Command::new("mkfifo").arg(&head)).unwrap();
+
+        let hung = in_time(move || {
+            as_one_within(Duration::from_secs(1), || {
+                repo_file(&dir, "o/n", "README.md")
+            })
+        });
+
+        assert!(timed_out(&hung.unwrap_err()));
+    }
+
+    /// Starts a worktree over what `plant` puts at a path in the clone, with a file outside that it
+    /// may lead to, then checks that the setting is off and nothing else of it changed.
+    fn planted(name: &str, plant: impl Fn(&Path, &Path)) {
+        for cloud in [false, true] {
+            let home = Home::new(&format!("{name}-{cloud}"));
+            home.tree();
+            let dir = home.home();
+            let clone = dir.join("repos/o/n");
+            let outside = home.dir.join("secret");
+            fs::write(&outside, "hunter2").unwrap();
+            let path = clone.join(".git/priory-pruned");
+            plant(&path, &outside);
+            let kind = fs::symlink_metadata(&path).unwrap().file_type();
+            let was = if cloud { "true" } else { "false" };
+            sh(&clone, &["config", "remote.origin.prune", was]);
+
+            in_time(move || worktree(&dir, "o/n", "1", None, false, cloud).map(|_| ())).unwrap();
+
+            assert_eq!(fs::read_to_string(&outside).unwrap(), "hunter2");
+            assert_eq!(fs::symlink_metadata(&path).unwrap().file_type(), kind);
+            let set = sh(&clone, &["config", "--get-all", "remote.origin.prune"]);
+            assert_eq!(set, "false");
+        }
+    }
+
+    #[test]
+    fn a_symlink_an_agent_planted_in_the_clone_changes_nothing() {
+        planted("planted-link", |path, outside| {
+            std::os::unix::fs::symlink(outside, path).unwrap();
+        });
+    }
+
+    #[test]
+    fn a_fifo_an_agent_planted_in_the_clone_changes_nothing() {
+        planted("planted-fifo", |path, _| {
+            run(Command::new("mkfifo").arg(path)).unwrap();
+        });
     }
 
     #[test]
@@ -4484,7 +4616,7 @@ mod tests {
             ],
         );
 
-        let reason = worktree(&home.home(), "o/n", "2", None, true).unwrap_err();
+        let reason = worktree(&home.home(), "o/n", "2", None, true, false).unwrap_err();
 
         assert_eq!(
             reason,

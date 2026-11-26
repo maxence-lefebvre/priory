@@ -109,7 +109,8 @@ pub(crate) fn plan(
            tasks.workflow, tasks.trigger, tasks.preempted IS NOT NULL, {KEYBOARD_HELD},
            tasks.position, runs.session,
            EXISTS (SELECT 1 FROM holds WHERE holds.task = tasks.id AND holds.released IS NULL)
-         FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.ended IS NULL"
+         FROM runs JOIN tasks ON tasks.id = runs.task
+         WHERE runs.ended IS NULL AND runs.harness IS NOT 'claude-cloud'"
     ))?;
     let mut rows = statement.query([])?;
     let mut candidates = Vec::new();

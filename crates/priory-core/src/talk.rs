@@ -174,9 +174,10 @@ pub(crate) fn message(
         )));
     }
     let text = format!(
-        "Task {task} ({key}) says:\n{}\n{}\nAnswer it with the message tool, giving task {task}.",
+        "Task {task} ({key}) says:\n{}\n{}\n{}{task}.",
         crate::consult::DATA,
-        crate::consult::quoted(&text)
+        crate::consult::quoted(&text),
+        crate::news::ANSWER
     );
     if let Err(refused) = deliver(&tx, to, &state, &text, factory)? {
         return Ok(Err(refused));

@@ -54,6 +54,10 @@ is one agent process working on a task's step. A task can have many runs, and it
 carries over between them. A repository's [recipes](daemon/runs.md#recipes) are the commands
 that prepare and clean up its worktrees. See [docs/daemon/runs.md](daemon/runs.md).
 
+**Cloud run.** A run whose agent has `harness = "claude-cloud"`. It works in a Claude cloud session
+on Anthropic's machines, so it takes no room on the runner. It cannot ask: it ends its step by
+pushing a branch Priory names, or fails at its deadline. See [docs/daemon/cloud.md](daemon/cloud.md).
+
 **Inbox and routing.** Every event the intake publishes lands in the daemon's inbox before anything
 acts on it. The daemon then finds the task the event concerns, such as the task that owns the pull
 request a check ran on. `priory task ID --json` lists the events routed to a task, and

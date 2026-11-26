@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 127;
+const VERSION: i64 = 128;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -2266,6 +2266,16 @@ CREATE INDEX IF NOT EXISTS inbox_by_pull_nocase ON inbox (('github:' || json_ext
 PRAGMA user_version = 127;
 ";
 
+// The commit a cloud run's session started from, which its push must descend from. A table of its
+// own, since SQLite has no ADD COLUMN IF NOT EXISTS and a file set back a version migrates again.
+const SCHEMA_128: &str = "
+CREATE TABLE IF NOT EXISTS cloud_heads (
+  run  INTEGER PRIMARY KEY,
+  head TEXT NOT NULL
+);
+PRAGMA user_version = 128;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -2283,7 +2293,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
     SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112, SCHEMA_113,
     SCHEMA_114, SCHEMA_115, SCHEMA_116, SCHEMA_117, SCHEMA_118, SCHEMA_119, SCHEMA_120, SCHEMA_121,
-    SCHEMA_122, SCHEMA_123, SCHEMA_124, SCHEMA_125, SCHEMA_126, SCHEMA_127,
+    SCHEMA_122, SCHEMA_123, SCHEMA_124, SCHEMA_125, SCHEMA_126, SCHEMA_127, SCHEMA_128,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -3979,10 +3989,18 @@ pub(crate) fn admissible<'r>(
             None if helper => None,
             None => crowded(db, factory, &admission)?,
         };
+        let busy = match (busy, agent) {
+            (None, Some((_, agent))) if crate::cloud::is_cloud(agent) => {
+                crate::cloud::waits(db, factory, admission.task)?
+            }
+            (busy, _) => busy,
+        };
         let waits = match (busy, head) {
             (Some(reason), _) => Some(reason),
             // The sweeper frees the room the queue waits for, so it never waits for room itself.
             (None, _) if admission.trigger == crate::stall::TRIGGER => None,
+            // A cloud run takes no room here, so it never waits for it or behind a task that does.
+            (None, _) if agent.is_some_and(|(_, agent)| crate::cloud::is_cloud(agent)) => None,
             (None, Some((head, cause))) => {
                 *waiting.entry(cause).or_default() += 1;
                 Some(format!("waits behind task {head}, which waits for room"))
@@ -4260,7 +4278,8 @@ pub(crate) fn promised_with(
         |row| row.get(0),
     )?;
     let mut statement = db.prepare(
-        "SELECT id, agent, tmux, session FROM runs WHERE ended IS NULL AND task IS NOT ?1",
+        "SELECT id, agent, tmux, session FROM runs WHERE ended IS NULL AND task IS NOT ?1
+         AND harness IS NOT 'claude-cloud'",
     )?;
     // A run recorded before schema 5 has no agent.
     let mut runs = statement.query_map([except], |row| {
@@ -4704,6 +4723,28 @@ pub(crate) fn unread(
     Ok(events)
 }
 
+/// The line of `task`'s source event, as its first prompt had it; empty without an event.
+pub(crate) fn source(tx: &Transaction, task: i64) -> rusqlite::Result<String> {
+    let event = tx
+        .query_row(
+            "SELECT type, subject, data FROM inbox
+             WHERE id = (SELECT source FROM tasks WHERE id = ?1)",
+            [task],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    match event {
+        Some((kind, subject, data)) => requested(tx, task, &kind, subject.as_deref(), &data),
+        None => Ok(String::new()),
+    }
+}
+
 /// The line of `task`'s source event, with the title and text its trigger's `pre` script gave in
 /// place of the event's, and the context it added after it.
 fn requested(
@@ -4905,6 +4946,8 @@ pub(crate) struct LiveRun {
     pub ready: bool,
     /// The seconds since it started, while no `SessionStart` arrived.
     pub waited: Option<i64>,
+    /// The name of the harness it started in, whatever its agent's is now.
+    pub harness: Option<String>,
     /// 1 when it started under `direnv exec`, 2 once direnv failed and it started without, else 0.
     pub direnv: i64,
     /// It resumed a session rather than starting one.
@@ -4971,7 +5014,7 @@ pub(crate) fn live(db: &Connection) -> rusqlite::Result<Vec<LiveRun>> {
         "SELECT runs.id, runs.task, runs.step, tasks.workflow, runs.tmux, runs.session, tasks.worktree,
          CASE WHEN NOT runs.ready THEN unixepoch('now') - unixepoch(runs.started) END,
          unixepoch('now') - unixepoch(runs.turn), runs.prompted, coalesce(runs.agent, ''), runs.ready,
-         coalesce(runs.direnv, 0), coalesce(runs.resumes, 0)
+         coalesce(runs.direnv, 0), runs.harness, coalesce(runs.resumes, 0)
          FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.ended IS NULL ORDER BY runs.id",
     )?;
     statement
@@ -4990,7 +5033,8 @@ pub(crate) fn live(db: &Connection) -> rusqlite::Result<Vec<LiveRun>> {
                 agent: row.get(10)?,
                 ready: row.get(11)?,
                 direnv: row.get(12)?,
-                resumes: row.get(13)?,
+                harness: row.get(13)?,
+                resumes: row.get(14)?,
             })
         })?
         .collect()
@@ -5175,7 +5219,7 @@ pub(crate) fn attempt(db: &mut Connection) -> rusqlite::Result<Option<Attempt>> 
         .query_row(
             &format!("SELECT outbox.id, runs.id, runs.tmux, runs.session, outbox.text, outbox.compact FROM runs
              JOIN outbox ON outbox.task = runs.task AND outbox.state = 'queued'
-             WHERE runs.ended IS NULL AND runs.idle = 1
+             WHERE runs.ended IS NULL AND runs.idle = 1 AND runs.harness IS NOT 'claude-cloud'
              AND (runs.session_started IS NULL
                OR julianday(runs.session_started) <= julianday('now', '-{SETTLE}'))
              AND NOT EXISTS (SELECT 1 FROM gates WHERE gates.run = runs.id AND gates.state = 'grading')
@@ -5832,6 +5876,32 @@ mod inbox_lookups {
 
         assert!(ignored.contains("INDEX inbox_by_day "), "{ignored}");
         assert!(of_task.contains("INDEX inbox_by_task "), "{of_task}");
+    }
+
+    #[test]
+    fn an_upgrade_from_127_adds_the_start_commit_over_the_runs_it_keeps() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.execute_batch(&MIGRATIONS[..127].concat()).unwrap();
+        db.execute_batch(
+            "INSERT INTO tasks (id, key, workflow, step, state, trigger, source)
+               VALUES (1, 'k', 'w', 's', 'running', 't', 'e');
+             INSERT INTO runs (id, task, step, tmux, session) VALUES (7, 1, 's', 'm', 'n');",
+        )
+        .unwrap();
+
+        apply(&mut db, false).unwrap();
+
+        let found: (i64, Option<String>, i64) = db
+            .query_row(
+                "SELECT id, (SELECT head FROM cloud_heads WHERE run = runs.id),
+                   (SELECT user_version FROM pragma_user_version) FROM runs",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(found, (7, None, 128));
+        db.prepare("SELECT 1 FROM inbox INDEXED BY inbox_by_task WHERE task = 1")
+            .unwrap();
     }
 
     #[test]

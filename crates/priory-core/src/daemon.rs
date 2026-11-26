@@ -333,7 +333,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     })?;
     // A reboot or a killed tmux server takes the agents with it; that is the host's doing, not theirs.
     for run in state::live(&db)? {
-        if runtime::pane(&run.tmux, &run.session).is_some() {
+        if run.harness.as_deref() == Some(crate::cloud::HARNESS)
+            || runtime::pane(&run.tmux, &run.session).is_some()
+        {
             continue;
         }
         runtime::kill(&run.tmux);
@@ -528,6 +530,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
                 redispatch = (!failed.is_empty()).then(|| Instant::now() + REDISPATCH);
             }
         }
+        crate::cloud::hold(behind && (trace.runner.is_some() || catching_up));
         // A task that moved may still be in the rest of the log: a runner acts on none before that,
         // not even on an answer to it.
         if behind && trace.runner.is_some() {
@@ -689,7 +692,8 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             && scripts.is_empty()
             && summarizing.is_empty()
             && stalls.calls.is_empty()
-            && deliveries.is_empty());
+            && deliveries.is_empty()
+            && !crate::cloud::polling());
         upgrader.tick(&mut db, &trace, &home, working);
         ticks::record(tick.elapsed());
         crate::watchdog::ended(&home);
@@ -1752,6 +1756,10 @@ fn tend(
         if runtime::stopping() {
             return Ok(());
         }
+        // A cloud run has no local process: its branch or its deadline ends it.
+        if run.harness.as_deref() == Some(crate::cloud::HARNESS) {
+            continue;
+        }
         if !run.ready && !scope.is_empty() {
             starting
                 .entry(run.id)
@@ -1882,6 +1890,7 @@ fn tend(
     if runtime::stopping() {
         return Ok(());
     }
+    crate::cloud::tick(db, trace, kit)?;
     state::due(db, factory, &|worktree, branch| {
         runtime::kept_head(home, Path::new(worktree), branch)
     })?;
@@ -2379,6 +2388,22 @@ fn base_branch(db: &Connection, task: i64) -> rusqlite::Result<Option<String>> {
     .optional()
 }
 
+/// The branch of the task that `task` stacks on, whatever its pull request's state, and the commits
+/// `task` started from: its worktree's first one, and the parent's one it last followed.
+fn parent_branch(db: &Connection, task: i64) -> rusqlite::Result<Option<(String, Vec<String>)>> {
+    db.query_row(
+        "SELECT base.branch, tasks.base_sha, tasks.parent_head
+         FROM tasks JOIN tasks AS base ON base.id = tasks.base_task
+         WHERE tasks.id = ?1 AND base.branch IS NOT NULL",
+        [task],
+        |row| {
+            let commits: [Option<String>; 2] = [row.get(1)?, row.get(2)?];
+            Ok((row.get(0)?, commits.into_iter().flatten().collect()))
+        },
+    )
+    .optional()
+}
+
 /// Whether the branch of the task that `task` stacks on moved since the `waiting` moment recorded
 /// it, before `task`'s first run: then `task` is held until a person answers its ask.
 fn parent_moved(db: &mut Connection, home: &Path, task: i64) -> rusqlite::Result<bool> {
@@ -2473,7 +2498,14 @@ fn restore_worktree(
         set_reason(db, task, &reason)?;
         return Ok(Restored::Waits);
     }
-    match runtime::worktree(home, repo, &name, None, factory.trust_worktrees()) {
+    match runtime::worktree(
+        home,
+        repo,
+        &name,
+        None,
+        factory.trust_worktrees(),
+        factory.cloud_repo(repo),
+    ) {
         Ok((worktree, _, added)) => {
             state::set_base(db, task, added.base(), factory.trust_worktrees())?;
             db.execute(
@@ -3016,6 +3048,7 @@ fn start(
         &folder,
         base.as_deref(),
         factory.trust_worktrees(),
+        factory.cloud_repo(repo),
     ) {
         Ok((worktree, branch, added)) => {
             if let runtime::Added::Kept(Some(recovery)) = &added {
@@ -3054,6 +3087,118 @@ fn start(
             "staged: step {} is irreversible, so its run did not start",
             step.id
         )));
+    }
+    if crate::cloud::is_cloud(&agent.value) {
+        if state::replaying(db)? {
+            return Ok(Err(format!(
+                "a replay starts no cloud session, and step {} needs one",
+                step.id
+            )));
+        }
+        if factory.staged(&admission.trigger) {
+            return Ok(Err(format!(
+                "staged: step {} pushes the task's branch to GitHub, so its cloud run did not start",
+                step.id
+            )));
+        }
+        if !factory.cloud_repo(repo) {
+            return Ok(Err(format!(
+                "a cloud run pushes {branch} to GitHub before a person approves it, so it needs [repos.\"{repo}\"] cloud = true in factory.toml"
+            )));
+        }
+        if let Some(reason) = crate::cloud::spent(db, factory, admission.task)? {
+            return Ok(Err(reason));
+        }
+        if let Some((sandbox, _)) = sandbox {
+            return Ok(Err(format!(
+                "workflow {jailed_by} needs sandbox {sandbox}, and a cloud run cannot be jailed"
+            )));
+        }
+        let head = match priory_runtime::cloud::clean_head(&worktree, &branch) {
+            Ok(head) => head,
+            Err(reason) if runtime::timed_out(&reason) => {
+                return Ok(crate::cloud::slow(admission.task, &reason));
+            }
+            Err(reason) => return Ok(Err(reason)),
+        };
+        if let Some((parent, started)) = parent_branch(db, admission.task)? {
+            match priory_runtime::cloud::holds_unpushed(&worktree, &head, &parent, &started) {
+                Ok(false) => {}
+                Ok(true) => {
+                    return Ok(Err(format!(
+                        "{branch} holds commits of {parent} that are not on origin, and a cloud run would push them. Push them to {parent}, or rebase {branch} onto a branch that is on origin, then resume the task"
+                    )));
+                }
+                Err(reason) if runtime::timed_out(&reason) => {
+                    return Ok(crate::cloud::slow(admission.task, &reason));
+                }
+                Err(reason) => return Ok(Err(reason)),
+            }
+        }
+        crate::cloud::checked(admission.task);
+        // Preparing the worktree takes time, in which a filter's window can open.
+        if state::filtered(db, factory, runner, admission.task)?.is_some() {
+            return Ok(Ok(()));
+        }
+        let session = uuid::Uuid::new_v4().to_string();
+        let definition = definition(factory, &agent.value, &sources).to_string();
+        let run = state::start(
+            db,
+            &NewRun {
+                task: admission.task,
+                step: &step.id,
+                agent: name,
+                tmux: &crate::cloud::tmux(admission.task),
+                session: &session,
+                repo,
+                branch: &branch,
+                worktree: &worktree.to_string_lossy(),
+                prompt: None,
+                ending: &tools::ending(step),
+                shared: false,
+                definition: &definition,
+                changed: None,
+                lanes: factory.lanes(),
+                kit_hash: sources.hash().as_deref(),
+                kit_commit: sources.commit,
+                debate: None,
+                memories_commit: sources.memories_commit,
+                harness: agent.value.harness.name(),
+                resumes: false,
+                sandbox: None,
+            },
+        )?;
+        // `claude --cloud` shows Claude's trust dialog in a folder it does not trust.
+        if factory.trust_worktrees() && factory.names_repo(repo) {
+            let grants = priory_runtime::trust::grant_cloud(home, repo);
+            let tx = db.transaction()?;
+            for grant in &grants {
+                crate::trace::trusted(&tx, trace, run, crate::cloud::HARNESS, grant, None)?;
+            }
+            tx.commit()?;
+        }
+        let private = factory.private().cloned();
+        let screen = {
+            let (worktree, repo) = (worktree.clone(), repo.to_owned());
+            let head = head.clone();
+            move || match private {
+                Some(private) => {
+                    crate::private::screen_push(&private, &worktree, &repo, &head, base.as_deref())
+                }
+                None => Ok(()),
+            }
+        };
+        let start = priory_runtime::cloud::Start {
+            tmux: crate::cloud::tmux(admission.task),
+            home: home.to_path_buf(),
+            repo: repo.to_owned(),
+            worktree,
+            branch,
+            head,
+            prompt: factory.prompt(&agent.value),
+        };
+        crate::cloud::dispatch(db, step, run, admission.task, &session, start, screen)?;
+        return Ok(Ok(()));
     }
     let turn = match &step.debate {
         Some(debate) => Some(crate::debate::turn(
@@ -3104,7 +3249,7 @@ fn start(
     let resumed = resumed.filter(|_| !fresh);
     let resume = match (&resumed, &agent.value.harness) {
         (Some(session), Harness::Codex) => state::thread(db, session)?,
-        (Some(session), Harness::ClaudeCode) => {
+        (Some(session), Harness::ClaudeCode | Harness::ClaudeCloud) => {
             (state::thread(db, session)?.is_none()).then(|| session.clone())
         }
         (None, _) => None,
@@ -3148,7 +3293,7 @@ fn start(
     runtime::kill(&tmux);
     let first = match agent.value.harness {
         Harness::Codex => state::claim(db, run)?.map(|text| runtime::typable(&text)),
-        Harness::ClaudeCode => None,
+        Harness::ClaudeCode | Harness::ClaudeCloud => None,
     };
     let env: Vec<String> = factory
         .otlp()
@@ -3313,7 +3458,7 @@ fn servers(
     dir: &Path,
 ) -> Result<priory_runtime::servers::Servers, String> {
     match agent.harness {
-        Harness::ClaudeCode => {
+        Harness::ClaudeCode | Harness::ClaudeCloud => {
             priory_runtime::servers::claude(&agent.mcp_servers, &agent.connectors, dir)
         }
         Harness::Codex => priory_runtime::servers::codex(&agent.mcp_servers, dir),
@@ -3560,7 +3705,7 @@ fn harness_of(factory: &Factory, agent: &str) -> &'static dyn runtime::Harness {
 
 fn harness(harness: &Harness) -> &'static dyn runtime::Harness {
     match harness {
-        Harness::ClaudeCode => &runtime::ClaudeCode,
+        Harness::ClaudeCode | Harness::ClaudeCloud => &runtime::ClaudeCode,
         Harness::Codex => &runtime::Codex,
     }
 }
@@ -3695,6 +3840,7 @@ mod tests {
             worktree: Some("/w/1".into()),
             ready: false,
             waited: Some(600),
+            harness: None,
             direnv: 1,
             resumes: false,
             turn: None,

@@ -2036,7 +2036,7 @@ mod tests {
         fs::write(taken.aside.join("ours"), "x").unwrap();
         // The task's start waits, although the folder is there.
         let waits = "waits to fetch o/n: the sweep removes a worktree of it";
-        let start = || crate::runtime::worktree(&home.0, "o/n", "1", None, false);
+        let start = || crate::runtime::worktree(&home.0, "o/n", "1", None, false, false);
         assert_eq!(start().unwrap_err(), waits);
         let fetch_waits = || crate::runtime::fetch_waits(&home.0, "o/n", "1");
         assert_eq!(fetch_waits().as_deref(), Some(waits));
@@ -2240,7 +2240,7 @@ mod tests {
             let trash = fs::read_dir(home.0.join("trash")).unwrap().next().unwrap();
             assert!(trash.unwrap().path().join("new").exists());
             drop(taken);
-            crate::runtime::worktree(&home.0, "o/n", "1", None, false).unwrap();
+            crate::runtime::worktree(&home.0, "o/n", "1", None, false, false).unwrap();
         }
     }
 
@@ -2305,7 +2305,7 @@ mod tests {
         let (home, found) = Home::new("start-waits");
         let mut taken = take(&home.0, &found).unwrap();
         let waits = "waits to fetch o/n: the sweep removes a worktree of it";
-        let start = || crate::runtime::worktree(&home.0, "o/n", "1", None, false);
+        let start = || crate::runtime::worktree(&home.0, "o/n", "1", None, false, false);
         let fetch_waits = || crate::runtime::fetch_waits(&home.0, "o/n", "1");
         assert_eq!(start().unwrap_err(), waits);
         assert_eq!(fetch_waits().as_deref(), Some(waits));

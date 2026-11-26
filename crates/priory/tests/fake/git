@@ -6,12 +6,49 @@
 # FAKE_DIR/git-ls-remotes gets a line per ls-remote, which FAKE_DIR/git-unreachable makes fail.
 # FAKE_DIR/git-crash holds a subcommand, with hash-object's kind, such as `hash-object -t tree` or
 # `ls-files`, that git crashes on when it checks an `.envrc`, or `fetch` for every fetch.
+# git-hang-ls makes `ls-remote` hang, after it logs to git-ls.log what may prompt. git-no-commit
+# makes a fetch of a commit by its SHA fail, as a dropped connection does. git-shas
+# gets a line per such fetch. git-hang-status makes the status that lists every untracked file wait
+# until it is gone, after it writes git-status-held, and git-hang-merge makes a
+# merge hang. git-hang-log makes the private terms' log wait in the same way, after it writes
+# git-log-held, and git-hang-config makes each read or write of remote.origin.prune hang.
 case " $* " in
-  *" status "*) echo "$*" >> "$FAKE_DIR/git-statuses" ;;
-  *" fetch "*) echo fetch >> "$FAKE_DIR/git-fetches"; if [ -e "$FAKE_DIR/git-hang" ]; then (trap '' TERM; sleep 60) & sleep 60; fi ;;
+  *" status "*)
+    echo "$*" >> "$FAKE_DIR/git-statuses"
+    if [ -e "$FAKE_DIR/git-hang-status" ] && [[ "$*" = *--untracked-files=all* ]]; then
+      echo held >> "$FAKE_DIR/git-status-held"
+      while [ -e "$FAKE_DIR/git-hang-status" ]; do sleep 0.1; done
+    fi
+    ;;
+  *" log --encoding=UTF-8 "*)
+    if [ -e "$FAKE_DIR/git-hang-log" ]; then
+      echo held >> "$FAKE_DIR/git-log-held"
+      while [ -e "$FAKE_DIR/git-hang-log" ]; do sleep 0.1; done
+    fi
+    ;;
+  *" config "*" remote.origin.prune "*)
+    while [ -e "$FAKE_DIR/git-hang-config" ]; do sleep 0.1; done
+    ;;
+  *" merge --quiet "*)
+    if [ -e "$FAKE_DIR/git-hang-merge" ]; then echo merge >> "$FAKE_DIR/git-merging"; exec sleep 60; fi
+    ;;
+  *" fetch "*)
+    echo fetch >> "$FAKE_DIR/git-fetches"
+    if [ -e "$FAKE_DIR/git-hang" ]; then (trap '' TERM; sleep 60) & sleep 60; fi
+    if [ -e "$FAKE_DIR/git-no-commit" ] && [[ "$*" =~ [0-9a-f]{40} ]]; then
+      echo 'fatal: the connection dropped' >&2
+      exit 128
+    fi
+    if [[ "$*" =~ [0-9a-f]{40} ]]; then echo sha >> "$FAKE_DIR/git-shas"; fi
+    ;;
   *" ls-remote "*)
     echo ls-remote >> "$FAKE_DIR/git-ls-remotes"
-    if [ -e "$FAKE_DIR/git-unreachable" ]; then echo 'fatal: unreachable' >&2; exit 128; fi ;;
+    if [ -e "$FAKE_DIR/git-hang-ls" ]; then
+      echo "${GIT_TERMINAL_PROMPT-unset} ${GIT_SSH_COMMAND-unset}" >> "$FAKE_DIR/git-ls.log"
+      exec sleep 60
+    fi
+    if [ -e "$FAKE_DIR/git-unreachable" ]; then echo 'fatal: unreachable' >&2; exit 128; fi
+    ;;
 esac
 if [ -e "$FAKE_DIR/git-crash" ]; then
   read -r crash < "$FAKE_DIR/git-crash" || true

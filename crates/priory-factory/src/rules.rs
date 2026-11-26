@@ -499,6 +499,14 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 problems.push(problem(settings, at, message));
                 continue;
             }
+            if let Some(setup) = &recipes.cloud_setup {
+                let table = format!("repos.\"{repo}\"");
+                for message in
+                    path_problems(&table, "a cloud setup script", &[("cloud_setup", setup)])
+                {
+                    problems.push(problem(settings, at, message));
+                }
+            }
             for moment in Moment::ALL {
                 if let Some(recipe) = recipes.recipe(moment) {
                     let name = format!("`[repos.\"{repo}\"] {}`", moment.name());
@@ -726,6 +734,7 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
     for agent in factory.agents.values() {
         check_codex(factory, agent, &mut problems);
         check_shared(agent, &mut problems);
+        check_cloud(agent, &mut problems);
         check_skills(factory, agent, &mut problems);
         check_connectors(agent, &mut problems);
     }
@@ -1188,7 +1197,67 @@ pub fn warnings(factory: &Factory) -> Vec<Problem> {
         }
     }
     warnings.extend(caps_warnings(factory));
+    warnings.extend(cloud_warnings(factory));
     warnings
+}
+
+/// A cloud step starts with a push of the task's branch, which publishes what local steps committed
+/// with no person's look, and only a repository that opts in starts one.
+fn cloud_warnings(factory: &Factory) -> Vec<Problem> {
+    let mut warnings = Vec::new();
+    let is_cloud = |step: &Step| step.agent.as_ref().is_some_and(|name| cloud(factory, name));
+    for workflow in factory.workflows.values() {
+        let steps = &workflow.value.steps;
+        let mut any = false;
+        for (index, step) in steps.iter().enumerate() {
+            any |= is_cloud(step);
+            let commits = (step.decides == Decider::Model || step.action.as_deref() == Some("run"))
+                && !matches!(step.effect, Effect::None | Effect::Read)
+                && !is_cloud(step);
+            if !commits {
+                continue;
+            }
+            let mut seen = BTreeSet::new();
+            let mut ahead: Vec<&str> = step.next.values().map(String::as_str).collect();
+            while let Some(id) = ahead.pop() {
+                let Some(target) = steps.iter().find(|target| target.id == id) else {
+                    continue;
+                };
+                if target.decides == Decider::Human || !seen.insert(id) {
+                    continue;
+                }
+                if is_cloud(target) {
+                    let message = format!(
+                        "step `{}` may commit and leads to cloud step `{id}` with no human step between: the cloud step pushes its commits to GitHub before a person sees them",
+                        step.id
+                    );
+                    let line = workflow.lines.step(index);
+                    warnings.push(problem(workflow, line, message));
+                }
+                ahead.extend(target.next.values().map(String::as_str));
+            }
+        }
+        let opted = factory
+            .settings
+            .as_ref()
+            .is_some_and(|settings| settings.value.repos.values().any(|repo| repo.cloud));
+        if any && !opted {
+            warnings.push(problem(
+                workflow,
+                None,
+                "has a cloud step, and no repository sets `cloud = true` in `[repos]`: its tasks block before their first session".into(),
+            ));
+        }
+    }
+    warnings
+}
+
+/// Whether agent `name` runs in the cloud.
+fn cloud(factory: &Factory, name: &str) -> bool {
+    factory
+        .agents
+        .get(name)
+        .is_some_and(|agent| matches!(agent.value.harness, Harness::ClaudeCloud))
 }
 
 /// Claude Code's model aliases: a transcript names the full model, which no price key can predict.
@@ -1497,6 +1566,126 @@ fn check_codex(factory: &Factory, agent: &Loaded<Agent>, problems: &mut Vec<Prob
             ));
         }
     }
+}
+
+/// The outcomes a cloud step may route: the daemon stores the result, and has only these two.
+pub const CLOUD_OUTCOMES: [&str; 2] = ["pushed", "failed"];
+
+/// Refuses what a cloud session cannot take: it runs on Anthropic's machines, with no hook, MCP
+/// server or local process.
+fn check_cloud(agent: &Loaded<Agent>, problems: &mut Vec<Problem>) {
+    let value = &agent.value;
+    if !matches!(value.harness, Harness::ClaudeCloud) {
+        return;
+    }
+    let refused = [
+        (
+            "model",
+            value.model.is_some(),
+            "the cloud environment picks it",
+        ),
+        (
+            "effort",
+            value.effort.is_some(),
+            "the cloud environment picks it",
+        ),
+        (
+            "session",
+            matches!(value.session, Session::Shared),
+            "a cloud session serves one task",
+        ),
+        (
+            "mcpServers",
+            !value.mcp_servers.is_empty(),
+            "a cloud session cannot reach this machine",
+        ),
+        (
+            "connectors",
+            !value.connectors.is_empty(),
+            "Priory cannot check a cloud session's connectors",
+        ),
+        (
+            "permissions",
+            value.permissions.default_mode.is_some()
+                || !value.permissions.allow.is_empty()
+                || !value.permissions.deny.is_empty(),
+            "the cloud environment sets its own",
+        ),
+        (
+            "memory",
+            value.memory.is_some(),
+            "a cloud run takes no room on this machine",
+        ),
+        (
+            "disk",
+            value.disk.is_some(),
+            "a cloud run takes no room on this machine",
+        ),
+        (
+            "compactAt",
+            value.compact_at.is_some(),
+            "Priory cannot read a cloud session's context",
+        ),
+    ];
+    for (field, _, why) in refused.iter().filter(|(_, set, _)| *set) {
+        problems.push(problem(
+            agent,
+            agent.lines.field(field),
+            format!("harness = \"claude-cloud\" cannot take `{field}`: {why}"),
+        ));
+    }
+}
+
+/// What a step whose agent runs in the cloud cannot have: the daemon stores its result from the
+/// branch the session pushes, so nothing checks a proof, a guard or a plan field.
+fn cloud_step_problems(factory: &Factory, step: &Step, sandboxed: bool) -> Vec<String> {
+    let cloud = |name: &String| cloud(factory, name);
+    let mut problems = Vec::new();
+    if let Some(debate) = &step.debate
+        && debate.agents.iter().any(cloud)
+    {
+        problems.push(
+            "a debate cannot name a claude-cloud agent: a cloud session has no turns Priory sees"
+                .into(),
+        );
+    }
+    let Some(agent) = step.agent.as_ref().filter(|name| cloud(name)) else {
+        return problems;
+    };
+    let fields = [
+        (!step.proof.is_empty(), "a `proof`"),
+        (!step.guard.allow.is_empty(), "a `guard`"),
+        (!step.plan_requires.is_empty(), "`plan_requires`"),
+        (!step.gate.is_empty(), "a `gate`"),
+        (step.budget.is_some(), "a `budget`"),
+        (step.attach, "`attach`"),
+    ];
+    for (_, field) in fields.iter().filter(|(set, _)| *set) {
+        problems.push(format!(
+            "agent `{agent}` runs in the cloud, so the step cannot have {field}: Priory never sees the session's work"
+        ));
+    }
+    if matches!(step.effect, Effect::None | Effect::Read) {
+        problems.push(format!(
+            "agent `{agent}` runs in the cloud, so the step's `effect` cannot be `{}`: Priory pushes the task's branch before the session starts",
+            step.effect.name()
+        ));
+    }
+    if sandboxed {
+        problems.push(format!(
+            "agent `{agent}` runs in the cloud, so the workflow cannot have `sandbox`: Priory cannot jail a cloud session"
+        ));
+    }
+    for outcome in step
+        .next
+        .keys()
+        .filter(|key| !CLOUD_OUTCOMES.contains(&key.as_str()))
+    {
+        problems.push(format!(
+            "agent `{agent}` runs in the cloud, so `next` cannot name outcome `{outcome}`: a cloud step ends `pushed` or `failed`"
+        ));
+    }
+    problems
 }
 
 /// Why autopilot approves no plan of workflow `name`, when none of its steps has one it may.
@@ -2458,6 +2647,9 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
         }
         if step.debate.is_some() && step.decides != Decider::Model {
             report("only a model step has a `debate`".into());
+        }
+        for message in cloud_step_problems(factory, step, workflow.value.sandbox.is_some()) {
+            report(message);
         }
         match step.decides {
             Decider::Model => {

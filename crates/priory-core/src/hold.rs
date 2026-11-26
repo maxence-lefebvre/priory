@@ -271,7 +271,7 @@ pub(crate) fn guarded(
     tx.query_row(
         &format!(
             "SELECT runs.task, tasks.workflow, runs.step, coalesce(runs.agent, ''), {},
-               runs.debate IS NOT NULL
+               runs.debate IS NOT NULL, runs.harness IS 'claude-cloud'
              FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.id = ?1",
             crate::preempt::KEYBOARD_HELD
         ),
@@ -282,6 +282,11 @@ pub(crate) fn guarded(
             let task: i64 = row.get(0)?;
             if row.get(5)? {
                 return Ok(Some(format!("task {task} is in a debate turn")));
+            }
+            if row.get(6)? {
+                return Ok(Some(format!(
+                    "task {task} runs in a cloud session, which Priory cannot stop"
+                )));
             }
             Ok(crate::preempt::guarded(
                 factory,

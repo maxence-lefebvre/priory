@@ -5093,6 +5093,241 @@ fn a_sandbox_kind_other_than_bwrap_is_refused_with_its_line() {
     );
 }
 
+const CLOUD_AGENT: &str = "+++\ndescription = \"Implements one task in a cloud session.\"\nharness = \"claude-cloud\"\n+++\nYou implement one issue.\n";
+
+/// The factory with a cloud implementer, whose `implement` step ends `pushed` or `failed`, and
+/// `step` added to that step.
+fn cloud_factory(name: &str, agent: &str, step: &str) -> Outcome {
+    let workflow = WORKFLOW.replace(
+        "next = { passed = \"approve-pr\", failed = \"stop\" }",
+        &format!("{step}next = {{ pushed = \"approve-pr\", failed = \"stop\" }}"),
+    );
+    cloud_workflow(name, agent, &workflow, CLOUD_REPO)
+}
+
+const CLOUD_REPO: &str = "name = \"demo\"\n\n[repos.\"owner/repo\"]\ncloud = true\n";
+
+/// The factory with `agent`, `workflow` and `settings` as its `factory.toml`.
+fn cloud_workflow(name: &str, agent: &str, workflow: &str, settings: &str) -> Outcome {
+    let mut files = with("agents/implementer/agent.md", agent);
+    files.retain(|(file, _)| !["workflows/implement.toml", "factory.toml"].contains(file));
+    files.push(("workflows/implement.toml", workflow));
+    files.push(("factory.toml", settings));
+    check(&factory(name, &files))
+}
+
+#[test]
+fn a_cloud_step_warns_when_a_local_step_commits_before_it_with_no_human_step_between() {
+    let local = "[[steps]]\nid = \"draft\"\ndecides = \"model\"\nagent = \"drafter\"\nprompt = \"Draft.\"\neffect = \"reversible\"\nnext = { passed = \"TO\", failed = \"stop\" }\n";
+    let cloud = WORKFLOW
+        .replace("passed = \"approve-pr\"", "pushed = \"approve-pr\"")
+        .replace("start = \"implement\"", "start = \"draft\"");
+    let gate = "[[steps]]\nid = \"look\"\ndecides = \"human\"\neffect = \"none\"\noptions = [\"go\", \"stop\"]\nnext = { go = \"implement\", stop = \"stop\" }\n";
+    let outcome = |name: &str, to: &str, gate: &str| {
+        let workflow = format!("{cloud}\n{}\n{gate}", local.replace("TO", to));
+        let mut files = with("agents/implementer/agent.md", CLOUD_AGENT);
+        files.retain(|(file, _)| !["workflows/implement.toml", "factory.toml"].contains(file));
+        files.push(("workflows/implement.toml", &workflow));
+        files.push(("factory.toml", CLOUD_REPO));
+        files.push((
+            "agents/drafter/agent.md",
+            "+++\ndescription = \"Drafts.\"\nharness = \"claude-code\"\n+++\nYou draft.\n",
+        ));
+        check(&factory(name, &files))
+    };
+
+    let direct = outcome("cloud-commits", "implement", "");
+    let seen = outcome("cloud-commits-seen", "look", gate);
+
+    assert_eq!(direct.code, 0, "{}", direct.stderr);
+    assert!(
+        direct.stderr.starts_with("warning: workflows/implement.toml:")
+            && direct.stderr.contains(
+                "step `draft` may commit and leads to cloud step `implement` with no human step between"
+            ),
+        "{}",
+        direct.stderr
+    );
+    assert_eq!((seen.code, seen.stderr.as_str()), (0, ""));
+}
+
+#[test]
+fn a_cloud_step_warns_when_no_repository_opts_in() {
+    let workflow = WORKFLOW.replace("passed = \"approve-pr\"", "pushed = \"approve-pr\"");
+
+    let outcome = cloud_workflow("cloud-no-repo", CLOUD_AGENT, &workflow, "name = \"demo\"\n");
+
+    assert_eq!(outcome.code, 0);
+    assert_eq!(
+        outcome.stderr,
+        "warning: workflows/implement.toml: has a cloud step, and no repository sets `cloud = true` in `[repos]`: its tasks block before their first session\n"
+    );
+}
+
+#[test]
+fn a_cloud_agent_at_a_step_that_ends_pushed_or_failed_passes() {
+    let outcome = cloud_factory("cloud", CLOUD_AGENT, "");
+
+    assert_eq!((outcome.code, outcome.stderr.as_str()), (0, ""));
+}
+
+#[test]
+fn a_cloud_agent_refuses_what_a_cloud_session_cannot_take_each_at_its_line() {
+    let agent = AGENT.replace("claude-code", "claude-cloud");
+
+    let outcome = cloud_factory("cloud-agent", &agent, "");
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "agents/implementer/agent.md:5: harness = \"claude-cloud\" cannot take `mcpServers`: a cloud session cannot reach this machine\n\
+         agents/implementer/agent.md:6: harness = \"claude-cloud\" cannot take `permissions`: the cloud environment sets its own\n"
+    );
+}
+
+#[test]
+fn a_cloud_agent_with_a_model_or_an_effort_fails_the_check() {
+    let agent = CLOUD_AGENT.replace(
+        "harness = \"claude-cloud\"\n",
+        "harness = \"claude-cloud\"\nmodel = \"sonnet\"\neffort = \"high\"\n",
+    );
+
+    let outcome = cloud_factory("cloud-model", &agent, "");
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "agents/implementer/agent.md:4: harness = \"claude-cloud\" cannot take `model`: the cloud environment picks it\n\
+         agents/implementer/agent.md:5: harness = \"claude-cloud\" cannot take `effort`: the cloud environment picks it\n"
+    );
+}
+
+#[test]
+fn a_cloud_agent_in_a_sandboxed_workflow_fails_the_check() {
+    let workflow = format!(
+        "sandbox = \"jail\"\n{}",
+        WORKFLOW.replace("passed = \"approve-pr\"", "pushed = \"approve-pr\"")
+    );
+    let mut files = with("agents/implementer/agent.md", CLOUD_AGENT);
+    files.retain(|(file, _)| !["workflows/implement.toml", "factory.toml"].contains(file));
+    files.push(("workflows/implement.toml", &workflow));
+    files.push((
+        "factory.toml",
+        "name = \"demo\"\n\n[sandboxes.jail]\nkind = \"bwrap\"\n",
+    ));
+
+    let outcome = check(&factory("cloud-sandboxed", &files));
+
+    assert_eq!(outcome.code, 1);
+    assert!(
+        outcome.stderr.contains(
+            "step `implement`: agent `implementer` runs in the cloud, so the workflow cannot have `sandbox`: Priory cannot jail a cloud session\n"
+        ),
+        "{}",
+        outcome.stderr
+    );
+}
+
+#[test]
+fn a_cloud_agent_with_a_shared_session_or_room_fails_the_check() {
+    let agent = CLOUD_AGENT.replace(
+        "harness = \"claude-cloud\"\n",
+        "harness = \"claude-cloud\"\nsession = \"shared\"\nmemory = \"8GB\"\ndisk = \"10GB\"\n",
+    );
+
+    let outcome = cloud_factory("cloud-room", &agent, "");
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "agents/implementer/agent.md:4: harness = \"claude-cloud\" cannot take `session`: a cloud session serves one task\n\
+         agents/implementer/agent.md:5: harness = \"claude-cloud\" cannot take `memory`: a cloud run takes no room on this machine\n\
+         agents/implementer/agent.md:6: harness = \"claude-cloud\" cannot take `disk`: a cloud run takes no room on this machine\n"
+    );
+}
+
+#[test]
+fn a_cloud_step_with_a_proof_a_guard_a_plan_field_or_another_outcome_fails_the_check() {
+    let cases = [
+        (
+            "cloud-proof",
+            "proof = { pushed = \"gate-passed\" }\n",
+            "a `proof`",
+        ),
+        (
+            "cloud-guard",
+            "guard = { allow = [\"push\"] }\n",
+            "a `guard`",
+        ),
+        (
+            "cloud-plan",
+            "plan_requires = [\"goal\"]\n",
+            "`plan_requires`",
+        ),
+        ("cloud-budget", "budget = \"1.00\"\n", "a `budget`"),
+        ("cloud-attach", "attach = true\n", "`attach`"),
+    ];
+    for (name, step, field) in cases {
+        let outcome = cloud_factory(name, CLOUD_AGENT, step);
+
+        assert_eq!(outcome.code, 1, "{name}");
+        assert!(
+            outcome.stderr.contains(&format!(
+                "workflows/implement.toml:4: step `implement`: agent `implementer` runs in the cloud, so the step cannot have {field}: Priory never sees the session's work\n"
+            )),
+            "{name}: {}",
+            outcome.stderr
+        );
+    }
+    let agent = ("agents/implementer/agent.md", CLOUD_AGENT);
+    let mut files = with(agent.0, agent.1);
+    files.retain(|(file, _)| *file != "workflows/implement.toml");
+    files.push(("workflows/implement.toml", WORKFLOW));
+
+    let outcome = check(&factory("cloud-outcome", &files));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "workflows/implement.toml:4: step `implement`: agent `implementer` runs in the cloud, so `next` cannot name outcome `passed`: a cloud step ends `pushed` or `failed`\n"
+    );
+}
+
+#[test]
+fn a_cloud_step_that_may_change_nothing_fails_the_check() {
+    for effect in ["none", "read"] {
+        let workflow = WORKFLOW
+            .replace("passed = \"approve-pr\"", "pushed = \"approve-pr\"")
+            .replace("effect = \"reversible\"", &format!("effect = \"{effect}\""));
+        let mut files = with("agents/implementer/agent.md", CLOUD_AGENT);
+        files.retain(|(file, _)| *file != "workflows/implement.toml");
+        files.push(("workflows/implement.toml", &workflow));
+
+        let outcome = check(&factory(&format!("cloud-effect-{effect}"), &files));
+
+        assert_eq!(outcome.code, 1, "{effect}");
+        assert_eq!(
+            outcome.stderr,
+            format!(
+                "workflows/implement.toml:4: step `implement`: agent `implementer` runs in the cloud, so the step's `effect` cannot be `{effect}`: Priory pushes the task's branch before the session starts\n"
+            )
+        );
+    }
+}
+
+#[test]
+fn a_cloud_setup_script_outside_its_repository_fails_the_check() {
+    let settings = "name = \"demo\"\n\n[repos.\"owner/repo\"]\ncloud_setup = \"../setup.sh\"\n";
+
+    let outcome = check(&factory("cloud-setup", &with("factory.toml", settings)));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "factory.toml:3: `[repos.\"owner/repo\"]` `cloud_setup` is `../setup.sh`: a cloud setup script is relative and stays inside the repository\n"
+    );
+}
+
 #[test]
 fn a_filter_window_names_its_timezone_in_a_factory_of_several_runners() {
     let runner = format!(

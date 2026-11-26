@@ -96,6 +96,8 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
 - [sessions.md](sessions.md): shared agent sessions, attaching to a run's terminal, and trusting the
   worktrees folder and each clone for Claude.
 - [codex.md](codex.md): how a Codex run differs from a Claude run.
+- [cloud.md](cloud.md): cloud runs, which run a step in a Claude cloud session and end it by the
+  branch the session pushes.
 - [signals.md](signals.md): the hook signals a run sends, the nudge after a silent turn, and the
   nudge's evaluation.
 - [skills.md](skills.md): how the factory's skills, `instructions.md` and memories reach every

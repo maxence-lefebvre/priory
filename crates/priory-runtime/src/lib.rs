@@ -1,4 +1,5 @@
 pub mod cgroup;
+pub mod cloud;
 pub mod eval;
 pub mod http;
 pub mod jail;

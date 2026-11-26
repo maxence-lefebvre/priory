@@ -48,12 +48,13 @@ pub(crate) fn any(tx: &Transaction, seqs: &[i64]) -> rusqlite::Result<bool> {
 }
 
 /// The classes a result's `feedback` gives, as pairs of URL and class, or why it is refused: it
-/// must be an object of known classes that names every item the agent was typed since the task's
+/// must be an object of known classes that, when `all` is true, names every item the agent was typed since the task's
 /// last result and has not sorted, and each persons-call needs an ask of the task that names it. The person's own items are recorded as persons-calls; the agent's own replies are not recorded.
 pub(crate) fn sorted(
     tx: &Transaction,
     task: i64,
     feedback: &Value,
+    all: bool,
 ) -> rusqlite::Result<Result<Vec<(String, String)>, String>> {
     let invalid =
         "feedback must be an object from each item's URL to trivial, nothing-to-do or persons-call";
@@ -113,7 +114,7 @@ pub(crate) fn sorted(
             params![task, url],
             |row| row.get(0),
         )?;
-        if !known && !given.contains_key(url) && !missing.iter().any(|item| item == url) {
+        if all && !known && !given.contains_key(url) && !missing.iter().any(|item| item == url) {
             missing.push(url.to_owned());
         }
     }
