@@ -1406,6 +1406,17 @@ fn a_task_endpoint_shows_its_brief_plan_pull_request_and_each_runs_tokens() {
         (2, "github.check_run.completed", pr("test", "failure")),
         (3, "github.check_run.completed", pr("test", "success")),
         (4, "github.check_run.completed", pr("lint", "success")),
+        // A job of the same name in another workflow.
+        (7, "github.check_run.completed", {
+            let mut other = pr("docs", "failure");
+            other["origin"] = json!("workflow:1:push");
+            other
+        }),
+        (8, "github.check_run.completed", {
+            let mut other = pr("docs", "success");
+            other["origin"] = json!("workflow:2:push");
+            other
+        }),
         // A review the intake read without the pull request's branches and head.
         (5, "github.pull_request_review.submitted", {
             let mut review = pr("", "");
@@ -1454,6 +1465,8 @@ fn a_task_endpoint_shows_its_brief_plan_pull_request_and_each_runs_tokens() {
     assert_eq!(
         pull["checks"],
         json!([
+            { "name": "docs", "conclusion": "failure", "at": "2026-11-17T11:07:00Z" },
+            { "name": "docs", "conclusion": "success", "at": "2026-11-17T11:08:00Z" },
             { "name": "lint", "conclusion": "success", "at": "2026-11-17T11:04:00Z" },
             { "name": "test", "conclusion": "success", "at": "2026-11-17T11:03:00Z" }
         ])
@@ -2729,7 +2742,7 @@ fn a_comment_a_poll_published_publishes_nothing_more_from_its_webhook() {
         "pull_request_url": "https://api.github.com/repos/owner/repo/pulls/43",
         "user": { "login": "ana", "type": "User" }
     });
-    let open = json!([{ "data": { "repository": { "pullRequests": { "nodes": [{
+    let open = json!({ "data": { "repository": { "pullRequests": { "nodes": [{
         "number": 43,
         "headRefName": "priory/3",
         "headRefOid": "abc123",
@@ -2746,9 +2759,9 @@ fn a_comment_a_poll_published_publishes_nothing_more_from_its_webhook() {
             "author": { "login": "ana", "__typename": "User" }
         }] },
         "commits": { "nodes": [] }
-    }] } } } }]);
+    }] } } } });
     setup.poll_answering(&[
-        ("graphql --paginate", open),
+        ("graphql -F", open),
         (
             "repos/owner/repo/pulls/comments?sort=created&direction=desc&per_page=100",
             json!([thread]),

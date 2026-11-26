@@ -1941,9 +1941,11 @@ pub(crate) fn publish(log: &EventLog, message: &Message) -> Result<(), Unsent> {
     let log = priory_intake::log::open(log).map_err(|error| Unsent::Nothing(error.to_string()))?;
     log.declare(&intake::output())
         .map_err(|error| Unsent::Nothing(error.to_string()))?;
-    let message = message
-        .clone()
-        .time(intake::now().map_err(Unsent::Nothing)?);
+    let mut message = message.clone();
+    // An autopilot setting is ordered by when the person made it, not when the log took it.
+    if message.kind != priory_intake::intake::AUTOPILOT_SET {
+        message = message.time(intake::now().map_err(Unsent::Nothing)?);
+    }
     // The publish may have reached the log before it failed, such as a commit whose answer the
     // connection lost.
     log.publish(OUTPUT, &message).map(|_| ()).map_err(|error| {

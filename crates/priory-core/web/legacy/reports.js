@@ -4,8 +4,23 @@ import { around, dossier, nextPick, refusal } from "../reports.js";
 import { keyOf } from "../queries.js";
 import { askFor, asked, cache, refresh, signOut } from "./data.js";
 import { connection } from "./frame.js";
-import { autolinked, focusId, html, icon, post, state, taskName, tile, writeRefusal } from "./shared.js";
+import { autolinked, focusId, html, icon, post, taskName, tile, writeRefusal } from "./shared.js";
+import { state } from "./state.js";
 
+Object.assign(state, {
+  // The pick waiting out its Undo, then in flight; each row's last refusal; the search text, null while
+  // it is closed; the row whose agreed pick Change reopened; the row Next pick reached last; a pick's or
+  // a comment's outcome once its row has left the report; the comment field open on a row, with its
+  // text, and whether a comment verb is in flight.
+  reportPending: null,
+  reportNotices: new Map(),
+  reportQuery: null,
+  reportChanging: null,
+  reportAt: null,
+  reportFlash: null,
+  compose: null,
+  remarking: false,
+});
 
 // Reports (DESIGN.md, Reports panel): the report written last, its sections in its own order, picks
 // with an Undo, and threads on rows through the report endpoints.
@@ -242,6 +257,13 @@ export function reportAct(target) {
     return render();
   }
   remark(target.dataset.row, `/api/reports/${action}`, { comment: Number(target.dataset.comment) });
+}
+
+// A report's pick still waiting out its Undo does not go once its page is left.
+export function dropPick() {
+  if (!state.reportPending || state.reportPending.sending) return;
+  clearTimeout(state.reportPending.timer);
+  state.reportPending = null;
 }
 
 export function reportsClick(action, target) {

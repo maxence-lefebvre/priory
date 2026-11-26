@@ -26,7 +26,7 @@ from somewhere.
 - The service worker's shell cache gets a new name, `priory-shell-2`, and drops the older one, so an
   offline start never mixes the module files with the bundle.
 - The migration goes page by page behind a React shell: each unported page renders in a
-  `LegacyPage` component until its port. [web-react.md](../design/web-react.md) holds the order.
+  legacy slot until its port. [web-react.md](../design/web-react.md) holds the order.
 
 ## Consequences
 

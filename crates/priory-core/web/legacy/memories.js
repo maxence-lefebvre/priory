@@ -3,8 +3,13 @@ import { render } from "../app.js";
 import { ARM_MS } from "../asks.js";
 import { memoryNote, memoryTag, plural } from "../desk.js";
 import { refresh, signOut } from "./data.js";
-import { html, icon, post, raw, state, tile, timeTag } from "./shared.js";
+import { current, html, icon, post, raw, tile, timeTag } from "./shared.js";
+import { state } from "./state.js";
 
+// Memory candidates: the Accept armed by its first tap { id, at, timer }, the one in flight, each
+// candidate's last note, those sent, whose buttons stay off until the desk drops them, and those
+// whose Current text is open, so a redraw keeps it open.
+Object.assign(state, { memoryArmed: null, memoryBusy: null, memoryNotices: new Map(), memorySent: new Set(), memoryCurrent: new Set() });
 
 // The review list (DESIGN.md, Memory candidates): each candidate's full text, then Accept and Drop.
 export function memoriesPage() {
@@ -70,6 +75,10 @@ export async function memoryAct(target) {
   state.memoryNotices.set(id, memoryNote(verb, status, body));
   render();
   refresh();
+}
+
+export function memoriesBefore() {
+  if (state.memoryArmed && current() !== "memories") disarmMemory();
 }
 
 export function memoriesClick(action, target, event) {

@@ -2,10 +2,14 @@
 import { render } from "../app.js";
 import { plural } from "../desk.js";
 import { KINDS, edgeStyle, historyRows, lockBadge, nodeShape, timeline, ungatedPairs } from "../flows.js";
+import { hold } from "../queries.js";
+import { flows as flowsRead } from "../reads/flows.js";
 import { api, cache, signOut } from "./data.js";
 import { connection } from "./frame.js";
-import { ICONS, html, icon, raw, state } from "./shared.js";
+import { ICONS, html, icon, raw } from "./shared.js";
+import { state } from "./state.js";
 
+Object.assign(state, { flowsLoading: false, flowsError: null });
 
 // Flows: each workflow drawn top to bottom. The factory is read once, so the flows load once.
 const KIND_WORD = { read: "read", reversible: "reversible write", irreversible: "irreversible write", ask: "ask", answer: "answer", verdict: "verdict" };
@@ -21,7 +25,7 @@ async function loadFlows() {
     if (token !== state.token || !state.data) return;
     state.data.flows = flows;
     state.flowsError = null;
-    cache.setQueryData(["flows"], flows);
+    hold(cache, flowsRead(), flows);
   } catch (error) {
     if (token !== state.token) return;
     if (error.status === 401) return signOut("The daemon refused this token. Paste the current one.");

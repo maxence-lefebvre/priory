@@ -1,16 +1,27 @@
 // The desk page's legacy drawing and actions.
 import { render } from "../app.js";
+import { deskReadAt } from "../data.js";
 import { askHeading, routedMark, runnerOf } from "../asks.js";
-import { actionNote, batchParts, capsuleWords, countHead, countWords, deskBanners, dueParts, nextLink, onRoom, plural, rowAction, sinceGroups } from "../desk.js";
+import { actionNote, batchParts, capsuleWords, countHead, countWords, deskBanners, dueParts, mergeSince, nextLink, onRoom, plural, rowAction, sinceGroups } from "../desk.js";
 import { droppedNote, sinceWords, unheardNote, unroutedNote } from "../inbox.js";
 import { taskLabel, workStep } from "../tasks.js";
 import { addButton } from "./add.js";
 import { askRow, askTableRow, runnerTag, sentLine } from "./asks.js";
 import { refresh, signOut } from "./data.js";
-import { connection } from "./frame.js";
-import { age, ago, autolinked, clock, date, html, icon, listOrEmpty, listSearch, olderRow, olderTasks, post, prsTag, raw, repoOf, role, savedViews, selectedAsk, state, stateWord, tile, timeTag, today } from "./shared.js";
+import { connection, keyHints } from "./frame.js";
+import { age, ago, autolinked, clock, date, html, icon, listOrEmpty, listSearch, olderRow, olderTasks, post, prsTag, raw, repoOf, role, savedViews, selectedAsk, stateWord, tile, timeTag, today } from "./shared.js";
+import { state } from "./state.js";
 import { taskActs } from "./taskacts.js";
 
+Object.assign(state, {
+  todoBusy: null,
+  todoNotices: new Map(),
+  rowBusy: null,
+  rowNotices: new Map(),
+  // Since you looked: the events the Desk opened on and each newer one, the visit they start
+  // from, when the first live read began, and whether POST /api/seen went.
+  since: { events: [], from: null, opened: null, sent: false },
+});
 
 // Desk model
 export function deskModel() {
@@ -305,6 +316,20 @@ export async function seen() {
   // As the Herdr Desk: one try. A visit not recorded shows the same events again next time.
   const { status, body } = await post("/api/seen", { at: state.since.opened }).catch((error) => ({ status: 0, body: { error: error.message } }));
   if (status !== 200) console.warn(`priory: could not record the visit: ${body.error || status}`);
+}
+
+export function deskList(wide) {
+  const { model, views, banner, rows } = deskBody(wide);
+  const head = countHead(model.open.length);
+  return html`<div class="list" role="region" aria-label="Desk"><div class="lhead"><h1>Desk</h1>
+      <span class="cnt">${head.n ? html`<span class="n num">${head.n}</span>` : ""}<span class="w">${head.words}<span>${countLine(model)}</span></span></span></div>
+      ${nextCard(model)}${views}${banner}<div class="scroll">${rows}</div>${wide ? keyHints() : ""}</div>`;
+}
+
+// The visit opens on the first live read of the desk.
+export function deskLive(desk) {
+  if (!state.since.opened) Object.assign(state.since, { opened: deskReadAt(), from: desk.last_visit });
+  state.since.events = mergeSince(state.since.events, desk.since_you_looked);
 }
 
 export function deskClick(action, target) {

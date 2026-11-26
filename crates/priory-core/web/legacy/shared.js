@@ -5,16 +5,16 @@ import { linked } from "../links.js";
 import { decoded } from "../pages.js";
 import { markdown } from "../markdown.js";
 import { prStack } from "../stack.js";
-import { acts } from "../acts.js";
 import { leaves, parts, pathOf, searchOf } from "../frame.js";
 import { ICONS, STATES } from "../icons.js";
-import { session } from "../session.js";
 import { filtered, taskLabel } from "../tasks.js";
 import { age } from "../times.js";
 import { askFor, asked } from "./data.js";
+import { place, shape, state } from "./state.js";
 
 export { ICONS, STATES, role } from "../icons.js";
 export { post } from "../session.js";
+export { place, shape, state, trail } from "./state.js";
 export { age, ago, clock, date, today } from "../times.js";
 
 class Raw { constructor(text) { this.text = text; } }
@@ -45,89 +45,10 @@ export const stateWord = (state) => {
   return html`<span class="sti t-${kind}">${name ? icon(name, "s15") : raw('<i class="dot"></i>')}${state}</span>`;
 };
 
-export const state = {
-  // The sign-in, the place and the actions live in plain modules; these read them.
-  get token() { return session.get().token; },
-  get failed() { return session.get().failed; },
-  // The revision of the Desk the page drew.
-  get revision() { return state.data?.desk.revision; },
-  get list() { return trail.list; },
-  get listUrl() { return trail.listUrl; },
-  get taskArmed() { return acts.get().armed; },
-  get taskBusy() { return acts.get().busy; },
-  get taskNotices() { return acts.get().notices; },
-  get sayDrafts() { return acts.get().drafts; },
-  data: null,
-  rendered: 0,
-  scrolls: new Map(),
-  observers: [],
-  // The answer in flight: { id, text }.
-  pending: null,
-  // The option the first tap armed, until the second tap sends it or 4 s pass: { id, revision, text, at, timer }.
-  armed: null,
-  // The remote task row opened in place, by its id `runner:key`.
-  remoteOpen: null,
-  // The Unrouted view's groups, read when the view opens, and each resource's last subscribe note.
-  unrouted: { groups: null, error: null, loading: false, busy: null, notices: new Map() },
-  todoBusy: null,
-  todoNotices: new Map(),
-  rowBusy: null,
-  rowNotices: new Map(),
-  // Memory candidates: the Accept armed by its first tap { id, at, timer }, the one in flight, each
-  // candidate's last note, and those sent, whose buttons stay off until the desk drops them.
-  memoryArmed: null,
-  memoryBusy: null,
-  memoryNotices: new Map(),
-  memorySent: new Set(),
-  // The candidates whose Current text is open, so a redraw keeps it open.
-  memoryCurrent: new Set(),
-  // The task whose Move is in flight, and each task's last Move refusal.
-  moveBusy: null,
-  moveNotices: new Map(),
-  // The task whose Move menu is open, so a redraw keeps it open.
-  moveOpen: null,
-  // The batch the page or the go ask shows, and the go ask's plan edits: the entry whose menu is open,
-  // the drop armed by its first tap, whether an edit is in flight, and what the last one said.
-  batch: null,
-  planEdit: { at: null, batch: null, open: null, armed: null, busy: false, note: null },
-  drafts: new Map(),
-  notices: new Map(),
-  writing: new Set(),
-  // The Reports panel: the pick waiting out its Undo, then in flight; each row's last refusal; the
-  // comment field open on a row, with its text, and whether a comment verb is in flight.
-  reportPending: null,
-  reportNotices: new Map(),
-  // The search text, null while it is closed; the row whose agreed pick Change reopened; the row
-  // Next pick reached last.
-  reportQuery: null,
-  reportChanging: null,
-  reportAt: null,
-  // A pick's or a comment's outcome once its row has left the report.
-  reportFlash: null,
-  compose: null,
-  remarking: false,
-  // The Costs panel: the split it shows, whether a read is in flight and past 300 ms, and why the last failed.
-  costs: { by: "workflow", loading: false, slow: false, error: null },
-  // The Add sheet: its draft and chips, the server's defaults, and where the last send got to.
-  // Notifications on this device: its status, a request in flight, and why the last one failed.
-  // check counts status reads, so a read that a tap or a newer read overtook is dropped.
-  push: { status: null, kinds: null, busy: false, error: null, check: 0, checking: false },
-  // The browser's install prompt, kept until the person taps Install.
-  install: null,
-  // Since you looked: the events the Desk opened on and each newer one, the visit they start
-  // from, when the first live read began, and whether POST /api/seen went.
-  since: { events: [], from: null, opened: null, sent: false },
-  add: { phase: "empty", error: null, defaults: null, task: null, draft: { text: "" }, ...JSON.parse(localStorage.getItem("priory.add") || "{}") },
-};
-
 export const timeTag = (iso, text = age(iso)) => html`<time datetime="${iso}" title="${iso ? new Date(iso).toString() : ""}">${text}</time>`;
 
-// The place the page draws, set as it opens: never ahead of what React shows.
-export const place = { href: "/", entry: {} };
-export const trail = { list: "desk", listUrl: "/" };
 export const route = () => parts(place.href);
 
-export const shape = { size: "compact" };
 export const layout = () => shape.size;
 
 export const view = () => state.data.views.views.default;
