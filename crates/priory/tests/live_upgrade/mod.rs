@@ -150,8 +150,9 @@ fn processes_that_outlive_an_upgrade_and_its_rollback_keep_working() {
     until_on(&setup, &old, "memory", |rows| rows.len() == 2);
     let revision = setup
         .command(&old)
-        .args(["wait", "--since", "-1", "--timeout", "1s"]);
-    let revision = revision.output().unwrap();
+        .args(["wait", "--since", "-1", "--timeout", "1s"])
+        .output()
+        .unwrap();
     let revision = String::from_utf8(revision.stdout).unwrap();
     let waiting = setup
         .command(&old)
