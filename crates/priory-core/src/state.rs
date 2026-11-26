@@ -3609,7 +3609,7 @@ fn key_ended(tx: &Transaction, key: Option<&String>) -> rusqlite::Result<bool> {
 }
 
 /// The active task that owns any of `resources`: one whose own key is among them, else the oldest.
-pub(crate) fn owner(tx: &Transaction, resources: &[String]) -> rusqlite::Result<Option<Task>> {
+pub(crate) fn owner(tx: &Connection, resources: &[String]) -> rusqlite::Result<Option<Task>> {
     Ok(owners(tx, resources)?.into_iter().next())
 }
 
@@ -3655,7 +3655,7 @@ fn merged(tx: &Transaction, id: i64, message: &Message) -> rusqlite::Result<()> 
     .map(drop)
 }
 
-fn owners(tx: &Transaction, resources: &[String]) -> rusqlite::Result<Vec<Task>> {
+fn owners(tx: &Connection, resources: &[String]) -> rusqlite::Result<Vec<Task>> {
     let resources = serde_json::to_string(resources).expect("resources serialize");
     tx.prepare(
         "SELECT DISTINCT tasks.id, tasks.key IN (SELECT value FROM json_each(?1)) AS keyed

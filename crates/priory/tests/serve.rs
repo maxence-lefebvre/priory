@@ -1288,6 +1288,62 @@ fn the_tasks_endpoint_finds_each_active_task_holding_a_pull_request_and_how_it_h
 }
 
 #[test]
+fn the_tasks_endpoint_finds_the_done_tasks_say_reopens_once_no_active_task_holds_the_pull_request()
+{
+    let mut setup = Setup::new("tasks-pr-done", SERVE);
+    let db = setup.db();
+    db.execute_batch(
+        "INSERT INTO tasks (id, key, workflow, step, state, lane, trigger, source, repo) VALUES
+           (1, 'cli:docs-1', 'implement', 'implement', 'done', 'none/misc', 'cli', 'cli-1', 'owner/repo'),
+           (2, 'cli:docs-2', 'implement', 'implement', 'done', 'none/misc', 'cli', 'cli-2', 'owner/repo'),
+           (3, 'cli:docs-3', 'implement', 'implement', 'dropped', 'none/misc', 'cli', 'cli-3', 'owner/repo'),
+           (4, 'github:owner/repo:pulls/7:review:ana', 'implement', 'implement', 'done', 'none/misc', 'cli', 'cli-4', 'owner/repo'),
+           (5, 'cli:docs-5', 'implement', 'implement', 'asleep', 'none/misc', 'cli', 'cli-5', 'owner/repo'),
+           (6, 'github:owner/repo:pulls/7:review:bob', 'implement', 'implement', 'done', 'none/misc', 'cli', 'cli-6', 'owner/repo');
+         INSERT INTO subscriptions (task, resource) VALUES (1, 'github:owner/repo#7'),
+           (2, 'github:owner/repo#7'), (3, 'github:owner/repo#7'),
+           (5, 'github:owner/repo#8'), (6, 'github:owner/repo#7');
+         INSERT INTO inbox (id, type, subject, time, data, links, outcome) VALUES
+           ('seen', 'github.pull_request.opened', 'owner/repo#7', '2026-11-17T10:00:00Z',
+            '{\"repo\":\"owner/repo\",\"pull_request\":7,\"open\":true}', '[]', 'ignored');",
+    )
+    .unwrap();
+    let address = setup.start(&["serve", &setup.factory()]);
+    let ids = |number: u64| -> Vec<i64> {
+        api(
+            &address,
+            &format!("/api/tasks?pr=github%3Aowner%2Frepo%23{number}"),
+        )["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|task| task["id"].as_i64().unwrap())
+            .collect()
+    };
+
+    assert_eq!(
+        ids(7),
+        [2, 1],
+        "done, newest first, and no done reviewer, even one that subscribes"
+    );
+    assert_eq!(ids(8), [5], "an active holder hides the done ones");
+    db.execute(
+        "INSERT INTO inbox (id, type, subject, time, data, links, outcome) VALUES
+           ('closed', 'github.pull_request.closed', 'owner/repo#7', '2026-11-17T11:00:00Z',
+            '{\"repo\":\"owner/repo\",\"pull_request\":7,\"merged\":true}', '[]', 'ignored')",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        ids(7),
+        Vec::<i64>::new(),
+        "say reopens nothing once it merged"
+    );
+    let upper = api(&address, "/api/tasks?pr=github%3AOwner%2FRepo%237");
+    assert_eq!(upper["tasks"], json!([]), "a close counts in any case");
+}
+
+#[test]
 fn the_tasks_endpoint_finds_the_holders_of_a_pull_request_in_any_case_of_its_repository() {
     let mut setup = Setup::new("tasks-pr-case", SERVE);
     let db = setup.db();
