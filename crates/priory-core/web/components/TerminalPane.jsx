@@ -309,6 +309,8 @@ export const TerminalPane = memo(function TerminalPane({ run, task, tmux, end })
     return () => {
       dialog.removeEventListener("click", outside);
       dialog.removeEventListener("close", sheetClosed);
+      // Back then Forward mounts the pane again: an open sheet must not come back with it.
+      terminal.sheet = null;
       if (dialog.open) dialog.close();
     };
   }, []);

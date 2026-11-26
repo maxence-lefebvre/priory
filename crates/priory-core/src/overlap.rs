@@ -9,7 +9,7 @@ use std::sync::Mutex;
 /// Records the files each task's branch changed at the end of its latest run, then holds each
 /// queued or ready task that changes files an earlier, unfinished task changes, until that task's
 /// pull request merges or, with none, the task ends. A task that already has work on an open pull
-/// request is never held. A person's release of the hold stays final for that earlier task. Tasks in
+/// request, or whose workflow sets `overlap = false`, is never held. A person's release of the hold stays final for that earlier task. Tasks in
 /// other repositories never overlap, a task never waits on one that waits on it, and a stacked batch
 /// entry never waits on a task it is stacked on.
 pub(crate) fn tick(db: &mut Connection, factory: &Factory, home: &Path) -> rusqlite::Result<()> {
@@ -19,7 +19,7 @@ pub(crate) fn tick(db: &mut Connection, factory: &Factory, home: &Path) -> rusql
     record(db, home)?;
     forget_closed(db)?;
     let mut fresh = BTreeSet::new();
-    for (task, _) in overlaps(db)? {
+    for (task, _) in overlaps(db, factory)? {
         // Unknown is not a no: a wrong hold is never judged again, so git is asked on the next tick.
         if works_on_open(db, home, task)? == Some(false) {
             fresh.insert(task);
@@ -30,7 +30,7 @@ pub(crate) fn tick(db: &mut Connection, factory: &Factory, home: &Path) -> rusql
     }
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     // Read again: the state may have moved while git ran.
-    for (task, held) in overlaps(&tx)? {
+    for (task, held) in overlaps(&tx, factory)? {
         if fresh.contains(&task) {
             hold::hold(&tx, task, &held, factory)?
                 .map(drop)
@@ -40,19 +40,33 @@ pub(crate) fn tick(db: &mut Connection, factory: &Factory, home: &Path) -> rusql
     tx.commit()
 }
 
-/// The hold each queued or ready task with no pull request of its own would get, by task. A hold
-/// only targets a lower id, so placing one changes no other.
-fn overlaps(db: &Connection) -> rusqlite::Result<Vec<(i64, Hold)>> {
+/// The hold each queued or ready task with no pull request of its own, in a workflow that keeps
+/// the check, would get, by task. A hold only targets a lower id, so placing one changes no other.
+fn overlaps(db: &Connection, factory: &Factory) -> rusqlite::Result<Vec<(i64, Hold)>> {
     let waiting: Vec<(i64, Vec<String>)> = db
         .prepare(
-            "SELECT id, files FROM tasks WHERE state IN ('queued', 'ready')
+            "SELECT id, files, workflow FROM tasks WHERE state IN ('queued', 'ready')
              AND json_array_length(files) > 0
              AND NOT EXISTS (SELECT 1 FROM pull_requests WHERE state = 'open'
                AND (task = tasks.id OR tasks.key IN (resource, 'cli:' || resource)))
              ORDER BY id",
         )?
-        .query_map([], |row| Ok((row.get(0)?, row.get::<_, String>(1)?)))?
-        .map(|row| row.map(|(id, files)| (id, files_of(&files))))
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .filter(|row| {
+            row.as_ref().map_or(true, |(_, _, workflow)| {
+                factory
+                    .workflows
+                    .get(workflow)
+                    .is_none_or(|loaded| loaded.value.overlap)
+            })
+        })
+        .map(|row| row.map(|(id, files, _)| (id, files_of(&files))))
         .collect::<rusqlite::Result<_>>()?;
     let mut holds = Vec::new();
     for (task, files) in waiting {

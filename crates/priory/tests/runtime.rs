@@ -26327,7 +26327,18 @@ fn overlapping_as(
     first: impl Fn(&Setup),
     work: impl Fn(&Setup),
 ) -> Setup {
-    let mut setup = Setup::with_workflow(name, TWO_MODEL_STEPS);
+    overlapping_in(name, TWO_MODEL_STEPS, request, factory, first, work)
+}
+
+fn overlapping_in(
+    name: &str,
+    workflow: &str,
+    request: &Message,
+    factory: &str,
+    first: impl Fn(&Setup),
+    work: impl Fn(&Setup),
+) -> Setup {
+    let mut setup = Setup::with_workflow(name, workflow);
     fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
     setup.publish(&requested(42));
     setup.start();
@@ -26398,6 +26409,27 @@ fn a_factory_with_overlap_off_holds_no_task() {
 
     setup.until("tasks", |rows| {
         rows.iter().any(|row| row[0] == "2" && row[4] == "running")
+    });
+
+    assert_eq!(state_of(&setup, "2").0, "running");
+}
+
+#[test]
+fn a_task_whose_workflow_turns_overlap_off_is_not_held() {
+    let setup = overlapping_in(
+        "overlap-workflow-off",
+        &format!("overlap = false\n{TWO_MODEL_STEPS}"),
+        &requested(43),
+        "name = \"demo\"",
+        |_| {},
+        |setup| {
+            setup.commit(2, "shared.txt");
+        },
+    );
+
+    setup.until("tasks", |rows| {
+        rows.iter()
+            .any(|row| row[0] == "2" && row[3] == "check" && row[4] != "ready")
     });
 
     assert_eq!(state_of(&setup, "2").0, "running");

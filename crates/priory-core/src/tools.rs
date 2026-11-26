@@ -5262,29 +5262,28 @@ fn held(tx: &Connection, task: i64, own: Option<&str>) -> rusqlite::Result<Vec<S
            UNION SELECT resource FROM waits WHERE task = ?1
              AND kind IN ('pull_request', 'checks', 'review') AND fired IS NULL AND withdrawn IS NULL)
          WHERE substr(resource, 1, length(?2) + 8) = 'github:' || ?2 || '#' COLLATE NOCASE
-         ORDER BY resource",
+         ORDER BY CAST(substr(resource, length(?2) + 9) AS INTEGER), resource",
     )?
     .query_map(params![task, repo], |row| row.get(0))?
     .collect()
 }
 
+// The resource repeats the expression of the `inbox_by_pull_nocase` index, so the lookup seeks it.
+const PULL_STATE: &str = "SELECT state FROM (
+   SELECT seq, CASE WHEN type = ?2 AND json_extract(data, '$.merged') = 1 THEN 'merged'
+     WHEN type != ?2 AND json_extract(data, '$.open') = 1 THEN 'open' ELSE 'closed' END AS state
+   FROM inbox
+   WHERE 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request')
+     = ?1 COLLATE NOCASE
+   AND json_extract(data, '$.pull_request') IS NOT NULL
+   AND (type = ?2 OR json_extract(data, '$.open') IS NOT NULL))
+ ORDER BY state = 'merged' DESC, seq DESC LIMIT 1";
+
 /// Whether the newest event that says so read the pull request `resource` `open`, `closed` or
 /// `merged`, if one did. A merge stands whatever came after it.
 fn pull_state(tx: &Connection, resource: &str) -> rusqlite::Result<Option<String>> {
-    tx.query_row(
-        "SELECT state FROM (
-           SELECT seq, CASE WHEN type = ?2 AND json_extract(data, '$.merged') = 1 THEN 'merged'
-             WHEN type != ?2 AND json_extract(data, '$.open') = 1 THEN 'open' ELSE 'closed' END AS state
-           FROM inbox
-           WHERE 'github:' || json_extract(data, '$.repo') || '#'
-             || coalesce(json_extract(data, '$.pull_request'), json_extract(data, '$.issue')) = ?1 COLLATE NOCASE
-           AND json_extract(data, '$.pull_request') IS NOT NULL
-           AND (type = ?2 OR json_extract(data, '$.open') IS NOT NULL))
-         ORDER BY state = 'merged' DESC, seq DESC LIMIT 1",
-        params![resource, CLOSED],
-        |row| row.get(0),
-    )
-    .optional()
+    tx.query_row(PULL_STATE, params![resource, CLOSED], |row| row.get(0))
+        .optional()
 }
 
 /// Queues `text` as the next prompt of the agent at the task's model step, as an answer
@@ -6514,5 +6513,62 @@ mod tests {
                 prop_assert_eq!(stored["verdict"].as_str(), Some(outcome.as_str()));
             }
         }
+    }
+
+    /// Task 1, done, in `octo/demo`, subscribed to its pull requests `numbers`, each read open.
+    fn subscribed(numbers: &[u32]) -> Connection {
+        let db = crate::state::memory();
+        db.execute_batch(
+            "INSERT INTO tasks
+               (key, workflow, step, state, band, lane, lane_derived, trigger, source, entered, repo)
+             VALUES ('cli:a', 'build', 'implement', 'done', 'now', 'cli', 0, 'cli', 'a',
+               strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 'octo/demo');",
+        )
+        .unwrap();
+        for number in numbers {
+            db.execute(
+                "INSERT INTO subscriptions (task, resource) VALUES (1, ?1)",
+                [format!("github:octo/demo#{number}")],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO inbox (id, type, time, data, links, outcome)
+                 VALUES (?1, 'github.pull_request.synchronize', '2026-01-01T00:00:00Z', ?2, '[]', 'noted')",
+                params![
+                    format!("e{number}"),
+                    json!({ "repo": "Octo/Demo", "pull_request": number, "open": true }).to_string()
+                ],
+            )
+            .unwrap();
+        }
+        db
+    }
+
+    #[test]
+    fn a_pull_requests_state_is_read_in_any_case_by_a_seek_of_the_inbox() {
+        let db = subscribed(&[7]);
+
+        assert_eq!(
+            pull_state(&db, "github:octo/demo#7").unwrap().as_deref(),
+            Some("open")
+        );
+        let plan = crate::state::query_plan(&db, PULL_STATE);
+        assert!(
+            plan.contains("USING INDEX inbox_by_pull_nocase (<expr>=?)"),
+            "{plan}"
+        );
+        db.execute_batch("DROP INDEX inbox_by_pull_nocase").unwrap();
+        let plan = crate::state::query_plan(&db, PULL_STATE);
+        assert!(plan.contains("SCAN inbox"), "{plan}");
+    }
+
+    #[test]
+    fn say_reopens_a_task_on_its_lowest_numbered_open_pull_request() {
+        let db = subscribed(&[10, 9]);
+
+        assert_eq!(
+            open_pull_request(&db, 1, None).unwrap(),
+            Ok("github:octo/demo#9".to_owned())
+        );
     }
 }

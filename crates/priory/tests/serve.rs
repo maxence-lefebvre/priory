@@ -1044,6 +1044,44 @@ fn seen_through_its_endpoint_records_the_visit_as_the_cli_verb_does() {
 }
 
 #[test]
+fn autopilot_off_through_its_endpoint_ends_it_as_the_cli_verb_does() {
+    let mut setup = Setup::new("web-autopilot-off", SERVE);
+    setup.seed();
+    succeeded(&setup.priory(&["autopilot", "on", &setup.factory(), "--for", "1h"]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+
+    let bad = post(&address, "/api/autopilot/off", "", r#"{"for": "1h"}"#);
+    assert_eq!(bad.0, 400, "{}", bad.1);
+    assert!(json_of(&setup, "desk")["autopilot"].is_object());
+    let off = post(&address, "/api/autopilot/off", "", "{}");
+    let again = post(&address, "/api/autopilot/off", "", "{}");
+
+    assert_eq!(off.0, 200, "{}", off.1);
+    assert_eq!(
+        serde_json::from_str::<Value>(&off.1).unwrap(),
+        json!({ "ok": "autopilot is off: see `priory autopilot report`", "untold": null })
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&again.1).unwrap()["ok"],
+        "autopilot was not on"
+    );
+    assert!(json_of(&setup, "desk")["autopilot"].is_null());
+}
+
+#[test]
+fn autopilot_off_without_a_daemon_gets_503_and_stays_on() {
+    let mut setup = Setup::new("web-autopilot-no-daemon", SERVE);
+    setup.seed();
+    succeeded(&setup.priory(&["autopilot", "on", &setup.factory(), "--for", "1h"]));
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let (status, body) = post(&address, "/api/autopilot/off", "", "{}");
+
+    assert_eq!(status, 503, "{body}");
+    assert!(json_of(&setup, "desk")["autopilot"].is_object());
+}
+
+#[test]
 fn the_asks_endpoint_leaves_out_asks_closed_over_a_week_ago_unless_asked_for_all() {
     let mut setup = Setup::new("asks-week", SERVE);
     setup.seed();
@@ -7027,7 +7065,9 @@ impl Setup {
             if requests.len() >= count {
                 return requests;
             }
-            assert!(Instant::now() < deadline, "{requests:?}");
+            // What the server said so far, so a failure names its cause.
+            let said = fs::read_to_string(self.dir.join("server.log")).unwrap_or_default();
+            assert!(Instant::now() < deadline, "{requests:?}\nserver: {said}");
             std::thread::sleep(Duration::from_millis(20));
         }
     }

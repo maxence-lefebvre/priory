@@ -1797,24 +1797,15 @@ fn autopilot_on(flags: &[&str]) -> ExitCode {
 /// autopilot on. Other runners that cannot be told fail the command.
 fn autopilot_off(dir: Option<&str>) -> ExitCode {
     let turned = state::open().and_then(|mut db| {
-        let on = autopilot::status(&db).map_err(|error| error.to_string())?;
-        let message = autopilot::message(None);
-        autopilot::set(&mut db, None, &message, false)?;
-        println!(
-            "{}",
-            match on.is_null() {
-                true => "autopilot was not on",
-                false => "autopilot is off: see `priory autopilot report`",
-            }
-        );
-        let told = load(&factory::folder(dir))
-            .ok_or_else(|| "the factory does not load".to_owned())
-            .and_then(|factory| {
-                let host = priory_runtime::room::hostname();
-                let role = autopilot::role(&factory, host.as_deref())?;
-                autopilot::tell(&mut db, &factory, role, &message)
-            });
-        told.map_err(|why| format!("it is off here, and no other runner was told: {why}"))
+        let factory = load(&factory::folder(dir));
+        let host = priory_runtime::room::hostname();
+        let off = autopilot::off(&mut db, factory.as_ref(), host.as_deref())?;
+        println!("{}", off.ok);
+        off.untold.map_or(Ok(()), |why| {
+            Err(format!(
+                "it is off here, and no other runner was told: {why}"
+            ))
+        })
     });
     exit("autopilot off", turned)
 }
