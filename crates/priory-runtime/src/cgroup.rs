@@ -51,13 +51,71 @@ pub fn memory_in(root: &Path, path: &str) -> Option<u64> {
 
 /// `anon` plus `shmem`, in bytes, from the text of a `memory.stat` file.
 pub fn stat_of(text: &str) -> Option<u64> {
-    let field = |key: &str| {
-        text.lines().find_map(|line| {
-            let (name, value) = line.split_once(' ')?;
-            (name == key).then(|| value.trim().parse::<u64>().ok())?
-        })
-    };
-    field("anon")?.checked_add(field("shmem")?)
+    field(text, "anon")?.checked_add(field(text, "shmem")?)
+}
+
+/// The value of `key` in the text of a flat keyed cgroup file such as `memory.stat` or `cpu.stat`.
+fn field(text: &str, key: &str) -> Option<u64> {
+    text.lines().find_map(|line| {
+        let (name, value) = line.split_once(' ')?;
+        (name == key).then(|| value.trim().parse::<u64>().ok())?
+    })
+}
+
+/// What a cgroup used up to one moment: its CPU time in microseconds, its memory and the bytes its
+/// processes read and wrote. A value the kernel does not expose is None.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Sample {
+    pub cpu_usec: Option<u64>,
+    pub user_usec: Option<u64>,
+    pub system_usec: Option<u64>,
+    /// `memory.peak`, or `anon + shmem` on a kernel without it.
+    pub memory: Option<u64>,
+    pub io_read: Option<u64>,
+    pub io_write: Option<u64>,
+}
+
+/// What the cgroup `path` used so far, under `/sys/fs/cgroup` or `PRIORY_CGROUP`. None once the
+/// cgroup is gone, so a caller keeps its last sample.
+pub fn sample(path: &str) -> Option<Sample> {
+    sample_in(&root(), path)
+}
+
+/// `sample`, under `root`.
+pub fn sample_in(root: &Path, path: &str) -> Option<Sample> {
+    let dir = root.join(path.trim_start_matches('/'));
+    let read = |file: &str| std::fs::read_to_string(dir.join(file)).ok();
+    let cpu = read("cpu.stat")?;
+    let memory = read("memory.peak")
+        .and_then(|peak| peak.trim().parse().ok())
+        .or_else(|| stat_of(&read("memory.stat")?));
+    // `io.stat` exists only when the user manager delegates the io controller.
+    let io = read("io.stat").map(|text| io_of(&text));
+    Some(Sample {
+        cpu_usec: field(&cpu, "usage_usec"),
+        user_usec: field(&cpu, "user_usec"),
+        system_usec: field(&cpu, "system_usec"),
+        memory,
+        io_read: io.map(|(read, _)| read),
+        io_write: io.map(|(_, write)| write),
+    })
+}
+
+/// The `rbytes` and `wbytes` of every device in the text of an `io.stat` file, summed.
+fn io_of(text: &str) -> (u64, u64) {
+    let mut sum = (0u64, 0u64);
+    for pair in text.split_whitespace() {
+        let Some((key, value)) = pair.split_once('=') else {
+            continue;
+        };
+        let value = value.parse::<u64>().unwrap_or(0);
+        match key {
+            "rbytes" => sum.0 = sum.0.saturating_add(value),
+            "wbytes" => sum.1 = sum.1.saturating_add(value),
+            _ => {}
+        }
+    }
+    sum
 }
 
 fn root() -> PathBuf {
@@ -117,6 +175,14 @@ mod tests {
         assert_eq!(memory_in(&root, SCOPE), Some(1 << 30));
         assert_eq!(memory_in(&root, "/user.slice/gone.scope"), None);
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn io_stat_sums_the_bytes_of_every_device() {
+        let text = "8:0 rbytes=100 wbytes=20 rios=1 wios=1 dbytes=0 dios=0\n\
+                    259:0 rbytes=5 wbytes=7 rios=1 wios=1 dbytes=0 dios=0\n";
+        assert_eq!(io_of(text), (105, 27));
+        assert_eq!(io_of(""), (0, 0));
     }
 
     #[test]

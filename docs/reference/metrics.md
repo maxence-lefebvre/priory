@@ -55,6 +55,7 @@ Every request carries these attributes on its resource.
 | `priory.log.queued` | gauge | `{message}` | | the messages that wait to publish |
 | `priory.runner.lease.age` | gauge | `s` | `priory.lease.runner` | in log time: the newest alive time among the runners' leases, less this runner's. Absent in a factory of one runner |
 | `priory.log.connection.wait` | histogram | `s` | | Postgres only: how long each call waited for the log's one connection |
+| `priory.log.skipped` | counter | `{message}` | | Postgres only: the messages a read skipped because they do not parse, such as one a restricted role wrote with a duplicate `type`. The reader prints each one and moves its cursor past it |
 
 A consumer on herdr-bus is named as it reads, such as `priory.a`, when it reads on this machine,
 and as `<name>@<machine id>` when it reads on another.
@@ -67,6 +68,10 @@ and as `<name>@<machine id>` when it reads on another.
 | `priory.run.starts.active` | gauge | `{run}` | `priory.harness` | the live runs with no `SessionStart` yet. Each harness the factory's agents use has a point, 0 with none |
 | `priory.run.start.oldest.age` | gauge | `s` | `priory.harness` | the oldest of those, since its `started`; 0 with none |
 | `priory.worktree.phase.duration` | histogram | `s` | `priory.phase` = `clone`, `fetch`, `checkout`, `setup`, `resume`, `teardown`; `outcome` = `ok`, `error`, `timeout` | `clone`, `fetch` and `checkout` timed around their `git` commands as a task's worktree is added. `setup`, `resume` and `teardown` from the recipe's start to its end, `ok` for `exit 0`. `timeout` is a command past `command_timeout`, or a recipe past its `timeout` |
+| `priory.run.cpu.time` | histogram | `s` | `priory.workflow`, `gen_ai.agent.name`, `priory.step` | a run's CPU time, from its scope's `cpu.stat` `usage_usec`. Bounds 1 s to 4 h. One value per run once its worktree is measured. See [agents-slice.md](../daemon/agents-slice.md#what-each-run-used) |
+| `priory.run.memory.peak` | histogram | `By` | as above | a run's peak memory: its scope's `memory.peak`, or its highest `anon + shmem`. Bounds 1 MiB to 64 GiB, by fours |
+| `priory.run.io.read`, `priory.run.io.write` | histogram | `By` | as above | the bytes a run's scope read and wrote, from `io.stat`. None where the user manager does not delegate the `io` controller |
+| `priory.run.disk` | histogram | `By` | as above | the size of the task's worktree when the run ended |
 | `priory.worktrees.active` | gauge | `{worktree}` | | the task folders under `worktrees/` in Priory home, as the sweep lists them |
 
 ## intake

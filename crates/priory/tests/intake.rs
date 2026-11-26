@@ -5023,3 +5023,18 @@ fn log_intake_role_prints_the_roles_sql_and_refuses_a_name_that_is_no_identifier
     assert!(!refused.status.success());
     assert!(String::from_utf8_lossy(&refused.stderr).contains("is no role name"));
 }
+
+#[test]
+fn log_intake_role_refuses_a_name_whose_policy_names_postgres_would_cut() {
+    let refused = harness::priory()
+        .args(["log", "intake-role", &"r".repeat(50)])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("longer than 49 bytes"));
+    let longest = harness::priory()
+        .args(["log", "intake-role", &"r".repeat(49)])
+        .output()
+        .unwrap();
+    assert!(longest.status.success());
+}

@@ -891,11 +891,23 @@ pub(crate) fn unmounted(path: &Path, mounts: Mounts) -> Result<(), String> {
 
 /// The first mount point at or under `path` in a `mountinfo` table.
 fn mount_under(table: &[u8], path: &Path) -> Option<PathBuf> {
+    mount_points(table).find(|point| point.starts_with(path))
+}
+
+/// Every mount point strictly under the real path `path`, from this host's mount table.
+pub fn mounts_under(path: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let table = mountinfo()?;
+    Ok(mount_points(&table)
+        .filter(|point| point.starts_with(path) && point != path)
+        .collect())
+}
+
+/// The mount points of a `mountinfo` table.
+fn mount_points(table: &[u8]) -> impl Iterator<Item = PathBuf> + '_ {
     table
         .split(|byte| *byte == b'\n')
         .filter_map(|line| line.split(|byte| *byte == b' ').nth(4))
         .map(|point| PathBuf::from(std::ffi::OsString::from_vec(unescaped(point))))
-        .find(|point| point.starts_with(path))
 }
 
 /// `field` with each `\` and 3 octal digits, as the kernel writes a space, back to its byte.

@@ -91,6 +91,10 @@ fn restricted_role(role: &str, types: &[&str], consumer: &str) -> Result<String,
             "{role:?} is no role name: use lowercase letters, digits and underscores"
         ));
     }
+    // Postgres cuts names at 63 bytes, so `{role}_moves_cursor` must fit for policies to differ.
+    if role.len() > 49 {
+        return Err(format!("{role:?} is longer than 49 bytes"));
+    }
     let types = types
         .iter()
         .map(|kind| format!("'{kind}'"))

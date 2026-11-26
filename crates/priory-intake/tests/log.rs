@@ -675,6 +675,30 @@ impl Drop for Role {
 }
 
 #[cfg(feature = "postgres")]
+impl Postgres {
+    /// Runs the intake role's SQL twice in this test's schema, and returns the role and a URL
+    /// that connects as it.
+    fn intake_role(&self, test: &str) -> (Role, String) {
+        let role = Role {
+            url: self.url.clone(),
+            name: format!("priory_intake_{test}_{}", std::process::id()),
+        };
+        let sql = log::sql::intake_role(&role.name).unwrap();
+        let mut admin =
+            ::postgres::Client::connect(&self.url(&self.url), ::postgres::NoTls).unwrap();
+        admin.batch_execute(&sql).unwrap();
+        admin.batch_execute(&sql).unwrap();
+        admin
+            .batch_execute(&format!("ALTER ROLE {} PASSWORD 'intake'", role.name))
+            .unwrap();
+        let (credentials, host) = self.url.split_once('@').unwrap();
+        let (scheme, _) = credentials.split_once("://").unwrap();
+        let url = self.url(&format!("{scheme}://{}:intake@{host}", role.name));
+        (role, url)
+    }
+}
+
+#[cfg(feature = "postgres")]
 #[test]
 fn postgres_intake_role_publishes_only_the_intakes_types_and_moves_only_its_cursor() {
     use priory_intake::log::postgres::Postgres as Log;
@@ -682,20 +706,7 @@ fn postgres_intake_role_publishes_only_the_intakes_types_and_moves_only_its_curs
         return;
     };
     let runner = declared(&store);
-    let role = Role {
-        url: store.url.clone(),
-        name: format!("priory_intake_{}", std::process::id()),
-    };
-    let sql = log::sql::intake_role(&role.name).unwrap();
-    let mut admin = ::postgres::Client::connect(&store.url(&store.url), ::postgres::NoTls).unwrap();
-    admin.batch_execute(&sql).unwrap();
-    admin.batch_execute(&sql).unwrap();
-    admin
-        .batch_execute(&format!("ALTER ROLE {} PASSWORD 'intake'", role.name))
-        .unwrap();
-    let (credentials, host) = store.url.split_once('@').unwrap();
-    let (scheme, _) = credentials.split_once("://").unwrap();
-    let as_role = store.url(&format!("{scheme}://{}:intake@{host}", role.name));
+    let (_role, as_role) = store.intake_role("publishes");
 
     let error = Log::connect(&as_role, TIMEOUT, false).err().unwrap();
     assert!(!log::unreachable(&*error), "{error}");
@@ -724,6 +735,47 @@ fn postgres_intake_role_publishes_only_the_intakes_types_and_moves_only_its_curs
     runner.publish(OUTPUT, &answer).unwrap();
     runner.ack("priory.runner", &second[0]).unwrap();
     assert_eq!(numbers(&*runner, "priory.runner"), [3]);
+}
+
+#[cfg(feature = "postgres")]
+#[test]
+fn postgres_readers_skip_rows_a_restricted_role_wrote_that_do_not_parse() {
+    let Some(store) = Postgres::new("poison") else {
+        return;
+    };
+    let runner = declared(&store);
+    let (_role, as_role) = store.intake_role("poison");
+    runner.publish(OUTPUT, &event(1)).unwrap();
+    let mut intake = ::postgres::Client::connect(&as_role, ::postgres::NoTls).unwrap();
+    for (id, message) in [
+        (
+            "duplicate",
+            r#"{"type":"priory.ask.answered","type":"github.issues.labeled","data":{}}"#,
+        ),
+        ("no-data", r#"{"type":"github.issues.labeled"}"#),
+    ] {
+        intake
+            .execute(
+                "INSERT INTO priory_log_messages (output, id, published, message)
+                 VALUES ($1, $2, now(), $3)",
+                &[&OUTPUT, &id, &message],
+            )
+            .unwrap();
+    }
+    runner.publish(OUTPUT, &event(4)).unwrap();
+
+    let first = runner.read("priory.runner", OUTPUT, 100).unwrap();
+    assert_eq!(first.len(), 1);
+    runner.ack("priory.runner", &first[0]).unwrap();
+    assert_eq!(numbers(&*runner, "priory.runner"), [4]);
+
+    let one = runner.read("priory.one", OUTPUT, 1).unwrap();
+    runner.ack("priory.one", &one[0]).unwrap();
+    let next = runner.read("priory.one", OUTPUT, 1).unwrap();
+    assert_eq!(next[0].message.data["n"], 4);
+
+    let newest = runner.messages(OUTPUT, None, 10).unwrap();
+    assert_eq!(newest.len(), 2);
 }
 
 #[cfg(feature = "postgres")]
