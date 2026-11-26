@@ -36,7 +36,8 @@ Each type has a JSON Schema in [`docs/schemas/events/`](../schemas/events/), nam
   [`priory.runner.alive`](#prioryrunneralive), [`priory.diocese.alive`](#priorydiocesealive),
   [`priory.ask.answered`](#prioryaskanswered),
   [`priory.ask.dismissed`](#prioryaskdismissed), [`priory.ask.posted`](#prioryaskposted),
-  [`priory.ask.applied`](#prioryaskapplied), [`priory.task.dropped`](#priorytaskdropped)
+  [`priory.ask.applied`](#prioryaskapplied), [`priory.task.dropped`](#priorytaskdropped),
+  [`priory.watch.posted`](#priorywatchposted)
 - Run grants: [`priory.run.granted`](#prioryrungranted), [`priory.run.revoked`](#prioryrunrevoked)
 - Memories: [`priory.memory.written`](#priorymemorywritten),
   [`priory.memory.accepted`](#priorymemoryaccepted), [`priory.memory.dropped`](#priorymemorydropped)
@@ -1594,6 +1595,47 @@ Schema: [`priory.runner.alive.json`](../schemas/events/priory.runner.alive.json)
   "time": "2026-11-21T10:00:00Z",
   "data": {
     "runner": "desktop"
+  },
+  "links": []
+}
+```
+
+### `priory.watch.posted`
+
+A runner lists what its intake would watch: its open waits, holds, subscriptions and task branches.
+Its daemon posts the list on start, when it changes and once a day. An intake keeps each runner's
+newest list for 7 days after its `time` ([watches.md](../intake/watches.md)). Subject: the runner.
+Schema: [`priory.watch.posted.json`](../schemas/events/priory.watch.posted.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `runner` | string | The runner, named by its runner file, or by its hostname in a factory of one runner |
+| `watches` | array | Every resource it watches. An empty list stops every watch of the runner |
+| `watches[].resource` | string | `github:<owner/name>#<number>`, `github:<owner/name>@<branch>`, `linear:<issue>` or `slack:<channel>:<thread ts>` |
+| `watches[].since` | string | The time the intake reads it from, RFC 3339 |
+| `watches[].rank` | integer | Which the intake reads first when a source limits its reads: 0 for an open wait or hold, 1 for an active task, 2 for a task that ended |
+
+<!-- example: events/priory.watch.posted.json -->
+```json
+{
+  "id": "4f1c2a8e-7b3d-4e9a-9c61-2d8b5a0e3f17",
+  "type": "priory.watch.posted",
+  "subject": "desktop",
+  "time": "2026-11-21T10:00:00Z",
+  "data": {
+    "runner": "desktop",
+    "watches": [
+      {
+        "resource": "github:owner/name#42",
+        "since": "2026-11-21T09:58:00Z",
+        "rank": 0
+      },
+      {
+        "resource": "github:owner/name@priory/7",
+        "since": "2026-11-21T09:30:00Z",
+        "rank": 1
+      }
+    ]
   },
   "links": []
 }

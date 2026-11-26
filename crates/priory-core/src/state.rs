@@ -2748,6 +2748,10 @@ pub(crate) fn handle_in(
     trace: &crate::trace::Trace,
     counter: Option<&crate::embed::Counter>,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    // A runner's watches are for the intake: the inbox would only fill with them.
+    if message.kind == priory_intake::intake::WATCH_POSTED {
+        return Ok(Vec::new());
+    }
     let seen = tx
         .query_row(
             "SELECT 1 FROM inbox WHERE id = ?1",
@@ -3510,7 +3514,8 @@ pub fn ended(db: &Connection, key: &str) -> rusqlite::Result<u64> {
 /// The resource and the agent's last prompt of each open wait that the intake polls for, then the
 /// pull request or Linear issue and creation time of each unmet merge condition and each issue
 /// condition of an open hold, met or not, then each subscription of a task that has not failed or
-/// been dropped, and the own key of the newest task on a key that did, then the branch of each
+/// been dropped, nor been done for 7 days, and the own key of the newest task on a key that failed or
+/// was dropped, then the branch of each
 /// active task, or of a task done in the last 10 minutes whose branch no event named yet, so the
 /// intake sees a pull request its worker opened itself. Each comes with its rank: 0 for an open wait
 /// or hold, 1 for an active task, 2 for one that ended.
@@ -3539,6 +3544,8 @@ pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String, u8)>> {
            -- Slack reads one thread per call, so an ended task's own thread is read for a week only.
            WHERE NOT (tasks.state IN ('done', 'failed', 'dropped') AND subscriptions.resource = tasks.key
              AND tasks.key GLOB 'slack:*' AND julianday('now') - julianday(tasks.changed) >= 7)
+           -- Feedback reopens a done task for a week; after that its subscriptions only grow the list.
+           AND NOT (tasks.state = 'done' AND julianday('now') - julianday(tasks.changed) >= 7)
            UNION ALL
            SELECT 3, owns.rowid, owns.resource, tasks.changed,
              CASE WHEN tasks.state IN ('done', 'failed', 'dropped') THEN 2 ELSE 1 END FROM owns
@@ -3547,7 +3554,7 @@ pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String, u8)>> {
              OR (tasks.state = 'done' AND julianday('now') - julianday(tasks.changed) < 10.0 / 1440
                AND NOT EXISTS (SELECT 1 FROM inbox WHERE inbox.outcome != 'outsider' AND owns.resource =
                  'github:' || json_extract(inbox.data, '$.repo') || '@' || json_extract(inbox.data, '$.head_branch'))))
-         ) ORDER BY source, id",
+         ) WHERE since IS NOT NULL ORDER BY source, id",
     )?
     .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
     .collect()

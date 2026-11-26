@@ -17,6 +17,7 @@ mod sentry;
 mod shortcut;
 mod slack;
 mod threads;
+mod watches;
 mod webhook;
 
 pub use cloudwatch::CloudwatchWebhook;
@@ -39,6 +40,8 @@ pub const TASK_CLAIMED: &str = "priory.task.claimed";
 pub const TASK_HELD: &str = "priory.task.held";
 /// A runner renews its lease.
 pub const RUNNER_ALIVE: &str = "priory.runner.alive";
+/// A runner lists the waits, holds, subscriptions and task branches its intake would watch.
+pub const WATCH_POSTED: &str = "priory.watch.posted";
 /// The diocese's view daemon says the log is up, so a lease does not run across a gap in it.
 pub const DIOCESE_ALIVE: &str = "priory.diocese.alive";
 /// A person on one runner answers an ask of another.
@@ -263,6 +266,7 @@ pub fn output() -> Output {
             TASK_CLAIMED,
             TASK_HELD,
             RUNNER_ALIVE,
+            WATCH_POSTED,
             DIOCESE_ALIVE,
             ASK_ANSWERED,
             ASK_DISMISSED,
@@ -281,6 +285,7 @@ pub fn output() -> Output {
 /// A resource an open wait names, `linear:<issue>`, `slack:<channel>:<thread ts>` or
 /// `github:<owner/name>#<number>`, and the time of its agent's last prompt: the intake publishes
 /// what happens to it from then on.
+#[derive(Clone)]
 pub struct Watch {
     pub resource: String,
     pub since: Timestamp,
@@ -336,11 +341,23 @@ pub struct Passed {
 /// succeeded, else its errors joined by `; `.
 pub type Outcomes<'a> = [(&'a str, Option<String>)];
 
+/// What the state file holds of this machine's runner: its name, in a factory of several, and what
+/// its intake would watch.
+pub struct Local {
+    pub runner: Option<String>,
+    pub watches: Vec<Watch>,
+}
+
+/// Reads this machine's state file, or `None` when the intake runs without one.
+pub type Watched = fn() -> Result<Option<Local>, String>;
+
 /// How many tasks with a key have ended: done, failed or dropped.
 pub type Ended = fn(&str) -> Result<u64, String>;
 
-/// Polls the sources until stopped, or once. `watched` reads the open waits on each poll, so that
-/// the intake polls the Slack threads, Linear issues and pull request repositories they name.
+/// Polls the sources until stopped, or once. On each poll it reads the waits, holds, subscriptions
+/// and task branches that `watched` reads from this machine's state file and the other runners post
+/// on the log, so that the intake polls the Slack threads, Linear issues and pull request
+/// repositories they name.
 /// `merged` reads the task pull requests merged since the time it is given, to read their merge
 /// commits' check runs.
 /// `red` reads the unread reports of red merges since the time it is given, and `recovered` marks one read.
@@ -352,7 +369,7 @@ pub type Ended = fn(&str) -> Result<u64, String>;
 pub fn run(
     factory: &Factory,
     once: bool,
-    watched: fn() -> Result<Vec<Watch>, String>,
+    watched: Watched,
     merged: fn(&str) -> Result<Vec<Merge>, String>,
     red: fn(&str) -> Result<Vec<Red>, String>,
     recovered: fn(i64) -> Result<(), String>,
@@ -396,6 +413,9 @@ pub fn run(
     let opened = log::open(factory.log()).map_err(|error| error.to_string())?;
     let bus = opened.as_ref();
     bus.declare(&output()).map_err(|error| error.to_string())?;
+    let runners: BTreeSet<String> = factory.runners.keys().cloned().collect();
+    let mut postings = watches::Postings::start(bus, &runners, now()?)
+        .map_err(|error| format!("read the runners' watches: {error}"))?;
     // A source the triggers need that cannot start, such as one without its key, ends the intake;
     // recording it first lets the desk say why while systemd restarts it.
     let started = |source: &str, error: String| {
@@ -422,7 +442,7 @@ pub fn run(
         shortcut::start(&factory.dir, settings, ended).map_err(|error| started("slack", error))?;
     }
     // The loop reports a failing read of the waits; here it only costs those repos their cursors.
-    let waiting = watched().unwrap_or_default();
+    let waiting = watch_list(bus, &mut postings, &runners, watched).unwrap_or_default();
     let resumed: BTreeSet<&str> = repos
         .iter()
         .copied()
@@ -448,7 +468,7 @@ pub fn run(
     let mut first = true;
     loop {
         let tick = std::time::Instant::now();
-        let watching = match watched() {
+        let watching = match watch_list(bus, &mut postings, &runners, watched) {
             Ok(watching) => watching,
             Err(error) if once => return Err(error),
             Err(error) => {
@@ -596,6 +616,29 @@ fn since(now: Timestamp) -> String {
         |_| String::new(),
         |earliest| earliest.strftime("%Y-%m-%dT%H:%M:%SZ").to_string(),
     )
+}
+
+/// What the intake watches: this machine's runner's watches from its state file, which is fresher
+/// than its posting, and every other runner's newest posting on the log. With no state file, as on
+/// a machine that runs no daemon, every runner's posting.
+fn watch_list(
+    bus: &dyn Log,
+    postings: &mut watches::Postings,
+    runners: &BTreeSet<String>,
+    watched: Watched,
+) -> Result<Vec<Watch>, String> {
+    postings
+        .read(bus, runners)
+        .map_err(|error| format!("read the runners' watches: {error}"))?;
+    let now = now()?;
+    Ok(match watched()? {
+        None => postings.watches(runners, None, now),
+        Some(local) if runners.len() < 2 => local.watches,
+        Some(local) => {
+            let others = postings.watches(runners, local.runner.as_deref(), now);
+            local.watches.into_iter().chain(others).collect()
+        }
+    })
 }
 
 /// The repository of a pull request wait, `owner/name` from `github:owner/name#42`.

@@ -17,7 +17,7 @@ use crate::{
     deliver, embed, handler, hold, notify, overlap, progress, push, search, sections, stall,
     subscribe, summary, sweep,
 };
-use priory_factory::factory::{self, Factory, Harness, OnChange, PermissionMode, Session};
+use priory_factory::factory::{self, Backend, Factory, Harness, OnChange, PermissionMode, Session};
 use priory_intake::intake::{self, OUTPUT};
 use priory_intake::log::{self, Log};
 use priory_runtime::runtime::{self, Launch, Line};
@@ -234,6 +234,15 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         usage: transcript::usage,
     };
     let consumer = runners::consumer(trace.runner.as_deref());
+    // Only a log another machine reads carries the watches: an intake beside a SQLite log has the
+    // state file. A factory of one runner has no runner name, so it posts by its hostname.
+    let poster = (trace.runner.is_some() || factory.log().backend == Backend::Postgres)
+        .then(|| trace.runner.clone().or_else(|| trace.machine.clone()))
+        .map(|name| name.unwrap_or_else(|| "priory".to_owned()));
+    if poster.is_some() {
+        bus.declare(&intake::output())?;
+    }
+    let mut posted = crate::watches::Posted::default();
     runners::name(&db, trace.runner.as_deref())?;
     // What came before writes the state alone, which a rollback puts back. A dispatch reaches further.
     let held = match lock {
@@ -250,6 +259,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     }
     if once {
         drain(&*bus, &consumer, &mut db, &trace, counting.get(&home))?;
+        if let Some(poster) = &poster {
+            crate::watches::post(&mut db, poster, intake::now()?, &mut posted)?;
+        }
         runners::flush(&db, &*bus)?;
         crate::held::tick(&mut db, &trace, intake::now()?)?;
         match state::waiting(&db)? {
@@ -516,6 +528,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             && !behind
         {
             runners::tick(&mut db, me, factory, intake::now()?, &mut alive)?;
+        }
+        if let Some(poster) = poster.as_deref().filter(|_| !behind) {
+            crate::watches::post(&mut db, poster, intake::now()?, &mut posted)?;
         }
         if let Some(drained) = drained {
             let tried = drained.and_then(|caught_up| match caught_up {

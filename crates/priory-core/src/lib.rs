@@ -87,3 +87,4 @@ mod triage;
 pub mod upgrade;
 mod usage;
 mod watchdog;
+mod watches;

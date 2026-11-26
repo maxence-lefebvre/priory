@@ -1093,6 +1093,32 @@ pub struct RunnerAlive {
     pub runner: String,
 }
 
+/// A runner lists what its intake would watch: its open waits, holds, subscriptions and task
+/// branches. Its daemon posts the list on start, when it changes and once a day. An intake keeps
+/// each runner's newest list, for 7 days after its `time`.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WatchPosted {
+    /// The runner, named by its runner file, or by its hostname in a factory of one runner.
+    pub runner: String,
+    /// Every resource it watches. An empty list stops every watch of the runner.
+    pub watches: Vec<Watched>,
+}
+
+/// One resource a runner watches.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Watched {
+    /// `github:<owner/name>#<number>`, `github:<owner/name>@<branch>`, `linear:<issue>` or
+    /// `slack:<channel>:<thread ts>`.
+    pub resource: String,
+    /// The time the intake reads it from, RFC 3339.
+    pub since: String,
+    /// Which the intake reads first when a source limits its reads: 0 for an open wait or hold, 1
+    /// for an active task, 2 for a task that ended.
+    pub rank: u8,
+}
+
 /// The diocese's view daemon says the log is up, once a minute. A runner's lease does not run
 /// across a gap of more than 3 minutes between two of these, which means the log was down.
 #[derive(JsonSchema)]
