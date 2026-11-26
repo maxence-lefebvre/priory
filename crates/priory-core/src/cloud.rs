@@ -396,6 +396,7 @@ fn collect(db: &mut Connection, trace: &Trace, kit: crate::kit::Current<'_>) -> 
         )
         .optional()?;
     let Some((task, session, workflow, step)) = live else {
+        let none = matches!(started, Err(NotStarted::Refused(_) | NotStarted::Denied(_)));
         let left = match started {
             Ok(started) => format!("its cloud session still runs: {}", link(&started.id)),
             Err(NotStarted::Uncertain(reason)) => format!(
@@ -406,17 +407,20 @@ fn collect(db: &mut Connection, trace: &Trace, kit: crate::kit::Current<'_>) -> 
                 let on_origin = on_origin.unwrap_or_else(|| {
                     ", and Priory did not look whether origin has its branch".to_owned()
                 });
-                eprintln!("priory daemon: cloud run {run} ended before its session started");
                 format!("no cloud session started{on_origin}")
             }
         };
-        eprintln!("priory daemon: cloud run {run} ended during its start: {left}");
         db.execute(
             "UPDATE tasks SET reason = CASE WHEN instr(reason, ?3) THEN replace(reason, ?3, ?2)
                ELSE coalesce(reason || '; ', '') || ?2 END
              WHERE id = (SELECT task FROM runs WHERE id = ?1) AND state = 'dropped'",
             params![run, left, MAY_START],
         )?;
+        // Logged once the reason is stored, so a reader of the log finds the task's reason final.
+        if none {
+            eprintln!("priory daemon: cloud run {run} ended before its session started");
+        }
+        eprintln!("priory daemon: cloud run {run} ended during its start: {left}");
         return Ok(());
     };
     match started {
