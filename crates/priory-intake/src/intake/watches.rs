@@ -103,11 +103,19 @@ impl Postings {
             .into_iter()
             .flatten()
             .filter_map(|watch| {
-                Some(Watch {
-                    resource: watch["resource"].as_str()?.to_owned(),
-                    since: watch["since"].as_str()?.parse().ok()?,
-                    rank: u8::try_from(watch["rank"].as_u64()?).ok()?,
-                })
+                let parsed = (|| {
+                    Some(Watch {
+                        resource: watch["resource"].as_str()?.to_owned(),
+                        since: watch["since"].as_str()?.parse().ok()?,
+                        rank: u8::try_from(watch["rank"].as_u64()?).ok()?,
+                    })
+                })();
+                if parsed.is_none() {
+                    eprintln!(
+                        "priory intake: runner {runner} posted a watch it cannot read: {watch}"
+                    );
+                }
+                parsed
             })
             .collect();
         self.newest

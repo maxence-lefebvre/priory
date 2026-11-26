@@ -8,8 +8,9 @@ page explains how the intake learns about those waits and polls for them.
 
 Each runner's daemon posts what its intake would watch on the log, as
 [`priory.watch.posted`](../reference/events.md#priorywatchposted), when another machine can read
-that log: in a factory of several runners, or with a Postgres log. It posts on start, whenever the
-list changes and once a day, with its runner's name, or its hostname in a factory of one runner. So
+that log: in a factory of several runners, or with a Postgres log. It posts on start, then when the
+list changed, at most once every 30 seconds, and once a day, with its runner's name, or its hostname
+in a factory of one runner. So
 an intake on another machine, such as the diocese, watches every runner's waits without their state
 files.
 
@@ -24,16 +25,17 @@ posting. What it watches depends on the state file that `PRIORY_DB` names:
 | unset, as on the diocese | one runner | the newest posting, whatever runner name it carries |
 | unset | several runners | every runner's newest posting |
 
-The state file is fresher than its runner's posting, which follows a daemon pass later. So a
+The state file is fresher than its runner's posting, which follows up to 30 seconds later. So a
 single-machine factory with a SQLite log works as before.
 
 - A runner that ends a task posts a list without it, so the intake stops watching it on its next
-  poll.
+  poll after that posting.
 - A runner's list expires 7 days after its last posting. A running daemon posts daily, so only a
   runner stopped for a week loses its watches, and it posts again when it starts. A runner asleep
   for less keeps them: the log holds the events for it until it wakes.
-- In a factory of several runners, a posting from a runner without a runner file is dropped, so
-  removing a runner's file stops its watches at once.
+- In a factory of several runners, a posting from a runner without a runner file is dropped. The
+  intake reads the runner files when it starts, so removing a runner's file stops its watches once
+  the intake restarts.
 
 Without a state file or a posting, the intake watches none of them.
 
@@ -50,8 +52,9 @@ Each runner's list holds what its state file has of:
 
 It skips the waits and holds of a task that is `done`, `failed` or `dropped`, and the subscriptions
 of one that is `failed` or `dropped`, except its own key while it is the newest task on that key.
-A done task's subscriptions stay, so feedback can reopen it. A comment on a failed or dropped
-task's key posts a report instead (see [routing.md](../daemon/routing.md#feedback-on-a-failed-or-dropped-task)).
+A done task's subscriptions stay for 7 days after it was done, so feedback can reopen it. A comment
+on a failed or dropped task's key posts a report instead (see
+[routing.md](../daemon/routing.md#feedback-on-a-failed-or-dropped-task)).
 An ended task's own Slack thread, its key, is read for 7 days only after the task ended, since each
 thread costs a call per poll. A thread that a wait and a subscription
 both name is read once a poll, from the earlier of their times.

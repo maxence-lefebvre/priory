@@ -17654,19 +17654,53 @@ fn runner_asleep_on(test: &str, on: serde_json::Value) -> Setup {
 }
 
 #[test]
-fn a_pull_request_wait_reaches_an_intake_without_a_state_file_through_the_log() {
+fn a_pull_request_wait_reaches_an_intake_without_a_state_file_and_its_review_wakes_the_task() {
     let setup = runner_asleep_on("watch-from-log", on_pull_7("review"));
     posted(&setup, "a", |resources| {
         resources.contains(&"github:owner/repo#7".to_owned())
     });
-    let log = fake_gh(&setup);
+    let review = json!({
+        "databaseId": 501,
+        "state": "APPROVED",
+        "body": "Ship it.",
+        "submittedAt": after_wait_stored(&setup).to_string(),
+        "url": "https://github.com/owner/repo/pull/7#pullrequestreview-501",
+        "commit": { "oid": "fff000" },
+        "author": { "login": "reviewer" }
+    });
+    let pull = json!({
+        "number": 7, "headRefName": "feature", "headRefOid": "abc123", "baseRefName": "main",
+        "merged": false, "state": "OPEN", "updatedAt": "2999-01-01T00:00:00Z",
+        "reviews": { "nodes": [review] },
+        "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "contexts": {
+            "totalCount": 0, "nodes": []
+        } } } }] }
+    });
+    let open = json!({ "data": { "repository": { "pullRequests": { "nodes": [pull] } } } });
+    let answer = setup.dir.join("open-pulls.json");
+    fs::write(&answer, open.to_string()).unwrap();
+    let bin = setup.dir.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    fs::write(
+        bin.join("gh"),
+        format!(
+            "#!/bin/sh\ncase \"$*\" in\n  *'graphql -F'*) cat '{}' ;;\n  *) echo '[]' ;;\nesac\n",
+            answer.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(bin.join("gh"), fs::Permissions::from_mode(0o755)).unwrap();
 
     setup.intake_from_log();
 
-    let calls = fs::read_to_string(&log).unwrap_or_default();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     assert!(
-        calls.contains("api repos/owner/repo/issues/events"),
-        "{calls}"
+        setup
+            .typed()
+            .iter()
+            .any(|typed| typed.starts_with("github.pull_request_review.submitted owner/repo#7")),
+        "{:?}",
+        setup.typed()
     );
 }
 
