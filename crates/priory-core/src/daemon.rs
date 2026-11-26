@@ -129,6 +129,9 @@ fn view(factory: &Factory) -> Result<(), Error> {
     let mut live = Live::new(factory, watch, trace.revision.clone(), server);
     let mut link = Link::default();
     loop {
+        if runtime::stopping() {
+            return listening.stop(|line| seen(&db, line));
+        }
         live.poll(&mut db, &trace, false)?;
         let trace = live.trace(&trace);
         let mut behind = false;
@@ -140,20 +143,24 @@ fn view(factory: &Factory) -> Result<(), Error> {
         }
         let wait = if behind { Duration::ZERO } else { EVERY };
         match listening.lines.recv_timeout(wait) {
-            Ok(line) => {
-                let reply = match serde_json::from_str::<Input>(&line.text) {
-                    // Since you looked is this machine's own.
-                    Ok(Input::Seen(line)) => state::seen(&db, &line.seen.person, line.seen.at)
-                        .map_err(|error| error.to_string()),
-                    _ => Err(VIEW_ONLY.to_owned()),
-                };
-                let reply = serde_json::to_string(&reply).expect("a result serializes");
-                let _ = line.applied.send(reply);
-            }
+            Ok(line) => seen(&db, line)?,
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
         }
     }
+}
+
+/// Answers a line on a view-only machine, where since you looked is its own and the rest is refused.
+fn seen(db: &Connection, line: Line) -> Result<(), Error> {
+    let reply = match serde_json::from_str::<Input>(&line.text) {
+        Ok(Input::Seen(line)) => {
+            state::seen(db, &line.seen.person, line.seen.at).map_err(|error| error.to_string())
+        }
+        _ => Err(VIEW_ONLY.to_owned()),
+    };
+    let reply = serde_json::to_string(&reply).expect("a result serializes");
+    let _ = line.applied.send(reply);
+    Ok(())
 }
 
 /// Reads the messages past the view's cursor into its mirrors, as `drain_some` does, and returns
@@ -423,11 +430,28 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut catching_up = true;
     // Passes that hold work are one tick for the watchdog, which the first other pass ends.
     let mut holding = false;
+    // A runner applies no line of the socket until it has read the whole log, nor does its stop.
+    let mut holds_lines = trace.runner.is_some();
     let mut lines = Lines {
         socket: &listening.lines,
         waiting: VecDeque::new(),
     };
     loop {
+        if runtime::stopping() {
+            let trace = live.trace(&trace);
+            let waiting = std::mem::take(&mut lines.waiting);
+            let mut answer = |line: Line| match holds_lines {
+                true => not_applied(line),
+                false => {
+                    let counter = counting.get(&home);
+                    apply(&mut db, line, &trace, counter, kit.current(), &searching)
+                }
+            };
+            for line in waiting {
+                answer(line)?;
+            }
+            return listening.stop(answer);
+        }
         let tick = Instant::now();
         if !std::mem::take(&mut holding) {
             ticks::begin();
@@ -467,6 +491,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         });
         // What a runner says follows from the whole log, so it says nothing before it read it.
         let behind = matches!(drained, Some(Ok(false)));
+        holds_lines = behind && trace.runner.is_some();
         if let Some(me) = &trace.runner
             && !behind
         {
@@ -515,6 +540,10 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             holding = true;
             continue;
         }
+        // A stop starts after the phase in progress, not after the whole tick.
+        if runtime::stopping() {
+            continue;
+        }
         ticks::phase("commands");
         // After the socket's lines, so an answer a person sent before this tick comes first.
         let head = |worktree: &Path, branch: &str| runtime::kept_head(&home, worktree, branch);
@@ -525,12 +554,21 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         if crate::recipe::tick(&mut db, &trace, &home, &mut recipes)? {
             swept = None;
         }
+        if runtime::stopping() {
+            continue;
+        }
         lines.people(&mut db, &trace)?;
         ticks::phase("evidence");
         crate::evidence::tick(&mut db, factory, &home, &mut records)?;
+        if runtime::stopping() {
+            continue;
+        }
         ticks::phase("kit");
         kit.tick(&db)?;
         let fetched = kit.current();
+        if runtime::stopping() {
+            continue;
+        }
         lines.people(&mut db, &trace)?;
         ticks::phase("runs");
         tend(
@@ -553,6 +591,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         // Committed first, so a crash before the kill leaves an ended run, not a lost one.
         for tmux in tools::over_budget_in_turn(&mut db, &trace, &mut peeked, &watched)? {
             runtime::kill(&tmux);
+        }
+        if runtime::stopping() {
+            continue;
         }
         lines.people(&mut db, &trace)?;
         ticks::phase("background work");
@@ -592,6 +633,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             held = Some(Instant::now());
             crate::held::tick(&mut db, &trace, intake::now()?)?;
         }
+        if runtime::stopping() {
+            continue;
+        }
         lines.people(&mut db, &trace)?;
         ticks::phase("sweep");
         let due = swept.is_none_or(|at| at.elapsed() >= every) || sweeping.asked();
@@ -608,6 +652,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         if ended {
             sweep::measure(&home);
         }
+        if runtime::stopping() {
+            continue;
+        }
         lines.people(&mut db, &trace)?;
         ticks::phase("reclaim");
         let under = || {
@@ -618,6 +665,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         // A retirement costs a worktree, so it waits for what the reclaim frees.
         if reclaiming.retires() {
             sweeping.retire(&db)?;
+        }
+        if runtime::stopping() {
+            continue;
         }
         lines.people(&mut db, &trace)?;
         ticks::phase("upgrade");
@@ -1248,6 +1298,25 @@ fn version(_: &VersionLine) -> Result<String, String> {
     Ok(env!("CARGO_PKG_VERSION").to_owned())
 }
 
+/// Answers a line a stop does not apply, so its client sends it to the next daemon.
+fn not_applied(line: Line) -> Result<(), Error> {
+    let reply = serde_json::to_string(&Err::<String, _>(runtime::NOT_APPLIED))
+        .map_err(|error| error.to_string())?;
+    let _ = line.applied.send(reply);
+    Ok(())
+}
+
+/// Answers a line while the upgrade holds the daemon, with its version alone.
+fn held_back(line: Line) -> Result<(), String> {
+    let reply = match serde_json::from_str::<Input>(&line.text) {
+        Ok(Input::Version(line)) => version(&line),
+        _ => Err(upgrade::IN_PROGRESS.to_owned()),
+    };
+    let reply = serde_json::to_string(&reply).map_err(|error| error.to_string())?;
+    let _ = line.applied.send(reply);
+    Ok(())
+}
+
 /// Waits until a migration's upgrade is committed. The daemon then answers its version alone, so a
 /// rollback to the backups loses nothing.
 fn hold(factory: &Factory, home: &Path, lock: runtime::Lock) -> Result<runtime::Listening, Error> {
@@ -1256,15 +1325,12 @@ fn hold(factory: &Factory, home: &Path, lock: runtime::Lock) -> Result<runtime::
         drop(std::net::TcpListener::bind(config.listen)?);
     }
     while upgrade::uncommitted(home) {
+        if runtime::stopping() {
+            listening.stop(|line| held_back(line).map_err(Error::from))?;
+            return Err("the daemon stopped".into());
+        }
         match listening.lines.recv_timeout(EVERY) {
-            Ok(line) => {
-                let reply = match serde_json::from_str::<Input>(&line.text) {
-                    Ok(Input::Version(line)) => version(&line),
-                    _ => Err(upgrade::IN_PROGRESS.to_owned()),
-                };
-                let reply = serde_json::to_string(&reply).expect("a result serializes");
-                let _ = line.applied.send(reply);
-            }
+            Ok(line) => held_back(line)?,
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
         }
@@ -1664,6 +1730,10 @@ fn tend(
     }
     starting.retain(|id, _| live.iter().any(|run| run.id == *id && !run.ready));
     for mut run in live {
+        // Each run can cost a tmux call, so a stop does not wait for them all.
+        if runtime::stopping() {
+            return Ok(());
+        }
         if !run.ready && !scope.is_empty() {
             starting
                 .entry(run.id)
@@ -1791,6 +1861,9 @@ fn tend(
             }
         }
     }
+    if runtime::stopping() {
+        return Ok(());
+    }
     state::due(db, factory, &|worktree, branch| {
         runtime::kept_head(home, Path::new(worktree), branch)
     })?;
@@ -1844,6 +1917,10 @@ fn tend(
             &checking,
         )?;
         last = measured.into_inner().or(last);
+        // A stopping daemon starts no run: the start would only race its stop.
+        if runtime::stopping() {
+            break (pass.promised, None);
+        }
         let Some(admission) = pass.admission else {
             break (pass.promised, Some(pass.waiting));
         };
@@ -1888,7 +1965,9 @@ fn tend(
         }
     }
     // Enter goes on a later tick, so the agent never reads it as part of the paste.
-    while let Some(attempt) = state::attempt(db)? {
+    while !runtime::stopping()
+        && let Some(attempt) = state::attempt(db)?
+    {
         let pasted = runtime::pane(&attempt.tmux, &attempt.session)
             .ok_or_else(|| "its pane is gone".to_owned())
             .and_then(|pane| runtime::paste(&pane, &attempt.text).map(|()| pane));

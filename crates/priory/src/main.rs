@@ -2920,6 +2920,11 @@ fn acquire(args: &[OsString], lease: bool) -> ExitCode {
     let began = Instant::now();
     let deadline = began + timeout;
     let (mut grant, mut said, mut sent) = (None, String::new(), false);
+    // A restart's wait counts against `--timeout` too.
+    let through_restart = |home: &Path, line: &str, wait: Duration| {
+        let left = deadline.saturating_duration_since(Instant::now());
+        runtime::call_retrying(home, line, wait, left)
+    };
     // The daemon keeps a waiting grant while this process lives, so a lost reply or a daemon
     // restart only delays the next poll of the same grant.
     let grant = loop {
@@ -2929,11 +2934,9 @@ fn acquire(args: &[OsString], lease: bool) -> ExitCode {
                     grant,
                     waited: gives_up.then(|| began.elapsed().as_secs()),
                 },
-                runtime::call_through_restart,
+                through_restart,
             ),
-            // Until a daemon took the request, none may be coming back: fail at once.
-            None if !sent => call(&acquire, runtime::call),
-            None => call(&acquire, runtime::call_through_restart),
+            None => call(&acquire, through_restart),
         };
         sent |= !matches!(&asked, Err(error) if error.starts_with(runtime::NO_DAEMON));
         let reply = match asked {
@@ -3172,7 +3175,7 @@ fn gate(gate: &Gate) -> Result<String, String> {
 /// Sends `gate` to the daemon with `send` and returns its reply, or why none came.
 fn call(
     gate: &Gate,
-    send: fn(&Path, &str, Duration) -> Result<String, String>,
+    send: impl Fn(&Path, &str, Duration) -> Result<String, String>,
 ) -> Result<Result<String, String>, String> {
     let line = serde_json::to_string(gate).expect("a gate message serializes");
     let reply = send(&runtime::home(), &line, runtime::REPLY)?;
@@ -3191,7 +3194,7 @@ fn project_gate() -> ExitCode {
     };
     let call = |line: &proof::Line| {
         let line = serde_json::to_string(line).expect("a gate line serializes");
-        runtime::call(&runtime::home(), &line, runtime::REPLY).and_then(|reply| {
+        runtime::call_through_restart(&runtime::home(), &line, runtime::REPLY).and_then(|reply| {
             serde_json::from_str::<Result<String, String>>(&reply)
                 .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
         })
@@ -3347,8 +3350,8 @@ fn evidence_add(file: &str, caption: &str) -> ExitCode {
         Err(error) => return exit("evidence add", Err(format!("{file}: {error}"))),
     };
     let line = json!({ "evidence": evidence::Add { session, file, caption: caption.to_owned() } });
-    let sent =
-        runtime::call(&runtime::home(), &line.to_string(), runtime::REPLY).and_then(|reply| {
+    let sent = runtime::call_through_restart(&runtime::home(), &line.to_string(), runtime::REPLY)
+        .and_then(|reply| {
             serde_json::from_str::<Result<String, String>>(&reply)
                 .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
         });
@@ -4331,10 +4334,11 @@ fn drop_waiting(factory: &factory::Factory, key: &str) -> Result<String, String>
 
 /// Sends `line` to the daemon and prints its reply.
 fn send(verb: &str, line: &str) -> ExitCode {
-    let reply = runtime::call(&runtime::home(), line, runtime::REPLY).and_then(|reply| {
-        serde_json::from_str::<Result<String, String>>(&reply)
-            .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
-    });
+    let reply =
+        runtime::call_through_restart(&runtime::home(), line, runtime::REPLY).and_then(|reply| {
+            serde_json::from_str::<Result<String, String>>(&reply)
+                .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
+        });
     match reply {
         Ok(text) => {
             println!("{text}");

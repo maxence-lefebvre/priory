@@ -214,8 +214,8 @@ systemctl --user start priory-intake priory-daemon
 
 A live run keeps the `priory mcp` server its session started, on the old binary. That server only
 relays calls to the daemon's socket, so it keeps working on a migrated state. A tool call it makes
-while the daemon restarts waits up to 30 seconds for the new daemon. A call in flight when the
-daemon stops can still fail. A session started on 1.2.0 or earlier keeps a server that opens
+while the daemon restarts waits up to 30 seconds for the new daemon, and so does a command that writes.
+A call in flight when the daemon stops is answered first, unless the daemon is killed. A session started on 1.2.0 or earlier keeps a server that opens
 the state itself, so install over one only when `priory runs` shows no live run.
 
 Check: `priory --version` prints the new version and `systemctl --user status` shows both units

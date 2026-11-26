@@ -226,9 +226,11 @@ before keeps its old server, so the first install of this slice still follows th
 
 Each is useful alone, in this order:
 
-1. **The graceful stop.** `SIGTERM` lets the daemon finish the lines it accepted before it exits.
+1. **The graceful stop.** `SIGTERM` lets the daemon finish the lines it accepted before it exits. Built:
+   [home.md](../daemon/home.md#socket-spool-and-lock) says how. The verbs wait for a restart too.
 2. **Call ids.** A line resent after a reset is applied once, from the MCP server or a hook.
-3. **Hooks that keep their line**, with the spool race closed.
+3. **Hooks that keep their line**, with the spool race closed. The race is closed: a hook appends under a
+   lock on the spool, and starts over when the daemon has taken the file.
 4. **Only the daemon migrates**, with its lock taken first. Built.
 5. **`priory upgrade`.** Verify, back up, rehearse, install, hand over, check, and `--rollback`. The
    daemon does this by itself with `[upgrade]` ([upgrades.md](../daemon/upgrades.md)), on a herdr-bus
