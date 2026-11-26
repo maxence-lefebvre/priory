@@ -14,8 +14,7 @@ import { Tile } from "../components/Icon.jsx";
 import { Time } from "../components/Text.jsx";
 import { useInbox } from "../hooks/useInbox.js";
 import { useStore } from "../hooks/useData.js";
-import { addSheet, keepDraft, openAdd, readAddDefaults, renderAdd } from "../legacy/add.js";
-import { state } from "../legacy/state.js";
+import { addOpen, adding, changeAdd, keepDraft, openAdd, readAddDefaults } from "../components/AddSheet.jsx";
 import { usePlace } from "./place.js";
 
 // The resource whose subscribe is in flight, and each resource's last note. A phone's rotation swaps
@@ -47,17 +46,16 @@ export async function subscribeTask(resource, task, label, revision) {
   refresh();
 }
 
-// The Add sheet, still legacy, with the server's text, whose URL keys the new task by the group's resource.
+// The Add sheet with the server's text, whose URL keys the new task by the group's resource.
 export async function requestTask(text, workflow) {
   await readAddDefaults();
   // The person may have opened the sheet and typed while the read ran.
-  if (addSheet().open) return renderAdd();
-  const { draft, defaults } = state.add;
-  draft.text = text;
-  const offered = requestedWorkflow(workflow, defaults?.opted_out);
+  if (addOpen()) return;
+  const draft = { ...adding.get().draft, text };
+  const offered = requestedWorkflow(workflow, adding.get().defaults?.opted_out);
   if (offered === undefined) delete draft.workflow;
   else draft.workflow = offered;
-  state.add.swapped = offered === undefined ? workflow : null;
+  changeAdd({ draft, swapped: offered === undefined ? workflow : null });
   keepDraft();
   openAdd();
 }

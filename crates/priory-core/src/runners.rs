@@ -295,6 +295,7 @@ fn apply_act(
             step: data["step"].as_str().map(str::to_owned),
             hold: None,
             text: data["text"].as_str().map(str::to_owned),
+            pull_request: None,
             expected: None,
             now: false,
         };

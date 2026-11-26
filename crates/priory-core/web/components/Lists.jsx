@@ -4,7 +4,7 @@ import { searchOf } from "../frame.js";
 import { go } from "../router.js";
 import { failureWords, session } from "../session.js";
 import { useStore } from "../hooks/useData.js";
-import { loadOlder } from "../legacy/shared.js";
+import { loadOlder } from "../data.js";
 import { Icon } from "./Icon.jsx";
 import { PageTop, Panel } from "./PhonePage.jsx";
 import { remoteClick } from "./TaskRows.jsx";

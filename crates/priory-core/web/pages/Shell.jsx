@@ -1,6 +1,7 @@
 // The root route: the sign-in, the first load, then the frame around the page the address names.
 import { memo, useEffect, useMemo, useRef } from "react";
 import { Outlet, useRouterState } from "@tanstack/react-router";
+import { AddSheet, openAdd } from "../components/AddSheet.jsx";
 import { Frame, StaleStrip } from "../components/Frame.jsx";
 import { parts, pathOf, shellOf, where } from "../frame.js";
 import { useDesk, useKeptTask, useKeptTasks, useLinks, useStore, useViews } from "../hooks/useData.js";
@@ -77,9 +78,9 @@ const Signed = memo(function Signed() {
   const shell = useMemo(() => layout && shellOf(at, { size, list, layout }), [at, size, list, layout]);
   const section = parts(place.href)[1];
   const value = useMemo(() => shell && { href: place.href, entry: place.entry, trail: place.trail, at, size, shell, section, layout }, [place, at, size, shell, section, layout]);
-  if (!views || !desk) return <Loading failed={failed} />;
+  if (!views || !desk) return <><Loading failed={failed} /><AddSheet /></>;
   const open = desk.items.filter((item) => item.kind === "ask").length;
-  return <Place.Provider value={value}><Frame shell={shell} size={size} views={views} open={open} onRetry={refresh}><Outlet /></Frame></Place.Provider>;
+  return <><Place.Provider value={value}><Frame shell={shell} size={size} views={views} open={open} onRetry={refresh} onAdd={openAdd}><Outlet /></Frame></Place.Provider><AddSheet /></>;
 });
 
 export const Shell = memo(function Shell() {

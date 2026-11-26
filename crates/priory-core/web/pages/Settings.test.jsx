@@ -1,8 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { renderToStaticMarkup } from "react-dom/server";
+import { renderToStaticMarkup as markup } from "react-dom/server";
+import { QueryClientProvider } from "@tanstack/react-query";
 
-// The legacy files touch the page as they load.
+// The data modules read the device's storage and the page as they load.
 const kept = new Map();
 const root = { dataset: { mode: "dark", theme: "ink" } };
 Object.assign(globalThis, {
@@ -14,6 +15,9 @@ Object.assign(globalThis, {
 const { Appearance, KindBoxes, Settings, pick, push } = await import("./Settings.jsx");
 const { PUSH_KINDS } = await import("../push.js");
 const { Place } = await import("./place.js");
+const { client } = await import("../queries.js");
+// The theme previews read the Desk's listings.
+const renderToStaticMarkup = (part) => markup(<QueryClientProvider client={client({ api: async () => ({}) })}>{part}</QueryClientProvider>);
 
 const DEFAULTS = { ask: true, stopped: true, intake: true, uncertain: true, cap: true, landed: false, stall: false };
 const checked = (html) => [...html.matchAll(/id="push-kind-(\w+)"[^>]*checked=""/g)].map(([, kind]) => kind);

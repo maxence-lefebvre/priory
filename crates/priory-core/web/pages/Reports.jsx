@@ -1,11 +1,11 @@
 // Reports (DESIGN.md, Reports panel): the report written last, its sections in its own order, picks
 // with an Undo, and threads on rows through the report endpoints.
 import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { cache, refresh } from "../data.js";
+import { askFor, asked, cache, refresh } from "../data.js";
 import { sectionInView } from "../desk.js";
 import { keyOf } from "../queries.js";
 import { around, dossier, nextPick, refusal } from "../reports.js";
-import { onSignOut, post, refuse, session } from "../session.js";
+import { onSignOut, post, refuse, session, writeRefusal } from "../session.js";
 import { store } from "../store.js";
 import { taskLabel } from "../tasks.js";
 import { Icon, Tile } from "../components/Icon.jsx";
@@ -13,8 +13,6 @@ import { PageTop, Panel } from "../components/PhonePage.jsx";
 import { Linked } from "../components/Text.jsx";
 import { useReport, useReports, useStore, useTasks } from "../hooks/useData.js";
 import { useMinute } from "../hooks/useScreen.js";
-import { askFor, asked } from "../legacy/data.js";
-import { writeRefusal } from "../legacy/shared.js";
 import { listClass, usePlace } from "./place.js";
 
 // What the page holds beyond the reads, kept from one visit to the next: the pick waiting out its

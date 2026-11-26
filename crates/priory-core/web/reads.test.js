@@ -49,7 +49,7 @@ test("a kept read is read again once a page shows it, and its own read answers",
   assert.deepEqual(paths, ["/api/flows"]);
 });
 
-test("the spend a legacy Costs panel kept fills both of its reads, and the next snapshot keeps them alone", () => {
+test("the spend an earlier Costs panel kept fills both of its reads, and the next snapshot keeps them alone", () => {
   const cache = client({ api: async () => ({}) });
   restore(cache, { reads: [[["spend"], { costs: { by: "workflow" }, attention: { acts: 2 }, updated: 5 }, 5]] });
   assert.deepEqual(cache.getQueryData(costs("workflow").queryKey), { by: "workflow" });

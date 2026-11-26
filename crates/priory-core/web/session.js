@@ -65,3 +65,10 @@ export function signOut(reason) {
 }
 
 export const refuse = () => signOut("The daemon refused this token. Paste the current one.");
+
+// Why a write did not go; `refused` words a refusal the daemon gave.
+export function writeRefusal(status, body, refused = () => `Not sent: ${body.error || `the server answered ${status}`}.`) {
+  if (status === 503) return "Could not send: no priory daemon runs beside this server. Start priory daemon, then send again.";
+  if (status === 504 || status === 0) return "The daemon may have applied this but did not confirm it. Check the report before you send again.";
+  return refused();
+}

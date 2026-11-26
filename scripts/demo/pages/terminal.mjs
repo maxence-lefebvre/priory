@@ -23,7 +23,8 @@ export async function check({ open, page, evaluate, until, sleep, change, report
   // The pane's Say line keeps its element, focus, text and caret while the task page reads again.
   await evaluate('document.querySelector("[data-action=term-type]").click()');
   await until('document.activeElement?.id === "term-line"', "the Say line");
-  await evaluate('globalThis.lineSeen = document.getElementById("term-line")');
+  // React's own links on the element are too deep to send back, so the check answers true.
+  await evaluate('globalThis.lineSeen = document.getElementById("term-line"); true');
   await page("Input.insertText", { text: "hello" });
   await evaluate("lineSeen.setSelectionRange(2, 4); reads.length = 0");
   change();

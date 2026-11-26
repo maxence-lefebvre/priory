@@ -40,11 +40,11 @@ export const StaleStrip = memo(function StaleStrip({ onRetry }) {
   return <div className="stale" role="status"><Icon name="unplug" size="s15" /><span>{`Reconnecting: ${failed}. ${since}`}</span>{retry}</div>;
 });
 
-const TopBar = memo(function TopBar({ factory }) {
+const TopBar = memo(function TopBar({ factory, onAdd }) {
   return (
     <header className="wtop">
       <span className="fac">{factory}</span><Connection /><span className="sp" />
-      <button type="button" className="addtop" data-action="add-open" aria-label="Add a task" aria-keyshortcuts="N" aria-haspopup="dialog"><Icon name="plus" size="s20" />Add</button>
+      <button type="button" className="addtop" data-action="add-open" aria-label="Add a task" aria-keyshortcuts="N" aria-haspopup="dialog" onClick={onAdd}><Icon name="plus" size="s20" />Add</button>
     </header>
   );
 });
@@ -68,7 +68,7 @@ export const Nav = memo(function Nav({ layout, current, rail, open }) {
   return <nav className="tabbar" aria-label="Panels">{tabs}<a href="/more" aria-current={more ? "page" : "false"}><Icon name="more" size="s20" />More</a></nav>;
 });
 
-export const Frame = memo(function Frame({ shell, size, views, open, onRetry, children }) {
+export const Frame = memo(function Frame({ shell, size, views, open, onRetry, onAdd, children }) {
   const { layout } = views.views.default;
   const strip = <StaleStrip key="strip" onRetry={onRetry} />;
   const compact = size === "compact";
@@ -76,7 +76,7 @@ export const Frame = memo(function Frame({ shell, size, views, open, onRetry, ch
   // One tree for every size, so a rotation keeps the page's elements.
   return (
     <>
-      {strip}{compact ? null : <TopBar factory={views.factory} />}
+      {strip}{compact ? null : <TopBar factory={views.factory} onAdd={onAdd} />}
       <div className={compact ? "flat" : shell.grid}>{wide ? <Nav rail layout={layout} current={shell.nav} open={open} /> : null}{children}</div>
       {wide || (compact && !shell.nav) ? null : <Nav layout={layout} current={shell.nav} open={open} />}
     </>

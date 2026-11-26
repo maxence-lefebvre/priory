@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClientProvider } from "@tanstack/react-query";
 
-// The legacy modules these pages import touch the page as they load.
+// The data modules these pages import read the device's storage and the page as they load.
 const sheet = { addEventListener() {}, open: false };
 Object.assign(globalThis, {
   localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
@@ -39,7 +39,7 @@ function draw(t, Part, { href = "/tasks", size = "wide", data = {}, errors = {} 
 }
 const K = (name, all) => JSON.stringify(keyOf(name, { all: { asks: false, tasks: Boolean(all), runs: Boolean(all) } }));
 
-test("Tasks draws its views, facets and table rows as the legacy page did", (t) => {
+test("Tasks draws its views, facets and table rows as before React", (t) => {
   const html = draw(t, TasksList, { data: { [K("tasks")]: TASKS } });
   assert.match(html, /^<div class="list" role="region" aria-label="Tasks"><div class="lhead"><h1>Tasks<\/h1><\/div><nav class="views" aria-label="Saved views"><a href="\/tasks\?view=active" aria-current="true">Active<span class="num">3<\/span><\/a><a href="\/tasks\?view=blocked" aria-current="false">Blocked<span class="num">1<\/span><\/a><a href="\/tasks\?view=ended" aria-current="false">Ended<span class="num">4<\/span><\/a><\/nav><div class="facets" aria-label="Facets"><details class="facet"><summary aria-label="Filter by state">State<svg/);
   assert.match(html, /<div class="scroll"><table class="tbl tasks"><thead><tr><th>State<\/th><th>Task<\/th><th>Title<\/th><th>Workflow and step<\/th><th>Lane<\/th><th>Band<\/th><th class="r">Age<\/th><\/tr><\/thead><tbody><tr data-href="\/tasks\/1"><td><span class="sti t-/);
