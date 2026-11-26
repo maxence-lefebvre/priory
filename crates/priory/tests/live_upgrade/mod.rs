@@ -76,6 +76,29 @@ fn address(setup: &Setup) -> String {
     }
 }
 
+/// The rows `<exe> <verb>` prints, once `done` holds: the state is the old binary's until the swap.
+fn until_on(
+    setup: &Setup,
+    exe: &str,
+    verb: &str,
+    done: impl Fn(&[Vec<String>]) -> bool,
+) -> Vec<Vec<String>> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let output = setup.command(exe).arg(verb).output().unwrap();
+        let rows: Vec<Vec<String>> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .skip(1)
+            .map(|line| line.split('\t').map(str::to_owned).collect())
+            .collect();
+        if done(&rows) {
+            return rows;
+        }
+        assert!(Instant::now() < deadline, "{verb}: {output:?}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 #[test]
 #[ignore = "scripts/live-upgrade.sh builds its binaries and runs it"]
 fn processes_that_outlive_an_upgrade_and_its_rollback_keep_working() {
@@ -96,7 +119,11 @@ fn processes_that_outlive_an_upgrade_and_its_rollback_keep_working() {
     setup.hold("hold-stop");
     setup.publish(&requested(42));
     start(&mut setup, &installed);
-    let session = live_session(&setup, "1");
+    let runs = until_on(&setup, &old, "runs", |rows| {
+        rows.iter().any(|row| row[1] == "1")
+    });
+    let session = runs[0][4].clone();
+    setup.written("fake/typed.log");
     let before = schema(&setup);
 
     // What runs on the old binary across the swap.
@@ -116,10 +143,15 @@ fn processes_that_outlive_an_upgrade_and_its_rollback_keep_working() {
             .unwrap()
     };
     let mut first = gated("first", "40");
-    setup.until("memory", |rows| rows.iter().any(|row| row[2] == "held"));
+    until_on(&setup, &old, "memory", |rows| {
+        rows.iter().any(|row| row[2] == "held")
+    });
     let mut second = gated("second", "40");
-    setup.until("memory", |rows| rows.len() == 2);
-    let revision = setup.priory(&["wait", "--since", "-1", "--timeout", "1s"]);
+    until_on(&setup, &old, "memory", |rows| rows.len() == 2);
+    let revision = setup
+        .command(&old)
+        .args(["wait", "--since", "-1", "--timeout", "1s"]);
+    let revision = revision.output().unwrap();
     let revision = String::from_utf8(revision.stdout).unwrap();
     let waiting = setup
         .command(&old)
