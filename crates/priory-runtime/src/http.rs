@@ -36,6 +36,12 @@ pub enum Lane {
 
 /// How long a request waits for a worker of its lane before it gets `503`.
 const QUEUED: Duration = Duration::from_secs(10);
+/// The requests each lane holds for its workers, first come first served.
+const QUEUE: usize = 64;
+
+fn busy() -> Reply {
+    Reply::error(503, "every worker of this kind is busy: retry in a second")
+}
 /// The handlers run at once in each lane; a request read while its lane's are busy waits for one.
 const WRITES: usize = 8;
 const LISTINGS: usize = 2;
@@ -128,7 +134,7 @@ where
     let make = Arc::new(make);
     let mut threads = Vec::new();
     let mut pool = |workers: usize| -> io::Result<mpsc::SyncSender<Job>> {
-        let (jobs, queue) = mpsc::sync_channel::<Job>(0);
+        let (jobs, queue) = mpsc::sync_channel::<Job>(QUEUE);
         let queue = Arc::new(Mutex::new(queue));
         for _ in 0..workers {
             let queue = Arc::clone(&queue);
@@ -144,7 +150,12 @@ where
                         let Ok(job) = job else {
                             return;
                         };
-                        let _ = job.reply.send(work(&job, &mut handle));
+                        // A job that waited past its time gets 503, so a pile of reads drains fast.
+                        let reply = match job.arrived.elapsed() < QUEUED {
+                            true => work(&job, &mut handle),
+                            false => busy(),
+                        };
+                        let _ = job.reply.send(reply);
                     }
                 })?;
             threads.push(worker);
@@ -278,8 +289,8 @@ fn answer<W: Fn(&Request) -> Reply>(
                     arrived: request.arrived,
                     reply,
                 };
-                // A request that finds no worker in time frees its connection for others.
-                let deadline = Instant::now() + QUEUED;
+                // A request that finds no room in its lane in time frees its connection for others.
+                let deadline = request.arrived + QUEUED;
                 let mut job = job;
                 loop {
                     match jobs.try_send(job) {
@@ -288,12 +299,7 @@ fn answer<W: Fn(&Request) -> Reply>(
                             job = back;
                             std::thread::sleep(Duration::from_millis(5));
                         }
-                        Err(mpsc::TrySendError::Full(_)) => {
-                            return Reply::error(
-                                503,
-                                "every worker of this kind is busy: retry in a second",
-                            );
-                        }
+                        Err(mpsc::TrySendError::Full(_)) => return busy(),
                         Err(mpsc::TrySendError::Disconnected(_)) => {
                             return Reply::error(500, "the request failed inside Priory");
                         }
