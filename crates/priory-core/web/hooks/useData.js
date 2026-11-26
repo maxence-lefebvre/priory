@@ -13,6 +13,12 @@ export function useReads() {
   return useStore(shown) && Boolean(token);
 }
 
+/** Whether a page's own read, not a listing, may read: not while the session failed, as the listings' reads heal it. */
+export function usePageReads() {
+  const { failed } = useStore(session);
+  return useReads() && !failed;
+}
+
 function useListing(name, wanted) {
   return useQuery({ queryKey: keyOf(name, wanted), enabled: useReads(), placeholderData: keepPreviousData });
 }

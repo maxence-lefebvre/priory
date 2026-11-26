@@ -381,6 +381,17 @@ await hooked("a queue that cannot be read again says so on its page, and the app
   await until('!document.querySelector(".stale")', "the note to go");
   return found.conn === "live" && found.said.startsWith("Could not read the queue again: /api/queue answered 500.") && kept ? true : { ...found, kept };
 });
+// land() keeps a failed listing's last read and lands the others: a tasks list that fails holds no queue back.
+await hooked("a legacy page draws the listing that read while another one fails", "/queue", TITLE("Queue"), {}, async () => {
+  await sleep(1500);
+  await evaluate('hook.fails = ["/api/tasks"]');
+  execFileSync("sqlite3", [join(dir, "state.db"), "UPDATE tasks SET tldr = 'Landed beside a failure' WHERE id = 4; UPDATE revision SET value = value + 1;"]);
+  await until('document.querySelector(".stale")', "the note");
+  await sleep(1500);
+  const drawn = await evaluate('document.querySelector(".list .scroll").innerText.includes("Landed beside a failure")');
+  await evaluate('hook.fails = []');
+  return drawn || "the queue's new title is not drawn";
+});
 await hooked("a page whose first read failed says why, and the app stays live", "/queue", 'document.querySelector("#app nav")', { cold: true, fails: ["/api/queue"] }, async () => {
   await until('document.getElementById("app").innerText.includes("Could not load this page: /api/queue answered 500.")', "why the page has nothing");
   const found = await evaluate('({ conn: document.querySelector(".conn").innerText, retry: Boolean(document.querySelector(".stale button")) })');
