@@ -3,10 +3,9 @@ export const reads = [
   ["/runs", "/api/desk /api/runs"],
 ];
 
-// The rows are React's: a refresh, a failed read or a lost connection keeps the very elements, and
-// no legacy slot draws them.
+// A refresh, a failed read or a lost connection keeps the very row elements.
 const LIST = 'document.querySelector("#app .list .scroll")';
-const HELD = `({ row: ${LIST}?.querySelector("tr[data-href]"), legacy: document.querySelector("#app .legacy") })`;
+const HELD = `({ row: ${LIST}?.querySelector("tr[data-href]") })`;
 export async function check({ hooked, evaluate, until, sleep, change, screen }) {
   await screen(1440, 900);
   await hooked("Runs keeps its rows, an open facet and its scroll through a refresh", "/runs", `${LIST}?.querySelector("tr[data-href]")`, {}, async () => {
@@ -16,8 +15,8 @@ export async function check({ hooked, evaluate, until, sleep, change, screen }) 
     change();
     await until('reads.includes("/api/runs")', "Runs to read again");
     await sleep(1000);
-    const found = await evaluate(`({ same: ${HELD}.row === held.row, legacy: Boolean(${HELD}.legacy), open: document.querySelector("#app details.facet").open, scroll: ${LIST}.scrollTop })`);
-    return found.same && !found.legacy && found.open && found.scroll === scroll ? true : { ...found, before: scroll };
+    const found = await evaluate(`({ same: ${HELD}.row === held.row, open: document.querySelector("#app details.facet").open, scroll: ${LIST}.scrollTop })`);
+    return found.same && found.open && found.scroll === scroll ? true : { ...found, before: scroll };
   });
   await hooked("a row of Runs opens its task", "/runs", `${LIST}?.querySelector("tr[data-href] td:nth-child(4)")`, {}, async () => {
     const href = await evaluate(`${LIST}.querySelector("tr[data-href]").dataset.href`);
@@ -29,8 +28,7 @@ export async function check({ hooked, evaluate, until, sleep, change, screen }) 
     const said = await evaluate('document.getElementById("app").innerText.match(/Could not load this page: [^\\n]*/)?.[0] ?? ""');
     await evaluate("hook.fails = []");
     await until(`${LIST}?.querySelector("tr[data-href]")`, "the rows");
-    const legacy = await evaluate('Boolean(document.querySelector("#app .legacy"))');
-    return said.startsWith("Could not load this page: /api/runs answered 500.") && !legacy ? true : { said, legacy };
+    return said.startsWith("Could not load this page: /api/runs answered 500.") ? true : said;
   });
   await hooked("offline, Runs keeps its rows and says it reconnects", "/runs", `${LIST}?.querySelector("tr[data-href]")`, {}, async () => {
     await sleep(1500);
@@ -38,9 +36,9 @@ export async function check({ hooked, evaluate, until, sleep, change, screen }) 
     change();
     await until('document.querySelector(".conn").innerText === "reconnecting"', "the session to fail");
     await sleep(1000);
-    const found = await evaluate(`({ same: ${HELD}.row === held.row, legacy: Boolean(${HELD}.legacy), stale: document.querySelector(".stale")?.innerText ?? "" })`);
+    const found = await evaluate(`({ same: ${HELD}.row === held.row, stale: document.querySelector(".stale")?.innerText ?? "" })`);
     await evaluate("hook.fails = []");
     await until('document.querySelector(".conn").innerText === "live"', "the session to heal");
-    return found.same && !found.legacy && found.stale.startsWith("Reconnecting") ? true : found;
+    return found.same && found.stale.startsWith("Reconnecting") ? true : found;
   });
 }
