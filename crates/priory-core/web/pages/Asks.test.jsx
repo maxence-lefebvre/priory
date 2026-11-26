@@ -68,6 +68,20 @@ test("an armed option says what its second press does, and only for the revision
   assert.doesNotMatch(draw(t, AskDrawer, { ask: "3", props: { id: "3", panels: ["asks"] } }), /Confirm:/);
 });
 
+test("a pressed option shows its answer sending on itself, keeps its label, and the others take no press", (t) => {
+  t.after(() => answers.set({ ...answers.get(), pending: null }));
+  answers.set({ ...answers.get(), pending: { id: 3, text: "skip" } });
+  const html = draw(t, AskDrawer, { ask: "3", props: { id: "3", panels: ["asks"] } });
+  assert.match(html, /<button type="button" class="opt  chosen " data-option="1" data-answer="1" aria-disabled="true" aria-busy="true"><span class="busy" aria-hidden="true"><\/span><span>skip<small>Sending…<\/small><\/span>/);
+  assert.match(html, /<button type="button" class="opt rec-opt  " data-option="0" data-answer="0" aria-disabled="true">/);
+  assert.doesNotMatch(html, /class="sending"/, "nothing else on the page says it is sending");
+  const phone = draw(t, AskPage, { size: "compact", ask: "3", props: { id: "3" } });
+  assert.doesNotMatch(phone, /id="bar-answer"/, "the bar hides when another option is sending");
+  answers.set({ ...answers.get(), pending: { id: 3, text: "staging-b" } });
+  const bar = draw(t, AskPage, { size: "compact", ask: "3", props: { id: "3" } });
+  assert.match(bar, /id="bar-answer" class="btn primary " data-answer="0" aria-disabled="true" aria-busy="true"><span class="busy" aria-hidden="true"><\/span><span>staging-b<\/span><small>Sending…<\/small>/);
+});
+
 test("a drawer with no ask says what to select, and an unknown ask says where to look", (t) => {
   assert.equal(draw(t, AskDrawer, { props: { id: null, panels: ["asks"] } }), '<aside class="drawer" aria-label="Ask"><p class="empty">Select an ask to read it here.</p></aside>');
   assert.match(draw(t, AskDrawer, { ask: "99", props: { id: "99", panels: ["asks"] } }), /No ask 99 here\. It may belong to another factory\. Check <code>priory asks --all<\/code>\./);
