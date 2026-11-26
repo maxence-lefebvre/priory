@@ -21,6 +21,7 @@ import { Linked, Time } from "../components/Text.jsx";
 import { useAsks, useDesk, useQueue, useStore, useTasks, useViews } from "../hooks/useData.js";
 import { useKeptFocus } from "../hooks/useKeptFocus.js";
 import { useKeptScroll } from "../hooks/useKeptScroll.js";
+import { useOlder } from "../hooks/useOlder.js";
 import { useMinute } from "../hooks/useScreen.js";
 import { asked } from "../legacy/data.js";
 import { AskRow, AskTableRow, Fold, KeyHints, OlderRow, RunnerTag, SentLine, useListSearch } from "./Asks.jsx";
@@ -356,6 +357,8 @@ function useDeskBody({ model, data, olderTasks }, wide) {
   const search = useListSearch();
   const { at } = usePlace();
   const current = deskViewOf(search);
+  useOlder("tasks", current === "all");
+  useOlder("asks", Boolean(at.ask));
   const views = (
     <SavedViews base="/" views={[
       { key: "needs", label: "Needs me", count: model.needs, on: current === "needs" },

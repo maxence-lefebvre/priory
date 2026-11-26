@@ -51,9 +51,10 @@ export async function check({ hooked, evaluate, until, sleep, change, page, scre
     await evaluate('globalThis.field = document.getElementById("draft"); true');
     await refresh();
     const refreshed = await evaluate('document.getElementById("draft") === field && document.activeElement === field && field.value === "a draft"');
+    await evaluate("field.setSelectionRange(2, 5)");
     await screen(390, 844);
     await sleep(800);
-    const rotated = await evaluate('document.getElementById("draft")?.value');
+    const rotated = await evaluate('(() => { const draft = document.getElementById("draft"); return draft === document.activeElement && draft.selectionStart === 2 && draft.selectionEnd === 5 ? draft.value : { value: draft?.value, focused: draft === document.activeElement, from: draft?.selectionStart }; })()');
     await screen(1440, 900);
     await sleep(800);
     await evaluate(`document.querySelector('.drawer [aria-label="Next ask"]').click()`);
@@ -63,6 +64,17 @@ export async function check({ hooked, evaluate, until, sleep, change, page, scre
     await until('document.getElementById("draft")', "the draft again");
     const back = await evaluate('document.getElementById("draft").value');
     return refreshed && rotated === "a draft" && back === "a draft" ? true : { refreshed, rotated, back };
+  });
+  await hooked("the Open view reads no older asks once the Answered view loaded them", "/asks?view=answered", 'document.querySelector("#app .list [data-older]")', {}, async () => {
+    await sleep(1500);
+    await evaluate('document.querySelector("#app .list [data-older]").scrollIntoView()');
+    await until('reads.includes("/api/asks?all=1")', "the older asks");
+    await sleep(1000);
+    await evaluate('document.querySelector(\'#app .views a[href^="/asks?view=open"]\').click()');
+    await sleep(1000);
+    await refresh();
+    const read = await evaluate("reads.filter((path) => path.startsWith(\"/api/asks\"))");
+    return read.length && read.every((path) => path === "/api/asks") ? true : read;
   });
   await hooked("Snooze and Dismiss each send once for two quick taps", "/asks/3", BUTTON("Dismiss"), { reply: refused }, async () => {
     await sleep(1500);

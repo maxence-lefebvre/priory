@@ -16,6 +16,7 @@ import { Linked, Time } from "../components/Text.jsx";
 import { useBatch } from "../hooks/useBatch.js";
 import { useStore, useTasks } from "../hooks/useData.js";
 import { useKeptScroll } from "../hooks/useKeptScroll.js";
+import { useOlder } from "../hooks/useOlder.js";
 import { asked } from "../legacy/data.js";
 import { writeRefusal } from "../legacy/shared.js";
 import { listClass, usePlace } from "./place.js";
@@ -198,6 +199,7 @@ export const Splits = memo(function Splits({ batch }) {
 export const BatchPage = memo(function BatchPage({ id }) {
   const { entry, size, href } = usePlace();
   const tasks = useTasks(useStore(asked));
+  useOlder("tasks", false);
   const { data: batch, error } = useBatch(id);
   const [back, label] = backTo(entry.from ?? null);
   const scroll = useKeptScroll(`batch ${href}`, Boolean(batch));

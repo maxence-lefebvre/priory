@@ -23,11 +23,12 @@ import { Drain } from "../components/TaskActs.jsx";
 import { TaskSections, sectionsOf } from "../components/TaskSections.jsx";
 import { Linked, Markdown, Time } from "../components/Text.jsx";
 import { usePageReads, useAsks, useDesk, useStore, useTasks } from "../hooks/useData.js";
+import { useBatch } from "../hooks/useBatch.js";
 import { useKeptScroll } from "../hooks/useKeptScroll.js";
+import { useOlder } from "../hooks/useOlder.js";
 import { useMinute } from "../hooks/useScreen.js";
 import { acceptAsk, asked } from "../legacy/data.js";
 import { loadOlder } from "../legacy/shared.js";
-import { batch as batchQuery } from "../reads/batch.js";
 import { useKeptFocus } from "../hooks/useKeptFocus.js";
 import { Closes, LaneGraph, LaneKey, PlanNote, Splits, closePlanEdit, splitsOf } from "./Batch.jsx";
 import { usePlace } from "./place.js";
@@ -167,6 +168,7 @@ function useAsksBody(list, wide) {
   const picks = picksOf(search);
   const asks = faceted(list.asks, picks);
   const current = viewOf(search);
+  useOlder("asks", Boolean(selected) || ["answered", "all"].includes(current));
   const { open, snoozed: asleep, answered, withdrawn } = askGroups(asks, now());
   // shortcut: older counts are not per facet, so a facet counts the loaded rows only; split `older` by facet if that misleads.
   const pending = list.older;
@@ -356,10 +358,24 @@ const acting = (off, run) => (event) => {
   run(event);
 };
 
+// The draft field takes focus once Write an answer opens it. A field the layout moves, as a rotation
+// does, takes back its focus and selection.
 let focusDraft = false;
+let movedDraft = null;
 function startWriting(ask) {
   focusDraft = true;
   set({ writing: new Set(answers.get().writing).add(ask.id) });
+}
+function keepDraft(field) {
+  if (focusDraft || (movedDraft && document.activeElement === document.body)) {
+    field.focus({ preventScroll: true });
+    if (movedDraft) field.setSelectionRange(...movedDraft);
+  }
+  focusDraft = false;
+  movedDraft = null;
+  return () => {
+    if (document.activeElement === field) movedDraft = [field.selectionStart, field.selectionEnd, field.selectionDirection];
+  };
 }
 
 const typeDraft = (ask, text) => set({ drafts: new Map(answers.get().drafts).set(ask.id, text) });
@@ -577,8 +593,7 @@ const AnswerSheet = memo(function AnswerSheet({ ask, task, locked, bound }) {
 function useGoBatch(ask) {
   // Another runner's batch lives on that runner; this server cannot read its plan.
   const which = ask?.key?.startsWith("batch:") && !runnerOf(ask) ? ask.key : null;
-  const reads = usePageReads();
-  const result = useQuery({ ...batchQuery(which, ask?.revision ?? null), enabled: reads && which !== null });
+  const result = useBatch(which, ask?.revision ?? null);
   const enabled = Boolean(which);
   const batch = enabled && result.data?.ask === ask.id ? result.data : null;
   return { batch, read: enabled ? result.data ?? null : null, error: enabled ? result.error : null };
@@ -602,7 +617,6 @@ const AskBody = memo(function AskBody({ ask, id, wide, compact, list, listUrl, l
   const { data: task, error: taskError } = useAskTask(ask);
   const { batch, read: batchRead, error: batchError } = useGoBatch(ask);
   const scroll = useKeptScroll(`ask ${wide} ${compact} ${id}`);
-  const draft = useRef(null);
   const pending = held?.id === ask.id ? held : null;
   const armed = armedOn(armedAny, ask);
   const owner = runnerOf(ask);
@@ -622,17 +636,14 @@ const AskBody = memo(function AskBody({ ask, id, wide, compact, list, listUrl, l
     const { armed: now } = answers.get();
     if (now && (now.id !== ask.id || now.revision !== ask.revision)) disarm();
   }, [ask.id, ask.revision]);
-  useLayoutEffect(() => {
-    if (focusDraft && draft.current) draft.current.focus();
-    focusDraft = false;
-  });
   const sectionsRead = (task ? sectionsOf(task, tasks) : []).filter(([key]) => key !== "plan" || (!batch && !planUnread(ask, task)));
   const lead = batch || !plansFirst(ask) ? [] : sectionsRead.filter(([key]) => key === "plan");
   const read = sectionsRead.filter((section) => !lead.includes(section));
   const planned = batch ? [["batchplan", "Plan"], ...(batch.closes?.length ? [["closes", "Closes"]] : []), ...(splitsOf(batch).length ? [["splits", "Splits"]] : [])] : [];
   const chips = [...planned, ...lead, ["why", "Why"], ...read, ["history", "History"], ...(ask.command ? [["command", "Command"]] : [])];
   const lit = useLit(scroll, chips.length);
-  useBar(part, scroll, Boolean(options.length));
+  // A resize moves the options in or out of the scroll.
+  useBar(part, scroll, `${wide} ${options.length}`);
   const header = (
     <div className="ahead">
       {wide
@@ -650,7 +661,7 @@ const AskBody = memo(function AskBody({ ask, id, wide, compact, list, listUrl, l
     if (text && writeShown(answers.get().writing.has(ask.id), lockOf(ask, task, batchRead), Boolean(answers.get().pending)) === "form") answer(ask, text, true);
   };
   const writeForm = shown === "form"
-    ? <form className="writeform" onSubmit={submit}><label className="sr" htmlFor="draft">Your answer</label><textarea id="draft" name="text" rows="3" ref={draft} value={drafts.get(ask.id) || ""} onChange={(event) => typeDraft(ask, event.target.value)} /><button type="submit" className="btn primary" aria-disabled={pending ? "true" : undefined}>Send</button></form>
+    ? <form className="writeform" onSubmit={submit}><label className="sr" htmlFor="draft">Your answer</label><textarea id="draft" name="text" rows="3" ref={keepDraft} value={drafts.get(ask.id) || ""} onChange={(event) => typeDraft(ask, event.target.value)} /><button type="submit" className="btn primary" aria-disabled={pending ? "true" : undefined}>Send</button></form>
     : <button type="button" className="ghost write" aria-disabled={shown === "disabled" ? "true" : "false"} onClick={acting(shown === "disabled", () => startWriting(ask))}><Icon name="pencil" size="s15" />Write an answer</button>;
   const snoozeButtons = !ask.task || owner || locked === "offline" ? null
     : ask.snoozed_until
@@ -730,6 +741,7 @@ function AskDetail({ id, wide, compact, part }) {
   const list = asksResult.data;
   const ask = list?.asks.find((candidate) => String(candidate.id) === id) ?? null;
   const older = list ? list.older.answered + list.older.withdrawn : 0;
+  useOlder("tasks", false);
   useEffect(() => {
     onScreen = { id, ask, listUrl: trail.listUrl, picks };
   });
