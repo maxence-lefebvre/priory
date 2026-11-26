@@ -415,8 +415,13 @@ The desk is the "Needs me" view. It lists, top to bottom:
    the waiting task. The intake banner looks the same with the `unplug` icon: which source fails
    to poll, since when and why, or since when the intake has not polled. So do the pause banner,
    with the `pause` icon and the desk's `paused` line, and one banner per day or week spend cap
-   reached, with the `hourglass` icon and its line of `caps`. The order is pause, room, intake,
-   then the caps.
+   reached, with the `hourglass` icon and its line of `caps`. The order is autopilot, pause, room,
+   intake, then the caps. The autopilot banner, with the `bot` icon in `--text`, says "Autopilot is
+   on until 08:00 (high, every lane). It answered 3 and left 1." over Turn off in `.btn secondary`.
+   A tap reads "Turning off" until the reply, and the banner goes once off. When no other runner was
+   told, its sentence turns `--danger-text`, "Autopilot is off here, and no other runner was told:
+   <why>.", over Tell them again. A refused off keeps the banner, with why in its note. Offline it
+   says "Autopilot was on 4 min ago, until 08:00 (high, every lane)." and its button is disabled.
 5. **Asks**: the open asks, oldest first, as ask rows. An ask routed to a lead carries the
    [routed mark](#routed-ask) in its row and in the next thing's card.
 6. **Stopped**: blocked tasks, uncertain prompts (R5.4) and failed tasks, each with its reason in
