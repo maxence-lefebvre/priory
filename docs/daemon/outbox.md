@@ -50,8 +50,9 @@ The prompt that moved or woke the task is already queued.
 
 ## Typing a prompt
 
-Once a task's run is idle, and at least 1 second after the run's `SessionStart`, the daemon types
-its oldest queued prompt:
+Once a task's run is idle, at least 1 second after the run's `SessionStart` and at least 5 seconds
+after the last [pick](reports.md#pick-an-option) on the task's report, the daemon types its oldest
+queued prompt:
 
 1. It loads the text into a tmux buffer from stdin, without its control characters. Newline and tab
    stay.

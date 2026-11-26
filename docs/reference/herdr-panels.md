@@ -313,9 +313,12 @@ its visual rules; this section says how it works.
 - **Picking.** An open pick is a segmented control of its options, with a `check` on the
   recommended one and "Recommends Take" beside it. A press waits out a 4 s Undo, since the pick wakes the
   report's agent, then runs `priory report pick PICK OPTION --expected REVISION` with the report's
-  revision the person read. While one pick is in flight, the panel starts no other. When the report
-  stops offering the pick during the Undo, because another task wrote a report or someone picked
-  first, the panel cancels the pick and says so.
+  revision the person read. Each row's pick has its own Undo, so a person picks several rows in a
+  row without waiting, and a pick never cancels or blocks another row's. The row being picked
+  shows `Picking Take` with Undo, then `Sending Take…`. The daemon wakes the agent once for picks
+  made in a row ([reports](../daemon/reports.md#pick-an-option)). When the report stops offering a
+  pick during its Undo, because another task wrote a report or someone picked first, the panel
+  cancels that pick and says so.
 - **Refused picks.** When `report pick` fails, the panel reads the report again and says why on the
   row: someone already picked, the report changed to another revision, the report no longer holds
   the pick, or the CLI's error. When the row has left the view, the reason shows in a strip under
@@ -334,7 +337,7 @@ its visual rules; this section says how it works.
   holds the row, so an older report offers Reply, Resolve and Reopen but no new thread. A refused comment says why under the row and keeps the text
   in the field. Rows that share an id share their threads.
 - **Keys.** `J` and `K` move between rows, `N` goes to the next pick, `1` to `9` press an option of
-  the selected pick, and `Esc` undoes a pick still waiting out its Undo.
+  the selected pick, and `Esc` undoes the selected row's pick while it waits out its Undo.
 - **Agent text.** Every row's meta, owner and the greeting draw as plain text. Its text draws with
   its [links](#links). A press on linked text stays there, so a link opens without selecting the
   row; the rest of the row still selects it.

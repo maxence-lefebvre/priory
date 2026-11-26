@@ -21244,6 +21244,94 @@ fn a_pick_at_a_stale_revision_is_refused_and_changes_nothing() {
     assert_eq!(setup.rows("tasks")[0][4], "asleep");
 }
 
+/// A report whose one section holds a pick on each of `rows`.
+fn triage(rows: &[&str]) -> serde_json::Value {
+    let rows: Vec<_> = rows
+        .iter()
+        .map(|row| json!({
+            "id": row, "key": row, "text": "Release build pauses",
+            "meta": null, "state": null, "owner": null, "time": null,
+            "pick": { "id": format!("pick-{row}"), "options": ["In", "Out"], "recommended": "In",
+                      "chosen": null, "applied": null },
+            "comments": []
+        }))
+        .collect();
+    json!({
+        "date": "2026-11-26", "since": "2026-11-25T18:00:00+01:00", "greeting": "Bonjour, Max",
+        "sections": [{ "id": "sentry", "title": "Sentry", "count": rows.len(), "rows": rows }]
+    })
+}
+
+#[test]
+fn three_picks_at_one_read_revision_are_all_recorded_and_wake_the_agent_once() {
+    let setup = asleep_on_a_report("report-burst", &triage(&["a", "b", "c"]));
+
+    for (row, option) in [("a", "In"), ("b", "Out"), ("c", "In")] {
+        let pick = format!("pick-{row}");
+        let picked = setup.priory(&["report", "pick", &pick, option, "--expected", "1"]);
+        assert!(picked.status.success(), "{picked:?}");
+    }
+
+    let shown = shown(&setup);
+    assert_eq!(shown["revision"], 4);
+    let chosen: Vec<_> = shown["sections"][0]["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["pick"]["chosen"].clone())
+        .collect();
+    assert_eq!(chosen, ["In", "Out", "In"]);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    assert_eq!(typed.len(), 3, "{typed:?}");
+    let picked = typed[2]
+        .lines()
+        .filter(|line| line.starts_with("The person picked"))
+        .count();
+    assert_eq!(picked, 3, "{typed:?}");
+}
+
+#[test]
+fn a_pick_after_the_agent_wrote_its_report_again_is_refused() {
+    let report = triage(&["a"]);
+    let mut setup = Setup::with_workflow("report-rewritten", STEPS);
+    let write = json!({ "name": "report", "arguments": report });
+    setup.calls(&[
+        json!([write, write]),
+        wait(json!({ "type": "time", "until": "2 hours" })),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+
+    let stale = setup.priory(&["report", "pick", "pick-a", "In", "--expected", "1"]);
+
+    assert_eq!(
+        String::from_utf8_lossy(&stale.stderr),
+        "priory report pick: task 1's report is at revision 2, not 1\n"
+    );
+}
+
+#[test]
+fn a_pick_on_a_pick_chosen_since_the_read_is_refused() {
+    let setup = asleep_on_a_report("report-picked-first", &triage(&["a"]));
+    let first = setup.priory(&["report", "pick", "pick-a", "In", "--expected", "1"]);
+    assert!(first.status.success(), "{first:?}");
+
+    let second = setup.priory(&["report", "pick", "pick-a", "Out", "--expected", "1"]);
+
+    assert_eq!(
+        String::from_utf8_lossy(&second.stderr),
+        "priory report pick: task 1's report is at revision 2, not 1\n"
+    );
+    assert_eq!(
+        shown(&setup)["sections"][0]["rows"][0]["pick"]["chosen"],
+        "In"
+    );
+}
+
 #[test]
 fn a_pick_option_that_requests_a_task_creates_it_and_fills_applied_with_what_it_requested() {
     let requests = json!({ "Take": {

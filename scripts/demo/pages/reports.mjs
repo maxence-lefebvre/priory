@@ -50,10 +50,10 @@ export async function check({ hooked, page, evaluate, until, sleep, change, scre
   await hooked("a pick waits out its Undo and Undo sends nothing; a refused pick says why under its row", "/reports", READY, { reply: refused }, async () => {
     await sleep(1500);
     await evaluate(`${ROW("ENG-250")}.querySelector(".rpick button:nth-child(2)").click()`);
-    const waiting = await evaluate('document.querySelector("#app .sending")?.innerText');
-    await evaluate(CLICK("Undo", ".sending"));
+    const waiting = await evaluate(`${ROW("ENG-250")}.querySelector(".rpending")?.innerText`);
+    await evaluate(`${ROW("ENG-250")}.querySelector(".rpending button").click()`);
     await sleep(4500);
-    const undone = await evaluate("posts.length === 0 && !document.querySelector('#app .sending')");
+    const undone = await evaluate(`posts.length === 0 && !${ROW("ENG-250")}.querySelector(".rpending")`);
     await evaluate(`${ROW("ENG-250")}.querySelector(".rpick button:nth-child(3)").click()`);
     await sleep(5500);
     const found = await evaluate(`({ posts, note: ${ROW("ENG-250")}.querySelector(".warnline")?.innerText })`);

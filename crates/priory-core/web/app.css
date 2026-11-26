@@ -570,6 +570,7 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .rpick button.chosen { background: var(--emph); color: var(--on-emph); }
 .rpick button.chosen .ico { color: var(--on-emph); }
 .rpick button[aria-disabled="true"]:not(.chosen) { color: var(--text-3); }
+.rpending { max-width: var(--measure); align-items: center; }
 .rpicked b { color: var(--text); font-weight: 600; }
 .rpicked .ico { color: var(--ok-text); }
 .rthread { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 10px 12px 4px; display: grid; gap: 4px; max-width: var(--measure); }
