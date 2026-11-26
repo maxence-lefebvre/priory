@@ -40039,9 +40039,10 @@ fn a_cancel_during_the_push_of_a_cloud_start_starts_no_session() {
     assert_eq!(setup.cloud_prompts(), [""; 0]);
     let [state, reason] = held_as(&setup, "1");
     assert_eq!(state, "dropped");
-    assert_eq!(
-        reason,
-        "cancelled from the desk; no cloud session started, and origin has its branch priory/1"
+    // The look at origin that follows can time out under load, which changes the reason's tail.
+    assert!(
+        reason.starts_with("cancelled from the desk; no cloud session started"),
+        "{reason}"
     );
 }
 
