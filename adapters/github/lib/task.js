@@ -41,3 +41,9 @@ export function fixText(kind, branch, base) {
   const update = `Bring ${branch} up to date with ${base} by merging it, resolve any conflicts, run the tests and push.`;
   return kind === "conflicts" ? `GitHub reports conflicts between ${branch} and ${base}. ${update}` : update;
 }
+
+/** The fixed text Generate guide says: the review guide block the Guide tab reads, written into the description. */
+export const guideText = (pr) =>
+  `Write a review guide for ${pr.url} into its description: the <!-- priory-guide --> block that ` +
+  "https://github.com/maxence-lefebvre/priory/blob/main/docs/adapters/github.md#the-review-guide-block describes, " +
+  "with head set to the pull request's head commit. Keep the rest of the description as it is.";

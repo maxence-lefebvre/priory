@@ -318,8 +318,9 @@ prompts.
   generation <n>`. Its pull requests are those of its stack, else the one it opened or waited on
   last, then those of its repository it subscribes to or waits on now. A pull request it only
   subscribes to or waits on counts once an event read it open. The GitHub extension names the
-  pull request on screen, and the task reopens on that one. Otherwise it reopens
-  on the lowest open one. It is refused, with the reason, when:
+  pull request on screen, and the task reopens on that one. Otherwise it reopens on the first
+  open one in that order, the ones it subscribes to or waits on lowest number first. It is
+  refused, with the reason, when:
 
   - it has no open pull request, or its own merged and none of its stack is open;
   - the pull request named is not one of its pull requests, or is not open;

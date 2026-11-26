@@ -1,5 +1,5 @@
 // The few IndexedDB calls store.js makes, on one in-memory object store.
-const later = (fn) => setTimeout(fn, 0);
+const later = (fn) => setImmediate(fn);
 export const data = new Map();
 
 globalThis.indexedDB = {
