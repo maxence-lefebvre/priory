@@ -70,6 +70,9 @@ struct Watch {
     trouble: Option<String>,
     /// What the CLI said when it uploaded the clone.
     upload: Option<String>,
+    /// The poll under way started after the session reported its result, so it sees the push the
+    /// session made before.
+    reported: bool,
 }
 
 /// What a poll found on `origin`.
@@ -671,7 +674,7 @@ fn follow(
         watch.trouble = None;
         match found {
             Ok(Found::Nothing) => {
-                if let Some(reported) = reported {
+                if let Some(reported) = reported.clone().filter(|_| watch.reported) {
                     end(db, trace, kit, run.task, &run.session, reported)?;
                     return Ok(false);
                 }
@@ -752,6 +755,7 @@ fn follow(
             watch.late.get_or_insert_with(Instant::now);
         }
         watch.polled = Some(Instant::now());
+        watch.reported = reported.is_some();
         let (sender, receiver) = channel();
         watch.polling = Some(receiver);
         let worktree = Path::new(&run.worktree).to_path_buf();

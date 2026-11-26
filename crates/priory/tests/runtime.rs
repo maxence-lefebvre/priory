@@ -42560,7 +42560,10 @@ fn a_pushed_commit_that_holds_the_run_grants_token_fails_the_step_and_revokes_th
     let work = setup.dir.join("session-leak");
     let bare = setup.dir.join("origin/owner/repo.git");
     let mut cloned = git(&setup.dir);
-    cloned.args(["clone", "-q", "-b", "priory/1"]).arg(&bare).arg(&work);
+    cloned
+        .args(["clone", "-q", "-b", "priory/1"])
+        .arg(&bare)
+        .arg(&work);
     assert!(cloned.status().unwrap().success());
     fs::write(work.join("config.txt"), format!("token = {token}\n")).unwrap();
     for args in [
