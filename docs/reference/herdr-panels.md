@@ -310,8 +310,8 @@ its visual rules; this section says how it works.
 - **Views.** All sections, and Picks, which keeps only the rows with a pick to agree. From 1024 px
   the views and the sections sit in a 200 px list on the left; below, they are chips under the
   toolbar. A section in that list scrolls to it.
-- **Picking.** An open pick is a segmented control of its options, with a `check` on the
-  recommended one and "Recommends Take" beside it. A press waits out a 4 s Undo, since the pick wakes the
+- **Picking.** An open pick is a segmented control of its options beside the row's text, with
+  the recommended option underlined and "recommended" in its label. A press waits out a 4 s Undo, since the pick wakes the
   report's agent, then runs `priory report pick PICK OPTION --expected REVISION` with the report's
   revision the person read. Each row's pick has its own Undo, so a person picks several rows in a
   row without waiting, and a pick never cancels or blocks another row's. The row being picked
@@ -339,9 +339,10 @@ its visual rules; this section says how it works.
   reopens the segmented control with the choice solid, and Keep folds it again. Another option goes
   through the same Undo and `priory report pick`, which records the change until the workflow
   applies the choice.
-- **Threads.** A row's threads sit under it. An open thread shows each comment's author, time and
+- **Threads.** A row's threads sit under it; a pick row shows them only while it is selected, and
+  until then its Comment button reads "2 comments". An open thread shows each comment's author, time and
   text, with Reply and Resolve; a resolved one folds to one line with Reopen. The selected row, when
-  it has an id, ends with a comment field; a pick card offers Comment to select it. Comment runs
+  it has an id, ends with a comment field; a pick card's Comment button selects it. Comment runs
   `priory report comment ROW --expected REVISION TEXT` with the report's revision the person read,
   and Reply runs `priory report reply`. Priory gives a row id's new thread to the newest report that
   holds the row, so an older report offers Reply, Resolve and Reopen but no new thread. A refused comment says why under the row and keeps the text

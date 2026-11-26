@@ -1215,10 +1215,13 @@ sits under More.
   under the chip bar, or the last section once the list is scrolled to its end. On a phone the
   chip strip scrolls sideways to keep the lit chip in view.
 - **Row**: its tile, its key in mono, its text, then a caption line with its meta, owner and time.
-  The key and the text take the factory's autolinks.
+  The text draws as [Markdown](#markdown), so a link shows its label with its host after it, and
+  the key takes the factory's autolinks. The meta stops at 2 lines within `--measure`, with its
+  full text in its `title`. With 720 px of panel width, a pick's control sits right of the text
+  and meta, its Picking line under it; narrower, it follows the meta.
 - **Pick**: a segmented control on `--raised`. A `check` means chosen, so no option shows one
-  before a choice. The recommendation is in words: the pick's note follows in a caption,
-  "Recommends Take". A tap turns the option solid `--emph`
+  before a choice. The recommended option has a dotted underline, and its label adds
+  "recommended" for a screen reader; an open pick has no note. A tap turns the option solid `--emph`
   with a `check`, and the caption under the control says `Picking "Take"` with a ghost Undo for
   4 s. Nothing is sent before the 4 s end. Each row's pick has its own caption and Undo, so the
   other rows stay open to pick meanwhile. An agreed pick folds to one line:
@@ -1231,8 +1234,10 @@ sits under More.
   "Pick all recommended" button and its count, disabled at 0 or while the section's batch waits.
   While it waits, a `--raised` strip under the chips says `Picking the recommended option on 9 rows
   in Sentry` with a secondary "Undo all 9"; each row in it says "With the batch" under its control.
-- **Threads** follow the Bonjour rules, with Reply and Resolve as ghost buttons in the card. A row
-  with an id ends with a Comment ghost button, on the newest report only: an older one takes replies. It opens the comment field under the row, with
+- **Threads** follow the Bonjour rules, with Reply and Resolve as ghost buttons in the card. A
+  row's threads fold behind a disclosure, `message-text` and "2 comments", which opens them with
+  the row's Comment button after them; an open comment field keeps it open. A row with an id and
+  no thread ends with a Comment ghost button, on the newest report only: an older one takes replies. It opens the comment field under the row, with
   Cancel and Comment. Reply opens the same field, with "Replying in thread 3" above it.
 
 | State | What shows |
@@ -1606,8 +1611,12 @@ The morning dossier.
 - In Herdr a section draws its first 15 rows, then a secondary "Show 140 more rows" button that
   draws the rest. Past the 15, the selected row, a row being picked, a row with a notice and a row
   with threads still show. A search with text and the Picks view draw every row.
-- A pick is a segmented control of its options. A `check` marks the chosen option only; the
-  note says "Recommends Take". An agreed pick folds to one line with Change.
+- A pick row is one block on the panel's background, `--action-soft` when selected: its tile, key
+  and text on one line, its meta on one truncated line, full when selected, and its control on the
+  right, wrapping under the text in a narrow pane. A `check` marks the chosen option only; the
+  recommended option is underlined, as GPUI draws no dotted line. An agreed pick folds to one line
+  with Change. A pick row's threads show only while it is selected; until then its Comment button
+  reads "2 comments" and selects it.
 - A section with a pick draws the web's section chips and Pick all recommended as `--type-caption`
   chips, and its batch strip on `--raised` with Undo all.
 - From 1024 px a 200 px list of the sections, with counts and "Picks", sits on the left. Below,
