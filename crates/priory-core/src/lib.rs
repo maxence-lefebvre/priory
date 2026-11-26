@@ -2,6 +2,7 @@ mod attach;
 pub mod autopilot;
 pub mod batch;
 pub mod bench;
+mod calls;
 pub mod capture;
 mod command;
 mod connectors;

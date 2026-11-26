@@ -17870,6 +17870,12 @@ fn a_grant_is_released_when_its_command_fails_or_is_killed_or_its_holder_dies() 
 
 /// A socket in front of the daemon's that forwards every line but the pid hand-off of a grant,
 /// which it holds back and reports on `handoffs`.
+/// The line a client sent on the daemon's socket, without its call id.
+fn inner(sent: &str) -> String {
+    let sent: serde_json::Value = serde_json::from_str(sent).unwrap();
+    sent["line"].as_str().unwrap().to_owned()
+}
+
 fn withholding_handoffs(setup: &Setup) -> (PathBuf, std::sync::mpsc::Receiver<()>) {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::{UnixListener, UnixStream};
@@ -17889,7 +17895,7 @@ fn withholding_handoffs(setup: &Setup) -> (PathBuf, std::sync::mpsc::Receiver<()
                 if reader.read_line(&mut line).unwrap_or(0) == 0 {
                     return;
                 }
-                if line.contains("\"memory\":\"run\"") {
+                if inner(&line).contains("\"memory\":\"run\"") {
                     sender.send(()).unwrap();
                     // Held until the client goes.
                     let _ = reader.read_line(&mut String::new());
@@ -17994,7 +18000,7 @@ fn scripted(
             std::io::BufReader::new(&stream)
                 .read_line(&mut line)
                 .unwrap();
-            let line: serde_json::Value = serde_json::from_str(&line).unwrap();
+            let line: serde_json::Value = serde_json::from_str(&inner(&line)).unwrap();
             lines.push([line["memory"].clone(), line["grant"].clone()]);
             if let Some(reply) = reply {
                 writeln!(stream, "{}", json!({ "Ok": reply })).unwrap();
@@ -18053,13 +18059,9 @@ fn a_gated_command_runs_once_after_the_daemon_drops_any_message() {
             String::from_utf8_lossy(&done.stderr)
         );
         assert_eq!(String::from_utf8_lossy(&done.stdout), "ran\n");
+        // The call sends a dropped message again by itself, with the same call id.
         let stderr = String::from_utf8_lossy(&done.stderr);
-        let said = stderr.matches("grant 7 waits to start its command: the daemon closed");
-        assert_eq!(
-            said.count(),
-            usize::from(name == "gate-dropped-run"),
-            "{name}: {stderr}"
-        );
+        assert!(!stderr.contains("the daemon closed"), "{name}: {stderr}");
         let expected = messages.map(|message| {
             let grant = if message == "acquire" {
                 json!(null)
@@ -19899,6 +19901,44 @@ fn a_tool_call_in_flight_when_the_daemon_stops_is_answered() {
     assert!(!error, "{text}");
     // systemd and an upgrade's helper read this as a stop, not as a failure.
     assert_eq!(daemon.wait().unwrap().signal(), Some(15));
+}
+
+/// Sends `line` on the daemon's socket, once it listens, and returns its reply.
+fn on_socket(setup: &Setup, line: &str) -> String {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut stream = loop {
+        match std::os::unix::net::UnixStream::connect(setup.socket()) {
+            Ok(stream) => break stream,
+            Err(error) => assert!(Instant::now() < deadline, "{error}"),
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    std::io::Write::write_all(&mut stream, format!("{line}\n").as_bytes()).unwrap();
+    let mut reply = String::new();
+    std::io::BufRead::read_line(&mut std::io::BufReader::new(&stream), &mut reply).unwrap();
+    reply.trim_end().to_owned()
+}
+
+#[test]
+fn a_line_sent_again_with_its_call_id_is_applied_once_across_a_restart() {
+    let mut setup = Setup::new("call-id");
+    setup.start();
+    listening(&setup);
+    let todo = json!({ "todo": { "add": { "text": "Once." } } }).to_string();
+    let line = json!({ "call": "c-1", "line": todo }).to_string();
+
+    let first = on_socket(&setup, &line);
+    setup.crash();
+    setup.start();
+    let resent = on_socket(&setup, &line);
+
+    assert_eq!(resent, first);
+    let listed = setup.priory(&["todo", "list"]);
+    let listed = String::from_utf8_lossy(&listed.stdout).into_owned();
+    assert_eq!(listed.matches("Once.").count(), 1, "{listed}");
+    // A daemon before call ids could read the plain line, and a client falls back to it.
+    let plain = on_socket(&setup, &todo);
+    assert!(plain.contains("Ok"), "{plain}");
 }
 
 #[test]

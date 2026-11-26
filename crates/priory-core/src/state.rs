@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-pub(crate) const VERSION: i64 = 127;
+pub(crate) const VERSION: i64 = 128;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -2266,6 +2266,17 @@ CREATE INDEX IF NOT EXISTS inbox_by_pull_nocase ON inbox (('github:' || json_ext
 PRAGMA user_version = 127;
 ";
 
+// The reply to each line that came with a call id, kept an hour, so a line sent again after a lost
+// reply gets it instead of a second apply. A reply that is null marks a line taken but not answered.
+const SCHEMA_128: &str = "
+CREATE TABLE IF NOT EXISTS replies (
+  call    TEXT PRIMARY KEY,
+  reply   TEXT,
+  taken   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+PRAGMA user_version = 128;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -2283,12 +2294,12 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
     SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112, SCHEMA_113,
     SCHEMA_114, SCHEMA_115, SCHEMA_116, SCHEMA_117, SCHEMA_118, SCHEMA_119, SCHEMA_120, SCHEMA_121,
-    SCHEMA_122, SCHEMA_123, SCHEMA_124, SCHEMA_125, SCHEMA_126, SCHEMA_127,
+    SCHEMA_122, SCHEMA_123, SCHEMA_124, SCHEMA_125, SCHEMA_126, SCHEMA_127, SCHEMA_128,
 ];
 
 /// What a migration does to the releases before it.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 enum Kind {
     /// It adds tables, indexes, and columns that are null or have a default. The release before it
     /// also understands every value this one writes into the old columns.
@@ -2307,6 +2318,7 @@ const KINDS: [Kind; VERSION as usize - UNDECLARED] = [
     Kind::Additive,
     // 126 swaps a column of `asks`, and writes a reason no release before it knows.
     Kind::Rebuild,
+    Kind::Additive,
     Kind::Additive,
 ];
 

@@ -3363,10 +3363,54 @@ pub fn call_retrying(
     call_at(&socket_path(home), line, wait, retry.min(RESTART), false)
 }
 
-/// Sends `line` on the socket at `path`. While a daemon that stopped there restarts, it tries a refused
-/// or missing socket, or a line the stop did not apply, again for up to `retry`; with `crash`, any
-/// refused socket too. Once connected, the reply has the whole of `wait`, so a late connect never
-/// cuts a call short.
+/// A line with its call id, which the daemon applies once however often it arrives.
+pub fn envelope(line: &str) -> String {
+    let call = uuid::Uuid::new_v4().to_string();
+    json!({ "call": call, "line": line }).to_string()
+}
+
+/// What the daemon answers a line it cannot read, such as an envelope before call ids.
+fn unread(reply: &str) -> bool {
+    serde_json::from_str::<Result<String, String>>(reply)
+        .is_ok_and(|reply| reply.is_err_and(|error| error.starts_with("unreadable line")))
+}
+
+/// Why one exchange on the socket failed.
+enum Failed {
+    /// No daemon took the connection, so the line was never sent.
+    Refused(String),
+    /// The line went out and no reply came: it may have been applied.
+    Lost(String),
+}
+
+/// Sends `line` on one connection to `path` and reads the reply within `wait`.
+fn exchange(path: &Path, line: &str, wait: Duration) -> Result<String, Failed> {
+    let mut stream = UnixStream::connect(path).map_err(|error| match error.kind() {
+        std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound => {
+            Failed::Refused(format!("{NO_DAEMON} {}: {error}", path.display()))
+        }
+        _ => Failed::Lost(format!("{NO_DAEMON} {}: {error}", path.display())),
+    })?;
+    let wait = Some(wait);
+    let mut reply = String::new();
+    stream
+        .set_write_timeout(wait)
+        .and_then(|()| stream.set_read_timeout(wait))
+        .and_then(|()| stream.write_all(format!("{line}\n").as_bytes()))
+        .and_then(|()| BufReader::new(&stream).read_line(&mut reply))
+        .map_err(|error| Failed::Lost(format!("the daemon did not reply: {error}")))?;
+    if reply.is_empty() {
+        return Err(Failed::Lost(
+            "the daemon closed the connection without a reply".to_owned(),
+        ));
+    }
+    Ok(reply.trim_end().to_owned())
+}
+
+/// Sends `line` with a call id on the socket at `path`. A line whose reply was lost goes again with
+/// the same id for up to `retry`, so a restart applies it once. While a daemon that stopped there
+/// restarts, a refused or missing socket, and a line the stop did not apply, go again too; with
+/// `crash`, any refused socket. Once connected, the reply has the whole of `wait`.
 fn call_at(
     path: &Path,
     line: &str,
@@ -3375,88 +3419,114 @@ fn call_at(
     crash: bool,
 ) -> Result<String, String> {
     let deadline = Instant::now() + retry;
-    let mut said = false;
-    let mut again = |refused: bool| {
-        let waits = Instant::now() < deadline && (refused && crash || restarting(path));
-        if waits && !std::mem::replace(&mut said, true) {
+    let sent = envelope(line);
+    let (mut lost, mut said) = (false, false);
+    loop {
+        let failed = match exchange(path, &sent, wait) {
+            // A daemon from before call ids never applied it, so the plain line is safe once.
+            Ok(reply) if unread(&reply) && !lost => {
+                return exchange(path, line, wait)
+                    .map_err(|(Failed::Refused(error) | Failed::Lost(error))| error);
+            }
+            Ok(reply) if unread(&reply) => {
+                return Err("the daemon may have applied this call before it restarted: read the state before you retry".to_owned());
+            }
+            Ok(reply) if reply.contains(NOT_APPLIED) => Ok(reply),
+            Ok(reply) => return Ok(reply),
+            Err(Failed::Lost(error)) => {
+                lost = true;
+                if Instant::now() >= deadline {
+                    return Err(error);
+                }
+                std::thread::sleep(Duration::from_millis(200));
+                continue;
+            }
+            Err(Failed::Refused(error)) => Err(error),
+        };
+        let waits = Instant::now() < deadline && (crash && path.exists() || restarting(path));
+        if !waits {
+            return failed;
+        }
+        if !std::mem::replace(&mut said, true) {
             eprintln!(
                 "priory: the daemon is restarting: waiting up to {} s for it",
                 retry.as_millis().div_ceil(1000)
             );
         }
-        if waits {
-            std::thread::sleep(Duration::from_millis(200));
-        }
-        waits
-    };
-    loop {
-        let mut stream = match UnixStream::connect(path) {
-            Ok(stream) => stream,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
-                ) && again(error.kind() == std::io::ErrorKind::ConnectionRefused) =>
-            {
-                continue;
-            }
-            Err(error) => return Err(format!("{NO_DAEMON} {}: {error}", path.display())),
-        };
-        let wait = Some(wait);
-        let mut reply = String::new();
-        stream
-            .set_write_timeout(wait)
-            .and_then(|()| stream.set_read_timeout(wait))
-            .and_then(|()| stream.write_all(format!("{line}\n").as_bytes()))
-            .and_then(|()| BufReader::new(&stream).read_line(&mut reply))
-            .map_err(|error| format!("the daemon did not reply: {error}"))?;
-        if reply.is_empty() {
-            return Err("the daemon closed the connection without a reply".to_owned());
-        }
-        if reply.contains(NOT_APPLIED) && again(false) {
-            continue;
-        }
-        return Ok(reply.trim_end().to_owned());
+        std::thread::sleep(Duration::from_millis(200));
     }
 }
 
-/// Sends one line to the daemon and waits up to 10 seconds for it to be applied. Only when no
-/// daemon takes the line is it appended to the spool, so a slow daemon never gets it twice.
+/// Sends one line to the daemon with a call id and waits up to 10 seconds for it to be applied.
+/// When no daemon takes it, or no reply comes, it goes to the spool with that id, which the next
+/// daemon applies unless it already did.
 pub fn send(home: &Path, line: &str) -> Result<(), String> {
-    let line = format!("{line}\n");
-    let wait = Some(Duration::from_secs(10));
-    let sent = UnixStream::connect(socket_path(home)).and_then(|mut stream| {
-        stream.set_write_timeout(wait)?;
-        stream.set_read_timeout(wait)?;
-        stream.write_all(line.as_bytes())?;
-        Ok(stream)
-    });
-    if let Ok(stream) = sent {
-        let mut answer = String::new();
-        // A daemon that closes or resets without replying died holding the line: spool it.
-        match BufReader::new(stream).read_line(&mut answer) {
-            Ok(0) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
-            Ok(_) if answer.contains(NOT_APPLIED) => {}
-            Ok(_) if answer == "ok\n" => return Ok(()),
-            Ok(_) | Err(_) => {
+    let wait = Duration::from_secs(10);
+    let sent = envelope(line);
+    let path = socket_path(home);
+    let spooled = match exchange(&path, &sent, wait) {
+        Ok(reply) if reply == "ok" => return Ok(()),
+        // A daemon from before call ids never applied it.
+        Ok(reply) if unread(&reply) => match exchange(&path, line, wait) {
+            Ok(reply) if reply == "ok" => return Ok(()),
+            Err(Failed::Refused(_)) => line.to_owned(),
+            _ => {
                 eprintln!("priory hook: the daemon took the signal but has not applied it yet");
                 return Ok(());
             }
+        },
+        // A stop that applied nothing: the next daemon applies it, once by its id.
+        Ok(reply) if reply.contains(NOT_APPLIED) => sent,
+        Ok(reply) => {
+            eprintln!("priory hook: the daemon answered {reply}");
+            return Ok(());
         }
-    }
+        Err(Failed::Refused(_) | Failed::Lost(_)) => sent,
+    };
     // A jailed run sees only its own spool, which the daemon names.
     let spool = std::env::var_os("PRIORY_SPOOL")
         .filter(|spool| !spool.is_empty())
         .map_or_else(|| spool(home), PathBuf::from);
     fs::create_dir_all(spool.parent().unwrap_or(home)).map_err(|error| error.to_string())?;
-    append(&spool, &line).map_err(|error| format!("{}: {error}", spool.display()))
+    append(&spool, &format!("{spooled}\n")).map_err(|error| format!("{}: {error}", spool.display()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn a_daemon_before_call_ids_gets_the_plain_line_once() {
+        let dir = std::env::temp_dir().join(format!("priory-plain-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("old.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let daemon = std::thread::spawn(move || {
+            let mut got = Vec::new();
+            for reply in [
+                r#"{"Err":"unreadable line: unknown field `call`"}"#,
+                r#"{"Ok":"done"}"#,
+            ] {
+                let (stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(&stream).read_line(&mut line).unwrap();
+                got.push(line.trim_end().to_owned());
+                (&stream)
+                    .write_all(format!("{reply}\n").as_bytes())
+                    .unwrap();
+            }
+            got
+        });
+
+        let reply = call_at(&path, r#"{"todo":1}"#, REPLY, Duration::ZERO, false).unwrap();
+
+        assert_eq!(reply, r#"{"Ok":"done"}"#);
+        let got = daemon.join().unwrap();
+        assert!(got[0].starts_with(r#"{"call":"#), "{got:?}");
+        assert_eq!(got[1], r#"{"todo":1}"#);
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn a_hook_that_opened_the_spool_the_daemon_takes_writes_to_the_next_one() {
@@ -3558,7 +3628,14 @@ mod tests {
         let reply = call_at(&path, "hello", Duration::from_secs(2), RESTART, false);
 
         assert_eq!(reply, Ok("done".to_owned()));
-        assert_eq!(daemon.join().unwrap(), ["hello\n"]);
+        let sent: Vec<serde_json::Value> = daemon
+            .join()
+            .unwrap()
+            .iter()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0]["line"], "hello");
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
@@ -3577,7 +3654,16 @@ mod tests {
         let reply = call_at(&path, "hello", Duration::from_secs(2), RESTART, false);
 
         assert_eq!(reply, Ok("done".to_owned()));
-        assert_eq!(daemon.join().unwrap(), ["hello\n", "hello\n"]);
+        let sent: Vec<serde_json::Value> = daemon
+            .join()
+            .unwrap()
+            .iter()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0]["line"], "hello");
+        // The same call, which the next daemon applies once.
+        assert_eq!(sent[0], sent[1]);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
@@ -3745,7 +3831,9 @@ mod tests {
         let reply = call_at(&path, "hello", Duration::from_secs(2), RESTART, false);
 
         assert_eq!(reply, Ok("done".to_owned()));
-        assert_eq!(daemon.join().unwrap().as_deref(), Some("hello\n"));
+        let sent: serde_json::Value =
+            serde_json::from_str(&daemon.join().unwrap().unwrap()).unwrap();
+        assert_eq!(sent["line"], "hello");
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 

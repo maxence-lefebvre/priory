@@ -228,8 +228,11 @@ Each is useful alone, in this order:
 
 1. **The graceful stop.** `SIGTERM` lets the daemon finish the lines it accepted before it exits. Built:
    [home.md](../daemon/home.md#socket-spool-and-lock) says how. The verbs wait for a restart too.
-2. **Call ids.** A line resent after a reset is applied once, from the MCP server or a hook.
-3. **Hooks that keep their line**, with the spool race closed. The race is closed: a hook appends under a
+2. **Call ids.** A line resent after a reset is applied once, from the MCP server or a hook. Built,
+   with one limit: a daemon killed between noting the id and storing the reply answers that it may
+   have applied the call.
+3. **Hooks that keep their line**, with the spool race closed. Built: a hook spools its line, with
+   its id, when no reply comes. The race is closed: a hook appends under a
    lock on the spool, and starts over when the daemon has taken the file.
 4. **Only the daemon migrates**, with its lock taken first. Built.
 5. **`priory upgrade`.** Verify, back up, rehearse, install, hand over, check, and `--rollback`. The

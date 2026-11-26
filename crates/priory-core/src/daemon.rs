@@ -1,3 +1,4 @@
+use crate::calls;
 use crate::enter::Entering;
 use crate::idle;
 use crate::link::Link;
@@ -153,7 +154,7 @@ fn view(factory: &Factory) -> Result<(), Error> {
 /// Answers a line on a view-only machine, where since you looked and a person's autopilot `off` are
 /// its own and the rest is refused.
 fn seen(db: &mut Connection, factory: &Factory, line: Line) -> Result<(), Error> {
-    let reply = match serde_json::from_str::<Input>(&line.text) {
+    let reply = match serde_json::from_str::<Input>(&calls::inner(&line.text)) {
         Ok(Input::Seen(line)) => {
             state::seen(db, &line.seen.person, line.seen.at).map_err(|error| error.to_string())
         }
@@ -1185,7 +1186,8 @@ fn apply(
     kit: crate::kit::Current<'_>,
     searching: &Sender<search::Asked>,
 ) -> Result<(), Error> {
-    if let Ok(call) = serde_json::from_str::<Call>(&line.text)
+    // A search writes nothing, so it needs no call id.
+    if let Ok(call) = serde_json::from_str::<Call>(&calls::inner(&line.text))
         && call.tool == "search"
     {
         let _ = searching.send((call, line.applied));
@@ -1322,7 +1324,7 @@ fn not_applied(line: Line) -> Result<(), Error> {
 
 /// Answers a line while the upgrade holds the daemon, with its version alone.
 fn held_back(line: Line) -> Result<(), String> {
-    let reply = match serde_json::from_str::<Input>(&line.text) {
+    let reply = match serde_json::from_str::<Input>(&calls::inner(&line.text)) {
         Ok(Input::Version(line)) => version(&line),
         _ => Err(upgrade::IN_PROGRESS.to_owned()),
     };
@@ -1508,6 +1510,27 @@ fn current_state(kind: &str, resource: &str) -> Option<Read> {
 /// a call's or an answer's is the JSON of its `Result`. A line that is none of them is reported
 /// and dropped.
 fn take(
+    db: &mut Connection,
+    line: &str,
+    trace: &Trace,
+    counter: Option<&embed::Counter>,
+    kit: crate::kit::Current<'_>,
+) -> Result<(String, Option<String>), Error> {
+    let Ok(envelope) = serde_json::from_str::<calls::Envelope>(line) else {
+        return take_line(db, line, trace, counter, kit);
+    };
+    if let Some(reply) = calls::stored(db, &envelope.call)? {
+        let unanswered = || serde_json::to_string(&Err::<String, _>(calls::UNANSWERED));
+        return Ok((reply.map_or_else(unanswered, Ok)?, None));
+    }
+    calls::take(db, &envelope.call)?;
+    let (reply, kill) = take_line(db, &envelope.line, trace, counter, kit)?;
+    calls::answered(db, &envelope.call, &reply)?;
+    Ok((reply, kill))
+}
+
+/// Applies one line, which carries no call id.
+fn take_line(
     db: &mut Connection,
     line: &str,
     trace: &Trace,

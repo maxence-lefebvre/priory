@@ -134,7 +134,15 @@ A runner that has not read the whole log yet applies no line of the socket, so i
 either. It answers each one that the daemon stopped before applying it. The command then sends it to
 the next daemon, and a hook spools it.
 
-`signals.spool` holds the signals sent while no daemon listened. The next daemon applies them first.
+Each client sends its line as `{"call": ID, "line": LINE}`, with a new UUID for each call. The
+daemon notes the id before it applies the line, and stores the reply for an hour. A client whose
+reply was lost, by a reset or a stop, sends the line again with the same id within its 30 seconds,
+and gets the stored reply instead of a second apply. When the daemon stopped between the two, it
+answers that it may have applied the call. A daemon of 1.3.8 or before refuses the envelope as an
+unreadable line, and the client then sends the plain line once, unless an earlier send was lost.
+
+`signals.spool` holds the signals sent while no daemon listened or no reply came, each with its
+call id. The next daemon applies them first, and each once.
 
 `daemon.lock` allows one daemon per home. A second daemon waits up to 5 seconds for the lock, then
 refuses to start.
