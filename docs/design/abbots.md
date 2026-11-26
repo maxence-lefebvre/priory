@@ -75,6 +75,8 @@ description = "Keeps my week tidy: inbox, follow-ups, memory."
 agent = "wren"                 # agents/wren/agent.md, with session = "shared"
 lane = "me/secretary"
 triggers = ["look-around", "tidy-memory", "follow-ups"]
+workflows = ["follow-up"]       # what its `priory add` may start; the CLI default when unset
+caps = { day = 5.0 }           # spend caps for every task with its label
 ```
 
 `priory check` reads it with these rules:
@@ -98,7 +100,7 @@ One panel, `abbot`, with the abbot's id as its argument. The web view serves it 
 1. **Header**: the avatar, 40 px, in a square with `--radius-md`, the name in the display role,
    and "1 needs you" in `--count`, or "Nothing needs you" in `--text-2`.
 2. **Needs you**: the open asks and stopped tasks of its items, oldest first, as the Desk's rows.
-3. **Closed**: its items done, failed or dropped in the last 7 days, newest first, at most 5,
+3. **Closed**: its items done or dropped in the last 7 days, newest first, at most 5,
    with "Show all" opening the Tasks view filtered on its label.
 4. **Automations**: its triggers, each with an icon for its source, its name and, for a schedule,
    its next firing ("16:00", "Mon 09:00"). Another source reads what it waits for: "on a Sentry
@@ -131,7 +133,7 @@ The task page gains an **Activity** section: one list, oldest first, that merges
 
 An open ask in the thread follows [Ask detail](../../DESIGN.md#ask-detail): options in the agent's
 order, the recommended one outlined in `--recommended` with "Recommended" under its label, full
-width on a phone and in one row on a wide screen. The source design marks the recommendation with
+width on a phone and in one row in the drawer. The source design marks the recommendation with
 a filled star chip; DESIGN.md fills an option only while it is armed, and DESIGN.md wins.
 
 ### Talking to an abbot
@@ -140,38 +142,44 @@ The PRD rules out "a chat interface". This note proposes to narrow that, because
 names an agent will want to tell it things, and `say` already does it for one task. Talking to an
 abbot is `say` to one standing task.
 
-- Each abbot has a standing task, key `abbot:<id>`, with a built-in workflow of one model step run
-  by the abbot's agent. It sleeps on a wait for `say` and for its triggers' firings, so it costs
-  nothing while idle.
-- A person talks to it from the panel's Say box, from `priory say abbot:wren TEXT`, or from their
-  own Claude Code session with a new plugin skill, `/priory:abbot wren TEXT`, which runs that
-  `say` only with the person's own words, as `answer` already works.
+- Each abbot has a standing task, key `abbot:<id>`, whose built-in workflow starts with a model
+  step run by the abbot's agent. Between turns it sleeps, and `say` already wakes an asleep task,
+  so it costs nothing while idle. Its triggers' firings start their own tasks, not this one.
+- A person talks to it from the panel's Say box, from `priory say` with the standing task, or from
+  their own Claude Code session. There, a new plugin command, `/priory:abbot wren TEXT`, prints
+  the `priory say` line for the person to run, as `/priory:answer` prints its line. `say` is a
+  person verb, so the plugin's hook denies it to the session's model, and that stays.
 - The abbot replies in the standing task's thread with a new tool, `note(text)`, which records one
-  message and ends nothing. When it needs a decision, it asks, as every agent does.
+  message and ends nothing. `progress` keeps one current state of a task and `tldr` one summary,
+  and each replaces the last; a reply is a new entry that the thread keeps. When the abbot needs a
+  decision, it asks, as every agent does.
 
 What the abbot may do from a chat, and what stays with a person:
 
 | Act | How | Who decides |
 | --- | --- | ----------- |
-| Open an item | `priory add --label abbot=wren` from its run | the abbot; spend caps on its triggers and lane bound it |
+| Open an item | `priory add` from its run; the daemon sets the abbot's lane and label, and refuses `--workflow` outside the abbot's `workflows`, `--intervention` and `--auto-answer` | the abbot, bounded by the abbot file's `caps`, which hold for every task with its label, and its lane's `max_running` |
 | Answer a question about its items | reads `priory tasks --lane me/secretary --json` and replies with `note` | the abbot |
-| Add or change a trigger | asks with the trigger's TOML as `text`; on the person's answer, a code step `write-trigger` writes `triggers/<name>.toml` once `priory check` passes, and adds it to the abbot's file | the person, always: the step is `irreversible`, so no lead, autopilot or `auto_answer` answers it |
+| Add or change a trigger | the model step ends with outcome `trigger` and the TOML in its result; a `human` step with `approves = ["write-trigger"]` shows that TOML; the irreversible code step `write-trigger` writes the TOML stored with the approved ask's revision, never a later one, once `priory check` passes, and adds it to the abbot's file | the person, always: the workflow names no `autonomous`, so no lead, autopilot or `auto_answer` approves it |
 | Answer another item's ask | only as that item's `lead`, under the existing `hands-off` rules | a person for every irreversible step and every command ask |
 | Accept a memory, cancel, hold, label | never | the guard's person verbs deny them to its run |
 
-The abbot's agent cannot write the factory's files: its `permissions` deny the factory folder,
-and `priory check` refuses an abbot whose agent allows it. A trigger reaches the factory only
-through the ask and the code step.
+The abbot's agent cannot write the factory's files. A `permissions` deny rule does not stop a
+shell from writing, so a new guard, `factory-write`, refuses every run's tool call that writes under
+the factory folder, Bash included, and no step may allow it. A trigger reaches the factory only
+through the approval and the code step.
 
 ### Memory of its own
 
 An abbot needs two kinds of memory. Its conversation is its short-term memory: the shared
-session, compacted by `compactAt` as any lead's is. Its facts, such as "Max reads Slack at 11:00
-and 16:00", are memories, behind the same accept as every other.
+session, compacted by `compactAt` as any lead's is. Its facts, such as "the person reads Slack at
+11:00 and 16:00", are memories, behind the same accept as every other.
 
 - A memory whose name starts with `<id>-`, such as `wren-slack-hours`, belongs to the abbot. Its
-  runs get it in their index, and no other run does. This keeps the flat folder and the loader's
-  name rule.
+  runs get it in their index, and no other run's index lists it. This keeps the flat folder and
+  the loader's name rule. It scopes what a run is told, not what it can read: the snapshot folder
+  and `memory(name)` still reach every name. A memory's `paths` frontmatter
+  ([skills.md](../daemon/skills.md#skills-and-memories-by-path)) scopes by file the same way.
 - `remember` from a run of the abbot's agent prefixes the name with `<id>-` when the name lacks
   it. A person accepts or drops the candidate on `/memories`, which groups candidates by abbot.
 - The abbot's "Tidy memory" automation is a dream ([dreaming.md](dreaming.md#one-night)) scoped to
@@ -187,7 +195,7 @@ and 16:00", are memories, behind the same accept as every other.
 2. The daemon sets the abbot's lane and the `abbot=<id>` label on a task its triggers start.
 3. `priory abbots [DIR] [--json]` prints each abbot with its counts and automations, and
    `GET /api/abbots/{id}` and `GET /api/abbots/{id}/avatar` serve the panel.
-4. The `abbot` panel on the web view, at `/abbots/<id>`, from the design Max approves, and a rail
+4. The `abbot` panel on the web view, at `/abbots/<id>`, from the design a person approves, and a rail
    item per abbot under the default view's panels, which is a row under More on a phone.
 5. Docs: `abbots/` in [factory.md](../reference/factory.md) and the PRD's Configuration block,
    `priory abbots` in [cli.md](../reference/cli.md), the endpoints in
@@ -216,12 +224,14 @@ Tests, through the CLI and the web view's tests:
 ## Later slices
 
 1. **The thread.** The Activity section on the task page, from the arrays the endpoint returns,
-   and the Herdr `priory-abbot` mod with the panel and the thread.
-2. **The standing task.** `abbot:<id>` and its built-in workflow, woken by `say` and its
-   triggers.
-3. **Chat.** The `note` tool, the panel's Say box, and the plugin's `/priory:abbot` skill.
-4. **Triggers from a chat.** The `write-trigger` code step, its ask, and the guard rule on the
-   factory folder.
+   and the Herdr `priory-abbot` mod with the panel and the thread. The mod waits for this slice
+   because it reads the endpoint of slice 1 and should draw the reviewed panel once, with the
+   thread, instead of twice.
+2. **The standing task.** `abbot:<id>` and its built-in workflow, woken by `say`.
+3. **Chat.** The `note` tool, the panel's Say box, and the plugin's `/priory:abbot` command.
+4. **Triggers from a chat.** The `write-trigger` code step, its approving human step, and the
+   `factory-write` guard. Tests: a run's `echo > triggers/x.toml` is refused, and a TOML changed
+   after the approval is not written.
 5. **Memory per abbot.** The name prefix, its index filter, `remember`'s prefix,
    `priory recap --label`, and `/memories` grouped by abbot.
 6. **Avatars elsewhere.** The avatar beside an abbot's items on the Desk and in notifications,
@@ -241,14 +251,18 @@ Tests, through the CLI and the web view's tests:
    with "A general chat assistant. A person talks to an abbot about its factory's work through
    `say` and asks, and every irreversible step still waits on a person's answer." Add a Concepts
    row: "Abbot | A named agent with an avatar that works one lane, owns its triggers and talks to a
-   person through say and asks". This pull request makes both edits for review.
+   person through `say` and asks". This pull request makes both edits for review.
 4. **Where does chat live first, the web view or the plugin?** The plugin costs one skill and
    reaches a person at their desk. The Say box reaches them on a phone, which is the M2 test.
    Recommendation: both in slice 3, since each is a `say` and neither adds a server path.
 5. **May an abbot add a trigger without a person?** A trigger spends money on every firing.
-   Recommendation: never. The step is `irreversible` so no lead, autopilot or `auto_answer` can
-   take it, and the ask shows the trigger's TOML as `text`.
-6. **What does a closed item mean?** Recommendation: done, failed or dropped in the last 7 days.
-   A failed item shows its state tile and stays in Needs you while it waits for a revive ask.
+   Recommendation: never. `write-trigger` is irreversible and approved only by a human step, and
+   it writes only the TOML that the approved revision showed.
+6. **What does a closed item mean?** Recommendation: done or dropped in the last 7 days. A failed
+   item is stopped, so it stays in Needs you with its Revive button, as on the Desk.
 7. **One avatar format?** Recommendation: PNG or SVG, square, at most 64 KB, served from the
    factory. A missing avatar draws the name's first letter on `--raised`.
+8. **Can two abbots' memory names collide?** In a kit two factories share, two `wren` abbots share
+   the `wren-` prefix, and a person's own memory named `wren-...` is hidden from other runs.
+   Recommendation: accept it in slice 5, and have `priory check` warn about a memory whose prefix
+   names an abbot of this factory that did not write it.
