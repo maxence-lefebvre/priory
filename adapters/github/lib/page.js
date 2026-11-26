@@ -2,7 +2,7 @@
 // The new page's class names change with GitHub's builds, so it is found by ids, ARIA and data-*.
 
 const OLD_NAV = 'nav[aria-label="Pull request navigation"], .tabnav-pr, .tabnav';
-const NEW_TAB = 'a[data-dd-action-name^="pull_requests.navigation."], #prs-files-anchor-tab, #prs-commits-anchor-tab';
+const NEW_TAB = 'a[data-dd-action-name^="pull_requests.navigation."], a[data-telemetry-action^="pull_requests.navigation."], #prs-files-anchor-tab, #prs-commits-anchor-tab';
 // A last resort: a row holding links to the pull request's other tabs.
 const TAB_LINK = 'a[href*="/pull/"][href$="/commits"], a[href*="/pull/"][href$="/checks"], a[href*="/pull/"][href$="/files"], a[href*="/pull/"][href$="/changes"]';
 const ROW = 'nav, [role="tablist"], [role="navigation"]';
@@ -24,8 +24,9 @@ export function anchor(doc) {
 /** Where the strip goes when no tab row is found: above GitHub's main, outside any React tree. @param {Document} doc */
 export const fallback = (doc) => doc.querySelector(".application-main") ?? doc.body;
 
-/** A tab of the row to copy for the Guide tab, or null. @param {Element} nav */
-export const tabLike = (nav) => nav.querySelector(NEW_TAB) ?? nav.querySelector('[role="tab"]') ?? nav.querySelector("a");
+/** A tab of the row to copy for the Guide tab, one not selected when it can, or null. @param {Element} nav */
+export const tabLike = (nav) =>
+  [...nav.querySelectorAll(NEW_TAB)].find((tab) => !tab.hasAttribute("aria-current")) ?? nav.querySelector(NEW_TAB) ?? nav.querySelector('[role="tab"]') ?? nav.querySelector("a");
 
 /** The description's rendered body, on either page, or null. @param {Document} doc */
 export function descriptionBody(doc) {
