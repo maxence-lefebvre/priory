@@ -816,11 +816,11 @@ fn parse_run(run: &mut Value) {
 /// measured is null.
 fn usage_total(runs: &Value) -> Value {
     let runs = runs.as_array().map(Vec::as_slice).unwrap_or_default();
-    let values = |key: &str| {
+    let values = |key: &'static str| {
         runs.iter()
             .filter_map(move |run| run["usage"][key].as_u64())
     };
-    let sum = |key: &str| values(key).reduce(u64::saturating_add);
+    let sum = |key: &'static str| values(key).reduce(u64::saturating_add);
     json!({
         "cpu_usec": sum("cpu_usec"),
         "user_usec": sum("user_usec"),
