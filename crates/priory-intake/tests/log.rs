@@ -708,14 +708,12 @@ fn postgres_intake_role_publishes_only_the_intakes_types_and_moves_only_its_curs
     let labeled = Message::new("github.issues.labeled", serde_json::json!({ "n": 2 }));
     intake.publish(OUTPUT, &labeled).unwrap();
     let answer = Message::new("priory.ask.answered", serde_json::json!({ "n": 3 }));
-    let refused = intake.publish(OUTPUT, &answer).unwrap_err().to_string();
+    // Display says only "db error": Debug carries the server's message.
+    let refused = format!("{:?}", intake.publish(OUTPUT, &answer).unwrap_err());
     assert!(refused.contains("row-level security"), "{refused}");
 
     runner.ack("priory.runner", &first[0]).unwrap();
-    let moved = intake
-        .ack("priory.runner", &first[0])
-        .unwrap_err()
-        .to_string();
+    let moved = format!("{:?}", intake.ack("priory.runner", &first[0]).unwrap_err());
     assert!(moved.contains("row-level security"), "{moved}");
     intake.ack("priory.intake", &first[0]).unwrap();
     let second = intake.read("priory.intake", OUTPUT, 10).unwrap();
