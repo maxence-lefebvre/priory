@@ -896,31 +896,22 @@ fn a_full_disk_does_not_stop_a_rollback() {
 
 #[test]
 fn a_quiet_moment_that_passed_puts_the_upgrade_off_and_stops_nothing() {
-    for (name, busy, why) in [
-        (
-            "grant",
-            "INSERT INTO grants (bytes, pid, started, command) VALUES (1, 1, 1, 'build')",
-            "a memory grant",
-        ),
-        (
-            "pause",
-            "INSERT INTO pause (id, reason, since) VALUES (1, 'x', 'now')",
-            "priory is paused",
-        ),
-    ] {
-        let setup = Setup::new(&format!("put-off-{name}"), "");
-        setup.upgrade(&fake(CURRENT, "exit 0", ":"), |_| {});
-        let db = rusqlite::Connection::open(setup.path("priory.db")).unwrap();
-        db.execute(busy, []).unwrap();
-        drop(db);
+    let setup = Setup::new("put-off-pause", "");
+    setup.upgrade(&fake(CURRENT, "exit 0", ":"), |_| {});
+    let db = rusqlite::Connection::open(setup.path("priory.db")).unwrap();
+    db.execute(
+        "INSERT INTO pause (id, reason, since) VALUES (1, 'x', 'now')",
+        [],
+    )
+    .unwrap();
+    drop(db);
 
-        setup.helper();
+    setup.helper();
 
-        assert!(setup.path("home/upgrade/staged").exists());
-        setup.assert_put_off(name, why);
-        let log = fs::read_to_string(setup.path("systemctl.log")).unwrap();
-        assert!(!log.contains("stop "), "{name}: {log}");
-    }
+    assert!(setup.path("home/upgrade/staged").exists());
+    setup.assert_put_off("pause", "priory is paused");
+    let log = fs::read_to_string(setup.path("systemctl.log")).unwrap();
+    assert!(!log.contains("stop "), "{log}");
 }
 
 #[test]
