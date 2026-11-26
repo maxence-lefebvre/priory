@@ -15,6 +15,7 @@ import { onSignOut, post, refuse, session } from "../session.js";
 import { store } from "../store.js";
 import { filtered, taskLabel } from "../tasks.js";
 import { age, ago, clock, date, today } from "../times.js";
+import { AskOption, Busy } from "../components/AskOption.jsx";
 import { Icon, StateWord, Tile } from "../components/Icon.jsx";
 import { NotReady } from "../components/NotReady.jsx";
 import { PageTop, Panel } from "../components/PhonePage.jsx";
@@ -429,7 +430,6 @@ const CommandBlock = memo(function CommandBlock({ ask, note }) {
 const ArmedLabel = ({ option, runs, at }) => <><span><small>{`Tap again to ${runs ? "run" : "send"}`}</small>{`Confirm: ${option}`}<small>{`Cancels in ${ARM_MS / 1000} s`}</small></span><Drain at={at} /></>;
 
 // The loading state of the pressed option or button, on it, beside its readable label (DESIGN.md, Ask states).
-const Busy = () => <span className="busy" aria-hidden="true" />;
 
 const armedOn = (armed, ask) => (armed?.id === ask.id && armed.revision === ask.revision ? armed : null);
 
@@ -442,13 +442,8 @@ const OptionList = memo(function OptionList({ ask, wide, locked, bound }) {
     const recommended = option === ask.recommendation;
     const runs = runsCommand(ask, option);
     const chosen = pending?.text === option;
-    const off = locked || (pending && !chosen);
-    const notes = chosen ? "Sending…" : [recommended && "Recommended", runs && "Runs a command"].filter(Boolean).join(". ");
     const on = armed?.text === option;
-    const button = (
-      <button key={i} type="button" className={`opt ${recommended ? "rec-opt" : ""} ${chosen ? "chosen" : ""} ${on ? "armed" : ""}`} data-option={i} data-answer={i} aria-disabled={off || pending ? "true" : "false"} aria-busy={chosen ? "true" : undefined} aria-describedby={locked ? "answer-locked" : undefined} onClick={() => pressOption(ask, i, Boolean(locked))}>
-        {chosen ? <Busy /> : null}{on ? <ArmedLabel option={option} runs={runs} at={armed.at} /> : <span>{option}{notes ? <small>{notes}</small> : null}</span>}{wide ? <kbd>{i + 1}</kbd> : null}</button>
-    );
+    const button = <AskOption key={i} option={option} index={i} recommended={recommended} runs={runs} sending={chosen} armed={on} off={Boolean(locked || pending)} label={on ? <ArmedLabel option={option} runs={runs} at={armed.at} /> : undefined} hint={wide ? i + 1 : null} describedBy={locked ? "answer-locked" : undefined} onPress={() => pressOption(ask, i, Boolean(locked))} />;
     return on && runs ? [button, <CommandBlock key={`${i}cmd`} ask={ask} note={bound} />] : button;
   });
 });

@@ -4,6 +4,8 @@
   "packageManager": "pnpm@12.21.0",
   "scripts": {
     "web:build": "node crates/priory-core/web/build.mjs",
-    "web:check": "cd crates/priory-core/web && node build.mjs --check && node_modules/.bin/oxlint --deny-warnings . && node test.mjs"
+    "web:check": "cd crates/priory-core/web && node build.mjs --check && node_modules/.bin/oxlint --deny-warnings . && node test.mjs",
+    "github:build": "node adapters/github/build.mjs",
+    "github:check": "cd adapters/github && node build.mjs --check && node_modules/.bin/oxlint --deny-warnings ."
   }
 }

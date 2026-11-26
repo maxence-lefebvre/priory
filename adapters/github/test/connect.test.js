@@ -24,6 +24,7 @@ const until = async (check, what) => {
 test("the side panel, signed out, shows the connect form, and a sign-in there reaches the docked panel", async () => {
   const calls = [];
   Object.assign(globalThis, {
+    window: globalThis,
     Node,
     DOMParser,
     BroadcastChannel: Channel,
@@ -37,12 +38,12 @@ test("the side panel, signed out, shows the connect form, and a sign-in there re
   });
   Object.defineProperty(navigator, "locks", { configurable: true, value: { request: () => new Promise(() => {}) } });
 
-  // The docked panel on the pull request hears sign-ins through live(), as frame.js wires it.
+  // The docked panel on the pull request hears sign-ins through live(), as the frame wires it.
   const { live } = await import("../lib/live.js");
   const heard = [];
   live((message) => message.signedIn && get("config").then((config) => heard.push(config)));
 
-  await import("../frame.js");
+  await import("../dist/frame.js");
   const body = document.body;
   await until(() => body.querySelector("form"), "the connect form");
   assert.equal(body.querySelector(".name").textContent, "Run a command");

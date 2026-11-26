@@ -1,5 +1,5 @@
 // A small DOM for the tests: parses HTML and answers the calls the extension's scripts make.
-// It covers only what content.js, frame.js and their fixtures use.
+// It covers only what content.js, the React frame in dist/frame.js and their fixtures use.
 
 const VOID = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"]);
 const RAW = new Set(["script", "style", "textarea", "title"]);
@@ -44,6 +44,29 @@ export class Node {
   }
   get firstChild() {
     return this.nodes[0] ?? null;
+  }
+  get lastChild() {
+    return this.nodes.at(-1) ?? null;
+  }
+  get nodeName() {
+    return this.localName?.toUpperCase() ?? "#document";
+  }
+  appendChild(kid) {
+    this.append(kid);
+    return kid;
+  }
+  insertBefore(kid, before) {
+    if (!before) return this.appendChild(kid);
+    before.before(kid);
+    return kid;
+  }
+  removeChild(kid) {
+    kid.remove();
+    return kid;
+  }
+  contains(other) {
+    for (let node = other; node; node = node.parentNode) if (node === this) return true;
+    return false;
   }
   get parentElement() {
     return this.parentNode instanceof Element ? this.parentNode : null;
@@ -122,8 +145,20 @@ export class Text extends Node {
     super(document);
     this.data = data;
   }
+  get nodeType() {
+    return 3;
+  }
+  get nodeName() {
+    return "#text";
+  }
   get textContent() {
     return this.data;
+  }
+  get nodeValue() {
+    return this.data;
+  }
+  set nodeValue(data) {
+    this.data = String(data);
   }
   cloneNode() {
     return new Text(this.ownerDocument, this.data);
@@ -137,7 +172,6 @@ export class Element extends Node {
     this.attributes = new Map();
     this.listeners = [];
     this.value = "";
-    this.disabled = false;
     this.style = {};
     const element = this;
     this.dataset = new Proxy({}, {
@@ -150,8 +184,24 @@ export class Element extends Node {
       remove: (name) => element.setAttribute("class", element.className.split(/\s+/).filter((c) => c && c !== name).join(" ")),
     };
   }
+  get nodeType() {
+    return 1;
+  }
   get tagName() {
     return this.localName.toUpperCase();
+  }
+  get type() {
+    return this.getAttribute("type") ?? (this.localName === "input" ? "text" : this.localName === "button" ? "submit" : "");
+  }
+  set type(value) {
+    this.setAttribute("type", value);
+  }
+  get disabled() {
+    return this.hasAttribute("disabled");
+  }
+  set disabled(value) {
+    if (value) this.setAttribute("disabled", "");
+    else this.removeAttribute("disabled");
   }
   get id() {
     return this.getAttribute("id") ?? "";
@@ -184,7 +234,7 @@ export class Element extends Node {
     this.attributes.set(name.toLowerCase(), String(value));
   }
   removeAttribute(name) {
-    this.attributes.delete(name);
+    this.attributes.delete(name.toLowerCase());
   }
   hasAttribute(name) {
     return this.attributes.has(name);
@@ -211,8 +261,8 @@ export class Element extends Node {
   }
   /** Runs the listeners of `type` here and up the tree, as a bubbling event would. */
   dispatch(type, init = {}) {
-    const event = { type, target: this, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }, ...init };
-    for (let element = this; element; element = element.parentElement) {
+    const event = { type, target: this, bubbles: true, defaultPrevented: false, stopped: false, preventDefault() { this.defaultPrevented = true; }, stopPropagation() { this.stopped = true; }, ...init };
+    for (let element = this; element && !event.stopped; element = element.parentElement) {
       event.currentTarget = element;
       for (const [t, listener] of element.listeners) if (t === type) listener(event);
     }
@@ -233,6 +283,13 @@ export class Document extends Node {
     super(null);
     this.ownerDocument = this;
     this.activeElement = null;
+    // React DOM looks for an iframe's element class on the document's window.
+    this.defaultView = { HTMLIFrameElement: class {} };
+    // React DOM checks `"oninput" in document` to listen for input events rather than polyfill them.
+    this.oninput = null;
+  }
+  get nodeType() {
+    return 9;
   }
   get documentElement() {
     return this.children[0] ?? null;

@@ -1,5 +1,6 @@
 packages:
   - crates/priory-core/web
+  - adapters/github
 # esbuild's install script only checks the binary its platform package already holds.
 allowBuilds:
   esbuild: false

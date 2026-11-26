@@ -4,3 +4,4 @@
 /.direnv
 /node_modules
 /crates/priory-core/web/node_modules
+/adapters/github/node_modules
