@@ -82,8 +82,9 @@ await page("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, dev
 await page("Page.addScriptToEvaluateOnNewDocument", { source: `
   localStorage.setItem("priory.token", "demo-token");
   globalThis.reads = []; globalThis.hidden = false; globalThis.landed = 0;
-  // What a check does to the requests: a view's layout, paths that fail, that answer late or at another revision, and the answer of a POST.
-  globalThis.hook = { fails: [], slow: {}, revision: {}, ...JSON.parse(sessionStorage.getItem("hook") || "{}") };
+  // What a check does to the requests: a view's layout, paths that fail, that answer late, at another revision or with a body
+  // of its own (\`answers\`, keyed by the path without its query), and the answer of a POST.
+  globalThis.hook = { fails: [], slow: {}, revision: {}, answers: {}, ...JSON.parse(sessionStorage.getItem("hook") || "{}") };
   if (hook.cold) for (const key of Object.keys(localStorage)) if (key.startsWith("priory.snapshot")) localStorage.removeItem(key);
   globalThis.posts = []; globalThis.polls = 0; globalThis.errors = []; globalThis.kept = 0; globalThis.clocks = new Set();
   addEventListener("error", (event) => errors.push(event.message));
@@ -105,6 +106,8 @@ await page("Page.addScriptToEvaluateOnNewDocument", { source: `
     if (String(path).startsWith("/api/events")) polls++;
     if (hook.slow[path]) await new Promise((done) => setTimeout(done, hook.slow[path]));
     if (hook.fails.includes(path)) return new Response("{}", { status: 500 });
+    const answer = hook.answers[String(path).split("?")[0]];
+    if (answer) return new Response(JSON.stringify(answer));
     const named = hook.revision[path];
     if (named) return read(path, options).then(async (reply) => new Response(JSON.stringify({ ...(await reply.json()), revision: named }))).finally(() => { landed++; });
     const late = hook.late === path && await read(path, options);
@@ -306,6 +309,21 @@ await hooked("a next ask opens at its question with the bar hidden, and two taps
     return { shown, top: document.querySelector("#app .scroll").scrollTop, later: document.querySelector("#app .abar")?.hidden === false, armed: Boolean(document.querySelector("#app .armed")), posts };
   })()`);
   return found.shown || found.top || found.later || found.armed || found.posts.length ? found : true;
+});
+await hooked("on a phone, a refused answer from the answer sheet gives the bar's options button the focus", "/asks/1", 'document.querySelector("#app .opts")', { reply: refused }, async () => {
+  await sleep(1500);
+  await evaluate('document.querySelector("#app .scroll").scrollTop = 600');
+  await until('document.querySelector("#app .abar")?.hidden === false', "the answer bar");
+  await evaluate('document.querySelector("#app .abar .btn.secondary").click()');
+  await until('document.querySelector("#answer[open] .opt[aria-disabled=false]")', "the answer sheet");
+  await evaluate('document.querySelector("#answer .opt[aria-disabled=false]").click()');
+  await sleep(300);
+  await evaluate('document.querySelector("#answer .opt[aria-disabled=false]").click()');
+  await until("posts.length", "the answer");
+  const FOCUSED = 'document.activeElement.matches("#app .abar .btn.secondary")';
+  await until(FOCUSED, "the options button's focus").catch(() => {});
+  const found = await evaluate(`({ posts: posts.length, open: document.getElementById("answer").open, focus: ${FOCUSED}, on: document.activeElement.outerHTML.slice(0, 60), bar: document.querySelector("#app .abar")?.hidden })`);
+  return found.posts === 1 && !found.open && found.focus ? true : found;
 });
 await hooked("a rotation keeps the Say field, its focus and caret", "/tasks/1", SAYS, {}, async () => {
   await sleep(1000);

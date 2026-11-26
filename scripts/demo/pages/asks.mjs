@@ -112,5 +112,22 @@ export async function check({ hooked, evaluate, until, sleep, change, page, scre
     await evaluate('document.querySelector("#answer [aria-label=Close]").click()');
     return kept && sheet === 2 ? true : { kept, sheet };
   });
+  await hooked("an open answer sheet stays closed after Back, and the next ask opens without it", "/asks", 'document.querySelector("#app nav")', {}, async () => {
+    const go = (href) => evaluate(`{ const link = Object.assign(document.createElement("a"), { href: "${href}" }); document.body.append(link); link.click(); link.remove(); }`);
+    await go("/asks/1");
+    await until('location.pathname === "/asks/1" && document.querySelector("#app .opts")', "ask 1");
+    await sleep(1000);
+    await evaluate('document.querySelector("#app .scroll").scrollTop = 600');
+    await until('document.querySelector("#app .abar")?.hidden === false', "the answer bar");
+    await evaluate('document.querySelector("#app .abar .btn.secondary").click()');
+    await until('document.getElementById("answer").open', "the answer sheet");
+    await evaluate("history.back()");
+    await until('location.pathname === "/asks"', "Back");
+    await go("/asks/2");
+    await until('location.pathname === "/asks/2"', "ask 2");
+    await sleep(1500);
+    const open = await evaluate('Boolean(document.getElementById("answer")?.open)');
+    return !open || { open };
+  });
   await screen(1440, 900);
 }
