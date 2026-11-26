@@ -185,7 +185,7 @@ const Autopilot = memo(function Autopilot({ autopilot }) {
   if (!view) return null;
   return (
     <div className="banner pilot" role="status"><Icon name="bot" size="s20" /><div><span className={view.error ? "t-danger" : undefined}>{view.words}</span><br />
-      <button type="button" id="autopilot-off" className="btn secondary" aria-disabled={view.busy ? "true" : "false"} onClick={() => { if (!view.busy) turnOff(off.window ?? autopilot.window); }}>{view.label}</button>
+      <button type="button" id="autopilot-off" className="btn secondary" aria-disabled={view.busy ? "true" : "false"} onClick={() => { if (!view.busy) turnOff(autopilot?.window ?? off.window); }}>{view.label}</button>
       {off.notice ? <p className="note acts-note" role="status">{off.notice}</p> : null}</div></div>
   );
 });
