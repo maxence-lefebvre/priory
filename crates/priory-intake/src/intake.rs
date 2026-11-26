@@ -39,6 +39,8 @@ pub const TASK_CLAIMED: &str = "priory.task.claimed";
 pub const TASK_HELD: &str = "priory.task.held";
 /// A runner renews its lease.
 pub const RUNNER_ALIVE: &str = "priory.runner.alive";
+/// The diocese's view daemon says the log is up, so a lease does not run across a gap in it.
+pub const DIOCESE_ALIVE: &str = "priory.diocese.alive";
 /// A person on one runner answers an ask of another.
 pub const ASK_ANSWERED: &str = "priory.ask.answered";
 /// A person on one runner dismisses an ask of another.
@@ -261,6 +263,7 @@ pub fn output() -> Output {
             TASK_CLAIMED,
             TASK_HELD,
             RUNNER_ALIVE,
+            DIOCESE_ALIVE,
             ASK_ANSWERED,
             ASK_DISMISSED,
             ASK_POSTED,

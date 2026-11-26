@@ -1,0 +1,10 @@
+{
+  "id": "4e8a1c37-2b6d-5f90-b3c4-d5e6f7a8b9c0",
+  "type": "priory.diocese.alive",
+  "subject": "diocese",
+  "time": "2026-11-21T10:00:00Z",
+  "data": {
+    "diocese": "diocese"
+  },
+  "links": []
+}

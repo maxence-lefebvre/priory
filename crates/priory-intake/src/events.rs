@@ -1070,6 +1070,15 @@ pub struct RunnerAlive {
     pub runner: String,
 }
 
+/// The diocese's view daemon says the log is up, once a minute. A runner's lease does not run
+/// across a gap of more than 3 minutes between two of these, which means the log was down.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DioceseAlive {
+    /// The diocese's machine, named by its hostname.
+    pub diocese: String,
+}
+
 /// A person answers an ask of another runner, with `priory answer RUNNER:ASK`. Only that runner
 /// applies it, with the revision check of a local answer.
 #[derive(JsonSchema)]
