@@ -98,6 +98,11 @@ intake, the trace store and an MCP gateway for cloud runs. It runs no agent. A d
 priories, as this VM serves every runner. It is designed but not built yet. See
 [docs/design/diocese.md](design/diocese.md).
 
+**Journal.** The state one trigger keeps between its runs: append-only entries, such as one line
+per run, and documents a run replaces, such as a JSON history. It travels on the log, so the next
+run finds it on any runner. Unlike a memory, nobody accepts it and only its trigger's runs read it.
+It is designed but not built yet. See [docs/design/journals.md](design/journals.md).
+
 **Health.** Every second, the daemon checks each run for an unexpected exit, a timeout or a
 permission prompt. It never approves a permission prompt. A crashed run gets one repair attempt.
 A step's `budget` limits the dollars a task may spend at that step. When a fix fails the
