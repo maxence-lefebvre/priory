@@ -124,9 +124,12 @@ fn caller(
         .optional()?;
     Ok(match found {
         None => Err(format!("no run has session {session}")),
-        Some((key, trigger)) if !factory.triggers.contains_key(&trigger) => Err(format!(
-            "task {key} has no trigger (it came from {trigger}), so it has no journal: only the runs of a factory trigger keep one"
-        )),
+        // `triggers/cli.toml` only sets defaults for a person's requests, which keep no journal.
+        Some((key, trigger)) if trigger == "cli" || !factory.triggers.contains_key(&trigger) => {
+            Err(format!(
+                "task {key} has no trigger (it came from {trigger}), so it has no journal: only the runs of a factory trigger keep one"
+            ))
+        }
         Some((key, trigger)) if !requested(db, &key, &trigger, None)? => Err(format!(
             "the log holds no request of task {key} by trigger {trigger}, so no runner would keep its journal"
         )),
@@ -576,14 +579,34 @@ mod tests {
 
     const KEY: &str = "github:owner/repo#1";
 
-    fn request() -> Message {
+    /// A factory with the triggers `daily` and `cli`, which `triggers/cli.toml` makes one.
+    fn factory() -> Factory {
+        let dir = std::env::temp_dir().join(format!("priory-journals-{}", std::process::id()));
+        let trigger =
+            "source = \"schedule\"\nrepo = \"owner/repo\"\nat = \"07:00\"\nworkflow = \"w\"\n";
+        for (path, text) in [
+            ("factory.toml", "name = \"demo\"\n"),
+            ("triggers/daily.toml", trigger),
+            ("triggers/cli.toml", trigger),
+        ] {
+            let file = dir.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, text).unwrap();
+        }
+        let factory = priory_factory::factory::load(&dir).0;
+        assert!(factory.triggers.contains_key("daily") && factory.triggers.contains_key("cli"));
+        factory
+    }
+
+    fn request(trigger: &str) -> Message {
         Message::new(
             "factory.task.requested",
-            json!({ "key": KEY, "trigger": "daily", "workflow": "w" }),
+            json!({ "key": KEY, "trigger": trigger, "workflow": "w" }),
         )
     }
 
-    fn write(kind: &str, label: &str, body: Value) -> Message {
+    /// A message another runner wrote, as the log carries it.
+    fn written(kind: &str, label: &str, body: Value) -> Message {
         let field = if kind == JOURNAL_APPENDED {
             "kind"
         } else {
@@ -591,13 +614,31 @@ mod tests {
         };
         Message::new(
             kind,
-            json!({ "trigger": "daily", field: label, "body": body, "task": KEY, "runner": "a" }),
+            json!({ "trigger": "daily", field: label, "body": body, "task": KEY, "runner": "b" }),
         )
     }
 
     /// A body of `bytes` bytes as JSON.
     fn sized(bytes: usize) -> Value {
         json!("x".repeat(bytes - 2))
+    }
+
+    /// A runner whose task of `KEY`, which trigger `trigger` requested, has the live run `s`.
+    fn runner(trigger: &str) -> Connection {
+        let mut db = crate::state::memory();
+        db.execute(
+            "INSERT INTO tasks (key, workflow, step, state, band, lane, lane_derived, trigger, source, entered)
+             VALUES (?1, 'w', 'work', 'running', 'now', 'l', 0, ?2, 's', 'now')",
+            params![KEY, trigger],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO runs (task, step, tmux, session) VALUES (1, 'work', 'priory-1', 's')",
+            [],
+        )
+        .unwrap();
+        fold(&mut db, &[request(trigger)]);
+        db
     }
 
     /// Reads `log` in order, as a runner's tick does.
@@ -611,30 +652,50 @@ mod tests {
         }
     }
 
-    /// Queues `message` as this runner's own write, before the log has it.
-    fn own(db: &mut Connection, message: &Message) {
-        let tx = db.transaction().unwrap();
-        let id = message.id.to_string();
-        let write = Write::of(&id, &message.kind, message.time, &message.data);
-        if write.entry {
-            write.entry(&tx, None).unwrap();
-        } else {
-            tx.execute(
-                "INSERT INTO journal_pending (id, trigger, name, body, task, runner, written)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    id,
-                    write.trigger,
-                    write.label,
-                    write.body,
-                    write.task,
-                    write.runner,
-                    write.written
-                ],
+    /// The run's `tool` call with `arguments`, and the message it queued for the log, if any.
+    fn call(
+        db: &mut Connection,
+        factory: &Factory,
+        tool: &str,
+        arguments: Value,
+    ) -> (Result<String, String>, Option<Message>) {
+        let trace = Trace {
+            factory,
+            revision: None,
+            machine: None,
+            runner: Some("a".to_owned()),
+            usage: |_, _| None,
+        };
+        let call = Call {
+            tool: tool.to_owned(),
+            session: "s".to_owned(),
+            arguments,
+        };
+        let count = |db: &Connection| -> i64 {
+            db.query_row("SELECT count(*) FROM sends", [], |row| row.get(0))
+                .unwrap()
+        };
+        let before = count(db);
+        let reply = write(db, &call, &trace).unwrap();
+        let queued: Option<String> = (count(db) > before).then(|| {
+            db.query_row(
+                "SELECT message FROM sends ORDER BY rowid DESC LIMIT 1",
+                [],
+                |row| row.get(0),
             )
-            .unwrap();
-        }
-        tx.commit().unwrap();
+            .unwrap()
+        });
+        (
+            reply,
+            queued.map(|text| serde_json::from_str(&text).unwrap()),
+        )
+    }
+
+    /// The message of the run's write, which must succeed.
+    fn own(db: &mut Connection, factory: &Factory, tool: &str, arguments: Value) -> Message {
+        let (reply, queued) = call(db, factory, tool, arguments);
+        assert!(reply.is_ok(), "{reply:?}");
+        queued.unwrap()
     }
 
     /// What every runner must agree on: the applied entries and documents.
@@ -658,6 +719,19 @@ mod tests {
 
     fn document(db: &Connection, name: &str) -> Value {
         documents(db, "daily", Some(name)).unwrap().unwrap()["body"].clone()
+    }
+
+    /// Puts from another runner that leave `free` bytes of the journal.
+    fn filled(free: usize) -> Vec<Message> {
+        let mut log: Vec<Message> = (0..31)
+            .map(|n| written(JOURNAL_PUT, &format!("doc-{n}"), sized(DOCUMENT_LIMIT)))
+            .collect();
+        log.push(written(
+            JOURNAL_PUT,
+            "rest",
+            sized(JOURNAL_LIMIT - 31 * DOCUMENT_LIMIT - free),
+        ));
+        log
     }
 
     #[test]
@@ -693,84 +767,83 @@ mod tests {
     #[test]
     fn runners_that_append_near_the_limit_at_once_and_one_that_reads_the_log_later_keep_equal_tables()
      {
-        // 31 full documents and one that leaves 20,000 bytes: room for one of two 15,000-byte entries.
-        let mut log = vec![request()];
-        log.extend((0..31).map(|n| write(JOURNAL_PUT, &format!("doc-{n}"), sized(DOCUMENT_LIMIT))));
-        log.push(write(
-            JOURNAL_PUT,
-            "rest",
-            sized(JOURNAL_LIMIT - 31 * DOCUMENT_LIMIT - 20_000),
-        ));
-        let (from_a, from_b) = (
-            write(JOURNAL_APPENDED, "run", sized(15_000)),
-            write(JOURNAL_APPENDED, "run", sized(15_000)),
+        let factory = factory();
+        let (mut a, mut b) = (runner("daily"), runner("daily"));
+        let mut log = vec![request("daily")];
+        // Room for one of two 15,000-byte entries.
+        let fill = filled(20_000);
+        fold(&mut a, &fill);
+        fold(&mut b, &fill);
+        log.extend(fill);
+        let entry = json!({ "kind": "run", "body": sized(15_000) });
+        let from_a = own(&mut a, &factory, "journal_append", entry.clone());
+        let from_b = own(&mut b, &factory, "journal_append", entry.clone());
+        let (refused, _) = call(&mut a, &factory, "journal_append", entry);
+        assert!(
+            refused.is_err_and(|why| why.contains("holds at most 8 MB")),
+            "a's own entry on its way counts for a's next write"
         );
-        let (mut a, mut b) = (crate::state::memory(), crate::state::memory());
-        fold(&mut a, &log);
-        fold(&mut b, &log);
-        own(&mut a, &from_a);
-        own(&mut b, &from_b);
         // b's entry reaches the log first, while a's still waits on a.
-        log.extend([from_b.clone(), from_a.clone()]);
-        let tail = &log[log.len() - 2..];
-        fold(&mut a, tail);
-        fold(&mut b, tail);
+        let tail = [from_b.clone(), from_a];
+        fold(&mut a, &tail);
+        fold(&mut b, &tail);
+        log.extend(tail);
         let mut later = crate::state::memory();
         fold(&mut later, &log);
 
         assert_eq!(tables(&a), tables(&b));
         assert_eq!(tables(&a), tables(&later));
         assert_eq!(tables(&a).0, [from_b.id.to_string()]);
-        let pending: i64 = a
+        let waiting: i64 = a
             .query_row(
                 "SELECT count(*) FROM journal_entries WHERE seq IS NULL",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(pending, 0, "a's refused entry left its tables");
+        assert_eq!(waiting, 0, "a's refused entry left its tables");
     }
 
     #[test]
     fn a_refused_own_put_keeps_the_version_every_runner_holds_and_a_put_applied_meanwhile() {
-        let mut a = crate::state::memory();
-        fold(
-            &mut a,
-            &[request(), write(JOURNAL_PUT, "history", json!("v1"))],
-        );
-        let mut refused = write(JOURNAL_PUT, "history", json!("v2"));
-        // No trigger requested task 9, so every runner refuses the put once the log has it.
-        refused.data["task"] = json!("github:owner/repo#9");
-        own(&mut a, &refused);
-        assert_eq!(
-            document(&a, "history"),
-            "v2",
-            "a run reads its own put at once"
-        );
+        let factory = factory();
+        let mut a = runner("daily");
+        fold(&mut a, &[written(JOURNAL_PUT, "history", json!("v1"))]);
+        let big = json!({ "name": "history", "body": sized(150_000) });
+        let from_a = own(&mut a, &factory, "journal_put", big);
+        assert_eq!(document(&a, "history").as_str().unwrap().len(), 149_998);
 
-        let from_b = write(JOURNAL_PUT, "history", json!("v3"));
-        fold(&mut a, &[from_b]);
+        // Before a's put reaches the log, b fills the journal and puts its own version.
+        let mut from_b = filled(100_000);
+        from_b.push(written(JOURNAL_PUT, "history", json!("v3")));
+        fold(&mut a, &from_b);
         assert_eq!(
-            document(&a, "history"),
-            "v2",
-            "its own later put still stands in"
+            document(&a, "history").as_str().unwrap().len(),
+            149_998,
+            "a's own later put still stands in"
         );
-        fold(&mut a, &[refused]);
+        fold(&mut a, &[from_a]);
         assert_eq!(document(&a, "history"), "v3");
     }
 
     #[test]
     fn a_second_own_put_stands_in_until_the_log_has_it_too() {
-        let mut a = crate::state::memory();
-        fold(&mut a, &[request()]);
-        let (first, second) = (
-            write(JOURNAL_PUT, "history", json!(1)),
-            write(JOURNAL_PUT, "history", json!(2)),
+        let factory = factory();
+        let mut a = runner("daily");
+        let first = own(
+            &mut a,
+            &factory,
+            "journal_put",
+            json!({ "name": "history", "body": 1 }),
         );
-        own(&mut a, &first);
-        own(&mut a, &second);
+        let second = own(
+            &mut a,
+            &factory,
+            "journal_put",
+            json!({ "name": "history", "body": 2 }),
+        );
         assert_eq!(document(&a, "history"), 2);
-        fold(&mut a, std::slice::from_ref(&first));
+        fold(&mut a, &[first]);
         assert_eq!(document(&a, "history"), 2);
         fold(&mut a, &[second]);
         assert_eq!(document(&a, "history"), 2);
@@ -781,14 +854,31 @@ mod tests {
     }
 
     #[test]
+    fn a_persons_request_and_a_batch_entry_keep_no_journal_even_with_a_cli_trigger_file() {
+        let factory = factory();
+        // A batch's entries copy their planning task's trigger, which `priory batch add` sets to cli.
+        let mut a = runner("cli");
+        let (reply, queued) = call(
+            &mut a,
+            &factory,
+            "journal_append",
+            json!({ "kind": "run", "body": 1 }),
+        );
+        assert!(
+            reply.is_err_and(|why| why.ends_with("has no trigger (it came from cli), so it has no journal: only the runs of a factory trigger keep one")),
+        );
+        assert!(queued.is_none());
+    }
+
+    #[test]
     fn a_message_for_a_task_no_trigger_of_its_own_requested_reaches_no_journal() {
         let mut a = crate::state::memory();
-        let mut other = write(JOURNAL_APPENDED, "run", json!(1));
+        let mut other = written(JOURNAL_APPENDED, "run", json!(1));
         other.data["trigger"] = json!("weekly");
         // A request the log holds only after a write comes too late for it.
-        let early = write(JOURNAL_APPENDED, "run", json!(2));
-        fold(&mut a, &[other, early, request()]);
-        fold(&mut a, &[write(JOURNAL_APPENDED, "run", json!(3))]);
+        let early = written(JOURNAL_APPENDED, "run", json!(2));
+        fold(&mut a, &[other, early, request("daily")]);
+        fold(&mut a, &[written(JOURNAL_APPENDED, "run", json!(3))]);
         assert_eq!(tables(&a).0.len(), 1);
         let read = entries(&a, "daily", None, None, None).unwrap().unwrap();
         assert_eq!(read["entries"][0]["body"], 3);
@@ -803,9 +893,9 @@ mod tests {
         let mut a = crate::state::memory();
         let at = |text: &str| text.parse::<jiff::Timestamp>().unwrap();
         let early =
-            write(JOURNAL_APPENDED, "run", json!("early")).time(at("2026-11-26T10:00:00.5Z"));
-        let late = write(JOURNAL_APPENDED, "run", json!("late")).time(at("2026-11-26T10:00:01Z"));
-        fold(&mut a, &[request(), early, late]);
+            written(JOURNAL_APPENDED, "run", json!("early")).time(at("2026-11-26T10:00:00.5Z"));
+        let late = written(JOURNAL_APPENDED, "run", json!("late")).time(at("2026-11-26T10:00:01Z"));
+        fold(&mut a, &[request("daily"), early, late]);
         let read = |since: &str| {
             entries(&a, "daily", None, Some(since), None)
                 .unwrap()
