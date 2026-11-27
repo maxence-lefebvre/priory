@@ -46,7 +46,7 @@ priory --version
 
 `cargo install` builds Priory and puts `priory` in `~/.cargo/bin`, which `rustup` added to your
 `PATH`, so every terminal you open finds it. The last command prints the version, such as
-`priory 1.3.14`.
+`priory 1.3.15`.
 
 ## 2. Write a factory
 
