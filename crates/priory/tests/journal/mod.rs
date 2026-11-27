@@ -316,12 +316,35 @@ fn an_import_appends_a_files_lines_in_order_and_a_second_one_needs_again() {
         again.status.code() == Some(1) && stderr.contains("pass --again"),
         "{again:?}"
     );
-    let appended = import(&["--entries", runs, "--kind", "run", "--again"]);
+    // A run's shell, even with PRIORY_SESSION emptied, cannot import.
+    let in_run = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .env("PRIORY_SESSION", "")
+        .args([
+            "journal",
+            "import",
+            factory,
+            "agent-label",
+            "--entries",
+            runs,
+            "--kind",
+            "run",
+            "--again",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        in_run.status.code() == Some(2)
+            && String::from_utf8_lossy(&in_run.stderr).contains("only a person runs it"),
+        "{in_run:?}"
+    );
+    // --skip 1 publishes the file's last two lines, after the refused imports.
+    let appended = import(&["--entries", runs, "--kind", "run", "--again", "--skip", "1"]);
     assert!(appended.status.success(), "{appended:?}");
     assert_eq!(
-        bodies(&entries(6)).len(),
-        6,
-        "the refused import wrote nothing"
+        bodies(&entries(5)),
+        [1, 2, 3, 2, 3].map(|run| json!({ "run": run })),
+        "the refused imports wrote nothing"
     );
 
     let document = ["--document", "history", history.to_str().unwrap()];

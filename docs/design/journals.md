@@ -226,7 +226,10 @@ An automation moves once, by its trigger:
 Importing twice writes every entry twice. The command refuses when the journal already has entries,
 or one of the documents it puts, unless the person passes `--again`. An import's messages carry the
 person's name in `person` and no `task`, and every runner applies a message with no `task` only
-when it names a person.
+when it names a person. The fold cannot tell a person's message from a forged one, so it trusts the log's
+writer roles: only a runner's daemon role may publish journal types, and the shell guard refuses
+`import` in a run's shell. A later fix gives `import` its own role on the log, and every runner
+applies a message with no `task` only from that role.
 
 ## Failure modes
 

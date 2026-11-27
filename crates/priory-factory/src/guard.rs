@@ -166,6 +166,8 @@ pub fn person_verb(args: &[String]) -> bool {
         ["score", ..] => args
             .iter()
             .any(|arg| arg == "--calibrate" || arg.starts_with("--calibrate=")),
+        // A run writes its journal with `append` and `put`; an import writes any trigger's.
+        ["journal", "import", ..] => true,
         // A run reads only its own trigger's journal; `--trigger` reads any.
         ["journal", ..] => args
             .iter()
@@ -2178,6 +2180,8 @@ mod tests {
             "env -u PRIORY_SESSION priory mcp --outside",
             "env -u PRIORY_SESSION priory journal read --trigger daily",
             "priory journal get history --trigger daily",
+            "env -u PRIORY_SESSION priory journal import daily --document history h.json --again",
+            "PRIORY_SESSION= priory journal import daily --entries runs.jsonl --kind run",
         ] {
             let hits = guards.hits("Bash", Some(command), &git);
             assert_eq!(hits[0].guard, "priory-person", "{command}");

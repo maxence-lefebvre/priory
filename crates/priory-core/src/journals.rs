@@ -288,11 +288,22 @@ pub fn import(
         return Err(full(trigger, bytes));
     }
     crate::runners::publish_all(factory.log(), &messages).map_err(|(sent, unsent)| {
-        let why = match unsent {
-            crate::runners::Unsent::Nothing(why) | crate::runners::Unsent::Unconfirmed(why) => why,
+        // An unconfirmed publish may have reached the log before it failed.
+        let (reached, why) = match unsent {
+            crate::runners::Unsent::Nothing(why) => (sent.to_string(), why),
+            crate::runners::Unsent::Unconfirmed(why) => {
+                (format!("between {sent} and {}", sent + 1), why)
+            }
+        };
+        let next = if sent < entries.len() {
+            format!(
+                "Once `priory journal read --trigger {trigger}` shows the last entry that arrived, rerun with --again and --skip set to how many of the file's entries the journal holds"
+            )
+        } else {
+            "Every entry reached it: rerun with only the --document options and --again".to_owned()
         };
         format!(
-            "{why}: {sent} of {} writes reached the log, so check the journal before you pass --again",
+            "{why}: {reached} of the {} writes reached the log, entries first. {next}",
             messages.len()
         )
     })?;
@@ -738,7 +749,7 @@ mod tests {
     fn an_import_applies_on_a_runner_with_no_request_and_a_write_with_neither_task_nor_person_does_not()
      {
         let imported = |person: Option<&str>, body: &str| {
-            let mut message = write(JOURNAL_APPENDED, "run", json!({ "line": body }));
+            let mut message = written(JOURNAL_APPENDED, "run", json!({ "line": body }));
             let data = message.data.as_object_mut().unwrap();
             data.remove("task");
             data["runner"] = Value::Null;
