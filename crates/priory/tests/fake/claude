@@ -41,29 +41,59 @@ if [ "${1-}" = --version ]; then
   echo '2.1.330 (Claude Code)'
   exit 0
 fi
-# `claude --cloud PROMPT` appends PROMPT to cloud.log, ended by ---, and to cloud-seen.log one line
-# with its folder, its branch heads, how many files `git status` lists and CCR_FORCE_BUNDLE. Then it
-# prints what Claude Code 2.1.331 prints once it created a cloud session, with the id
-# session_01Fake<n>. In FAKE_DIR, cloud-fail makes it print an error and exit 1, cloud-quiet print
-# nothing, cloud-hang wait until it is killed, cloud-trust show Claude's trust dialog and wait,
-# cloud-title gives the session's title, and cloud-note a line it prints first. With cloud-push, it
-# pushes a commit with that file's content as its message to the branch the prompt names in
-# `git push origin HEAD:<branch>`, from the folder's branch on origin, as the cloud session would.
-# cloud-orphan, which one start consumes, makes that commit descend from nothing.
-# `claude --mcp-config FILE --cloud PROMPT` first copies FILE, ended by ---, to cloud-mcp.log.
+# `claude --cloud DESCRIPTION` appends a placeholder for session n's prompt to cloud.log, ended by
+# ---, and to cloud-seen.log one line with its folder, its branch heads, how many files `git status`
+# lists and CCR_FORCE_BUNDLE. Then it prints what Claude Code 2.1.331 prints once it created a cloud
+# session, with the id session_01Fake<n>. In FAKE_DIR, cloud-fail makes it print an error and exit
+# 1, cloud-quiet print nothing, cloud-hang wait until it is killed, cloud-trust show Claude's trust
+# dialog and wait, cloud-title gives the session's title, and cloud-note a line it prints first.
+# The session's first `-p --cloud` message is its prompt: it takes the placeholder's place in
+# cloud.log. With cloud-push, that message then pushes a commit with that file's content as its
+# message to the branch the prompt names in `git push origin HEAD:<branch>`, from the folder's
+# branch on origin, as the cloud session would. cloud-orphan, which one push consumes, makes that
+# commit descend from nothing.
+# `claude --mcp-config FILE --cloud DESCRIPTION` first copies FILE, ended by ---, to cloud-mcp.log.
 if [ "${1-}" = --mcp-config ] && [ "${3-}" = --cloud ]; then
   { cat "$2"; echo; echo '---'; } >> "$FAKE_DIR/cloud-mcp.log"
   shift 2
 fi
-# `claude -p MSG --cloud ID` appends ID, MSG and --- to cloud-wake.log, as a message to a session.
-if [ "${1-}" = -p ] && [ "${3-}" = --cloud ]; then
-  { printf '%s\n%s\n' "$4" "$2"; echo '---'; } >> "$FAKE_DIR/cloud-wake.log"
+# `claude -p --cloud ID` reads MSG on stdin. A session's first MSG is its prompt; each later one
+# appends ID, MSG and --- to cloud-wake.log, as a message to a session.
+if [ "${1-}" = -p ] && [ "${2-}" = --cloud ]; then
+  msg=$(cat; printf x)
+  msg=${msg%x}
+  n=${3#session_01Fake}
+  origin="$FAKE_DIR/cloud-origin-$n"
+  if [ -e "$origin" ]; then
+    log=$(cat "$FAKE_DIR/cloud.log"; printf x)
+    log=${log%x}
+    printf '%s' "${log/"@cloud-prompt-$n"/"$msg"}" > "$FAKE_DIR/cloud.log"
+    if [ -e "$FAKE_DIR/cloud-push" ]; then
+      branch=$(printf '%s' "$msg" | sed -n 's/.*git push origin HEAD:\([^`]*\)`.*/\1/p' | head -n 1)
+      { read -r from; read -r url; } < "$origin"
+      work=$(mktemp -d)
+      git clone -q -b "$from" "$url" "$work/repo" 2> /dev/null ||
+        git clone -q "$url" "$work/repo"
+      if [ -e "$FAKE_DIR/cloud-orphan" ]; then
+        rm "$FAKE_DIR/cloud-orphan"
+        git -C "$work/repo" checkout -q --orphan lost
+      fi
+      printf 'cloud %s\n' "$n" > "$work/repo/cloud.txt"
+      git -C "$work/repo" add cloud.txt
+      git -C "$work/repo" -c user.name=t -c user.email=t@t commit -qF "$FAKE_DIR/cloud-push"
+      git -C "$work/repo" push -q origin "HEAD:refs/heads/$branch"
+      rm -rf "$work"
+    fi
+    rm "$origin"
+  else
+    { printf '%s\n%s\n' "$3" "$msg"; echo '---'; } >> "$FAKE_DIR/cloud-wake.log"
+  fi
   echo '{"type":"result","subtype":"success","is_error":false}'
   exit 0
 fi
 if [ "${1-}" = --cloud ] && [[ " $* " != *" -p "* ]]; then
-  prompt="${@: -1}"
-  { printf '%s\n' "$prompt"; echo '---'; } >> "$FAKE_DIR/cloud.log"
+  n=$(($(grep -c '^---$' "$FAKE_DIR/cloud.log" 2> /dev/null || true) + 1))
+  { echo "@cloud-prompt-$n"; echo '---'; } >> "$FAKE_DIR/cloud.log"
   echo "$PWD heads=$(git for-each-ref --format='%(refname:short)' refs/heads | paste -sd,) dirty=$(git status --porcelain | wc -l) bundle=${CCR_FORCE_BUNDLE-unset}" >> "$FAKE_DIR/cloud-seen.log"
   if [ ! -t 1 ]; then
     echo 'Error: --cloud requires an interactive terminal.' >&2
@@ -79,22 +109,7 @@ if [ "${1-}" = --cloud ] && [[ " $* " != *" -p "* ]]; then
     printf ' Accessing workspace:\n %s\n Quick safety check: Is this a project you created or one you trust?\n \xe2\x9d\xaf No, exit\n   Yes, I trust this folder\n' "$PWD"
     exec sleep 600
   fi
-  n=$(grep -c '^---$' "$FAKE_DIR/cloud.log")
-  if [ -e "$FAKE_DIR/cloud-push" ]; then
-    branch=$(printf '%s' "$prompt" | sed -n 's/.*git push origin HEAD:\([^`]*\)`.*/\1/p' | head -n 1)
-    work=$(mktemp -d)
-    git clone -q -b "$(git branch --show-current)" "$(git remote get-url origin)" "$work/repo" 2> /dev/null ||
-      git clone -q "$(git remote get-url origin)" "$work/repo"
-    if [ -e "$FAKE_DIR/cloud-orphan" ]; then
-      rm "$FAKE_DIR/cloud-orphan"
-      git -C "$work/repo" checkout -q --orphan lost
-    fi
-    printf 'cloud %s\n' "$n" > "$work/repo/cloud.txt"
-    git -C "$work/repo" add cloud.txt
-    git -C "$work/repo" -c user.name=t -c user.email=t@t commit -qF "$FAKE_DIR/cloud-push"
-    git -C "$work/repo" push -q origin "HEAD:refs/heads/$branch"
-    rm -rf "$work"
-  fi
+  printf '%s\n%s\n' "$(git branch --show-current)" "$(git remote get-url origin)" > "$FAKE_DIR/cloud-origin-$n"
   cat "$FAKE_DIR/cloud-note" 2> /dev/null
   echo "Created cloud session: $(cat "$FAKE_DIR/cloud-title" 2> /dev/null || echo 'Fake task')"
   echo "View: https://claude.ai/code/session_01Fake$n?from=cli&m=0"
