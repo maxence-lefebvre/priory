@@ -6,7 +6,7 @@ use super::harness;
 
 use herdr_bus::{Bus, Message, Output, Seq, Stored};
 use priory_intake::log::Log;
-use priory_intake::log::postgres::{Postgres, client};
+use priory_intake::log::postgres::{Cursor, Postgres, client};
 use serde_json::json;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -221,6 +221,14 @@ fn a_copy_keeps_every_message_and_every_cursor() {
             Log::ack(&bus, consumer, &delivery).unwrap();
         }
     }
+    // A disabled connection keeps its cursor, so it is copied too.
+    let reader_c = bus
+        .connections()
+        .unwrap()
+        .into_iter()
+        .find(|connection| connection.consumer.starts_with("reader.c@"))
+        .unwrap();
+    bus.set_enabled(reader_c.id, false).unwrap();
     let before: Vec<Stored> = ["first", "second"]
         .iter()
         .flat_map(|output| oldest_first(&bus, output))
@@ -358,4 +366,21 @@ fn a_copy_refuses_a_log_that_holds_a_message_and_a_dry_run_writes_nothing() {
     let other = log.messages("other", None, 10).unwrap();
     assert_eq!((other.len(), other[0].seq), (1, seq));
     assert!(log.messages("first", None, 10).unwrap().is_empty());
+}
+
+#[test]
+fn a_copy_refuses_a_cursor_past_the_last_message() {
+    let Some(setup) = Setup::new("ahead") else {
+        return;
+    };
+    let log = setup.postgres();
+    // What a daemon that acked a message published during the copy leaves.
+    let ahead = Cursor {
+        consumer: "priory".into(),
+        output: INTAKE.into(),
+        seq: 1,
+    };
+    let error = log.copy_in(&[], &[ahead], false).unwrap_err().to_string();
+    assert!(error.contains("stop the daemon and the intake"), "{error}");
+    assert!(log.backlog(INTAKE).unwrap().is_empty());
 }

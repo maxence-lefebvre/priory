@@ -21,20 +21,16 @@ pub fn from_herdr_bus(path: &Path, target: &Postgres, dry_run: bool) -> Result<S
     if !path.is_file() {
         return Err(format!("{} is no herdr-bus file", path.display()).into());
     }
+    target.refuse_held()?;
     let bus = Bus::open(path)?;
     let messages = all(&bus)?;
     let here = format!("@{}", bus.id());
     let mut cursors = Vec::new();
     let mut skipped = Vec::new();
     for connection in bus.connections()? {
-        // Postgres keeps neither taps nor disabled connections.
-        if connection.output == herdr_bus::TAP || !connection.enabled {
-            skipped.push(format!(
-                "{} on {}{}",
-                connection.consumer,
-                connection.output,
-                if connection.enabled { "" } else { ", disabled" }
-            ));
+        // Postgres keeps no tap. A disabled connection keeps its cursor, so it reads on from there.
+        if connection.output == herdr_bus::TAP {
+            skipped.push(format!("{} on {}", connection.consumer, connection.output));
             continue;
         }
         // Priory's readers go by their bare name, as `Log::backlog` shows them.
@@ -83,7 +79,10 @@ pub fn from_herdr_bus(path: &Path, target: &Postgres, dry_run: bool) -> Result<S
         "left in herdr-bus: its id, its outputs' descriptions and its requests' replies"
     )?;
     if dry_run {
-        write!(report, "\ndry run: the Postgres log is unchanged")?;
+        write!(
+            report,
+            "\ndry run: the Postgres log holds no message or cursor"
+        )?;
     }
     Ok(report)
 }

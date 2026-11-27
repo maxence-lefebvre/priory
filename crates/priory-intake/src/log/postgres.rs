@@ -324,6 +324,12 @@ impl Log for Postgres {
     }
 }
 
+const HELD: &str = "SELECT EXISTS (SELECT 1 FROM priory_log_messages)
+    OR EXISTS (SELECT 1 FROM priory_log_cursors)";
+
+const REFUSED: &str =
+    "the Postgres log already holds messages or cursors: priory log copy only fills an empty log";
+
 /// One consumer's cursor on one output, as `copy_in` writes it.
 pub struct Cursor {
     pub consumer: String,
@@ -332,10 +338,33 @@ pub struct Cursor {
 }
 
 impl Postgres {
+    /// Refuses a log that holds any message or cursor, before a copy reads its source.
+    pub fn refuse_held(&self) -> Result<()> {
+        if self.run(|client| Ok(client.query_one(HELD, &[])?.get::<_, bool>(0)))? {
+            return Err(REFUSED.into());
+        }
+        Ok(())
+    }
+
     /// Writes `messages`, oldest first, with their seqs, and `cursors` into this log in one
     /// transaction, and refuses a log that holds any message or cursor already, so a copy never
     /// mixes two histories. Later publishes get seqs past the last copied. `dry_run` rolls back.
     pub fn copy_in(&self, messages: &[Stored], cursors: &[Cursor], dry_run: bool) -> Result<()> {
+        // A cursor past the last message means a reader acked during the copy: Postgres would
+        // hand its next seqs to new messages, and that reader would skip them.
+        let last = messages
+            .iter()
+            .map(|stored| stored.seq.0)
+            .max()
+            .unwrap_or(0);
+        if let Some(cursor) = cursors.iter().find(|cursor| cursor.seq > last) {
+            return Err(format!(
+                "{} on {} read up to {}, past the last copied message {last}: \
+                 stop the daemon and the intake, then copy again",
+                cursor.consumer, cursor.output, cursor.seq
+            )
+            .into());
+        }
         let mut rows = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for stored in messages {
             rows.0.push(stored.seq.0);
@@ -358,17 +387,8 @@ impl Postgres {
                 "SELECT pg_advisory_xact_lock(hashtext('priory_log_publish'))",
                 &[],
             )?;
-            let held: bool = tx
-                .query_one(
-                    "SELECT EXISTS (SELECT 1 FROM priory_log_messages)
-                         OR EXISTS (SELECT 1 FROM priory_log_cursors)",
-                    &[],
-                )?
-                .get(0);
-            if held {
-                return Err("the Postgres log already holds messages or cursors: \
-                            priory log copy only fills an empty log"
-                    .into());
+            if tx.query_one(HELD, &[])?.get(0) {
+                return Err(REFUSED.into());
             }
             tx.execute(
                 "INSERT INTO priory_log_messages (seq, output, id, published, message)

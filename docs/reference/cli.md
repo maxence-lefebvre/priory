@@ -57,10 +57,11 @@ does and the page that describes it.
   message keeps its seq, id, body and published time, and each consumer keeps its cursor, so the
   intake fires no schedule slot again and polls no baseline again. Later publishes get seqs past the
   last copied one. It refuses a Postgres log that holds any message or cursor, and a failed copy
-  writes nothing. It prints the messages per output and the cursor per consumer. It skips taps,
-  disabled connections, the bus's id, its outputs' descriptions and its requests' replies, which
-  Postgres has no place for. `--dry-run` prints the same counts and writes nothing. Stop the
-  intake and every daemon on the factory first.
+  writes nothing. It prints the messages per output and the cursor per consumer. It refuses a cursor
+  past the last copied message, which a reader that acked during the copy leaves. It skips taps, the
+  bus's id, its outputs' descriptions and its requests' replies, which Postgres has no place for.
+  `--dry-run` prints the same counts and writes no message or cursor. Stop the intake and every
+  daemon on the factory first.
 - `priory gateway grant [DIR] --for DURATION`: makes a run grant that lasts `DURATION`, such as
   `30m`, from when the log takes it. It publishes `priory.run.granted` with the token's SHA-256, and
   prints `{ "grant", "token" }`. The token is printed once and reaches nothing else.
