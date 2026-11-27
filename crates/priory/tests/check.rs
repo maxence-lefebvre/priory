@@ -5294,6 +5294,65 @@ fn a_cloud_step_with_a_proof_a_guard_a_plan_field_or_another_outcome_fails_the_c
 }
 
 #[test]
+fn a_cloud_step_routes_any_outcome_only_through_the_gateway() {
+    let agent = ("agents/implementer/agent.md", CLOUD_AGENT);
+    let mut files = with(agent.0, agent.1);
+    files.retain(|(file, _)| !["workflows/implement.toml", "factory.toml"].contains(file));
+    files.push(("workflows/implement.toml", WORKFLOW));
+    let on =
+        "name = \"demo\"\n[cloud]\ngateway = true\ngateway_url = \"https://diocese.example/mcp\"\n";
+    files.push(("factory.toml", on));
+
+    let outcome = check(&factory("cloud-gateway-outcome", &files));
+
+    assert!(
+        !outcome.stderr.contains("cannot name outcome"),
+        "{}",
+        outcome.stderr
+    );
+    assert_eq!(outcome.code, 0, "{}", outcome.stderr);
+
+    for (name, url, code) in [
+        ("cloud-gateway-no-url", None, 1),
+        (
+            "cloud-gateway-plain-http",
+            Some("http://diocese.example/mcp"),
+            1,
+        ),
+        (
+            "cloud-gateway-lookalike",
+            Some("http://127.0.0.1.example/mcp"),
+            1,
+        ),
+        (
+            "cloud-gateway-loopback",
+            Some("http://127.0.0.1:7429/mcp"),
+            0,
+        ),
+        (
+            "cloud-gateway-loopback-v6",
+            Some("http://[::1]:7429/mcp"),
+            0,
+        ),
+        ("cloud-gateway-localhost", Some("http://localhost/mcp"), 0),
+    ] {
+        let url = url.map_or(String::new(), |url| format!("gateway_url = \"{url}\"\n"));
+        let settings = format!("name = \"demo\"\n[cloud]\ngateway = true\n{url}");
+        let mut each = files.clone();
+        each.pop();
+        each.push(("factory.toml", &settings));
+
+        let outcome = check(&factory(name, &each));
+
+        assert_eq!(outcome.code, code, "{name}: {}", outcome.stderr);
+        let refused = outcome
+            .stderr
+            .contains("`[cloud] gateway = true` needs `gateway_url`");
+        assert_eq!(refused, code == 1, "{name}: {}", outcome.stderr);
+    }
+}
+
+#[test]
 fn a_cloud_step_that_may_change_nothing_fails_the_check() {
     for effect in ["none", "read"] {
         let workflow = WORKFLOW

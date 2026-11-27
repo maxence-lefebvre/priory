@@ -326,6 +326,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut probed = factory.sandboxed();
     let mut jailing = if probed { probe() } else { Ok(()) };
     state::uncertain(&db)?;
+    priory_runtime::cloud::sweep_servers(&home);
     crate::keyboard::adopt(&mut db, &trace)?;
     // No one watches a compaction a stopped daemon started, so it never types its `/compact`.
     for tmux in idle::tmux_sessions(&db)? {
@@ -3208,6 +3209,13 @@ fn start(
                 None => Ok(()),
             }
         };
+        let mcp = {
+            let tx = db.transaction()?;
+            let seconds = crate::cloud::lifetime(step).as_secs();
+            let mcp = crate::grant::make(&tx, trace, run, admission.task, seconds)?;
+            tx.commit()?;
+            mcp
+        };
         let start = priory_runtime::cloud::Start {
             tmux: crate::cloud::tmux(admission.task),
             home: home.to_path_buf(),
@@ -3216,6 +3224,7 @@ fn start(
             branch,
             head,
             prompt: factory.prompt(&agent.value),
+            mcp,
         };
         crate::cloud::dispatch(db, step, run, admission.task, &session, start, screen)?;
         return Ok(Ok(()));

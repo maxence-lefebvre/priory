@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 130;
+const VERSION: i64 = 131;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -2304,6 +2304,27 @@ CREATE TABLE IF NOT EXISTS diocese (
 PRAGMA user_version = 130;
 ";
 
+// Each cloud run's grant at the diocese's gateway, by the token's hash only, and the calls it carried.
+const SCHEMA_131: &str = "
+CREATE TABLE IF NOT EXISTS run_grants (
+  run      INTEGER PRIMARY KEY,
+  grant_id TEXT NOT NULL UNIQUE,
+  hash     TEXT NOT NULL,
+  revoked  INTEGER NOT NULL DEFAULT 0,
+  reported TEXT,
+  wake     INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS run_calls (
+  call      TEXT PRIMARY KEY,
+  grant_id  TEXT NOT NULL,
+  tool      TEXT NOT NULL,
+  arguments TEXT NOT NULL,
+  reply     TEXT,
+  failed    INTEGER
+);
+PRAGMA user_version = 131;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -2322,7 +2343,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112, SCHEMA_113,
     SCHEMA_114, SCHEMA_115, SCHEMA_116, SCHEMA_117, SCHEMA_118, SCHEMA_119, SCHEMA_120, SCHEMA_121,
     SCHEMA_122, SCHEMA_123, SCHEMA_124, SCHEMA_125, SCHEMA_126, SCHEMA_127, SCHEMA_128, SCHEMA_129,
-    SCHEMA_130,
+    SCHEMA_130, SCHEMA_131,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -2843,6 +2864,9 @@ pub(crate) fn route_in(
     if crate::memories::handle(tx, message)?.is_some()
         || crate::autopilot::handle(tx, message, trace.runner.is_some())?.is_some()
     {
+        return Ok(Vec::new());
+    }
+    if crate::grant::called(tx, message)? {
         return Ok(Vec::new());
     }
     if let Some(me) = trace.runner.as_deref()

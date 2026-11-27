@@ -1,0 +1,96 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/events/priory.run.replied.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Link": {
+      "additionalProperties": false,
+      "description": "A link for people.",
+      "properties": {
+        "label": {
+          "description": "`issue` or `pull_request`.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "type": "object"
+    },
+    "RunReplied": {
+      "additionalProperties": false,
+      "description": "A runner applied a call the gateway handed over, once, and replies with the tool's text.\nPublished by the runner's daemon.",
+      "properties": {
+        "call": {
+          "description": "The call's id.",
+          "type": "string"
+        },
+        "error": {
+          "description": "Whether the tool refused the call.",
+          "type": "boolean"
+        },
+        "grant": {
+          "description": "The grant the call came with.",
+          "type": "string"
+        },
+        "text": {
+          "description": "What the tool said.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "call",
+        "grant",
+        "text",
+        "error"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "A runner applied a call the gateway handed over, once, and replies with the tool's text.\nPublished by the runner's daemon.",
+  "properties": {
+    "data": {
+      "$ref": "#/definitions/RunReplied"
+    },
+    "id": {
+      "description": "A UUIDv5 of the message's name, so a retried publish keeps its id.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "links": {
+      "description": "GitHub and Linear events carry one link to the event's page.",
+      "items": {
+        "$ref": "#/definitions/Link"
+      },
+      "type": "array"
+    },
+    "subject": {
+      "description": "A short line for listings, such as `owner/name#42`.",
+      "type": "string"
+    },
+    "time": {
+      "description": "When the event happened, RFC 3339.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "type": {
+      "const": "priory.run.replied",
+      "description": "The message type, such as `github.issues.labeled`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "subject",
+    "time",
+    "data",
+    "links"
+  ],
+  "title": "priory.run.replied",
+  "type": "object"
+}

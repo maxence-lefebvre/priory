@@ -1062,7 +1062,8 @@ pub struct TaskHeld {
 }
 
 /// A runner made a run grant: a token that signs a cloud run in at the diocese's gateway. The token
-/// itself never reaches the log. Published by `priory gateway grant`.
+/// itself never reaches the log. Published by a runner as a cloud run starts, or by
+/// `priory gateway grant`.
 #[derive(JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RunGranted {
@@ -1073,6 +1074,49 @@ pub struct RunGranted {
     pub hash: String,
     /// How long the grant lasts, in seconds from when the log took this message.
     pub seconds: u64,
+    /// The key of the task whose cloud run the grant signs in; none on a grant made by hand.
+    pub task: Option<String>,
+    /// The cloud run's id on its runner; none on a grant made by hand.
+    pub run: Option<i64>,
+    /// The runner that made the grant and applies its calls; none on a grant made by hand, and on
+    /// a factory with no runner files.
+    pub runner: Option<String>,
+}
+
+/// The diocese's gateway hands a cloud session's tool call to the runner that made its grant.
+/// Published by `priory gateway`.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RunCalled {
+    /// The call's id. A session that calls again with the same arguments before it got a reply
+    /// makes the same call, so the runner applies it once.
+    #[schemars(extend("format" = "uuid"))]
+    pub call: String,
+    /// The grant the session signed in with.
+    pub grant: String,
+    /// The cloud run the grant names.
+    pub run: i64,
+    /// The runner the grant names; none on a factory with no runner files.
+    pub runner: Option<String>,
+    /// `ask`, `wait` or `result`.
+    pub tool: String,
+    /// The tool's arguments, as the session sent them.
+    pub arguments: serde_json::Value,
+}
+
+/// A runner applied a call the gateway handed over, once, and replies with the tool's text.
+/// Published by the runner's daemon.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RunReplied {
+    /// The call's id.
+    pub call: String,
+    /// The grant the call came with.
+    pub grant: String,
+    /// What the tool said.
+    pub text: String,
+    /// Whether the tool refused the call.
+    pub error: bool,
 }
 
 /// A run grant stops working: the gateway refuses its token from its next read of the log on.

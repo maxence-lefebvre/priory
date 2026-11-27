@@ -23,7 +23,7 @@
     },
     "RunGranted": {
       "additionalProperties": false,
-      "description": "A runner made a run grant: a token that signs a cloud run in at the diocese's gateway. The token\nitself never reaches the log. Published by `priory gateway grant`.",
+      "description": "A runner made a run grant: a token that signs a cloud run in at the diocese's gateway. The token\nitself never reaches the log. Published by a runner as a cloud run starts, or by\n`priory gateway grant`.",
       "properties": {
         "grant": {
           "description": "The grant's id.",
@@ -34,22 +34,47 @@
           "description": "The token's SHA-256, in lowercase hex.",
           "type": "string"
         },
+        "run": {
+          "description": "The cloud run's id on its runner; none on a grant made by hand.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "runner": {
+          "description": "The runner that made the grant and applies its calls; none on a grant made by hand, and on\na factory with no runner files.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "seconds": {
           "description": "How long the grant lasts, in seconds from when the log took this message.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
+        },
+        "task": {
+          "description": "The key of the task whose cloud run the grant signs in; none on a grant made by hand.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
         "grant",
         "hash",
-        "seconds"
+        "seconds",
+        "task",
+        "run",
+        "runner"
       ],
       "type": "object"
     }
   },
-  "description": "A runner made a run grant: a token that signs a cloud run in at the diocese's gateway. The token\nitself never reaches the log. Published by `priory gateway grant`.",
+  "description": "A runner made a run grant: a token that signs a cloud run in at the diocese's gateway. The token\nitself never reaches the log. Published by a runner as a cloud run starts, or by\n`priory gateway grant`.",
   "properties": {
     "data": {
       "$ref": "#/definitions/RunGranted"

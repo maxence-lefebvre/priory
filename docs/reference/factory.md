@@ -76,6 +76,8 @@ See [cloud.md](../daemon/cloud.md) for what a cloud run is.
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `max` | integer, at least 1 | no | `4` | How many cloud runs a runner has at once. Past it, a task waits to start one | `2` |
 | `sessions` | integer, at least 1 | no | `10` | How many cloud sessions one task may start. Past it, the task blocks | `3` |
+| `gateway` | boolean | no | `false` | Whether each cloud run gets a run grant and calls `ask`, `wait` and `result` through the diocese's gateway, and a cloud step may route any outcome. When false, a cloud run reports by its branch push only. See [cloud.md](../daemon/cloud.md#through-the-gateway) | `true` |
+| `gateway_url` | string | with `gateway = true` | none | The gateway's MCP endpoint, which each cloud session connects to with its token: `https://`, or `http://` to a loopback host only | `"https://diocese.example/mcp"` |
 
 ## `[intake]`
 

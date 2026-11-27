@@ -1,0 +1,13 @@
+{
+  "id": "0196c0a4-3c2d-7e4f-8a51-7b8c9d0e1f20",
+  "type": "priory.run.replied",
+  "subject": "0196c0a4-2b1c-7d3e-9f40-6a7b8c9d0e1e",
+  "time": "2026-11-21T10:02:01Z",
+  "data": {
+    "call": "0196c0a4-2b1c-7d3e-9f40-6a7b8c9d0e1e",
+    "grant": "0196c0a2-7f3e-7b41-9a5d-2e6f8c1b4d6f",
+    "text": "ask 7 stored: end your turn now; Priory wakes you with its answer",
+    "error": false
+  },
+  "links": []
+}

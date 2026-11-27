@@ -264,6 +264,14 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 ));
             }
         }
+        let cloud = &settings.value.cloud;
+        if cloud.gateway && !cloud.gateway_url.as_deref().is_some_and(secure) {
+            problems.push(problem(
+                settings,
+                settings.lines.field("cloud"),
+                "`[cloud] gateway = true` needs `gateway_url`, the gateway's https MCP endpoint, which each cloud session connects to with its token; http is only for a loopback host".to_owned(),
+            ));
+        }
         if !cfg!(feature = "postgres") && settings.value.log.backend == Backend::Postgres {
             problems.push(problem(
                 settings,
@@ -1568,6 +1576,27 @@ fn check_codex(factory: &Factory, agent: &Loaded<Agent>, problems: &mut Vec<Prob
     }
 }
 
+/// Whether `url` keeps a bearer token off the network in plain text: https, or http to loopback.
+fn secure(url: &str) -> bool {
+    if url.starts_with("https://") {
+        return true;
+    }
+    let Some(rest) = url.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = match authority.strip_prefix('[') {
+        Some(bracketed) => bracketed.split(']').next().unwrap_or_default(),
+        None => authority
+            .rsplit_once(':')
+            .map_or(authority, |(host, _)| host),
+    };
+    host == "localhost"
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
 /// The outcomes a cloud step may route: the daemon stores the result, and has only these two.
 pub const CLOUD_OUTCOMES: [&str; 2] = ["pushed", "failed"];
 
@@ -1676,11 +1705,11 @@ fn cloud_step_problems(factory: &Factory, step: &Step, sandboxed: bool) -> Vec<S
             "agent `{agent}` runs in the cloud, so the workflow cannot have `sandbox`: Priory cannot jail a cloud session"
         ));
     }
-    for outcome in step
-        .next
-        .keys()
-        .filter(|key| !CLOUD_OUTCOMES.contains(&key.as_str()))
-    {
+    // Through the gateway, a cloud session calls `result` with any outcome of its step.
+    let routed = |key: &&String| {
+        factory.cloud_gateway().is_none() && !CLOUD_OUTCOMES.contains(&key.as_str())
+    };
+    for outcome in step.next.keys().filter(routed) {
         problems.push(format!(
             "agent `{agent}` runs in the cloud, so `next` cannot name outcome `{outcome}`: a cloud step ends `pushed` or `failed`"
         ));

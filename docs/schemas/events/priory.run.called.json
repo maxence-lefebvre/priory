@@ -1,0 +1,110 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/events/priory.run.called.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Link": {
+      "additionalProperties": false,
+      "description": "A link for people.",
+      "properties": {
+        "label": {
+          "description": "`issue` or `pull_request`.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "type": "object"
+    },
+    "RunCalled": {
+      "additionalProperties": false,
+      "description": "The diocese's gateway hands a cloud session's tool call to the runner that made its grant.\nPublished by `priory gateway`.",
+      "properties": {
+        "arguments": {
+          "description": "The tool's arguments, as the session sent them."
+        },
+        "call": {
+          "description": "The call's id. A session that calls again with the same arguments before it got a reply\nmakes the same call, so the runner applies it once.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "grant": {
+          "description": "The grant the session signed in with.",
+          "type": "string"
+        },
+        "run": {
+          "description": "The cloud run the grant names.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "runner": {
+          "description": "The runner the grant names; none on a factory with no runner files.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tool": {
+          "description": "`ask`, `wait` or `result`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "call",
+        "grant",
+        "run",
+        "runner",
+        "tool",
+        "arguments"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "The diocese's gateway hands a cloud session's tool call to the runner that made its grant.\nPublished by `priory gateway`.",
+  "properties": {
+    "data": {
+      "$ref": "#/definitions/RunCalled"
+    },
+    "id": {
+      "description": "A UUIDv5 of the message's name, so a retried publish keeps its id.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "links": {
+      "description": "GitHub and Linear events carry one link to the event's page.",
+      "items": {
+        "$ref": "#/definitions/Link"
+      },
+      "type": "array"
+    },
+    "subject": {
+      "description": "A short line for listings, such as `owner/name#42`.",
+      "type": "string"
+    },
+    "time": {
+      "description": "When the event happened, RFC 3339.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "type": {
+      "const": "priory.run.called",
+      "description": "The message type, such as `github.issues.labeled`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "subject",
+    "time",
+    "data",
+    "links"
+  ],
+  "title": "priory.run.called",
+  "type": "object"
+}

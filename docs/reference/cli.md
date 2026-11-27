@@ -66,7 +66,12 @@ does and the page that describes it.
   `Authorization: Bearer`, and a missing, unknown, expired or revoked one gets `401`. A grant may
   make 60 calls a minute, and all requests together 10 refused ones, past which they get `429`. A
   method other than `POST` gets `405`, and a body over 64 KiB gets `413` before it is read. It
-  serves one tool, `whoami`, which names the grant and acts on nothing. It reads grants from the
+  serves `whoami`, which names the grant and acts on nothing, and `ask`, `wait` and `result` to a
+  grant a runner made for a cloud run. It hands each of those to that runner as
+  `priory.run.called`, refuses it once the task's claim names another runner, and answers with the
+  runner's `priory.run.replied`, or that the runner is away after 40 seconds. At most 2 calls of one
+  grant, and 128 in all, wait for a reply at once; past that, a call is refused at once. It reads grants, claims
+  and replies from the
   log as the consumer `priory.gateway` into `$PRIORY_HOME/diocese-gateway.db`, each second, and
   answers `503` to every request while its last full read is over 10 seconds old. It skips a grant
   message it cannot record, such as one whose hash another grant has. It appends one JSON line per

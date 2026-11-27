@@ -1,9 +1,10 @@
 //! The diocese's gateway: an HTTP MCP endpoint that a cloud run reaches with a run grant's token.
-//! It serves `whoami` only, which proves the connection and acts on nothing.
+//! It serves `whoami`, which acts on nothing, and `ask`, `wait` and `result`, which it hands to the
+//! runner that owns the run's task through the log and answers with that runner's reply.
 
 use herdr_bus::Message;
 use priory_factory::factory::Factory;
-use priory_intake::intake::{self, OUTPUT};
+use priory_intake::intake::{self, OUTPUT, TASK_CLAIMED as CLAIMED};
 use priory_intake::log::Log;
 use priory_intake::log::sql::GATEWAY_CONSUMER;
 use priory_runtime::http::{self, Lane, Reply, Request};
@@ -22,6 +23,10 @@ use std::time::{Duration, Instant};
 pub const GRANTED: &str = "priory.run.granted";
 /// A run grant stops working.
 pub const REVOKED: &str = "priory.run.revoked";
+/// The gateway hands a cloud session's tool call to the runner that made its grant.
+pub const CALLED: &str = "priory.run.called";
+/// That runner applied the call once, with this text or error.
+pub const REPLIED: &str = "priory.run.replied";
 
 /// The one path the gateway serves.
 const PATH: &str = "/mcp";
@@ -37,6 +42,15 @@ const CALLS: u32 = 60;
 /// Refused requests a minute, from anyone: behind the TLS proxy every peer is loopback anyway.
 const REFUSALS: u32 = 10;
 const MINUTE: Duration = Duration::from_secs(60);
+/// How long a call waits for its runner's reply: the bound a run's MCP server waits on the socket.
+const REPLY: Duration = Duration::from_secs(40);
+/// How many calls wait for a reply at once.
+// shortcut: the server has 8 handler threads, so past 8 waiting calls the rest queue; raise its
+// threads for this lane if a factory runs more cloud sessions at once.
+const WAITING: usize = 128;
+/// How many calls of one grant wait for a reply at once, so one session whose runner is away cannot
+/// hold every handler thread.
+const GRANT_WAITING: usize = 2;
 
 /// Makes a grant that lasts `span`, such as `30m`, publishes its hash on the log, and returns the
 /// grant's id and its token as JSON. The token reaches nothing else.
@@ -50,7 +64,8 @@ pub fn grant(factory: &Factory, span: &str) -> Result<String, String> {
     }
     let token = crate::serve::new_secret()?;
     let id = uuid::Uuid::now_v7().to_string();
-    let data = json!({ "grant": id, "hash": hash(&token), "seconds": seconds });
+    let data = json!({ "grant": id, "hash": hash(&token), "seconds": seconds, "task": null,
+        "run": null, "runner": null });
     crate::runners::publish(factory.log(), &Message::new(GRANTED, data).subject(&id))?;
     Ok(json!({ "grant": id, "token": token }).to_string())
 }
@@ -90,6 +105,7 @@ pub fn serve(factory: &Factory, listen: SocketAddr) -> Result<(), String> {
         calls: Mutex::new(Window::default()),
         refusals: Mutex::new(Window::default()),
         synced: Mutex::new(Instant::now()),
+        waiting: Mutex::new(HashMap::new()),
     });
     gate.sync(&*log, &db)?;
     let listener =
@@ -98,11 +114,13 @@ pub fn serve(factory: &Factory, listen: SocketAddr) -> Result<(), String> {
     // Every path but `PATH` needs this token, which nobody holds.
     let nobody = crate::serve::new_secret()?;
     let served = Arc::clone(&gate);
+    let events = factory.log().clone();
     let make = move || {
         let (gate, db) = (Arc::clone(&served), open(&state));
-        move |request: &Request| match &db {
-            Ok(db) => gate.handle(db, request),
-            Err(error) => Reply::error(500, error),
+        let log = priory_intake::log::open(&events).map_err(|error| error.to_string());
+        move |request: &Request| match (&db, &log) {
+            (Ok(db), Ok(log)) => gate.handle(db, &**log, request),
+            (Err(error), _) | (_, Err(error)) => Reply::error(500, error),
         }
     };
     http::serve(
@@ -139,17 +157,62 @@ fn open(path: &Path) -> Result<Connection, String> {
                      deadline INTEGER,
                      revoked INTEGER NOT NULL DEFAULT 0
                  );",
+            )?;
+            let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+            if version > 0 {
+                return Ok(());
+            }
+            // The grants a runner makes per cloud run name their task, run and runner.
+            db.execute_batch(
+                "BEGIN IMMEDIATE;
+                 ALTER TABLE grants ADD COLUMN task TEXT;
+                 ALTER TABLE grants ADD COLUMN run INTEGER;
+                 ALTER TABLE grants ADD COLUMN runner TEXT;
+                 CREATE TABLE claims (key TEXT PRIMARY KEY, runner TEXT NOT NULL);
+                 CREATE TABLE calls (
+                     key TEXT PRIMARY KEY,
+                     call TEXT NOT NULL,
+                     delivered INTEGER NOT NULL DEFAULT 0
+                 );
+                 CREATE TABLE replies (
+                     call TEXT PRIMARY KEY,
+                     text TEXT NOT NULL,
+                     error INTEGER NOT NULL
+                 );
+                 PRAGMA user_version = 1;
+                 COMMIT;",
             )
         })
         .map_err(|error| format!("{}: {error}", path.display()))?;
     Ok(db)
 }
 
-fn hash(token: &str) -> String {
+pub(crate) fn hash(token: &str) -> String {
     Sha256::digest(token.as_bytes())
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+/// The length of a run grant's token: 128 bits in hex.
+const TOKEN: usize = 32;
+
+/// Whether `text` holds the token whose SHA-256 is `hash`, in any case. It hashes every run of
+/// `TOKEN` hex digits, so the runner never keeps the token itself.
+pub(crate) fn holds_token(text: &str, hash: &str) -> bool {
+    let hex: Vec<u8> = text.bytes().map(|byte| byte.to_ascii_lowercase()).collect();
+    hex.split(|byte| !byte.is_ascii_hexdigit())
+        .filter(|run| run.len() >= TOKEN)
+        .any(|run| {
+            run.windows(TOKEN).any(|window| {
+                let digest = Sha256::digest(window);
+                digest
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+                    == hash
+            })
+        })
 }
 
 /// Counts per key within the current minute.
@@ -178,6 +241,44 @@ struct Gate {
     refusals: Mutex<Window>,
     /// When the gateway last read the log to its end.
     synced: Mutex<Instant>,
+    /// How many calls of each grant wait for a runner's reply.
+    waiting: Mutex<HashMap<String, usize>>,
+}
+
+/// One call that waits for its runner's reply, counted while it lives.
+struct Waiting<'g> {
+    gate: &'g Gate,
+    grant: String,
+}
+
+impl<'g> Waiting<'g> {
+    /// Counts a call of `grant`, unless as many wait as may.
+    fn begin(gate: &'g Gate, grant: &str) -> Option<Self> {
+        let mut waiting = gate.waiting.lock().ok()?;
+        let all: usize = waiting.values().sum();
+        let mine = waiting.entry(grant.to_owned()).or_default();
+        if all >= WAITING || *mine >= GRANT_WAITING {
+            return None;
+        }
+        *mine += 1;
+        Some(Waiting {
+            gate,
+            grant: grant.to_owned(),
+        })
+    }
+}
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut waiting) = self.gate.waiting.lock()
+            && let Some(count) = waiting.get_mut(&self.grant)
+        {
+            *count -= 1;
+            if *count == 0 {
+                waiting.remove(&self.grant);
+            }
+        }
+    }
 }
 
 impl Gate {
@@ -206,7 +307,7 @@ impl Gate {
         }
     }
 
-    fn handle(&self, db: &Connection, request: &Request) -> Reply {
+    fn handle(&self, db: &Connection, log: &dyn Log, request: &Request) -> Reply {
         if self
             .synced
             .lock()
@@ -251,20 +352,140 @@ impl Gate {
         let call = |params: &Value| match params["name"].as_str() {
             Some("whoami") => Ok(json!({ "content": [{ "type": "text", "text":
                 format!("run grant {id}, valid until {deadline}: the gateway reached Priory") }] })),
-            _ => Err("the gateway serves whoami only".to_owned()),
+            Some(tool @ ("ask" | "wait" | "result")) => {
+                let reply = self.hand_over(db, log, &grant, tool, &params["arguments"]);
+                let (text, failed) = match reply {
+                    Ok(text) => (text, false),
+                    Err(text) => (text, true),
+                };
+                Ok(json!({ "content": [{ "type": "text", "text": text }], "isError": failed }))
+            }
+            _ => Err("the gateway serves whoami, ask, wait and result".to_owned()),
         };
-        let (status, body, outcome) =
-            match mcp::respond(&line, &json!([whoami()]), INSTRUCTIONS, &call) {
-                None => (202, String::new(), "notification".to_owned()),
-                Some(reply) => {
-                    let outcome = reply["error"]["message"]
-                        .as_str()
-                        .map_or_else(|| "served".to_owned(), |error| format!("error: {error}"));
-                    (200, reply.to_string(), outcome)
-                }
-            };
+        let mut tools = mcp::gateway_tools();
+        tools
+            .as_array_mut()
+            .expect("tools are a list")
+            .insert(0, whoami());
+        let (status, body, outcome) = match mcp::respond(&line, &tools, INSTRUCTIONS, &call) {
+            None => (202, String::new(), "notification".to_owned()),
+            Some(reply) => {
+                let failed = reply["result"]["isError"] == true;
+                let outcome = reply["error"]["message"].as_str().map_or_else(
+                    || {
+                        if failed {
+                            "refused".to_owned()
+                        } else {
+                            "served".to_owned()
+                        }
+                    },
+                    |error| format!("error: {error}"),
+                );
+                (200, reply.to_string(), outcome)
+            }
+        };
         self.audit(Some(id), tool, Some(status), &outcome);
         Reply::json(status, body)
+    }
+
+    /// Hands `tool` to the runner of `grant` through the log, and returns its reply, or why there is
+    /// none. A call that got no reply is the same call when the session makes it again, so the
+    /// runner applies it once; once a reply reached the session, the same arguments make a new call.
+    fn hand_over(
+        &self,
+        db: &Connection,
+        log: &dyn Log,
+        grant: &Grant,
+        tool: &str,
+        arguments: &Value,
+    ) -> Result<String, String> {
+        let Some(run) = grant.run else {
+            return Err(format!(
+                "run grant {} names no cloud run, so it reaches whoami only",
+                grant.id
+            ));
+        };
+        let runner = grant.runner.as_deref();
+        // With no runner files, one runner owns every task and no claim names it.
+        if let (Some(task), Some(runner)) = (&grant.task, runner) {
+            let owner: Option<String> = db
+                .query_row("SELECT runner FROM claims WHERE key = ?1", [task], |row| {
+                    row.get(0)
+                })
+                .optional()
+                .map_err(|error| error.to_string())?;
+            if let Some(owner) = owner.filter(|owner| owner != runner) {
+                return Err(format!(
+                    "task {task} moved to runner {owner}, so run grant {} no longer reaches it",
+                    grant.id
+                ));
+            }
+        }
+        let owner = runner.map_or_else(
+            || "its runner".to_owned(),
+            |runner| format!("runner {runner}"),
+        );
+        let key = hash(&format!("{}\n{tool}\n{arguments}", grant.id));
+        // The call is stored before it is published, and a call with no reply yet is the same call
+        // again, so two requests or a crash between the two never make a second call.
+        let mine = uuid::Uuid::now_v7().to_string();
+        db.execute(
+            "INSERT INTO calls (key, call) VALUES (?1, ?2)
+             ON CONFLICT (key) DO UPDATE SET call = ?2, delivered = 0 WHERE delivered",
+            params![key, mine],
+        )
+        .map_err(|error| error.to_string())?;
+        let call: String = db
+            .query_row("SELECT call FROM calls WHERE key = ?1", [&key], |row| {
+                row.get(0)
+            })
+            .map_err(|error| error.to_string())?;
+        let data = json!({ "call": call, "grant": grant.id, "run": run, "runner": runner,
+            "tool": tool, "arguments": arguments });
+        // The log keeps the first message of an id, so publishing the same call again adds nothing.
+        let id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, call.as_bytes());
+        let message = Message::new(CALLED, data)
+            .id(id)
+            .subject(&call)
+            .time(intake::now()?);
+        log.publish(OUTPUT, &message)
+            .map_err(|error| format!("hand the call to {owner}: {error}"))?;
+        let Some(_waiting) = Waiting::begin(self, &grant.id) else {
+            return Err(format!(
+                "over {GRANT_WAITING} calls of this grant, or {WAITING} in all, wait on their runners: call again in a minute"
+            ));
+        };
+        let Some(reply) = self.reply(db, &call)? else {
+            return Err(format!(
+                "{owner} is away: it applies the call once it reads the log. Call the tool again with the same arguments for its reply"
+            ));
+        };
+        db.execute("UPDATE calls SET delivered = 1 WHERE key = ?1", [&key])
+            .map_err(|error| error.to_string())?;
+        reply
+    }
+
+    /// The reply to `call` once the log holds it, or none within `REPLY`.
+    #[allow(clippy::type_complexity)]
+    fn reply(&self, db: &Connection, call: &str) -> Result<Option<Result<String, String>>, String> {
+        let deadline = Instant::now() + REPLY;
+        loop {
+            let found = db
+                .query_row(
+                    "SELECT text, error FROM replies WHERE call = ?1",
+                    [call],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?)),
+                )
+                .optional()
+                .map_err(|error| error.to_string())?;
+            if let Some((text, error)) = found {
+                return Ok(Some(if error { Err(text) } else { Ok(text) }));
+            }
+            if Instant::now() >= deadline {
+                return Ok(None);
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 
     /// The grant the request's bearer token names, while it is live, or why it is refused.
@@ -277,13 +498,16 @@ impl Gate {
             .ok_or("send the run grant's token as `Authorization: Bearer <token>`")?;
         let found = db
             .query_row(
-                "SELECT id, deadline, revoked FROM grants WHERE hash = ?1",
+                "SELECT id, deadline, revoked, task, run, runner FROM grants WHERE hash = ?1",
                 [hash(token)],
                 |row| {
                     Ok((
                         Grant {
                             id: row.get(0)?,
                             deadline: row.get(1)?,
+                            task: row.get(3)?,
+                            run: row.get(4)?,
+                            runner: row.get(5)?,
                         },
                         row.get::<_, bool>(2)?,
                     ))
@@ -319,15 +543,48 @@ impl Gate {
 struct Grant {
     id: String,
     deadline: i64,
+    /// The key of the task whose cloud run holds it, the run and its runner: none on a grant made
+    /// by hand.
+    task: Option<String>,
+    run: Option<i64>,
+    runner: Option<String>,
 }
 
-/// Records one grant or revocation in the gateway's state file, or says why it cannot.
+/// Records one grant, revocation, claim or reply in the gateway's state file, or says why it
+/// cannot.
 fn record(db: &Connection, delivery: &priory_intake::log::Delivery) -> Result<(), String> {
     let kind = delivery.message.kind.as_str();
-    if kind != GRANTED && kind != REVOKED {
-        return Ok(());
-    }
     let data = &delivery.message.data;
+    match kind {
+        // shortcut: the latest claim of a key names its owner, without judging leases as runners do;
+        // the runner that made the grant still refuses a call of a run it ended.
+        CLAIMED => {
+            let (Some(key), Some(runner)) = (data["key"].as_str(), data["runner"].as_str()) else {
+                return Err("it names no key or runner".to_owned());
+            };
+            return db
+                .execute(
+                    "INSERT INTO claims (key, runner) VALUES (?1, ?2)
+                     ON CONFLICT (key) DO UPDATE SET runner = ?2",
+                    [key, runner],
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string());
+        }
+        REPLIED => {
+            let call = data["call"].as_str().ok_or("it names no call")?;
+            let text = data["text"].as_str().unwrap_or_default();
+            return db
+                .execute(
+                    "INSERT OR IGNORE INTO replies (call, text, error) VALUES (?1, ?2, ?3)",
+                    params![call, text, data["error"] == true],
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string());
+        }
+        GRANTED | REVOKED => {}
+        _ => return Ok(()),
+    }
     let id = data["grant"]
         .as_str()
         .filter(|id| !id.is_empty())
@@ -345,9 +602,18 @@ fn record(db: &Connection, delivery: &priory_intake::log::Delivery) -> Result<()
             // The log's clock when it has one, so a runner's clock decides no deadline.
             let from = delivery.logged.unwrap_or(delivery.message.time);
             db.execute(
-                "INSERT INTO grants (id, hash, deadline) VALUES (?1, ?2, ?3)
-                 ON CONFLICT (id) DO UPDATE SET hash = ?2, deadline = ?3",
-                params![id, hash, from.as_second().saturating_add(seconds)],
+                // A grant is made once: a later message with its id changes nothing, and one revoked
+                // before its grant was read stays revoked.
+                "INSERT INTO grants (id, hash, deadline, task, run, runner)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT (id) DO NOTHING",
+                params![
+                    id,
+                    hash,
+                    from.as_second().saturating_add(seconds),
+                    data["task"].as_str(),
+                    data["run"].as_i64(),
+                    data["runner"].as_str(),
+                ],
             )
         }
         _ => db.execute(
@@ -367,7 +633,7 @@ fn limited(status: u16, why: &str) -> Reply {
     reply
 }
 
-const INSTRUCTIONS: &str = "Priory's diocese gateway. whoami says which run grant signed in.";
+const INSTRUCTIONS: &str = "Priory's diocese gateway. whoami says which run grant signed in. ask, wait and result reach the runner that started this cloud run, as they reach a local run.";
 
 fn whoami() -> Value {
     json!({
@@ -411,6 +677,41 @@ mod tests {
     }
 
     #[test]
+    fn a_token_is_found_in_any_case_inside_a_longer_hex_run_and_nowhere_else() {
+        let token = "0123456789abcdef0123456789abcdef";
+        let hash = hash(token);
+        let upper = token.to_uppercase();
+        for text in [
+            format!("Authorization: Bearer {token}\n"),
+            format!("+ secret = \"ff{upper}00\""),
+            format!("commit 1\n\nQuestions: is {token} right?"),
+        ] {
+            assert!(holds_token(&text, &hash), "{text}");
+        }
+        for text in [
+            "0123456789abcdef0123456789abcde".to_owned(),
+            format!("{} {}", &token[..16], &token[16..]),
+            "commit 4b825dc642cb6eb9a060e54bf8d69288fbee4904".to_owned(),
+        ] {
+            assert!(!holds_token(&text, &hash), "{text}");
+        }
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn a_token_scan_never_panics_and_finds_a_token_planted_anywhere(
+            before in "\\PC{0,200}",
+            after in "\\PC{0,200}",
+            token in "[0-9a-f]{32}",
+        ) {
+            let hash = hash(&token);
+            let _ = holds_token(&format!("{before}{after}"), &hash);
+            let planted = format!("{before} {token} {after}");
+            proptest::prop_assert!(holds_token(&planted, &hash));
+        }
+    }
+
+    #[test]
     fn a_gateway_that_cannot_read_the_log_for_over_10s_answers_503() {
         let db = Connection::open_in_memory().unwrap();
         let gate = Gate {
@@ -418,13 +719,14 @@ mod tests {
             calls: Mutex::new(Window::default()),
             refusals: Mutex::new(Window::default()),
             synced: Mutex::new(Instant::now()),
+            waiting: Mutex::new(HashMap::new()),
         };
         let request = Request::get(PATH, Instant::now());
         assert!(gate.sync(&Down, &db).is_err());
-        assert_eq!(gate.handle(&db, &request).status, 405);
+        assert_eq!(gate.handle(&db, &Down, &request).status, 405);
 
         *gate.synced.lock().unwrap() = Instant::now() - STALE - Duration::from_secs(1);
         assert!(gate.sync(&Down, &db).is_err());
-        assert_eq!(gate.handle(&db, &request).status, 503);
+        assert_eq!(gate.handle(&db, &Down, &request).status, 503);
     }
 }

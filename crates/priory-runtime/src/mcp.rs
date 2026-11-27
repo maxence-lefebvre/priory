@@ -233,6 +233,21 @@ pub fn serve_outside(session: Option<&str>) -> Result<(), String> {
     })
 }
 
+/// The schemas of the run tools a cloud session reaches through the diocese's gateway.
+pub fn gateway_tools() -> Value {
+    let tools = tools();
+    let served = ["ask", "wait", "result"];
+    Value::Array(
+        tools
+            .as_array()
+            .expect("the run's tools are a list")
+            .iter()
+            .filter(|tool| served.iter().any(|name| tool["name"] == *name))
+            .cloned()
+            .collect(),
+    )
+}
+
 /// The schemas of `priory mcp --outside`'s tools.
 pub fn outside_tools() -> Value {
     let text = |description: &str| json!({ "type": "string", "description": description });

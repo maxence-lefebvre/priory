@@ -50,6 +50,17 @@ fi
 # pushes a commit with that file's content as its message to the branch the prompt names in
 # `git push origin HEAD:<branch>`, from the folder's branch on origin, as the cloud session would.
 # cloud-orphan, which one start consumes, makes that commit descend from nothing.
+# `claude --mcp-config FILE --cloud PROMPT` first copies FILE, ended by ---, to cloud-mcp.log.
+if [ "${1-}" = --mcp-config ] && [ "${3-}" = --cloud ]; then
+  { cat "$2"; echo; echo '---'; } >> "$FAKE_DIR/cloud-mcp.log"
+  shift 2
+fi
+# `claude -p MSG --cloud ID` appends ID, MSG and --- to cloud-wake.log, as a message to a session.
+if [ "${1-}" = -p ] && [ "${3-}" = --cloud ]; then
+  { printf '%s\n%s\n' "$4" "$2"; echo '---'; } >> "$FAKE_DIR/cloud-wake.log"
+  echo '{"type":"result","subtype":"success","is_error":false}'
+  exit 0
+fi
 if [ "${1-}" = --cloud ] && [[ " $* " != *" -p "* ]]; then
   prompt="${@: -1}"
   { printf '%s\n' "$prompt"; echo '---'; } >> "$FAKE_DIR/cloud.log"

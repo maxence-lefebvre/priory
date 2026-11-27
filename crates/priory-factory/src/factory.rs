@@ -1172,6 +1172,13 @@ pub struct Cloud {
     pub max: Option<std::num::NonZeroU32>,
     /// How many cloud sessions one task may start, 10 when unset. Past it, the task blocks.
     pub sessions: Option<std::num::NonZeroU32>,
+    /// Whether each cloud run gets a run grant and reaches `ask`, `wait` and `result` through the
+    /// diocese's gateway. False when unset: a cloud run reports by its branch push only.
+    #[serde(default)]
+    pub gateway: bool,
+    /// The gateway's public MCP endpoint, such as `https://diocese.example/mcp`, which a cloud
+    /// session connects to. `gateway = true` needs it.
+    pub gateway_url: Option<String>,
 }
 
 /// `[memory]`: how long a command waits in the memory gate.
@@ -3246,6 +3253,15 @@ impl Factory {
             .as_ref()
             .and_then(|settings| settings.value.cloud.sessions)
             .map_or(10, std::num::NonZeroU32::get)
+    }
+
+    /// The gateway's MCP endpoint when cloud runs reach it, which `[cloud] gateway = true` turns on.
+    pub fn cloud_gateway(&self) -> Option<&str> {
+        self.settings
+            .as_ref()
+            .map(|settings| &settings.value.cloud)
+            .filter(|cloud| cloud.gateway)
+            .and_then(|cloud| cloud.gateway_url.as_deref())
     }
 
     /// Whether a task of `repo` may start cloud sessions.

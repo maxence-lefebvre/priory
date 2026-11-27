@@ -6,6 +6,8 @@
 # FAKE_DIR/git-ls-remotes gets a line per ls-remote, which FAKE_DIR/git-unreachable makes fail.
 # FAKE_DIR/git-crash holds a subcommand, with hash-object's kind, such as `hash-object -t tree` or
 # `ls-files`, that git crashes on when it checks an `.envrc`, or `fetch` for every fetch.
+# git-hold-ls makes `ls-remote` read origin, write git-ls-held, and print what it read only once
+# git-hold-ls is gone, as a slow ls-remote that began before a push does.
 # git-hang-ls makes `ls-remote` hang, after it logs to git-ls.log what may prompt. git-no-commit
 # makes a fetch of a commit by its SHA fail, as a dropped connection does. git-shas
 # gets a line per such fetch. git-hang-status makes the status that lists every untracked file wait
@@ -43,6 +45,13 @@ case " $* " in
     ;;
   *" ls-remote "*)
     echo ls-remote >> "$FAKE_DIR/git-ls-remotes"
+    if [ -e "$FAKE_DIR/git-hold-ls" ]; then
+      seen=$(PATH=${PATH#*:} git "$@")
+      echo held >> "$FAKE_DIR/git-ls-held"
+      while [ -e "$FAKE_DIR/git-hold-ls" ]; do sleep 0.1; done
+      [ -z "$seen" ] || printf '%s\n' "$seen"
+      exit 0
+    fi
     if [ -e "$FAKE_DIR/git-hang-ls" ]; then
       echo "${GIT_TERMINAL_PROMPT-unset} ${GIT_SSH_COMMAND-unset}" >> "$FAKE_DIR/git-ls.log"
       exec sleep 60

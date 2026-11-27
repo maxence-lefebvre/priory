@@ -70,6 +70,9 @@ struct Watch {
     trouble: Option<String>,
     /// What the CLI said when it uploaded the clone.
     upload: Option<String>,
+    /// The poll under way started after the session reported its result, so it sees the push the
+    /// session made before.
+    reported: bool,
 }
 
 /// What a poll found on `origin`.
@@ -227,15 +230,37 @@ pub(crate) fn branch(task: i64, session: &str) -> String {
     format!("claude/priory-{task}-{}", &session[..session.len().min(8)])
 }
 
-/// The rules that replace the `result` tool's line, since a cloud session cannot reach Priory.
-fn rules(branch: &str) -> String {
-    format!(
+/// The rules that replace the `result` tool's line. Without the gateway a cloud session cannot
+/// reach Priory, so its push is its whole report.
+fn rules(branch: &str, gateway: bool) -> String {
+    let push = format!(
         "When you are done, commit your work and push it to the branch `{branch}`: `git push origin HEAD:{branch}`. \
          Start the last commit message with one line that says what changed. \
-         Do not open a pull request: Priory opens it after a person reviews the branch. \
-         Nobody answers questions during this session. If you need a decision, write it in the last \
-         commit message under `Questions:` and push anyway."
-    )
+         Do not open a pull request: Priory opens it after a person reviews the branch."
+    );
+    match gateway {
+        false => format!(
+            "{push} Nobody answers questions during this session. If you need a decision, write it in the last \
+             commit message under `Questions:` and push anyway."
+        ),
+        true => format!(
+            "{push} Then call the `result` tool of the `priory` MCP server with the step's outcome, and end your turn. \
+             To ask a person a decision, call its `ask` tool and end your turn; to wait for an event, call `wait` and end \
+             your turn. Priory sends the answer or the event as your next message. Never write the server's \
+             token in a file, a commit or a message: a push that holds it fails the step."
+        ),
+    }
+}
+
+/// How long a cloud run of `step` may take: its `timeout`, 2 hours when unset.
+pub(crate) fn deadline(step: &Step) -> Duration {
+    step.timeout.unwrap_or(DEADLINE)
+}
+
+/// How long a cloud run of `step` may stay live: its deadline, the grace as long again that a
+/// poll after it may take, and one poll more.
+pub(crate) fn lifetime(step: &Step) -> Duration {
+    2 * deadline(step) + POLL
 }
 
 /// `text` without the first whole lines that are `part`: a person's later words may quote it.
@@ -306,7 +331,7 @@ pub(crate) fn dispatch(
         &entry,
         source.trim(),
         &queued,
-        &rules(&branch(task, session)),
+        &rules(&branch(task, session), start.mcp.is_some()),
     ]
     .into_iter()
     .filter(|part| !part.is_empty())
@@ -480,7 +505,14 @@ fn fail(
     summary: &str,
 ) -> Result<(), Error> {
     give_back(db, run, task, step)?;
-    end(db, trace, kit, task, session, "failed", summary, None)
+    end(
+        db,
+        trace,
+        kit,
+        task,
+        session,
+        arguments("failed", summary, None),
+    )
 }
 
 /// Queues again what run `run` claimed, without the step's own prompt. The task's event goes back
@@ -546,6 +578,8 @@ struct Live {
     workflow: String,
     step: String,
     age: i64,
+    /// The hash of its grant's token, when it has one.
+    hash: Option<String>,
 }
 
 /// Ends each live cloud run whose branch is on `origin` as `pushed`, and each past its step's
@@ -557,6 +591,8 @@ pub(crate) fn tick(
     kit: crate::kit::Current<'_>,
 ) -> Result<(), Error> {
     collect(db, trace, kit)?;
+    crate::grant::apply(db, trace, kit)?;
+    crate::grant::wake(db)?;
     let starting = STARTING
         .lock()
         .expect("no start panics")
@@ -566,7 +602,8 @@ pub(crate) fn tick(
         .prepare(
             "SELECT runs.id, runs.task, runs.session, runs.thread, coalesce(tasks.worktree, ''),
              coalesce(tasks.branch, ''), coalesce((SELECT head FROM cloud_heads WHERE run = runs.id), ''), tasks.workflow, runs.step,
-             unixepoch('now') - unixepoch(runs.started)
+             unixepoch('now') - unixepoch(runs.started),
+             (SELECT hash FROM run_grants WHERE run = runs.id)
              FROM runs JOIN tasks ON tasks.id = runs.task
              WHERE runs.ended IS NULL AND runs.harness = 'claude-cloud' ORDER BY runs.id",
         )?
@@ -582,6 +619,7 @@ pub(crate) fn tick(
                 workflow: row.get(7)?,
                 step: row.get(8)?,
                 age: row.get(9)?,
+                hash: row.get(10)?,
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
@@ -615,7 +653,7 @@ pub(crate) fn tick(
                 .insert(run.id, watch);
         }
     }
-    Ok(())
+    crate::grant::revoke_ended(db)
 }
 
 /// Takes the poll of `run` that ended, starts the next one when it is due, and ends the run on a
@@ -630,6 +668,7 @@ fn follow(
 ) -> Result<bool, Error> {
     let pushes = branch(run.task, &run.session);
     let step = step_of(trace, &run.workflow, &run.step);
+    let reported = crate::grant::reported(db, run.id)?;
     if let Some(polling) = &watch.polling {
         let found = match polling.try_recv() {
             Ok(found) => found,
@@ -641,22 +680,20 @@ fn follow(
         watch.trouble = None;
         match found {
             Ok(Found::Nothing) => {
+                if let Some(reported) = reported.clone().filter(|_| watch.reported) {
+                    end(db, trace, kit, run.task, &run.session, reported)?;
+                    return Ok(false);
+                }
                 watch.seen = None;
                 watch.absent = watch.late.is_some();
             }
             // A push may be a first part of the work, or be replaced: the next poll confirms it.
             Ok(Found::Seen(commit)) => watch.seen = Some(commit),
             Ok(Found::Taken(pushed)) => {
-                end(
-                    db,
-                    trace,
-                    kit,
-                    run.task,
-                    &run.session,
-                    "pushed",
-                    &pushed.subject,
-                    Some((&pushed.commit, &pushed.body)),
-                )?;
+                let mut arguments = reported
+                    .unwrap_or_else(|| arguments("pushed", &pushed.subject, Some(&pushed.body)));
+                arguments["commit"] = json!(pushed.commit);
+                end(db, trace, kit, run.task, &run.session, arguments)?;
                 return Ok(false);
             }
             Err(NotTaken::Never(reason)) => {
@@ -682,7 +719,7 @@ fn follow(
             }
         }
     }
-    let timeout = step.and_then(|step| step.timeout).unwrap_or(DEADLINE);
+    let timeout = step.map_or(DEADLINE, deadline);
     let late = run.age >= 0 && run.age as u64 >= timeout.as_secs();
     // The grace counts from the first late poll, so a runner that slept past the deadline has it whole.
     let graced = watch.late.is_some_and(|since| since.elapsed() < timeout);
@@ -699,10 +736,11 @@ fn follow(
                 " It started from an upload, so the Claude GitHub App may not be on the repository: {upload}."
             ));
         }
-        summary.push_str(&format!(
-            " A cloud run cannot ask, so open the session to see why: {}",
-            link(cloud)
-        ));
+        let why = match run.hash {
+            Some(_) => "Open the session to see why",
+            None => "A cloud run cannot ask, so open the session to see why",
+        };
+        summary.push_str(&format!(" {why}: {}", link(cloud)));
         fail(
             db,
             trace,
@@ -715,7 +753,8 @@ fn follow(
         )?;
         return Ok(false);
     }
-    let confirms = watch.seen.is_some() && watch.trouble.is_none();
+    // A reported result waits only for the push the session made before it.
+    let confirms = (watch.seen.is_some() || reported.is_some()) && watch.trouble.is_none();
     let every = if late || confirms { SOON } else { POLL };
     let first_late = late && watch.late.is_none();
     if first_late || watch.polled.is_none_or(|polled| polled.elapsed() >= every) {
@@ -723,15 +762,16 @@ fn follow(
             watch.late.get_or_insert_with(Instant::now);
         }
         watch.polled = Some(Instant::now());
+        watch.reported = reported.is_some();
         let (sender, receiver) = channel();
         watch.polling = Some(receiver);
         let worktree = Path::new(&run.worktree).to_path_buf();
         let (branch, head) = (run.branch.clone(), run.head.clone());
-        let (seen, id) = (watch.seen.clone(), run.id);
+        let (seen, id, hash) = (watch.seen.clone(), run.id, run.hash.clone());
         let poll = Poll::begin();
         std::thread::spawn(move || {
             let _poll = poll;
-            let found = look(&worktree, &pushes, &branch, &head, seen, || {
+            let found = look(&worktree, &pushes, &branch, &head, seen, hash, || {
                 unheld(&HELD, || still_live(id))
             });
             let _ = sender.send(found);
@@ -787,12 +827,14 @@ impl Drop for Poll {
 }
 
 /// Polls `pushes`, and takes the commit a poll before found there as `seen`, while `live` says so.
+/// A push whose commits hold the token of the grant whose hash is `hash` is never taken.
 fn look(
     worktree: &Path,
     pushes: &str,
     branch: &str,
     head: &str,
     seen: Option<String>,
+    hash: Option<String>,
     live: impl Fn() -> Result<bool, String>,
 ) -> Result<Found, NotTaken> {
     let Some(commit) = cloud::poll(worktree, pushes).map_err(NotTaken::Later)? else {
@@ -804,42 +846,66 @@ fn look(
     if seen.as_ref() != Some(&commit) {
         return Ok(Found::Seen(commit));
     }
+    if let Some(hash) = hash {
+        let range = format!("{head}..{commit}");
+        // Every change in full: a merge's against each parent, binary and `-diff` files as text,
+        // and no diff driver or textconv of the repository's.
+        let log = [
+            "log",
+            "-p",
+            "-m",
+            "--text",
+            "--no-textconv",
+            "--no-ext-diff",
+            "--no-color",
+            "--format=commit %H%nAuthor: %an <%ae>%nCommitter: %cn <%ce>%n%B",
+            &range,
+        ];
+        let shown = runtime::run(runtime::git(worktree).args(log)).map_err(NotTaken::Later)?;
+        if crate::diocese::holds_token(&shown, &hash) {
+            return Err(NotTaken::Never(
+                "its commits hold the run grant's token, so Priory revoked the grant".to_owned(),
+            ));
+        }
+    }
     let taken = cloud::adopt(worktree, branch, head, &commit, live)?;
     Ok(taken.map_or(Found::Nothing, Found::Taken))
 }
 
-/// Stores the result the session's harness session `session` would have sent, then ends its turn as
-/// a `Stop` does, so the task moves by `next` like a local run's. A step with no such outcome
-/// blocks the task with the summary.
-#[allow(clippy::too_many_arguments)]
+/// The `result` arguments of `outcome` with `summary`, and `evidence` when it says anything.
+fn arguments(outcome: &str, summary: &str, evidence: Option<&str>) -> serde_json::Value {
+    let mut arguments = json!({ "outcome": outcome, "summary": summary });
+    if let Some(evidence) = evidence.filter(|evidence| !evidence.is_empty()) {
+        arguments["evidence"] = json!(evidence);
+    }
+    arguments
+}
+
+/// Stores the result `arguments` the session's harness session `session` would have sent, then ends
+/// its turn as a `Stop` does, so the task moves by `next` like a local run's. A step with no such
+/// outcome blocks the task with the summary.
 fn end(
     db: &mut Connection,
     trace: &Trace,
     kit: crate::kit::Current<'_>,
     task: i64,
     session: &str,
-    outcome: &str,
-    summary: &str,
-    pushed: Option<(&str, &str)>,
+    arguments: serde_json::Value,
 ) -> Result<(), Error> {
-    let mut arguments = json!({ "outcome": outcome, "summary": summary });
-    if let Some((commit, body)) = pushed {
-        arguments["commit"] = json!(commit);
-        if !body.is_empty() {
-            arguments["evidence"] = json!(body);
-        }
-    }
-    let call = crate::tools::Call {
-        tool: "result".into(),
-        session: session.into(),
-        arguments,
-    };
-    let skipped = match outcome {
-        "pushed" => {
+    let outcome = arguments["outcome"].as_str().unwrap_or_default().to_owned();
+    let summary = arguments["summary"].as_str().unwrap_or_default().to_owned();
+    let outcome = outcome.as_str();
+    let skipped = match arguments.get("commit") {
+        Some(_) => {
             let tx = db.transaction()?;
             crate::tools::graders(&tx, session, outcome, trace.factory, kit)?
         }
         _ => Vec::new(),
+    };
+    let call = crate::tools::Call {
+        tool: "result".into(),
+        session: session.into(),
+        arguments,
     };
     let (stored, _) = crate::tools::call(db, &call, trace, kit, &|worktree, branch| {
         runtime::head(worktree, branch)

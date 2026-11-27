@@ -207,8 +207,16 @@ fn gateway_serves_whoami_to_a_live_grant_and_refuses_and_audits_every_other_toke
     let list = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" });
     let (_, body) = call(&address, Some(&token), &list);
     let tools: Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 1);
-    assert_eq!(tools["result"]["tools"][0]["name"], "whoami");
+    let names: Vec<_> = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names[0], "whoami");
+    let mut rest = names[1..].to_vec();
+    rest.sort_unstable();
+    assert_eq!(rest, ["ask", "result", "wait"]);
 
     let (status, body) = call(&address, Some(&token), &whoami());
     assert_eq!(status, 200, "{body}");
@@ -248,7 +256,8 @@ fn gateway_serves_whoami_to_a_live_grant_and_refuses_and_audits_every_other_toke
     assert!(
         served
             .iter()
-            .any(|outcome| outcome.starts_with("error: the gateway serves whoami only")),
+            .any(|outcome| outcome
+                .starts_with("error: the gateway serves whoami, ask, wait and result")),
         "{served:?}"
     );
     assert!(
