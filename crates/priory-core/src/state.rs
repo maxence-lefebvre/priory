@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 131;
+const VERSION: i64 = 132;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -2325,6 +2325,50 @@ CREATE TABLE IF NOT EXISTS run_calls (
 PRAGMA user_version = 131;
 ";
 
+// Each trigger's journal as read from the log: its entries in log order, and the latest put of each
+// document. An entry this runner wrote has no `seq` until it reads its own message back; a put it
+// wrote waits in `journal_pending`, apart from the version every runner holds. `at` is `written` in
+// milliseconds, which `since` compares.
+const SCHEMA_132: &str = "
+CREATE TABLE IF NOT EXISTS journal_entries (
+  id      TEXT PRIMARY KEY,
+  trigger TEXT NOT NULL,
+  kind    TEXT NOT NULL,
+  body    TEXT NOT NULL,
+  task    TEXT NOT NULL,
+  runner  TEXT,
+  written TEXT NOT NULL,
+  at      INTEGER NOT NULL,
+  seq     INTEGER
+);
+CREATE INDEX IF NOT EXISTS journal_entries_by_trigger ON journal_entries (trigger, seq);
+CREATE TABLE IF NOT EXISTS journal_documents (
+  trigger TEXT NOT NULL,
+  name    TEXT NOT NULL,
+  id      TEXT NOT NULL,
+  body    TEXT NOT NULL,
+  task    TEXT NOT NULL,
+  runner  TEXT,
+  written TEXT NOT NULL,
+  seq     INTEGER NOT NULL,
+  PRIMARY KEY (trigger, name)
+);
+CREATE TABLE IF NOT EXISTS journal_pending (
+  id      TEXT PRIMARY KEY,
+  trigger TEXT NOT NULL,
+  name    TEXT NOT NULL,
+  body    TEXT NOT NULL,
+  task    TEXT NOT NULL,
+  runner  TEXT,
+  written TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS inbox_requests_by_key ON inbox (json_extract(data, '$.key'))
+  WHERE type = 'factory.task.requested';
+CREATE INDEX IF NOT EXISTS inbox_journal_writes ON inbox (seq)
+  WHERE type IN ('priory.journal.appended', 'priory.journal.put');
+PRAGMA user_version = 132;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -2343,7 +2387,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112, SCHEMA_113,
     SCHEMA_114, SCHEMA_115, SCHEMA_116, SCHEMA_117, SCHEMA_118, SCHEMA_119, SCHEMA_120, SCHEMA_121,
     SCHEMA_122, SCHEMA_123, SCHEMA_124, SCHEMA_125, SCHEMA_126, SCHEMA_127, SCHEMA_128, SCHEMA_129,
-    SCHEMA_130, SCHEMA_131,
+    SCHEMA_130, SCHEMA_131, SCHEMA_132,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -2684,6 +2728,10 @@ fn apply(db: &mut Connection, new: bool) -> Result<(), String> {
         return Err(found.newer());
     };
     tx.execute_batch(&pending.concat()).map_err(at)?;
+    // An older daemon recorded journal messages it could not read: fold them now, in log order.
+    if (1..132).contains(&found.version) {
+        crate::journals::backfill(&tx).map_err(at)?;
+    }
     // No migration here declares a floor, so no older binary may open the result.
     tx.pragma_update(None, "application_id", 0).map_err(at)?;
     let broken: i64 = tx
@@ -2862,6 +2910,7 @@ pub(crate) fn route_in(
         return Ok(Vec::new());
     }
     if crate::memories::handle(tx, message)?.is_some()
+        || crate::journals::handle(tx, message)?.is_some()
         || crate::autopilot::handle(tx, message, trace.runner.is_some())?.is_some()
     {
         return Ok(Vec::new());
@@ -5961,6 +6010,52 @@ mod inbox_lookups {
             )
             .unwrap();
         assert_eq!(found, (7, 0, VERSION));
+    }
+
+    #[test]
+    fn an_upgrade_from_131_folds_the_journal_messages_an_older_daemon_recorded() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.execute_batch(&MIGRATIONS[..131].concat()).unwrap();
+        let row = |seq: i64, kind: &str, data: serde_json::Value| {
+            db.execute(
+                "INSERT INTO inbox (seq, id, type, time, data, links, outcome)
+                 VALUES (?1, ?2, ?3, '2026-11-26T10:00:00Z', ?4, '[]', 'ignored')",
+                params![seq, format!("m{seq}"), kind, data.to_string()],
+            )
+            .unwrap();
+        };
+        let key = "github:owner/repo#1";
+        let write = |field: &str, label: &str| serde_json::json!({ "trigger": "daily", field: label, "body": 1, "task": key, "runner": "a" });
+        row(
+            1,
+            "factory.task.requested",
+            serde_json::json!({ "key": key, "trigger": "daily" }),
+        );
+        row(2, "priory.journal.appended", write("kind", "run"));
+        row(3, "priory.journal.put", write("name", "history"));
+        let mut foreign = write("kind", "run");
+        foreign["trigger"] = serde_json::json!("weekly");
+        row(4, "priory.journal.appended", foreign);
+
+        apply(&mut db, false).unwrap();
+
+        let outcomes: Vec<String> = db
+            .prepare("SELECT outcome FROM inbox WHERE seq > 1 ORDER BY seq")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(outcomes, ["noted", "noted", "refused"]);
+        let found: (String, i64, String) = db
+            .query_row(
+                "SELECT (SELECT id FROM journal_entries WHERE seq = 2),
+                   (SELECT count(*) FROM journal_entries), (SELECT id FROM journal_documents)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(found, ("m2".to_owned(), 1, "m3".to_owned()));
     }
 
     #[test]

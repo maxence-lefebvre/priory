@@ -1,0 +1,87 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/events/priory.journal.pruned.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "JournalPruned": {
+      "additionalProperties": false,
+      "description": "A person prunes the entries of a trigger's journal written before a time. No command publishes\nit yet, and no runner applies it.",
+      "properties": {
+        "before": {
+          "description": "Entries written before this time go.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "trigger": {
+          "description": "The trigger whose journal it prunes.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "trigger",
+        "before"
+      ],
+      "type": "object"
+    },
+    "Link": {
+      "additionalProperties": false,
+      "description": "A link for people.",
+      "properties": {
+        "label": {
+          "description": "`issue` or `pull_request`.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "A person prunes the entries of a trigger's journal written before a time. No command publishes\nit yet, and no runner applies it.",
+  "properties": {
+    "data": {
+      "$ref": "#/definitions/JournalPruned"
+    },
+    "id": {
+      "description": "A UUIDv5 of the message's name, so a retried publish keeps its id.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "links": {
+      "description": "GitHub and Linear events carry one link to the event's page.",
+      "items": {
+        "$ref": "#/definitions/Link"
+      },
+      "type": "array"
+    },
+    "subject": {
+      "description": "A short line for listings, such as `owner/name#42`.",
+      "type": "string"
+    },
+    "time": {
+      "description": "When the event happened, RFC 3339.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "type": {
+      "const": "priory.journal.pruned",
+      "description": "The message type, such as `github.issues.labeled`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "subject",
+    "time",
+    "data",
+    "links"
+  ],
+  "title": "priory.journal.pruned",
+  "type": "object"
+}

@@ -240,6 +240,26 @@ unless the person passes `--again`.
 
 Each slice ships alone and leaves the factory working.
 
+Slice 1 is on `main`. Slices 2 to 5 are later slices. In slice 1, a runner decides whether a
+journal message applies from the message and the log before it alone: the `factory.task.requested`
+of its task by its trigger, and the messages it applied before. A runner's own writes on their way
+count only for its own write checks, so runners never diverge on what they keep.
+
+Two choices of slice 1 and one gap:
+
+- **A person's tasks keep no journal.** A task that `priory request` or `priory batch add` made, and
+  each batch entry, which copies its planning task's trigger, has trigger `cli`. Its run gets the
+  no-trigger error even when the factory has `triggers/cli.toml`, which only sets a request's
+  defaults.
+- **The CLI's `--trigger` is a person's.** A run's pane refuses it, as it refuses every other verb
+  only a person runs, and so does the shell guard.
+- **A Linear team move breaks a task's journal.** When an issue moves to another team, each runner
+  renames the key in its tasks, and in the inbox only on requests no runner accepted. A run of the
+  renamed task then finds no request of its new key on the log, and its writes fail. A follow-up
+  should match the key the request carried, followed through the log's rename events. Slice 1 screens a write for credentials, not
+yet for the factory's private terms, and its CLI reaches a journal through `PRIORY_SESSION` only, not
+through a `run` action's `PRIORY_TASK`.
+
 ### 1. Entries and documents on the log
 
 - **Code.** The three event types and their schemas, the two state tables, the four tools, and

@@ -166,6 +166,10 @@ pub fn person_verb(args: &[String]) -> bool {
         ["score", ..] => args
             .iter()
             .any(|arg| arg == "--calibrate" || arg.starts_with("--calibrate=")),
+        // A run reads only its own trigger's journal; `--trigger` reads any.
+        ["journal", ..] => args
+            .iter()
+            .any(|arg| arg == "--trigger" || arg.starts_with("--trigger=")),
         // A person's own session serves it, and its `answer` and `dismiss` decide asks.
         ["mcp", ..] => args.iter().any(|arg| arg == "--outside"),
         [verb, ..] => PERSON_VERBS.contains(&verb),
@@ -2172,6 +2176,8 @@ mod tests {
             "priory score . --calibrate=review --budget 5",
             "priory batch edit 2 --expected 1 --drop 4",
             "env -u PRIORY_SESSION priory mcp --outside",
+            "env -u PRIORY_SESSION priory journal read --trigger daily",
+            "priory journal get history --trigger daily",
         ] {
             let hits = guards.hits("Bash", Some(command), &git);
             assert_eq!(hits[0].guard, "priory-person", "{command}");
@@ -2188,6 +2194,8 @@ mod tests {
             "priory batch show 2",
             "priory batch add 12 13",
             "priory mcp --session 3f2a",
+            "priory journal read --last 7 --json",
+            "priory journal append --kind run '{}'",
         ] {
             assert_eq!(hit(command), None, "{command}");
         }

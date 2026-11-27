@@ -343,6 +343,18 @@ An agent's settings and its shell call these. A person rarely does.
 - `priory evidence add FILE --caption TEXT`: adds an asciicast v2 recording inside the run's
   worktree to the run's result, once it passes the admission checks. It refuses an image or a
   video. See [evidence.md](../daemon/evidence.md#a-cast-the-agent-adds).
+- `priory journal append --kind KIND [BODY]`: appends an entry to the journal of the run's task's
+  trigger, as `journal_append` does, from the pane where `PRIORY_SESSION` is set. It reads the body
+  from stdin when `BODY` is absent. A body that does not parse as JSON is Markdown text.
+- `priory journal read [--last N] [--since TIME] [--kind KIND] [--json] [--trigger NAME]`: prints the
+  entries, one line each with its time, kind and body, as `journal_read` returns them. `--json`
+  prints the reply as JSON. A person reads any trigger's journal from the state file with
+  `--trigger`, which a run's pane, where `PRIORY_SESSION` is set, refuses.
+- `priory journal put NAME < BODY`: replaces the document `NAME` with stdin, as `journal_put` does.
+- `priory journal get [NAME] [--json] [--trigger NAME]`: prints the document `NAME` as it was put,
+  or each document's name, size and time without it, as `journal_get` returns them. `--trigger`
+  reads any trigger's journal, and refuses `append` and `put`. See
+  [tools.md](tools.md#journal_appendkind-body-journal_readlast-since-kind-journal_putname-body-and-journal_getname).
 - `priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]`: runs a heavy command once
   the machine has the memory for it, or prints the grants. `acquire` exits 75 when its wait passes
   the factory's `[memory] give_up_after`. See [memory-gate.md](../daemon/memory-gate.md).

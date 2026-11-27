@@ -576,3 +576,47 @@ fn a_runner_whose_link_hangs_counts_its_probes_as_timeouts() {
     });
     assert!(alive(&mut a));
 }
+
+#[test]
+fn a_triggers_journal_written_on_one_runner_reaches_its_next_run_on_another() {
+    use super::journal::bodies;
+    let Some(database) = Database::new("journal") else {
+        return;
+    };
+    let (mut a, _a_link) = runner_on(&database, "journal", "a");
+    let (mut b, _b_link) = runner_on(&database, "journal", "b");
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    database.publish(&work(1));
+    a.calls(&[ask()]);
+    a.start_as(exe);
+    a.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    for params in [
+        json!({ "name": "journal_append", "arguments": { "kind": "run", "body": { "items": 14 } } }),
+        json!({ "name": "journal_put", "arguments": { "name": "history", "body": [1] } }),
+    ] {
+        let (text, failed) = a.tool(0, params);
+        assert!(!failed, "{text}");
+    }
+    database.logged(
+        &a,
+        "priory.journal.put",
+        json!({ "trigger": "agent-label", "runner": "a" }),
+    );
+    a.crash();
+
+    database.publish(&work(2));
+    b.calls(&[ask()]);
+    b.start_as(exe);
+    b.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    let read = b.read_journal(0, json!({ "name": "journal_read", "arguments": {} }));
+    assert_eq!(bodies(&read), [json!({ "items": 14 })]);
+    let got = b.read_journal(
+        0,
+        json!({ "name": "journal_get", "arguments": { "name": "history" } }),
+    );
+    assert_eq!(got["body"], json!([1]));
+}

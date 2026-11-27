@@ -698,6 +698,16 @@ impl Postgres {
     }
 }
 
+/// Asserts that `log`, as a restricted role, cannot publish either journal write.
+#[cfg(feature = "postgres")]
+fn refuses_journals(log: &dyn Log) {
+    for kind in ["priory.journal.appended", "priory.journal.put"] {
+        let write = Message::new(kind, serde_json::json!({ "trigger": "daily", "body": 1 }));
+        let refused = format!("{:?}", log.publish(OUTPUT, &write).unwrap_err());
+        assert!(refused.contains("row-level security"), "{kind}: {refused}");
+    }
+}
+
 #[cfg(feature = "postgres")]
 #[test]
 fn postgres_intake_role_publishes_only_the_intakes_types_and_moves_only_its_cursor() {
@@ -722,6 +732,7 @@ fn postgres_intake_role_publishes_only_the_intakes_types_and_moves_only_its_curs
     // Display says only "db error": Debug carries the server's message.
     let refused = format!("{:?}", intake.publish(OUTPUT, &answer).unwrap_err());
     assert!(refused.contains("row-level security"), "{refused}");
+    refuses_journals(&intake);
 
     runner.ack("priory.runner", &first[0]).unwrap();
     let moved = format!("{:?}", intake.ack("priory.runner", &first[0]).unwrap_err());
@@ -814,6 +825,7 @@ fn postgres_gateway_role_publishes_only_run_calls_and_moves_only_its_cursor() {
         let error = format!("{:?}", gateway.publish(OUTPUT, &message).unwrap_err());
         assert!(error.contains("row-level security"), "{refused}: {error}");
     }
+    refuses_journals(&gateway);
 
     let first = gateway.read("priory.gateway", OUTPUT, 10).unwrap();
     assert_eq!(first.len(), 1);

@@ -1359,6 +1359,55 @@ pub struct MemoryDropped {
     pub retire: Option<bool>,
 }
 
+/// A run appends an entry to its trigger's journal with `journal_append` or
+/// `priory journal append`. Each message is one entry, known by its `id`. Every runner keeps it for
+/// the trigger's later runs, unless the entry is over 16 KB, would take the journal past 8 MB, or
+/// its `task` came from another trigger.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct JournalAppended {
+    /// The trigger whose journal holds the entry.
+    pub trigger: String,
+    /// What the entry is, such as `run`, `note` or `handover`.
+    pub kind: String,
+    /// The entry: a JSON value, or a string of Markdown.
+    pub body: serde_json::Value,
+    /// The key of the task whose run wrote it.
+    pub task: String,
+    /// The runner that wrote it, or null in a factory of one runner.
+    pub runner: Option<String>,
+}
+
+/// A run replaces a document of its trigger's journal with `journal_put` or `priory journal put`.
+/// Between two puts of one name, the later in log order wins. A body over 256 KB, or one that would
+/// take the journal past 8 MB, is refused.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct JournalPut {
+    /// The trigger whose journal holds the document.
+    pub trigger: String,
+    /// The document's name.
+    pub name: String,
+    /// The document: a JSON value, or a string of Markdown.
+    pub body: serde_json::Value,
+    /// The key of the task whose run wrote it.
+    pub task: String,
+    /// The runner that wrote it, or null in a factory of one runner.
+    pub runner: Option<String>,
+}
+
+/// A person prunes the entries of a trigger's journal written before a time. No command publishes
+/// it yet, and no runner applies it.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct JournalPruned {
+    /// The trigger whose journal it prunes.
+    pub trigger: String,
+    /// Entries written before this time go.
+    #[schemars(extend("format" = "date-time"))]
+    pub before: String,
+}
+
 /// A person turns autopilot on or off with `priory autopilot`. Every runner applies it in log order.
 #[derive(JsonSchema)]
 #[serde(deny_unknown_fields)]

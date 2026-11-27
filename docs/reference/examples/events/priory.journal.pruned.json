@@ -1,0 +1,11 @@
+{
+  "id": "0196f1d2-8e9f-7a0b-9c1d-3e4f5a6b7c80",
+  "type": "priory.journal.pruned",
+  "subject": "daily-report",
+  "time": "2026-11-26T09:00:00Z",
+  "data": {
+    "trigger": "daily-report",
+    "before": "2026-08-28T00:00:00Z"
+  },
+  "links": []
+}
