@@ -44,6 +44,8 @@ pub struct Start {
     pub worktree: PathBuf,
     pub branch: String,
     pub head: String,
+    /// The session's first message. It reaches the CLI on stdin, never its arguments, which another
+    /// user of the machine can read.
     pub prompt: String,
     /// The MCP servers the session loads, as `--mcp-config` JSON: the gateway with the run grant's
     /// token. It reaches the CLI through a private file, never its arguments, and the file goes once
@@ -168,7 +170,17 @@ pub fn start(
         .and_then(|()| create(start, &dir, goes_on));
     let _ = fs::remove_dir_all(&dir);
     let _ = fs::remove_file(servers(start));
-    started
+    let started = started?;
+    // A run cancelled while the CLI ran gets no prompt.
+    goes_on()
+        .and_then(|()| wake(&started.id, &start.prompt))
+        .map_err(|error| {
+            NotStarted::Uncertain(format!(
+                "cloud session {} started, but its prompt was not sent: {error}",
+                started.id
+            ))
+        })?;
+    Ok(started)
 }
 
 /// The file that holds `start`'s MCP servers while the CLI starts.
@@ -180,7 +192,8 @@ fn servers(start: &Start) -> PathBuf {
 }
 
 /// Removes the MCP server files a start left under `home`: a daemon killed during a start never
-/// removed its token. No start runs while the daemon starts.
+/// removed its token. Removes the prompt files an older Priory left there too. No start runs while
+/// the daemon starts.
 pub fn sweep_servers(home: &Path) {
     let Ok(entries) = fs::read_dir(home.join("prompts")) else {
         return;
@@ -188,23 +201,17 @@ pub fn sweep_servers(home: &Path) {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name.starts_with("priory-cloud-") && name.ends_with(".mcp.json") {
+        if name.starts_with("priory-cloud-") {
             let _ = fs::remove_file(entry.path());
         }
     }
 }
 
-/// Sends cloud session `session` the message `text` with `claude -p TEXT --cloud SESSION`, which
-/// starts its next turn.
+/// Sends cloud session `session` the message `text` on the stdin of `claude -p --cloud SESSION`,
+/// which starts its next turn.
 pub fn wake(session: &str, text: &str) -> Result<(), String> {
-    let mut command = Command::new("claude");
-    for variable in NESTED {
-        command.env_remove(variable);
-    }
-    // shortcut: the message is in argv, which another user of this machine can read with ps; send
-    // it on stdin once `claude -p --cloud ID` is known to read it there.
-    command.args(["-p", text, "--cloud", session]);
-    let output = fed_within(&mut command, None, command_timeout())
+    let mut command = wake_command(session);
+    let output = fed_within(&mut command, Some(text.into()), command_timeout())
         .map_err(|error| format!("claude -p --cloud: {error}"))?
         .ok_or_else(|| {
             format!(
@@ -219,6 +226,15 @@ pub fn wake(session: &str, text: &str) -> Result<(), String> {
             one_line(&String::from_utf8_lossy(&output.stderr))
         )),
     }
+}
+
+fn wake_command(session: &str) -> Command {
+    let mut command = Command::new("claude");
+    for variable in NESTED {
+        command.env_remove(variable);
+    }
+    command.args(["-p", "--cloud", session]);
+    command
 }
 
 fn isolate(start: &Start, dir: &Path) -> Result<(), String> {
@@ -243,8 +259,17 @@ fn isolate(start: &Start, dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Runs `claude --cloud PROMPT` in `dir` inside a detached tmux session, since the CLI creates a
-/// cloud session only in a terminal, and waits up to the command timeout for it to exit.
+/// The first message `claude --cloud` gets as an argument: no task text, since argv is public on
+/// the machine. The prompt follows as the session's next message.
+fn description(start: &Start) -> String {
+    format!(
+        "Priory run {}. Do nothing and end your turn; your task comes in the next message.",
+        start.tmux
+    )
+}
+
+/// Runs `claude --cloud DESCRIPTION` in `dir` inside a detached tmux session, since the CLI creates
+/// a cloud session only in a terminal, and waits up to the command timeout for it to exit.
 fn create(
     start: &Start,
     dir: &Path,
@@ -252,43 +277,17 @@ fn create(
 ) -> Result<Started, NotStarted> {
     tmux_socket_fits(&tmux_socket())?;
     let name = start.tmux.as_str();
-    // tmux refuses a command over about 16 KiB, so the prompt reaches the CLI through a file.
-    let file = start.home.join("prompts").join(name);
-    fs::create_dir_all(file.parent().expect("the file has a parent"))
-        .and_then(|()| write_private(&file, start.prompt.as_bytes()))
-        .map_err(|error| format!("{}: {error}", file.display()))?;
-    let mut servers_flag: Vec<std::ffi::OsString> = Vec::new();
     if let Some(mcp) = &start.mcp {
         let path = servers(start);
-        write_private(&path, mcp.as_bytes())
+        fs::create_dir_all(path.parent().expect("the file has a parent"))
+            .and_then(|()| write_private(&path, mcp.as_bytes()))
             .map_err(|error| format!("{}: {error}", path.display()))?;
-        servers_flag = vec!["--mcp-config".into(), path.into_os_string()];
     }
-    let upload = ["CCR_FORCE_BUNDLE", "CCR_ENABLE_BUNDLE"];
-    // The prompt, which the CLI may echo, cannot hold this mark.
     let since = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH);
     let mark = format!("{EXIT}{:x}=", since.unwrap_or_default().as_nanos());
-    let mut new = tmux();
-    new.args(["new-session", "-d", "-x", "200", "-y", "50", "-s", name])
-        .arg("-c")
-        .arg(dir)
-        .args(["--", "sh", "-c", SCRIPT])
-        .arg(&file)
-        .arg(&mark)
-        .arg("env")
-        .args(
-            NESTED
-                .iter()
-                .chain(&upload)
-                .flat_map(|variable| ["-u", variable]),
-        )
-        .arg("claude")
-        .args(&servers_flag)
-        .arg("--cloud");
+    let mut new = launch(start, dir, &mark);
     let late = || NotStarted::Uncertain("tmux did not start claude --cloud in time".into());
-    goes_on().inspect_err(|_| {
-        let _ = fs::remove_file(&file);
-    })?;
+    goes_on()?;
     let opened = fed_within(&mut new, None, command_timeout())
         .map_err(|error| format!("tmux new-session: {error}"))?
         .ok_or_else(|| {
@@ -307,7 +306,7 @@ fn create(
             .args(["capture-pane", "-p", "-J", "-S", "-", "-t"])
             .arg(format!("={name}:")))
         .unwrap_or_default();
-        let printed = unechoed(&screen, &start.prompt);
+        let printed = unechoed(&screen, &description(start));
         if let Some(code) = printed.iter().find_map(|line| line.strip_prefix(&*mark)) {
             kill(name);
             let said: Vec<_> = printed
@@ -342,9 +341,41 @@ fn create(
 
 const EXIT: &str = "priory-cloud-exit-";
 
-/// Runs the CLI with the prompt file `$0` as its last argument, then prints the mark `$1` and its
-/// exit code and stays, so the pane still shows what it printed.
-const SCRIPT: &str = r#"m=$1; shift; p=$(cat "$0"; printf x); rm -f "$0"; "$@" "${p%x}"; echo "$m$?"; exec sleep 600"#;
+/// The tmux command that runs `claude --cloud` in `dir` and then prints `mark`. It names the MCP
+/// server file, never its content.
+fn launch(start: &Start, dir: &Path, mark: &str) -> Command {
+    let upload = ["CCR_FORCE_BUNDLE", "CCR_ENABLE_BUNDLE"];
+    let mut new = tmux();
+    new.args([
+        "new-session",
+        "-d",
+        "-x",
+        "200",
+        "-y",
+        "50",
+        "-s",
+        &start.tmux,
+    ])
+    .arg("-c")
+    .arg(dir)
+    .args(["--", "sh", "-c", SCRIPT, mark, "env"])
+    .args(
+        NESTED
+            .iter()
+            .chain(&upload)
+            .flat_map(|variable| ["-u", variable]),
+    )
+    .arg("claude");
+    if start.mcp.is_some() {
+        new.arg("--mcp-config").arg(servers(start));
+    }
+    new.arg("--cloud").arg(description(start));
+    new
+}
+
+/// Runs the CLI, then prints the mark `$0` and its exit code and stays, so the pane still shows
+/// what it printed.
+const SCRIPT: &str = r#"m=$0; "$@"; echo "$m$?"; exec sleep 600"#;
 
 /// The lines of `screen` the CLI printed itself, without those that echo a part of `prompt`.
 fn unechoed<'s>(screen: &'s str, prompt: &str) -> Vec<&'s str> {
@@ -585,6 +616,34 @@ pub fn adopt(
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn no_argument_of_a_cloud_launch_or_wake_holds_the_prompt_or_the_token() {
+        let start = Start {
+            tmux: "priory-cloud-7".into(),
+            home: PathBuf::from("/home/p"),
+            repo: "o/r".into(),
+            worktree: PathBuf::from("/w"),
+            branch: "priory/7".into(),
+            head: "abc".into(),
+            prompt: "Fix the secret-prompt bug.".into(),
+            mcp: Some(r#"{"headers":{"Authorization":"Bearer secret-token"}}"#.into()),
+        };
+        let launch = launch(&start, Path::new("/d"), "priory-cloud-exit-1=");
+        let wake = wake_command("session_01");
+        let args: Vec<_> = launch.get_args().chain(wake.get_args()).collect();
+        for arg in &args {
+            let arg = arg.to_string_lossy();
+            assert!(!arg.contains("secret-prompt"), "{arg}");
+            assert!(!arg.contains("secret-token"), "{arg}");
+        }
+        assert!(args.contains(&servers(&start).as_os_str()));
+        assert_eq!(wake.get_program(), "claude");
+        assert_eq!(
+            wake.get_args().collect::<Vec<_>>(),
+            ["-p", "--cloud", "session_01"]
+        );
+    }
 
     #[test]
     fn a_cloud_session_id_is_read_from_the_view_url_or_the_resume_line() {
