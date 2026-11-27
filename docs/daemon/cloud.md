@@ -70,10 +70,15 @@ time. The daemon:
 1. reads that the run is still live, after any check for private terms, so a cancel stops the push;
 2. pushes the task's branch to `origin`, without force, and checks that `origin` has that commit;
 3. makes a clone of that branch alone in `cloud/<owner>/<name>` under Priory's home;
-4. reads again that the run is live, and runs `claude --cloud PROMPT` in that clone, in a tmux session named `priory-cloud-<task>`, and
-   waits up to `command_timeout` for it to exit;
-5. removes the clone, and stores the `session_<id>` the command printed as the run's cloud session,
-   which `priory runs` shows in its `session` column.
+4. reads again that the run is live, and runs `claude --cloud DESCRIPTION` in that clone, in a tmux session named `priory-cloud-<task>`, and
+   waits up to `command_timeout` for it to exit. The description holds no task text: it says the task comes next;
+5. removes the clone, and sends the prompt to the `session_<id>` the command printed, on the stdin
+   of `claude -p --cloud SESSION`. A command's arguments are readable by every user of the machine,
+   and its stdin is not. It reads that the run is live first, so a run cancelled meanwhile gets no
+   prompt. When that read or the send fails, the task blocks as uncertain and names the session.
+   The send does not wait for the session: a message sent while a turn runs joins that turn,
+   checked on Claude Code 2.1.332;
+6. stores that session as the run's cloud session, which `priory runs` shows in its `session` column.
 
 When the state file cannot be read for those two checks, the daemon reads it again each second. One
 start waits `command_timeout` at most for both together, past which a read under way still ends, and
@@ -171,7 +176,7 @@ With it false, the default, everything else on this page holds as written.
   lasts twice the step's `timeout` and a minute, as long as the run may live with its grace. It publishes `priory.run.granted` with the token's SHA-256, the
   task's key, the run and the runner, and keeps only the hash. The token reaches the CLI once, as
   the `Authorization: Bearer` header of an HTTP MCP server named `priory` at `[cloud] gateway_url`,
-  in a file only the daemon's user reads, passed as `claude --mcp-config FILE --cloud PROMPT`. The
+  in a file only the daemon's user reads, passed as `claude --mcp-config FILE --cloud DESCRIPTION`. The
   file goes once the CLI exits, and a daemon that starts removes any such file a killed start left.
   The token is in no prompt, argument, log line or trace. Nobody has yet checked that a real
   `claude --cloud` passes `--mcp-config` on to the session.
@@ -183,9 +188,8 @@ With it false, the default, everything else on this page holds as written.
   away after 40 seconds. The same arguments sent again before a reply reached the session make the
   same call, so a retry applies once.
 - **A wake.** Once an ask is answered, a wait fires or anything else is queued for the task after
-  `ask` or `wait`, the daemon sends it to the session with `claude -p MSG --cloud SESSION`, which
-  starts the session's next turn. A failed wake is logged, and the desk still shows the answer. The
-  message is an argument of that command, so another user of the runner can read it with `ps`.
+  `ask` or `wait`, the daemon sends it on the stdin of `claude -p --cloud SESSION`, which
+  starts the session's next turn. A failed wake is logged, and the desk still shows the answer.
 - **The end.** `result` stores nothing yet: the daemon keeps it, looks for the push within 15
   seconds, and ends the step with that outcome, summary and evidence. It takes the pushed commit
   as above, or ends the step without one when a look that began after the result finds no new

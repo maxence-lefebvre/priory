@@ -39519,6 +39519,12 @@ fn a_start_that_may_have_made_a_session_blocks_the_task_and_a_resume_sends_the_w
         ("cloud-quiet", "cloud-quiet", "", "printed no session id"),
         ("cloud-late", "cloud-hang", "", "did not exit within 8s"),
         (
+            "cloud-unsent",
+            "cloud-wake-fail",
+            "",
+            "cloud session session_01Fake1 started, but its prompt was not sent",
+        ),
+        (
             "cloud-elsewhere",
             "cloud-note",
             "Branch priory/1 is not on GitHub, so the cloud session starts from the default branch, main\n",
@@ -40699,22 +40705,6 @@ fn a_cancelled_tasks_reason_links_the_cloud_session_it_leaves() {
         reason.contains("its cloud session still runs: https://claude.ai/code/session_01Fake1"),
         "{reason}"
     );
-}
-
-#[test]
-fn a_prompt_the_cli_echoes_names_no_session_and_no_marker() {
-    let mut setup = cloud("cloud-echo", CLOUD);
-    let echoed = "View: https://claude.ai/code/session_Echo is where the session starts empty.\n";
-    let agent = setup.dir.join("factory/agents/implementer/agent.md");
-    fs::write(agent, format!("{CLOUD_AGENT}{echoed}")).unwrap();
-    fs::write(setup.dir.join("fake/cloud-note"), echoed).unwrap();
-    setup.publish(&requested(42));
-
-    setup.start();
-
-    setup.until("runs", |rows| {
-        rows.first().is_some_and(|row| row[4] == "session_01Fake1")
-    });
 }
 
 #[test]
