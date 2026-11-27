@@ -1,3 +1,6 @@
+// The run tools list is one `json!` literal deeper than the default limit of 128.
+#![recursion_limit = "256"]
+
 pub mod cgroup;
 pub mod cloud;
 pub mod eval;

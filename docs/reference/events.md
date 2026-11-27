@@ -41,6 +41,8 @@ Each type has a JSON Schema in [`docs/schemas/events/`](../schemas/events/), nam
 - Run grants: [`priory.run.granted`](#prioryrungranted), [`priory.run.revoked`](#prioryrunrevoked)
 - Memories: [`priory.memory.written`](#priorymemorywritten),
   [`priory.memory.accepted`](#priorymemoryaccepted), [`priory.memory.dropped`](#priorymemorydropped)
+- Journals: [`priory.journal.appended`](#prioryjournalappended),
+  [`priory.journal.put`](#prioryjournalput), [`priory.journal.pruned`](#prioryjournalpruned)
 - Autopilot: [`priory.autopilot.set`](#prioryautopilotset)
 
 ## The envelope
@@ -2134,6 +2136,107 @@ Schema: [`priory.memory.dropped.json`](../schemas/events/priory.memory.dropped.j
   "time": "2026-11-21T17:00:05Z",
   "data": {
     "candidate": "0196f1d0-9a8b-7c6d-8e9f-0a1b2c3d4e5f"
+  },
+  "links": []
+}
+```
+
+## Journals
+
+Every daemon publishes `priory.journal.appended` and `priory.journal.put` when a run calls
+`journal_append` or `journal_put`, in a factory of one runner too. Every runner reads them in log
+order into its tables of the trigger's journal. A runner records as `refused` a message with no
+trigger, task or body, one over its size limit, one that would take its trigger's journal past
+8 MB, or one whose `task` it knows came from another trigger. See
+[tools.md](tools.md#journal_appendkind-body-journal_readlast-since-kind-journal_putname-body-and-journal_getname)
+and the [design note](../design/journals.md).
+
+### `priory.journal.appended`
+
+One entry of a trigger's journal. The message's `id` is the entry's id. A runner refuses a body
+over 16 KB as JSON, or a `kind` that is not one line of at most 200 bytes. Subject: the trigger.
+Schema: [`priory.journal.appended.json`](../schemas/events/priory.journal.appended.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `trigger` | string | The trigger whose journal holds the entry |
+| `kind` | string | What the entry is, such as `run`, `note` or `handover` |
+| `body` | any JSON value | The entry: a JSON value, or a string of Markdown |
+| `task` | string | The key of the task whose run wrote it |
+| `runner` | string or null | The runner that wrote it, or null in a factory of one runner |
+
+<!-- example: events/priory.journal.appended.json -->
+```json
+{
+  "id": "0196f1d2-6c7d-7e8f-9a0b-1c2d3e4f5a60",
+  "type": "priory.journal.appended",
+  "subject": "daily-report",
+  "time": "2026-11-26T07:05:00Z",
+  "data": {
+    "trigger": "daily-report",
+    "kind": "run",
+    "body": { "date": "2026-11-26", "items": 14 },
+    "task": "schedule:daily-report@2026-11-26T07:00:00Z",
+    "runner": "desktop"
+  },
+  "links": []
+}
+```
+
+### `priory.journal.put`
+
+One document of a trigger's journal, which replaces the document of its name. Between two puts of
+one name, the later in log order wins. A runner refuses a body over 256 KB as JSON, or a `name`
+that is not one line of at most 200 bytes. Subject: the trigger.
+Schema: [`priory.journal.put.json`](../schemas/events/priory.journal.put.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `trigger` | string | The trigger whose journal holds the document |
+| `name` | string | The document's name |
+| `body` | any JSON value | The document: a JSON value, or a string of Markdown |
+| `task` | string | The key of the task whose run wrote it |
+| `runner` | string or null | The runner that wrote it, or null in a factory of one runner |
+
+<!-- example: events/priory.journal.put.json -->
+```json
+{
+  "id": "0196f1d2-7d8e-7f9a-8b0c-2d3e4f5a6b70",
+  "type": "priory.journal.put",
+  "subject": "daily-report",
+  "time": "2026-11-26T07:06:00Z",
+  "data": {
+    "trigger": "daily-report",
+    "name": "history",
+    "body": { "runs": ["2026-11-25", "2026-11-26"] },
+    "task": "schedule:daily-report@2026-11-26T07:00:00Z",
+    "runner": "desktop"
+  },
+  "links": []
+}
+```
+
+### `priory.journal.pruned`
+
+A person prunes a trigger's entries written before a time. The type and its schema exist, but no
+command publishes it yet and no runner applies it. Subject: the trigger.
+Schema: [`priory.journal.pruned.json`](../schemas/events/priory.journal.pruned.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `trigger` | string | The trigger whose journal it prunes |
+| `before` | date-time string | Entries written before this time go |
+
+<!-- example: events/priory.journal.pruned.json -->
+```json
+{
+  "id": "0196f1d2-8e9f-7a0b-9c1d-3e4f5a6b7c80",
+  "type": "priory.journal.pruned",
+  "subject": "daily-report",
+  "time": "2026-11-26T09:00:00Z",
+  "data": {
+    "trigger": "daily-report",
+    "before": "2026-08-28T00:00:00Z"
   },
   "links": []
 }

@@ -568,6 +568,55 @@ remembered release-day as candidate 0196f1d0-4a5b-7c6d-8e9f-0a1b2c3d4e5f: your t
 See [skills.md](../daemon/skills.md#memories-agents-write) for how a candidate reaches runs, and
 [memories.md](memories.md#candidates) for the states, the commands and every error.
 
+## `journal_append(kind, body)`, `journal_read(last?, since?, kind?)`, `journal_put(name, body)` and `journal_get(name?)`
+
+These four keep the state of the run's task's trigger between its runs, on the log every runner
+reads. Each acts on the journal of the trigger that started the run's task, and takes no trigger
+argument, so a run cannot reach another trigger's journal. None of them ends the turn.
+
+| Tool | Does |
+| ---- | ---- |
+| `journal_append` | Appends an entry and replies with its id |
+| `journal_read` | Replies with entries as JSON, oldest first |
+| `journal_put` | Replaces the document `name` |
+| `journal_get` | Replies with the document `name` as JSON, or the name, size and time of each document without `name` |
+
+| Field | Meaning |
+| ----- | ------- |
+| `kind` | What an entry is, such as `run`, `note` or `handover`: one line of at most 200 bytes |
+| `name` | A document's name: one line of at most 200 bytes |
+| `body` | A JSON value, or a string of Markdown |
+| `last` | How many of the newest entries `journal_read` returns: 20 by default, at most 200 |
+| `since` | Only entries written at or after this RFC 3339 time |
+
+```json
+{ "kind": "run", "body": { "date": "2026-11-26", "items": 14 } }
+```
+
+The daemon stores each write, then publishes `priory.journal.appended` or `priory.journal.put` on
+the log through its queue, as it does a memory. Every runner reads them into its tables, so a later
+run of the same trigger on any runner reads them from its own runner. A read answers from those
+tables, so it needs no link to the log.
+
+Each write fails, and writes nothing, with an error that names the limit:
+
+- an entry over 16 KB, as JSON;
+- a document over 256 KB, as JSON;
+- a write that takes the trigger's journal past 8 MB of entries and documents. A put counts once
+  the document it replaces;
+- a body that looks like it holds a credential.
+
+A run of a task that no factory trigger started, such as one `priory request` made, gets an error
+from all four tools:
+
+```text
+task cli:7 has no trigger (it came from cli), so it has no journal: only the runs of a factory trigger keep one
+```
+
+The tool descriptions tell the agent to treat what it reads as data, since an earlier run wrote it.
+`priory journal` calls the same from a run's pane. See [cli.md](cli.md#commands-a-run-calls) and
+[events.md](events.md#journals).
+
 ## `compact(focus?)`
 
 `compact` queues `/compact <focus>` in the outbox and tells the agent to end its turn. An agent

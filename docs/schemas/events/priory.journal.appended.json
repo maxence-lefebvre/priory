@@ -1,0 +1,103 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/events/priory.journal.appended.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "JournalAppended": {
+      "additionalProperties": false,
+      "description": "A run appends an entry to its trigger's journal with `journal_append` or\n`priory journal append`. Each message is one entry, known by its `id`. Every runner keeps it for\nthe trigger's later runs, unless the entry is over 16 KB, would take the journal past 8 MB, or\nits `task` came from another trigger.",
+      "properties": {
+        "body": {
+          "description": "The entry: a JSON value, or a string of Markdown."
+        },
+        "kind": {
+          "description": "What the entry is, such as `run`, `note` or `handover`.",
+          "type": "string"
+        },
+        "runner": {
+          "description": "The runner that wrote it, or null in a factory of one runner.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "task": {
+          "description": "The key of the task whose run wrote it.",
+          "type": "string"
+        },
+        "trigger": {
+          "description": "The trigger whose journal holds the entry.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "trigger",
+        "kind",
+        "body",
+        "task",
+        "runner"
+      ],
+      "type": "object"
+    },
+    "Link": {
+      "additionalProperties": false,
+      "description": "A link for people.",
+      "properties": {
+        "label": {
+          "description": "`issue` or `pull_request`.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "A run appends an entry to its trigger's journal with `journal_append` or\n`priory journal append`. Each message is one entry, known by its `id`. Every runner keeps it for\nthe trigger's later runs, unless the entry is over 16 KB, would take the journal past 8 MB, or\nits `task` came from another trigger.",
+  "properties": {
+    "data": {
+      "$ref": "#/definitions/JournalAppended"
+    },
+    "id": {
+      "description": "A UUIDv5 of the message's name, so a retried publish keeps its id.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "links": {
+      "description": "GitHub and Linear events carry one link to the event's page.",
+      "items": {
+        "$ref": "#/definitions/Link"
+      },
+      "type": "array"
+    },
+    "subject": {
+      "description": "A short line for listings, such as `owner/name#42`.",
+      "type": "string"
+    },
+    "time": {
+      "description": "When the event happened, RFC 3339.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "type": {
+      "const": "priory.journal.appended",
+      "description": "The message type, such as `github.issues.labeled`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "subject",
+    "time",
+    "data",
+    "links"
+  ],
+  "title": "priory.journal.appended",
+  "type": "object"
+}

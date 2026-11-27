@@ -1667,6 +1667,15 @@ fn take(
             replied(crate::memories::write(db, &call, trace, kit)?),
             None,
         )),
+        Ok(Input::Call(call)) if matches!(call.tool.as_str(), "journal_append" | "journal_put") => {
+            Ok((replied(crate::journals::write(db, &call, trace)?), None))
+        }
+        Ok(Input::Call(call)) if matches!(call.tool.as_str(), "journal_read" | "journal_get") => {
+            Ok((
+                replied(crate::journals::read(db, &call, trace.factory)?),
+                None,
+            ))
+        }
         Ok(Input::Call(call)) if call.tool == "memory" => Ok((
             replied(crate::memories::recall(db, &call, trace.factory, kit)?),
             None,

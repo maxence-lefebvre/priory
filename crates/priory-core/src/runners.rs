@@ -97,6 +97,7 @@ pub(crate) fn view(
         let outcome = if crate::route::outsider(message) {
             Some("outsider")
         } else if crate::memories::handle(&tx, message)?.is_some()
+            || crate::journals::handle(&tx, message)?.is_some()
             || crate::autopilot::handle(&tx, message, true)?.is_some()
             || handle(&tx, message, viewer, trace, None)?.is_some()
         {

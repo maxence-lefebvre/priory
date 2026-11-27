@@ -64,6 +64,12 @@ pub const MEMORY_WRITTEN: &str = "priory.memory.written";
 pub const MEMORY_ACCEPTED: &str = "priory.memory.accepted";
 /// A person drops a memory candidate, so no run gets it.
 pub const MEMORY_DROPPED: &str = "priory.memory.dropped";
+/// A run appends an entry to its trigger's journal.
+pub const JOURNAL_APPENDED: &str = "priory.journal.appended";
+/// A run replaces a document of its trigger's journal.
+pub const JOURNAL_PUT: &str = "priory.journal.put";
+/// A person prunes a trigger's journal entries before a time. Nothing publishes it yet.
+pub const JOURNAL_PRUNED: &str = "priory.journal.pruned";
 /// A person turns autopilot on or off, for every runner.
 pub const AUTOPILOT_SET: &str = "priory.autopilot.set";
 const LABELED: &str = "github.issues.labeled";
@@ -278,6 +284,9 @@ pub fn output() -> Output {
             MEMORY_WRITTEN,
             MEMORY_ACCEPTED,
             MEMORY_DROPPED,
+            JOURNAL_APPENDED,
+            JOURNAL_PUT,
+            JOURNAL_PRUNED,
             AUTOPILOT_SET,
         ])
 }

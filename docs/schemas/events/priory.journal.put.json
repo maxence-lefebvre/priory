@@ -1,0 +1,103 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/events/priory.journal.put.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "JournalPut": {
+      "additionalProperties": false,
+      "description": "A run replaces a document of its trigger's journal with `journal_put` or `priory journal put`.\nBetween two puts of one name, the later in log order wins. A body over 256 KB, or one that would\ntake the journal past 8 MB, is refused.",
+      "properties": {
+        "body": {
+          "description": "The document: a JSON value, or a string of Markdown."
+        },
+        "name": {
+          "description": "The document's name.",
+          "type": "string"
+        },
+        "runner": {
+          "description": "The runner that wrote it, or null in a factory of one runner.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "task": {
+          "description": "The key of the task whose run wrote it.",
+          "type": "string"
+        },
+        "trigger": {
+          "description": "The trigger whose journal holds the document.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "trigger",
+        "name",
+        "body",
+        "task",
+        "runner"
+      ],
+      "type": "object"
+    },
+    "Link": {
+      "additionalProperties": false,
+      "description": "A link for people.",
+      "properties": {
+        "label": {
+          "description": "`issue` or `pull_request`.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "A run replaces a document of its trigger's journal with `journal_put` or `priory journal put`.\nBetween two puts of one name, the later in log order wins. A body over 256 KB, or one that would\ntake the journal past 8 MB, is refused.",
+  "properties": {
+    "data": {
+      "$ref": "#/definitions/JournalPut"
+    },
+    "id": {
+      "description": "A UUIDv5 of the message's name, so a retried publish keeps its id.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "links": {
+      "description": "GitHub and Linear events carry one link to the event's page.",
+      "items": {
+        "$ref": "#/definitions/Link"
+      },
+      "type": "array"
+    },
+    "subject": {
+      "description": "A short line for listings, such as `owner/name#42`.",
+      "type": "string"
+    },
+    "time": {
+      "description": "When the event happened, RFC 3339.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "type": {
+      "const": "priory.journal.put",
+      "description": "The message type, such as `github.issues.labeled`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "subject",
+    "time",
+    "data",
+    "links"
+  ],
+  "title": "priory.journal.put",
+  "type": "object"
+}

@@ -25,6 +25,7 @@ mod held;
 mod hold;
 mod idle;
 mod intent;
+pub mod journals;
 pub mod judge;
 pub mod keyboard;
 mod kit;

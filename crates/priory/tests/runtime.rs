@@ -8,6 +8,7 @@ mod consult;
 mod debate;
 mod evidence;
 mod hold_running;
+mod journal;
 mod metrics;
 mod outside_answer;
 #[cfg(feature = "postgres")]
@@ -10290,6 +10291,10 @@ fn the_mcp_server_lists_its_tools() {
             "remember",
             "forget",
             "memory",
+            "journal_append",
+            "journal_read",
+            "journal_put",
+            "journal_get",
             "compact",
             "tldr",
             "report",

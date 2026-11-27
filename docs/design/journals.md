@@ -240,6 +240,10 @@ unless the person passes `--again`.
 
 Each slice ships alone and leaves the factory working.
 
+Slice 1 is on `main`. Slices 2 to 5 are later slices. Slice 1 screens a write for credentials, not
+yet for the factory's private terms, and its CLI reaches a journal through `PRIORY_SESSION` only, not
+through a `run` action's `PRIORY_TASK`.
+
 ### 1. Entries and documents on the log
 
 - **Code.** The three event types and their schemas, the two state tables, the four tools, and

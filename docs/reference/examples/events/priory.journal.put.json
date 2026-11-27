@@ -1,0 +1,14 @@
+{
+  "id": "0196f1d2-7d8e-7f9a-8b0c-2d3e4f5a6b70",
+  "type": "priory.journal.put",
+  "subject": "daily-report",
+  "time": "2026-11-26T07:06:00Z",
+  "data": {
+    "trigger": "daily-report",
+    "name": "history",
+    "body": { "runs": ["2026-11-25", "2026-11-26"] },
+    "task": "schedule:daily-report@2026-11-26T07:00:00Z",
+    "runner": "desktop"
+  },
+  "links": []
+}
