@@ -2181,6 +2181,7 @@ mod tests {
             "env -u PRIORY_SESSION priory journal read --trigger daily",
             "priory journal get history --trigger daily",
             "env -u PRIORY_SESSION priory journal import daily --document history h.json --again",
+            "env -u PRIORY_SESSION priory journal import x --entries f",
             "PRIORY_SESSION= priory journal import daily --entries runs.jsonl --kind run",
         ] {
             let hits = guards.hits("Bash", Some(command), &git);
