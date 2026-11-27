@@ -126,7 +126,15 @@ publishes the heartbeat straight to the log. `diocese-down` and `diocese-up` sto
    `postgresql://priory:PASSWORD@127.0.0.1:PORT/priory?sslmode=disable` in the daemon's
    environment, from a file only you can read. The tunnel encrypts the link, so the plain
    connection inside it stays on loopback.
-6. Start this machine's daemon first, then the second machine's, each with
+6. If the factory already ran on herdr-bus, stop its intake and daemon, then copy its log into
+   Postgres, so that schedules, polls and readers resume where they stood:
+
+   ```sh
+   priory log copy <factory folder> --from herdr-bus ~/.local/share/herdr-bus/bus.db
+   ```
+
+   Add `--dry-run` first to see what it would copy. See [cli.md](reference/cli.md).
+7. Start this machine's daemon first, then the second machine's, each with
    `priory daemon <factory folder>`.
 
 ## Limits

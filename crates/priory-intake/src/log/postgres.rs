@@ -324,7 +324,76 @@ impl Log for Postgres {
     }
 }
 
+/// One consumer's cursor on one output, as `copy_in` writes it.
+pub struct Cursor {
+    pub consumer: String,
+    pub output: String,
+    pub seq: i64,
+}
+
 impl Postgres {
+    /// Writes `messages`, oldest first, with their seqs, and `cursors` into this log in one
+    /// transaction, and refuses a log that holds any message or cursor already, so a copy never
+    /// mixes two histories. Later publishes get seqs past the last copied. `dry_run` rolls back.
+    pub fn copy_in(&self, messages: &[Stored], cursors: &[Cursor], dry_run: bool) -> Result<()> {
+        let mut rows = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for stored in messages {
+            rows.0.push(stored.seq.0);
+            rows.1.push(stored.output.clone());
+            rows.2.push(stored.message.id.to_string());
+            rows.3.push(stored.published);
+            rows.4.push(serde_json::to_string(&stored.message)?);
+        }
+        let cursors: (Vec<_>, Vec<_>, Vec<_>) = (
+            cursors
+                .iter()
+                .map(|cursor| cursor.consumer.clone())
+                .collect(),
+            cursors.iter().map(|cursor| cursor.output.clone()).collect(),
+            cursors.iter().map(|cursor| cursor.seq).collect(),
+        );
+        self.run(move |client| {
+            let mut tx = client.transaction()?;
+            tx.execute(
+                "SELECT pg_advisory_xact_lock(hashtext('priory_log_publish'))",
+                &[],
+            )?;
+            let held: bool = tx
+                .query_one(
+                    "SELECT EXISTS (SELECT 1 FROM priory_log_messages)
+                         OR EXISTS (SELECT 1 FROM priory_log_cursors)",
+                    &[],
+                )?
+                .get(0);
+            if held {
+                return Err("the Postgres log already holds messages or cursors: \
+                            priory log copy only fills an empty log"
+                    .into());
+            }
+            tx.execute(
+                "INSERT INTO priory_log_messages (seq, output, id, published, message)
+                 SELECT * FROM unnest($1::BIGINT[], $2::TEXT[], $3::TEXT[], $4::TIMESTAMPTZ[], $5::TEXT[])",
+                &[&rows.0, &rows.1, &rows.2, &rows.3, &rows.4],
+            )?;
+            tx.execute(
+                "SELECT setval(pg_get_serial_sequence('priory_log_messages', 'seq'),
+                     GREATEST(max(seq), 1), max(seq) IS NOT NULL) FROM priory_log_messages",
+                &[],
+            )?;
+            tx.execute(
+                "INSERT INTO priory_log_cursors (consumer, output, seq)
+                 SELECT * FROM unnest($1::TEXT[], $2::TEXT[], $3::BIGINT[])",
+                &[&cursors.0, &cursors.1, &cursors.2],
+            )?;
+            if dry_run {
+                tx.rollback()?;
+            } else {
+                tx.commit()?;
+            }
+            Ok(())
+        })
+    }
+
     /// Moves `consumer`'s cursor on `output` to `seq`, unless it is past it already.
     fn advance(&self, consumer: &str, output: &str, seq: i64) -> Result<()> {
         let (consumer, output) = (consumer.to_owned(), output.to_owned());

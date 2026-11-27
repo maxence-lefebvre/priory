@@ -353,8 +353,9 @@ Each slice ships alone and leaves the factory working.
 ### 1. The VM, Postgres and the private network, with the desktop as the only runner
 
 - **Operations.** Rent the VM, join it to the tailnet, start Postgres bound to the tailnet address
-  and OpenObserve beside it, set up the nightly dump. Stop the desktop's daemon and intake, dump the
-  desktop's log, restore it on the VM, point `PRIORY_LOG_URL` and `[telemetry]` `otlp` at the VM, and
+  and OpenObserve beside it, set up the nightly dump. Stop the desktop's daemon and intake, copy the
+  desktop's log to the VM with `priory log copy --from herdr-bus PATH` when it is still herdr-bus's
+  file, or dump it and restore it there when it is Postgres already, point `PRIORY_LOG_URL` and `[telemetry]` `otlp` at the VM, and
   start them again.
 - **Code.** None.
 - **Tests.** The existing Postgres log tests, against the VM from the desktop. Measure a publish and
