@@ -5,7 +5,7 @@
   "definitions": {
     "JournalAppended": {
       "additionalProperties": false,
-      "description": "A run appends an entry to its trigger's journal with `journal_append` or\n`priory journal append`. Each message is one entry, known by its `id`. Every runner keeps it for\nthe trigger's later runs, unless the entry is over 16 KB, would take the journal past 8 MB, or\nits `task` came from another trigger.",
+      "description": "A run appends an entry to its trigger's journal with `journal_append` or\n`priory journal append`. Each message is one entry, known by its `id`. Every runner keeps it for\nthe trigger's later runs, unless the entry is over 16 KB, would take the journal past 8 MB, or\nits `task` came from another trigger. `priory journal import` publishes it with a `person` and\nno `task`.",
       "properties": {
         "body": {
           "description": "The entry: a JSON value, or a string of Markdown."
@@ -14,16 +14,26 @@
           "description": "What the entry is, such as `run`, `note` or `handover`.",
           "type": "string"
         },
+        "person": {
+          "description": "The person who wrote it with `priory journal import`, when no task did.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "runner": {
-          "description": "The runner that wrote it, or null in a factory of one runner.",
+          "description": "The runner that wrote it, or null in a factory of one runner or a person's import.",
           "type": [
             "string",
             "null"
           ]
         },
         "task": {
-          "description": "The key of the task whose run wrote it.",
-          "type": "string"
+          "description": "The key of the task whose run wrote it. A person's import has none.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "trigger": {
           "description": "The trigger whose journal holds the entry.",
@@ -34,7 +44,6 @@
         "trigger",
         "kind",
         "body",
-        "task",
         "runner"
       ],
       "type": "object"
@@ -58,7 +67,7 @@
       "type": "object"
     }
   },
-  "description": "A run appends an entry to its trigger's journal with `journal_append` or\n`priory journal append`. Each message is one entry, known by its `id`. Every runner keeps it for\nthe trigger's later runs, unless the entry is over 16 KB, would take the journal past 8 MB, or\nits `task` came from another trigger.",
+  "description": "A run appends an entry to its trigger's journal with `journal_append` or\n`priory journal append`. Each message is one entry, known by its `id`. Every runner keeps it for\nthe trigger's later runs, unless the entry is over 16 KB, would take the journal past 8 MB, or\nits `task` came from another trigger. `priory journal import` publishes it with a `person` and\nno `task`.",
   "properties": {
     "data": {
       "$ref": "#/definitions/JournalAppended"

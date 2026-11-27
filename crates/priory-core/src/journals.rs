@@ -215,6 +215,108 @@ pub(crate) fn write(
     }))
 }
 
+/// `priory journal import`: publishes `entries`, each of kind `kind`, in their order, and each of
+/// `puts`, to trigger `trigger`'s journal as `person`'s writes. It checks every write before it
+/// publishes the first, and refuses a journal that already holds entries, or one of the documents,
+/// unless `again`.
+#[allow(clippy::too_many_arguments)]
+pub fn import(
+    factory: &Factory,
+    db: &Connection,
+    trigger: &str,
+    person: &str,
+    kind: &str,
+    entries: &[Value],
+    puts: &[(String, Value)],
+    again: bool,
+) -> Result<String, String> {
+    let fail = |error: rusqlite::Error| error.to_string();
+    if !factory.triggers.contains_key(trigger) {
+        return Err(format!("the factory has no trigger {trigger}"));
+    }
+    if !again {
+        let held: i64 = db
+            .query_row(
+                "SELECT count(*) FROM journal_entries WHERE trigger = ?1",
+                [trigger],
+                |row| row.get(0),
+            )
+            .map_err(fail)?;
+        if !entries.is_empty() && held > 0 {
+            return Err(format!(
+                "the journal of {trigger} already holds {held} entries: pass --again to append these after them"
+            ));
+        }
+        for (name, _) in puts {
+            if documents(db, trigger, Some(name)).map_err(fail)?.is_ok() {
+                return Err(format!(
+                    "the journal of {trigger} already holds document {name}: pass --again to replace it"
+                ));
+            }
+        }
+    }
+    let writes = entries
+        .iter()
+        .map(|body| (true, kind, body))
+        .chain(puts.iter().map(|(name, body)| (false, name.as_str(), body)));
+    // shortcut: a document that --again replaces counts twice here, which only refuses early near 8 MB.
+    let mut bytes = used(db, trigger, None, false).map_err(fail)?;
+    let mut messages = Vec::new();
+    for (n, (entry, label, body)) in writes.enumerate() {
+        let text = body.to_string();
+        let what = if entry {
+            format!("entry {}", n + 1)
+        } else {
+            format!("document {label}")
+        };
+        if let Some(why) = refused(entry, label, text.len()) {
+            return Err(format!("{what}: {why}"));
+        }
+        if crate::screen::holds_secret(&text) || crate::screen::holds_secret(label) {
+            return Err(format!(
+                "{what} looks like it holds a credential: keep secrets out of a journal"
+            ));
+        }
+        bytes += text.len();
+        let mut data =
+            json!({ "trigger": trigger, "body": body, "person": person, "runner": null });
+        data[if entry { "kind" } else { "name" }] = json!(label);
+        let kind = if entry { JOURNAL_APPENDED } else { JOURNAL_PUT };
+        messages.push(Message::new(kind, data).subject(trigger.to_owned()));
+    }
+    if bytes > JOURNAL_LIMIT {
+        return Err(full(trigger, bytes));
+    }
+    crate::runners::publish_all(factory.log(), &messages).map_err(|(sent, unsent)| {
+        // An unconfirmed publish may have reached the log before it failed.
+        let (reached, why) = match unsent {
+            crate::runners::Unsent::Nothing(why) => (sent.to_string(), why),
+            crate::runners::Unsent::Unconfirmed(why) => {
+                (format!("between {sent} and {}", sent + 1), why)
+            }
+        };
+        let next = if sent < entries.len() {
+            format!(
+                "Once `priory journal read --trigger {trigger}` shows the last entry that arrived, rerun with --again and --skip set to how many of the file's entries the journal holds"
+            )
+        } else {
+            "Every entry reached it: rerun with only the --document options and --again".to_owned()
+        };
+        format!(
+            "{why}: {reached} of the {} writes reached the log, entries first. {next}",
+            messages.len()
+        )
+    })?;
+    let mut said = format!(
+        "imported {} entries into the journal of {trigger}",
+        entries.len()
+    );
+    for (name, body) in puts {
+        said += &format!("\nput document {name}, {} bytes", body.to_string().len());
+    }
+    Ok(said)
+}
+
 /// One journal write, as a message or an inbox row holds it.
 struct Write<'a> {
     id: &'a str,
@@ -223,6 +325,8 @@ struct Write<'a> {
     label: &'a str,
     body: String,
     task: &'a str,
+    /// The person who imported it, for a write no task made.
+    person: &'a str,
     runner: Option<&'a str>,
     written: String,
     at: i64,
@@ -243,6 +347,7 @@ impl<'a> Write<'a> {
                 data["body"].to_string()
             },
             task: text("task"),
+            person: text("person"),
             runner: data["runner"].as_str(),
             written: time.to_string(),
             at: time.as_millisecond(),
@@ -254,7 +359,11 @@ impl<'a> Write<'a> {
         Ok(!self.trigger.is_empty()
             && !self.body.is_empty()
             && refused(self.entry, self.label, self.body.len()).is_none()
-            && requested(tx, self.task, self.trigger, before)?
+            && (if self.task.is_empty() {
+                !self.person.trim().is_empty()
+            } else {
+                requested(tx, self.task, self.trigger, before)?
+            })
             && used(tx, self.trigger, (!self.entry).then_some(self.label), true)? + self.body.len()
                 <= JOURNAL_LIMIT)
     }
@@ -634,6 +743,36 @@ mod tests {
             sized(JOURNAL_LIMIT - 31 * DOCUMENT_LIMIT - free),
         ));
         log
+    }
+
+    #[test]
+    fn an_import_applies_on_a_runner_with_no_request_and_a_write_with_neither_task_nor_person_does_not()
+     {
+        let imported = |person: Option<&str>, body: &str| {
+            let mut message = written(JOURNAL_APPENDED, "run", json!({ "line": body }));
+            let data = message.data.as_object_mut().unwrap();
+            data.remove("task");
+            data["runner"] = Value::Null;
+            if let Some(person) = person {
+                data.insert("person".to_owned(), json!(person));
+            }
+            message
+        };
+        let log = [
+            imported(Some("a-person"), "1"),
+            imported(None, "anon"),
+            imported(Some("a-person"), "2"),
+        ];
+        let mut later = crate::state::memory();
+        fold(&mut later, &log);
+        let read = entries(&later, "daily", None, None, None).unwrap().unwrap();
+        let lines: Vec<&Value> = read["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| &e["body"]["line"])
+            .collect();
+        assert_eq!(lines, [&json!("1"), &json!("2")]);
     }
 
     #[test]
