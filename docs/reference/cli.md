@@ -52,6 +52,16 @@ does and the page that describes it.
   `priory.run.called`, and moves only the `priory.gateway` cursor. Set `PRIORY_LOG_RESTRICTED=1`
   for the gateway that connects as it. See
   [the diocese](../design/diocese.md#database-roles).
+- `priory log copy [DIR] --from herdr-bus PATH [--dry-run]`: copies the herdr-bus file at `PATH`
+  into the Postgres log the factory's `[log]` names, from its `url_env`, in one transaction. Each
+  message keeps its seq, id, body and published time, and each consumer keeps its cursor, so the
+  intake fires no schedule slot again and polls no baseline again. Later publishes get seqs past the
+  last copied one. It refuses a Postgres log that holds any message or cursor, and a failed copy
+  writes nothing. It prints the messages per output and the cursor per consumer. It refuses a cursor
+  past the last copied message, which a reader that acked during the copy leaves. It skips taps, the
+  bus's id, its outputs' descriptions and its requests' replies, which Postgres has no place for.
+  `--dry-run` prints the same counts and writes no message or cursor. Stop the intake and every
+  daemon on the factory first.
 - `priory gateway grant [DIR] --for DURATION`: makes a run grant that lasts `DURATION`, such as
   `30m`, from when the log takes it. It publishes `priory.run.granted` with the token's SHA-256, and
   prints `{ "grant", "token" }`. The token is printed once and reaches nothing else.

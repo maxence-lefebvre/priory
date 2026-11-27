@@ -1,5 +1,7 @@
 #[allow(dead_code)]
 mod harness;
+#[cfg(feature = "postgres")]
+mod log_copy;
 
 use std::fs;
 use std::path::{Path, PathBuf};

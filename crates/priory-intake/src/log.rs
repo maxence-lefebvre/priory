@@ -4,6 +4,8 @@ use herdr_bus::{Bus, Message, Output, Seq, Start, Stored, Timestamp};
 use priory_factory::factory::{Backend, EventLog};
 
 #[cfg(feature = "postgres")]
+pub mod copy;
+#[cfg(feature = "postgres")]
 pub mod postgres;
 pub mod sql;
 
@@ -90,13 +92,9 @@ pub fn open(log: &EventLog) -> Result<Box<dyn Log>> {
 
 #[cfg(feature = "postgres")]
 fn open_postgres(log: &EventLog) -> Result<Box<dyn Log>> {
-    let url_env = log.url_env();
-    let url = std::env::var(url_env).map_err(|_| {
-        format!("[log] backend = \"postgres\" reads its connection string from ${url_env}, which is not set")
-    })?;
     let restricted = std::env::var(RESTRICTED_ENV).is_ok_and(|value| value == "1");
     Ok(Box::new(postgres::Postgres::connect(
-        &url,
+        &url(log)?,
         log.timeout(),
         restricted,
     )?))
@@ -104,7 +102,41 @@ fn open_postgres(log: &EventLog) -> Result<Box<dyn Log>> {
 
 #[cfg(not(feature = "postgres"))]
 fn open_postgres(_log: &EventLog) -> Result<Box<dyn Log>> {
-    Err("[log] backend = \"postgres\" needs a priory built with `--features postgres`".into())
+    Err(NO_POSTGRES.into())
+}
+
+#[cfg(not(feature = "postgres"))]
+const NO_POSTGRES: &str =
+    "[log] backend = \"postgres\" needs a priory built with `--features postgres`";
+
+/// The connection string of the Postgres log `log` names, from its `url_env`.
+#[cfg(feature = "postgres")]
+fn url(log: &EventLog) -> Result<String> {
+    let url_env = log.url_env();
+    Ok(std::env::var(url_env).map_err(|_| {
+        format!("[log] backend = \"postgres\" reads its connection string from ${url_env}, which is not set")
+    })?)
+}
+
+/// Copies the herdr-bus file at `from` into the empty Postgres log that `log` names, or with
+/// `dry_run` only counts what it would copy, and returns the counts to print.
+pub fn copy(log: &EventLog, from: &std::path::Path, dry_run: bool) -> Result<String> {
+    if log.backend != Backend::Postgres {
+        return Err("priory log copy fills the Postgres log: set [log] backend = \"postgres\" in factory.toml first".into());
+    }
+    copy_postgres(log, from, dry_run)
+}
+
+#[cfg(feature = "postgres")]
+fn copy_postgres(log: &EventLog, from: &std::path::Path, dry_run: bool) -> Result<String> {
+    // One transaction moves the whole log, so it gets minutes where a call gets `[log]`'s timeout.
+    let target = postgres::Postgres::connect(&url(log)?, copy::TIMEOUT, false)?;
+    copy::from_herdr_bus(from, &target, dry_run)
+}
+
+#[cfg(not(feature = "postgres"))]
+fn copy_postgres(_log: &EventLog, _from: &std::path::Path, _dry_run: bool) -> Result<String> {
+    Err(NO_POSTGRES.into())
 }
 
 impl Log for Bus {

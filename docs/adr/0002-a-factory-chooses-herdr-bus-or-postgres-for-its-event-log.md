@@ -50,8 +50,9 @@ Priory publisher declares first, and an output with no messages reads empty.
 
 ## Consequences
 
-- Moving a factory from herdr-bus to Postgres starts the log empty. Messages already in
-  herdr-bus's file stay there, and the intake resumes each source as on its first start.
+- Moving a factory from herdr-bus to Postgres starts the log empty, unless `priory log copy`
+  copies herdr-bus's file into it first, with every seq and cursor kept (added 2026-11-27).
+  Without the copy, the intake resumes each source as on its first start.
 - One publisher writes at a time across every machine, to keep seqs in commit order.
 - CI runs the contract suite against a Postgres service on every push. Locally it runs when
   `PRIORY_TEST_POSTGRES_URL` is set, and skips otherwise.
