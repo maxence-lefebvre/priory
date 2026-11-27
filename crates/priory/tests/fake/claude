@@ -48,7 +48,7 @@ fi
 # 1, cloud-quiet print nothing, cloud-hang wait until it is killed, cloud-trust show Claude's trust
 # dialog and wait, cloud-title gives the session's title, and cloud-note a line it prints first.
 # The session's first `-p --cloud` message is its prompt: it takes the placeholder's place in
-# cloud.log. With cloud-push, that message then pushes a commit with that file's content as its
+# cloud.log. With cloud-wake-fail, every `-p --cloud` prints an error and exits 1. With cloud-push, that message then pushes a commit with that file's content as its
 # message to the branch the prompt names in `git push origin HEAD:<branch>`, from the folder's
 # branch on origin, as the cloud session would. cloud-orphan, which one push consumes, makes that
 # commit descend from nothing.
@@ -60,6 +60,10 @@ fi
 # `claude -p --cloud ID` reads MSG on stdin. A session's first MSG is its prompt; each later one
 # appends ID, MSG and --- to cloud-wake.log, as a message to a session.
 if [ "${1-}" = -p ] && [ "${2-}" = --cloud ]; then
+  if [ -e "$FAKE_DIR/cloud-wake-fail" ]; then
+    echo 'Error: Could not send to cloud session.' >&2
+    exit 1
+  fi
   msg=$(cat; printf x)
   msg=${msg%x}
   n=${3#session_01Fake}

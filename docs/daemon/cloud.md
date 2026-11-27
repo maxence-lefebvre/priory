@@ -74,7 +74,10 @@ time. The daemon:
    waits up to `command_timeout` for it to exit. The description holds no task text: it says the task comes next;
 5. removes the clone, and sends the prompt to the `session_<id>` the command printed, on the stdin
    of `claude -p --cloud SESSION`. A command's arguments are readable by every user of the machine,
-   and its stdin is not. When that send fails, the task blocks as uncertain and names the session;
+   and its stdin is not. It reads that the run is live first, so a run cancelled meanwhile gets no
+   prompt. When that read or the send fails, the task blocks as uncertain and names the session.
+   The send does not wait for the session: a message sent while a turn runs joins that turn,
+   checked on Claude Code 2.1.332;
 6. stores that session as the run's cloud session, which `priory runs` shows in its `session` column.
 
 When the state file cannot be read for those two checks, the daemon reads it again each second. One

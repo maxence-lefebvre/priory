@@ -39519,6 +39519,12 @@ fn a_start_that_may_have_made_a_session_blocks_the_task_and_a_resume_sends_the_w
         ("cloud-quiet", "cloud-quiet", "", "printed no session id"),
         ("cloud-late", "cloud-hang", "", "did not exit within 8s"),
         (
+            "cloud-unsent",
+            "cloud-wake-fail",
+            "",
+            "cloud session session_01Fake1 started, but its prompt was not sent",
+        ),
+        (
             "cloud-elsewhere",
             "cloud-note",
             "Branch priory/1 is not on GitHub, so the cloud session starts from the default branch, main\n",

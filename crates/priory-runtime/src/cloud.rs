@@ -171,12 +171,15 @@ pub fn start(
     let _ = fs::remove_dir_all(&dir);
     let _ = fs::remove_file(servers(start));
     let started = started?;
-    wake(&started.id, &start.prompt).map_err(|error| {
-        NotStarted::Uncertain(format!(
-            "cloud session {} started, but its prompt did not reach it: {error}",
-            started.id
-        ))
-    })?;
+    // A run cancelled while the CLI ran gets no prompt.
+    goes_on()
+        .and_then(|()| wake(&started.id, &start.prompt))
+        .map_err(|error| {
+            NotStarted::Uncertain(format!(
+                "cloud session {} started, but its prompt was not sent: {error}",
+                started.id
+            ))
+        })?;
     Ok(started)
 }
 
@@ -189,7 +192,8 @@ fn servers(start: &Start) -> PathBuf {
 }
 
 /// Removes the MCP server files a start left under `home`: a daemon killed during a start never
-/// removed its token. No start runs while the daemon starts.
+/// removed its token. Removes the prompt files an older Priory left there too. No start runs while
+/// the daemon starts.
 pub fn sweep_servers(home: &Path) {
     let Ok(entries) = fs::read_dir(home.join("prompts")) else {
         return;
@@ -197,7 +201,7 @@ pub fn sweep_servers(home: &Path) {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name.starts_with("priory-cloud-") && name.ends_with(".mcp.json") {
+        if name.starts_with("priory-cloud-") {
             let _ = fs::remove_file(entry.path());
         }
     }
@@ -259,7 +263,7 @@ fn isolate(start: &Start, dir: &Path) -> Result<(), String> {
 /// the machine. The prompt follows as the session's next message.
 fn description(start: &Start) -> String {
     format!(
-        "Priory run {}. Your task comes in the next message: wait for it.",
+        "Priory run {}. Do nothing and end your turn; your task comes in the next message.",
         start.tmux
     )
 }
