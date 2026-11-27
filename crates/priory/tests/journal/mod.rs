@@ -206,7 +206,7 @@ fn a_journal_write_over_a_limit_fails_a_task_without_a_trigger_has_none_and_the_
     let run = setup.journal_cli(1, &["read", "--trigger", "nightly"], "");
     let stderr = String::from_utf8_lossy(&run.stderr);
     assert!(
-        !run.status.success() && stderr.contains("--trigger is a person's"),
+        !run.status.success() && stderr.contains("only a person runs it"),
         "{stderr}"
     );
 

@@ -3665,15 +3665,10 @@ fn journal(args: Vec<String>) -> ExitCode {
         _ => return usage(),
     };
     let verb_name = format!("journal {verb}");
+    // `main` refuses `--trigger` in a run's pane, since only a person reads another trigger's journal.
     let session = std::env::var("PRIORY_SESSION")
         .ok()
         .filter(|id| !id.is_empty());
-    if flag("trigger").is_some() && session.is_some() {
-        return exit(
-            &verb_name,
-            Err("--trigger is a person's: a run reads its own task's trigger's journal, so drop --trigger".to_owned()),
-        );
-    }
     let replied = match flag("trigger") {
         Some(trigger) if matches!(verb, "read" | "get") => state::read_only().and_then(|db| {
             let read = if verb == "read" {

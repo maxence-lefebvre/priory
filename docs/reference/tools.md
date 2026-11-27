@@ -608,8 +608,9 @@ Each write fails, and writes nothing, with an error that names the limit:
 
 Until the runner reads a put back from the log, the run's own put stands in for the document it
 replaces, for that runner alone. If every runner refuses it, the runner drops it and keeps the
-version the others hold. A run of a task that no factory trigger started, such as one `priory
-request` made, gets an error from all four tools:
+version the others hold. A run of a task that no factory trigger started gets an error from all four
+tools. That includes a task `priory request` or `priory batch add` made, and each batch entry,
+whose trigger is `cli` even when the factory has `triggers/cli.toml`:
 
 ```text
 task cli:7 has no trigger (it came from cli), so it has no journal: only the runs of a factory trigger keep one
