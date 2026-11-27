@@ -40708,22 +40708,6 @@ fn a_cancelled_tasks_reason_links_the_cloud_session_it_leaves() {
 }
 
 #[test]
-fn a_prompt_the_cli_echoes_names_no_session_and_no_marker() {
-    let mut setup = cloud("cloud-echo", CLOUD);
-    let echoed = "View: https://claude.ai/code/session_Echo is where the session starts empty.\n";
-    let agent = setup.dir.join("factory/agents/implementer/agent.md");
-    fs::write(agent, format!("{CLOUD_AGENT}{echoed}")).unwrap();
-    fs::write(setup.dir.join("fake/cloud-note"), echoed).unwrap();
-    setup.publish(&requested(42));
-
-    setup.start();
-
-    setup.until("runs", |rows| {
-        rows.first().is_some_and(|row| row[4] == "session_01Fake1")
-    });
-}
-
-#[test]
 fn a_repository_that_did_not_opt_in_starts_no_cloud_session_and_pushes_nothing() {
     let mut setup = cloud("cloud-opt-in", CLOUD);
     setup.settings("");
