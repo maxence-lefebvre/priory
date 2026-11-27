@@ -14,16 +14,26 @@
           "description": "The document's name.",
           "type": "string"
         },
+        "person": {
+          "description": "The person who wrote it with `priory journal import`, when no task did.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "runner": {
-          "description": "The runner that wrote it, or null in a factory of one runner.",
+          "description": "The runner that wrote it, or null in a factory of one runner or a person's import.",
           "type": [
             "string",
             "null"
           ]
         },
         "task": {
-          "description": "The key of the task whose run wrote it.",
-          "type": "string"
+          "description": "The key of the task whose run wrote it. A person's import has none.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "trigger": {
           "description": "The trigger whose journal holds the document.",
@@ -34,7 +44,6 @@
         "trigger",
         "name",
         "body",
-        "task",
         "runner"
       ],
       "type": "object"

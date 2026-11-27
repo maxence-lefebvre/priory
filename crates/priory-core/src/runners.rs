@@ -2024,22 +2024,37 @@ pub fn give(
 }
 
 pub(crate) fn publish(log: &EventLog, message: &Message) -> Result<(), Unsent> {
-    let log = priory_intake::log::open(log).map_err(|error| Unsent::Nothing(error.to_string()))?;
+    publish_all(log, std::slice::from_ref(message)).map_err(|(_, unsent)| unsent)
+}
+
+/// Publishes `messages` in order on one connection, or says how many it published before one failed.
+pub(crate) fn publish_all(log: &EventLog, messages: &[Message]) -> Result<(), (usize, Unsent)> {
+    let log =
+        priory_intake::log::open(log).map_err(|error| (0, Unsent::Nothing(error.to_string())))?;
     log.declare(&intake::output())
-        .map_err(|error| Unsent::Nothing(error.to_string()))?;
-    let mut message = message.clone();
-    // An autopilot setting is ordered by when the person made it, not when the log took it.
-    if message.kind != priory_intake::intake::AUTOPILOT_SET {
-        message = message.time(intake::now().map_err(Unsent::Nothing)?);
-    }
-    // The publish may have reached the log before it failed, such as a commit whose answer the
-    // connection lost.
-    log.publish(OUTPUT, &message).map(|_| ()).map_err(|error| {
-        if priory_intake::log::unreachable(&*error) {
-            return Unsent::Unconfirmed(format!("{error}: try again when it is back"));
+        .map_err(|error| (0, Unsent::Nothing(error.to_string())))?;
+    for (sent, message) in messages.iter().enumerate() {
+        let mut message = message.clone();
+        // An autopilot setting is ordered by when the person made it, not when the log took it.
+        if message.kind != priory_intake::intake::AUTOPILOT_SET {
+            message = message.time(intake::now().map_err(|why| (sent, Unsent::Nothing(why)))?);
         }
-        Unsent::Unconfirmed(format!("publish on {OUTPUT}: {error}"))
-    })
+        // The publish may have reached the log before it failed, such as a commit whose answer the
+        // connection lost.
+        log.publish(OUTPUT, &message).map_err(|error| {
+            if priory_intake::log::unreachable(&*error) {
+                return (
+                    sent,
+                    Unsent::Unconfirmed(format!("{error}: try again when it is back")),
+                );
+            }
+            (
+                sent,
+                Unsent::Unconfirmed(format!("publish on {OUTPUT}: {error}")),
+            )
+        })?;
+    }
+    Ok(())
 }
 
 /// Why a message for the log may not be on it.

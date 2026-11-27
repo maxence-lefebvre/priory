@@ -121,7 +121,7 @@ priory journal get history > history.json
 A person reads any journal by its trigger's name, with `--trigger daily-report`, and so does the web
 view. A person also runs the two commands a run never gets:
 
-- `priory journal import --trigger NAME`, to move an automation over (see
+- `priory journal import TRIGGER`, to move an automation over (see
   [Moving an automation over](#moving-an-automation-over)).
 - `priory journal prune --trigger NAME`, to apply the trigger's `keep` at once.
 
@@ -213,10 +213,10 @@ answers and memories keep their history.
 
 An automation moves once, by its trigger:
 
-1. A person runs `priory journal import --trigger NAME --entries runs.jsonl --kind run`, and
-   `--document history=history.json` for each document, on the machine that holds the files. Each
-   line of a `.jsonl` file becomes an entry; each file of a notes folder, with `--entries notes/`,
-   becomes an entry dated by its name or its time.
+1. A person runs `priory journal import TRIGGER --entries runs.jsonl --kind run`, and
+   `--document history history.json` for each document, on the machine that holds the files. Each
+   line of a `.jsonl` file becomes an entry. A notes folder, with `--entries notes/`, is not in
+   slice 2.
 2. The command publishes the entries in their old order, with their old times in the body, as
    ordinary journal messages, and prints how many it wrote and the size of each document.
 3. The person edits the automation's prompt or script to read and write through the tools and stop
@@ -224,7 +224,9 @@ An automation moves once, by its trigger:
 4. After a week of runs on more than one runner, the person deletes the old files.
 
 Importing twice writes every entry twice. The command refuses when the journal already has entries,
-unless the person passes `--again`.
+or one of the documents it puts, unless the person passes `--again`. An import's messages carry the
+person's name in `person` and no `task`, and every runner applies a message with no `task` only
+when it names a person.
 
 ## Failure modes
 
@@ -240,7 +242,7 @@ unless the person passes `--again`.
 
 Each slice ships alone and leaves the factory working.
 
-Slice 1 is on `main`. Slices 2 to 5 are later slices. In slice 1, a runner decides whether a
+Slices 1 and 2 are on `main`. Slices 3 to 5 are later slices. In slice 1, a runner decides whether a
 journal message applies from the message and the log before it alone: the `factory.task.requested`
 of its task by its trigger, and the messages it applied before. A runner's own writes on their way
 count only for its own write checks, so runners never diverge on what they keep. Slice 1 screens a write for credentials, not

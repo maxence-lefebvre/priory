@@ -266,3 +266,80 @@ fn a_journal_write_over_a_limit_fails_a_task_without_a_trigger_has_none_and_the_
         "a refused write wrote nothing"
     );
 }
+
+#[test]
+fn an_import_appends_a_files_lines_in_order_and_a_second_one_needs_again() {
+    let mut setup = Setup::new("journal-import");
+    setup.start();
+    let factory = setup.dir.join("factory");
+    let factory = factory.to_str().unwrap();
+    let runs = setup.dir.join("runs.jsonl");
+    fs::write(&runs, "{\"run\":1}\n\n{\"run\":2}\n{\"run\":3}\n").unwrap();
+    let history = setup.dir.join("history.json");
+    fs::write(&history, r#"{"seen":[1,2,3]}"#).unwrap();
+    let runs = runs.to_str().unwrap();
+    let import = |extra: &[&str]| {
+        let mut args = vec!["journal", "import", factory, "agent-label"];
+        args.extend(extra);
+        setup.priory(&args)
+    };
+    let entries = |want: usize| {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let read = setup.priory(&["journal", "read", "--trigger", "agent-label", "--json"]);
+            let read: serde_json::Value = serde_json::from_slice(&read.stdout).unwrap_or_default();
+            if read["entries"].as_array().is_some_and(|e| e.len() >= want)
+                || Instant::now() > deadline
+            {
+                break read;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+
+    let first = import(&["--entries", runs, "--kind", "run"]);
+    assert!(first.status.success(), "{first:?}");
+    let read = entries(3);
+    assert_eq!(
+        bodies(&read),
+        [
+            json!({ "run": 1 }),
+            json!({ "run": 2 }),
+            json!({ "run": 3 })
+        ]
+    );
+    assert_eq!(read["entries"][0]["kind"], "run");
+
+    let again = import(&["--entries", runs, "--kind", "run"]);
+    let stderr = String::from_utf8_lossy(&again.stderr);
+    assert!(
+        again.status.code() == Some(1) && stderr.contains("pass --again"),
+        "{again:?}"
+    );
+    let appended = import(&["--entries", runs, "--kind", "run", "--again"]);
+    assert!(appended.status.success(), "{appended:?}");
+    assert_eq!(
+        bodies(&entries(6)).len(),
+        6,
+        "the refused import wrote nothing"
+    );
+
+    let document = ["--document", "history", history.to_str().unwrap()];
+    let put = import(&document);
+    assert!(put.status.success(), "{put:?}");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !setup
+        .priory(&["journal", "get", "history", "--trigger", "agent-label"])
+        .status
+        .success()
+    {
+        assert!(Instant::now() < deadline, "the document never applied");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let twice = import(&document);
+    assert!(
+        twice.status.code() == Some(1)
+            && String::from_utf8_lossy(&twice.stderr).contains("already holds document history"),
+        "{twice:?}"
+    );
+}

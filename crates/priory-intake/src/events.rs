@@ -1362,7 +1362,8 @@ pub struct MemoryDropped {
 /// A run appends an entry to its trigger's journal with `journal_append` or
 /// `priory journal append`. Each message is one entry, known by its `id`. Every runner keeps it for
 /// the trigger's later runs, unless the entry is over 16 KB, would take the journal past 8 MB, or
-/// its `task` came from another trigger.
+/// its `task` came from another trigger. `priory journal import` publishes it with a `person` and
+/// no `task`.
 #[derive(JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct JournalAppended {
@@ -1372,9 +1373,13 @@ pub struct JournalAppended {
     pub kind: String,
     /// The entry: a JSON value, or a string of Markdown.
     pub body: serde_json::Value,
-    /// The key of the task whose run wrote it.
-    pub task: String,
-    /// The runner that wrote it, or null in a factory of one runner.
+    /// The key of the task whose run wrote it. A person's import has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+    /// The person who wrote it with `priory journal import`, when no task did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub person: Option<String>,
+    /// The runner that wrote it, or null in a factory of one runner or a person's import.
     pub runner: Option<String>,
 }
 
@@ -1390,9 +1395,13 @@ pub struct JournalPut {
     pub name: String,
     /// The document: a JSON value, or a string of Markdown.
     pub body: serde_json::Value,
-    /// The key of the task whose run wrote it.
-    pub task: String,
-    /// The runner that wrote it, or null in a factory of one runner.
+    /// The key of the task whose run wrote it. A person's import has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+    /// The person who wrote it with `priory journal import`, when no task did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub person: Option<String>,
+    /// The runner that wrote it, or null in a factory of one runner or a person's import.
     pub runner: Option<String>,
 }
 

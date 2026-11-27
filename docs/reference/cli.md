@@ -355,6 +355,15 @@ An agent's settings and its shell call these. A person rarely does.
   or each document's name, size and time without it, as `journal_get` returns them. `--trigger`
   reads any trigger's journal, and refuses `append` and `put`. See
   [tools.md](tools.md#journal_appendkind-body-journal_readlast-since-kind-journal_putname-body-and-journal_getname).
+- `priory journal import [DIR] TRIGGER [--entries FILE --kind KIND] [--document NAME FILE]...
+  [--again]`: a person moves an automation's files onto trigger `TRIGGER`'s journal. Each non-blank
+  line of `--entries` must be one JSON object, and becomes an entry of kind `KIND`, in file order.
+  Each `--document` puts file `FILE` as document `NAME`; a file that does not parse as JSON is
+  Markdown text. The command checks every write against the size limits before it publishes the
+  first, and prints how many entries it wrote and each document's size. It fails when the journal
+  already holds entries, or a named document, unless `--again` is given. It reads this runner's
+  tables, so run it on the runner whose daemon has read the log. A run's pane, where
+  `PRIORY_SESSION` is set, refuses it.
 - `priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]`: runs a heavy command once
   the machine has the memory for it, or prints the grants. `acquire` exits 75 when its wait passes
   the factory's `[memory] give_up_after`. See [memory-gate.md](../daemon/memory-gate.md).

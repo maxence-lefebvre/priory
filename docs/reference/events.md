@@ -2147,7 +2147,8 @@ Every daemon publishes `priory.journal.appended` and `priory.journal.put` when a
 `journal_append` or `journal_put`, in a factory of one runner too. Every runner reads them in log
 order into its tables of the trigger's journal. A runner records as `refused` a message with no
 trigger or body, one over its size limit, one that would take its trigger's journal past 8 MB, or
-one whose `task` no earlier `factory.task.requested` of its `trigger` names. Each check reads only
+one whose `task` no earlier `factory.task.requested` of its `trigger` names. A message with no
+`task` applies when it names a `person`: `priory journal import` publishes those. Each check reads only
 the message and the log before it, so every runner applies the same messages. A daemon that recorded
 journal messages before it could read them applies them, in log order, when it upgrades. See
 [tools.md](tools.md#journal_appendkind-body-journal_readlast-since-kind-journal_putname-body-and-journal_getname)
@@ -2164,8 +2165,9 @@ Schema: [`priory.journal.appended.json`](../schemas/events/priory.journal.append
 | `trigger` | string | The trigger whose journal holds the entry |
 | `kind` | string | What the entry is, such as `run`, `note` or `handover` |
 | `body` | any JSON value | The entry: a JSON value, or a string of Markdown |
-| `task` | string | The key of the task whose run wrote it |
-| `runner` | string or null | The runner that wrote it, or null in a factory of one runner |
+| `task` | string, absent from an import | The key of the task whose run wrote it |
+| `person` | string, absent from a run's write | The person who wrote it with `priory journal import` |
+| `runner` | string or null | The runner that wrote it, or null in a factory of one runner or an import |
 
 <!-- example: events/priory.journal.appended.json -->
 ```json
@@ -2197,8 +2199,9 @@ Schema: [`priory.journal.put.json`](../schemas/events/priory.journal.put.json).
 | `trigger` | string | The trigger whose journal holds the document |
 | `name` | string | The document's name |
 | `body` | any JSON value | The document: a JSON value, or a string of Markdown |
-| `task` | string | The key of the task whose run wrote it |
-| `runner` | string or null | The runner that wrote it, or null in a factory of one runner |
+| `task` | string, absent from an import | The key of the task whose run wrote it |
+| `person` | string, absent from a run's write | The person who wrote it with `priory journal import` |
+| `runner` | string or null | The runner that wrote it, or null in a factory of one runner or an import |
 
 <!-- example: events/priory.journal.put.json -->
 ```json
