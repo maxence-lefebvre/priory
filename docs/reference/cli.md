@@ -355,8 +355,8 @@ An agent's settings and its shell call these. A person rarely does.
   or each document's name, size and time without it, as `journal_get` returns them. `--trigger`
   reads any trigger's journal, and refuses `append` and `put`. See
   [tools.md](tools.md#journal_appendkind-body-journal_readlast-since-kind-journal_putname-body-and-journal_getname).
-- `priory journal import [DIR] TRIGGER [--entries FILE --kind KIND [--skip N]]
-  [--document NAME FILE]... [--again]`: a person moves an automation's files onto trigger `TRIGGER`'s journal. Each non-blank
+- `priory journal import [DIR] TRIGGER [--entries FILE --kind KIND [--skip N]] [--document NAME FILE]... [--again]`:
+  a person moves an automation's files onto trigger `TRIGGER`'s journal. Each non-blank
   line of `--entries` must be one JSON object, and becomes an entry of kind `KIND`, in file order.
   Each `--document` puts file `FILE` as document `NAME`; a file that does not parse as JSON is
   Markdown text. The command checks every write against the size limits before it publishes the
