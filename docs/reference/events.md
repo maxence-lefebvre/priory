@@ -2146,8 +2146,10 @@ Schema: [`priory.memory.dropped.json`](../schemas/events/priory.memory.dropped.j
 Every daemon publishes `priory.journal.appended` and `priory.journal.put` when a run calls
 `journal_append` or `journal_put`, in a factory of one runner too. Every runner reads them in log
 order into its tables of the trigger's journal. A runner records as `refused` a message with no
-trigger, task or body, one over its size limit, one that would take its trigger's journal past
-8 MB, or one whose `task` it knows came from another trigger. See
+trigger or body, one over its size limit, one that would take its trigger's journal past 8 MB, or
+one whose `task` no earlier `factory.task.requested` of its `trigger` names. Each check reads only
+the message and the log before it, so every runner applies the same messages. A daemon that recorded
+journal messages before it could read them applies them, in log order, when it upgrades. See
 [tools.md](tools.md#journal_appendkind-body-journal_readlast-since-kind-journal_putname-body-and-journal_getname)
 and the [design note](../design/journals.md).
 

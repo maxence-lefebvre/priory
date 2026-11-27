@@ -3665,6 +3665,15 @@ fn journal(args: Vec<String>) -> ExitCode {
         _ => return usage(),
     };
     let verb_name = format!("journal {verb}");
+    let session = std::env::var("PRIORY_SESSION")
+        .ok()
+        .filter(|id| !id.is_empty());
+    if flag("trigger").is_some() && session.is_some() {
+        return exit(
+            &verb_name,
+            Err("--trigger is a person's: a run reads its own task's trigger's journal, so drop --trigger".to_owned()),
+        );
+    }
     let replied = match flag("trigger") {
         Some(trigger) if matches!(verb, "read" | "get") => state::read_only().and_then(|db| {
             let read = if verb == "read" {
@@ -3682,10 +3691,7 @@ fn journal(args: Vec<String>) -> ExitCode {
             );
         }
         None => {
-            let Some(session) = std::env::var("PRIORY_SESSION")
-                .ok()
-                .filter(|id| !id.is_empty())
-            else {
+            let Some(session) = session else {
                 return exit(
                     &verb_name,
                     Err("PRIORY_SESSION is unset: run it from a run's pane, or read a journal with --trigger NAME".to_owned()),

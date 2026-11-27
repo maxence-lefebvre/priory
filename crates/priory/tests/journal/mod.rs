@@ -203,6 +203,12 @@ fn a_journal_write_over_a_limit_fails_a_task_without_a_trigger_has_none_and_the_
     let person = setup.priory(&["journal", "read", "--trigger", "agent-label"]);
     let lines = String::from_utf8_lossy(&person.stdout).into_owned();
     assert!(lines.ends_with("\trun\t{\"items\":3}\n"), "{lines}");
+    let run = setup.journal_cli(1, &["read", "--trigger", "nightly"], "");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        !run.status.success() && stderr.contains("--trigger is a person's"),
+        "{stderr}"
+    );
 
     // A JSON string's two quotes count: these bodies are one byte over each limit.
     let over = |kb: usize| "x".repeat(kb * 1024 - 1);

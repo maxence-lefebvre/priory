@@ -2326,7 +2326,9 @@ PRAGMA user_version = 131;
 ";
 
 // Each trigger's journal as read from the log: its entries in log order, and the latest put of each
-// document. A row this runner wrote has no `seq` until it reads its own message back.
+// document. An entry this runner wrote has no `seq` until it reads its own message back; a put it
+// wrote waits in `journal_pending`, apart from the version every runner holds. `at` is `written` in
+// milliseconds, which `since` compares.
 const SCHEMA_132: &str = "
 CREATE TABLE IF NOT EXISTS journal_entries (
   id      TEXT PRIMARY KEY,
@@ -2336,6 +2338,7 @@ CREATE TABLE IF NOT EXISTS journal_entries (
   task    TEXT NOT NULL,
   runner  TEXT,
   written TEXT NOT NULL,
+  at      INTEGER NOT NULL,
   seq     INTEGER
 );
 CREATE INDEX IF NOT EXISTS journal_entries_by_trigger ON journal_entries (trigger, seq);
@@ -2347,11 +2350,22 @@ CREATE TABLE IF NOT EXISTS journal_documents (
   task    TEXT NOT NULL,
   runner  TEXT,
   written TEXT NOT NULL,
-  seq     INTEGER,
+  seq     INTEGER NOT NULL,
   PRIMARY KEY (trigger, name)
+);
+CREATE TABLE IF NOT EXISTS journal_pending (
+  id      TEXT PRIMARY KEY,
+  trigger TEXT NOT NULL,
+  name    TEXT NOT NULL,
+  body    TEXT NOT NULL,
+  task    TEXT NOT NULL,
+  runner  TEXT,
+  written TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS inbox_requests_by_key ON inbox (json_extract(data, '$.key'))
   WHERE type = 'factory.task.requested';
+CREATE INDEX IF NOT EXISTS inbox_journal_writes ON inbox (seq)
+  WHERE type IN ('priory.journal.appended', 'priory.journal.put');
 PRAGMA user_version = 132;
 ";
 
@@ -2714,6 +2728,10 @@ fn apply(db: &mut Connection, new: bool) -> Result<(), String> {
         return Err(found.newer());
     };
     tx.execute_batch(&pending.concat()).map_err(at)?;
+    // An older daemon recorded journal messages it could not read: fold them now, in log order.
+    if (1..132).contains(&found.version) {
+        crate::journals::backfill(&tx).map_err(at)?;
+    }
     // No migration here declares a floor, so no older binary may open the result.
     tx.pragma_update(None, "application_id", 0).map_err(at)?;
     let broken: i64 = tx
@@ -5992,6 +6010,52 @@ mod inbox_lookups {
             )
             .unwrap();
         assert_eq!(found, (7, 0, VERSION));
+    }
+
+    #[test]
+    fn an_upgrade_from_131_folds_the_journal_messages_an_older_daemon_recorded() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.execute_batch(&MIGRATIONS[..131].concat()).unwrap();
+        let row = |seq: i64, kind: &str, data: serde_json::Value| {
+            db.execute(
+                "INSERT INTO inbox (seq, id, type, time, data, links, outcome)
+                 VALUES (?1, ?2, ?3, '2026-11-26T10:00:00Z', ?4, '[]', 'ignored')",
+                params![seq, format!("m{seq}"), kind, data.to_string()],
+            )
+            .unwrap();
+        };
+        let key = "github:owner/repo#1";
+        let write = |field: &str, label: &str| serde_json::json!({ "trigger": "daily", field: label, "body": 1, "task": key, "runner": "a" });
+        row(
+            1,
+            "factory.task.requested",
+            serde_json::json!({ "key": key, "trigger": "daily" }),
+        );
+        row(2, "priory.journal.appended", write("kind", "run"));
+        row(3, "priory.journal.put", write("name", "history"));
+        let mut foreign = write("kind", "run");
+        foreign["trigger"] = serde_json::json!("weekly");
+        row(4, "priory.journal.appended", foreign);
+
+        apply(&mut db, false).unwrap();
+
+        let outcomes: Vec<String> = db
+            .prepare("SELECT outcome FROM inbox WHERE seq > 1 ORDER BY seq")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(outcomes, ["noted", "noted", "refused"]);
+        let found: (String, i64, String) = db
+            .query_row(
+                "SELECT (SELECT id FROM journal_entries WHERE seq = 2),
+                   (SELECT count(*) FROM journal_entries), (SELECT id FROM journal_documents)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(found, ("m2".to_owned(), 1, "m3".to_owned()));
     }
 
     #[test]

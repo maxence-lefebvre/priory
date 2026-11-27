@@ -1,6 +1,10 @@
 //! Journals: the state a trigger's runs keep between them, on the log every runner reads. The
 //! `journal_append`, `journal_read`, `journal_put` and `journal_get` tools, and the tables every
 //! runner folds `priory.journal.appended` and `priory.journal.put` into, in log order.
+//!
+//! Every runner must keep the same tables, so whether a message applies depends only on the
+//! message and the log before it: the requests every runner recorded, and the writes it already
+//! applied. A runner's own writes wait apart until it reads them back, and never count there.
 
 use crate::tools::Call;
 use crate::trace::Trace;
@@ -19,6 +23,10 @@ pub const JOURNAL_LIMIT: usize = 8 * 1024 * 1024;
 /// How many entries `journal_read` returns without `last`, and at most.
 const READ_DEFAULT: i64 = 20;
 const READ_MAX: i64 = 200;
+
+/// The latest of this runner's puts of each name of trigger `?1` that it has yet to read back.
+const PENDING: &str = "SELECT name, body, written, max(rowid) FROM journal_pending
+    WHERE trigger = ?1 GROUP BY name";
 
 /// Why an entry of `kind`, or a document of `name`, with a body of `bytes` is refused, if it is.
 fn refused(entry: bool, label: &str, bytes: usize) -> Option<String> {
@@ -43,18 +51,35 @@ fn refused(entry: bool, label: &str, bytes: usize) -> Option<String> {
     })
 }
 
-/// The bytes trigger `trigger`'s journal holds, leaving out the row of id `id` and the document
-/// `name`, which a write replaces.
-fn used(db: &Connection, trigger: &str, id: &str, name: Option<&str>) -> rusqlite::Result<usize> {
-    db.query_row(
+/// The bytes trigger `trigger`'s journal holds apart from the document `name`, which a put
+/// replaces. With `confirmed`, only what every runner applied from the log; else also this
+/// runner's writes on their way, each pending put in place of the document it replaces.
+fn used(
+    db: &Connection,
+    trigger: &str,
+    name: Option<&str>,
+    confirmed: bool,
+) -> rusqlite::Result<usize> {
+    let sql = if confirmed {
         "SELECT coalesce((SELECT sum(length(CAST(body AS BLOB))) FROM journal_entries
-                          WHERE trigger = ?1 AND id != ?2), 0)
+                          WHERE trigger = ?1 AND seq IS NOT NULL), 0)
               + coalesce((SELECT sum(length(CAST(body AS BLOB))) FROM journal_documents
-                          WHERE trigger = ?1 AND id != ?2 AND name IS NOT ?3), 0)",
-        params![trigger, id, name],
-        |row| row.get::<_, i64>(0),
-    )
-    .map(|bytes| usize::try_from(bytes).unwrap_or(usize::MAX))
+                          WHERE trigger = ?1 AND name IS NOT ?2), 0)"
+            .to_owned()
+    } else {
+        format!(
+            "WITH pending AS ({PENDING})
+             SELECT coalesce((SELECT sum(length(CAST(body AS BLOB))) FROM journal_entries
+                              WHERE trigger = ?1), 0)
+                  + coalesce((SELECT sum(length(CAST(body AS BLOB))) FROM journal_documents
+                              WHERE trigger = ?1 AND name IS NOT ?2
+                                AND name NOT IN (SELECT name FROM pending)), 0)
+                  + coalesce((SELECT sum(length(CAST(body AS BLOB))) FROM pending
+                              WHERE name IS NOT ?2), 0)"
+        )
+    };
+    db.query_row(&sql, params![trigger, name], |row| row.get::<_, i64>(0))
+        .map(|bytes| usize::try_from(bytes).unwrap_or(usize::MAX))
 }
 
 fn full(trigger: &str, bytes: usize) -> String {
@@ -64,8 +89,26 @@ fn full(trigger: &str, bytes: usize) -> String {
     )
 }
 
+/// Whether the log held, before inbox position `before` when given, a request of task `key` by
+/// trigger `trigger`. Every runner records every request, so every runner answers alike, and a
+/// message that names a task no trigger requested reaches no journal.
+fn requested(
+    db: &Connection,
+    key: &str,
+    trigger: &str,
+    before: Option<i64>,
+) -> rusqlite::Result<bool> {
+    db.query_row(
+        "SELECT EXISTS (SELECT 1 FROM inbox
+           WHERE type = 'factory.task.requested' AND json_extract(data, '$.key') = ?1
+             AND json_extract(data, '$.trigger') = ?2 AND (?3 IS NULL OR seq < ?3))",
+        params![key, trigger, before],
+        |row| row.get(0),
+    )
+}
+
 /// The key and trigger of the task whose run has harness session `session`, or why it has no
-/// journal: no run has the session, or no factory trigger started its task.
+/// journal: no run has the session, or no factory trigger requested its task.
 fn caller(
     db: &Connection,
     session: &str,
@@ -83,6 +126,9 @@ fn caller(
         None => Err(format!("no run has session {session}")),
         Some((key, trigger)) if !factory.triggers.contains_key(&trigger) => Err(format!(
             "task {key} has no trigger (it came from {trigger}), so it has no journal: only the runs of a factory trigger keep one"
+        )),
+        Some((key, trigger)) if !requested(db, &key, &trigger, None)? => Err(format!(
+            "the log holds no request of task {key} by trigger {trigger}, so no runner would keep its journal"
         )),
         Some(found) => Ok(found),
     })
@@ -126,7 +172,7 @@ pub(crate) fn write(
         Ok(found) => found,
         Err(why) => return Ok(Err(why)),
     };
-    let bytes = used(&tx, &trigger, "", (!entry).then_some(label.as_str()))? + text.len();
+    let bytes = used(&tx, &trigger, (!entry).then_some(label.as_str()), false)? + text.len();
     if bytes > JOURNAL_LIMIT {
         return Ok(Err(full(&trigger, bytes)));
     }
@@ -136,7 +182,24 @@ pub(crate) fn write(
     let kind = if entry { JOURNAL_APPENDED } else { JOURNAL_PUT };
     let message = Message::new(kind, data).subject(trigger.clone()).time(time);
     let id = message.id.to_string();
-    store(&tx, &message, None)?;
+    let write = Write::of(&id, kind, time, &message.data);
+    if entry {
+        write.entry(&tx, None)?;
+    } else {
+        tx.execute(
+            "INSERT INTO journal_pending (id, trigger, name, body, task, runner, written)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                id,
+                write.trigger,
+                write.label,
+                write.body,
+                write.task,
+                write.runner,
+                write.written
+            ],
+        )?;
+    }
     tx.execute(
         "INSERT INTO sends (message) VALUES (?1)",
         [serde_json::to_string(&message).expect("a message serializes")],
@@ -149,92 +212,161 @@ pub(crate) fn write(
     }))
 }
 
-/// Writes `message`'s entry or document into the tables, at log position `seq` once read back.
-/// A document replaces the one of its name unless that one is this runner's own put that the log
-/// has yet to order, which comes later.
-fn store(tx: &Transaction, message: &Message, seq: Option<i64>) -> rusqlite::Result<()> {
-    let data = &message.data;
-    let text = |field: &str| data[field].as_str();
-    let values = params![
-        message.id.to_string(),
-        text("trigger"),
-        text(if message.kind == JOURNAL_APPENDED {
-            "kind"
-        } else {
-            "name"
-        }),
-        data["body"].to_string(),
-        text("task"),
-        text("runner"),
-        message.time.to_string(),
-        seq
-    ];
-    if message.kind == JOURNAL_APPENDED {
+/// One journal write, as a message or an inbox row holds it.
+struct Write<'a> {
+    id: &'a str,
+    entry: bool,
+    trigger: &'a str,
+    label: &'a str,
+    body: String,
+    task: &'a str,
+    runner: Option<&'a str>,
+    written: String,
+    at: i64,
+}
+
+impl<'a> Write<'a> {
+    fn of(id: &'a str, kind: &str, time: jiff::Timestamp, data: &'a Value) -> Self {
+        let entry = kind == JOURNAL_APPENDED;
+        let text = |field: &str| data[field].as_str().unwrap_or_default();
+        Write {
+            id,
+            entry,
+            trigger: text("trigger"),
+            label: text(if entry { "kind" } else { "name" }),
+            body: if data["body"].is_null() {
+                String::new()
+            } else {
+                data["body"].to_string()
+            },
+            task: text("task"),
+            runner: data["runner"].as_str(),
+            written: time.to_string(),
+            at: time.as_millisecond(),
+        }
+    }
+
+    /// Whether every runner applies it, from the log before inbox position `before` alone.
+    fn applies(&self, tx: &Transaction, before: Option<i64>) -> rusqlite::Result<bool> {
+        Ok(!self.trigger.is_empty()
+            && !self.body.is_empty()
+            && refused(self.entry, self.label, self.body.len()).is_none()
+            && requested(tx, self.task, self.trigger, before)?
+            && used(tx, self.trigger, (!self.entry).then_some(self.label), true)? + self.body.len()
+                <= JOURNAL_LIMIT)
+    }
+
+    /// Keeps it as an entry, read back at `seq` or on its way without.
+    fn entry(&self, tx: &Transaction, seq: Option<i64>) -> rusqlite::Result<()> {
         tx.execute(
-            "INSERT INTO journal_entries (id, trigger, kind, body, task, runner, written, seq)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "INSERT INTO journal_entries (id, trigger, kind, body, task, runner, written, at, seq)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT (id) DO UPDATE SET seq = excluded.seq WHERE seq IS NULL",
-            values,
-        )?;
-    } else {
+            params![
+                self.id,
+                self.trigger,
+                self.label,
+                self.body,
+                self.task,
+                self.runner,
+                self.written,
+                self.at,
+                seq
+            ],
+        )
+        .map(drop)
+    }
+
+    /// Applies it, read from the log at inbox position `seq`: an entry joins the journal, and a
+    /// document replaces the one of its name. Either way this runner's own copy stops waiting.
+    fn apply(&self, tx: &Transaction, seq: i64) -> rusqlite::Result<()> {
+        if self.entry {
+            return self.entry(tx, Some(seq));
+        }
         tx.execute(
-            "INSERT INTO journal_documents (id, trigger, name, body, task, runner, written, seq)
+            "INSERT INTO journal_documents (trigger, name, id, body, task, runner, written, seq)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT (trigger, name) DO UPDATE SET id = excluded.id, body = excluded.body,
                task = excluded.task, runner = excluded.runner, written = excluded.written,
-               seq = excluded.seq
-             WHERE journal_documents.id = excluded.id OR journal_documents.seq IS NOT NULL",
-            values,
+               seq = excluded.seq",
+            params![
+                self.trigger,
+                self.label,
+                self.id,
+                self.body,
+                self.task,
+                self.runner,
+                self.written,
+                seq
+            ],
+        )?;
+        self.forget_own(tx)
+    }
+
+    /// Drops this runner's own copy on its way, if it wrote it: refused, or now applied.
+    fn forget_own(&self, tx: &Transaction) -> rusqlite::Result<()> {
+        tx.execute(
+            "DELETE FROM journal_entries WHERE id = ?1 AND seq IS NULL",
+            [self.id],
+        )?;
+        tx.execute("DELETE FROM journal_pending WHERE id = ?1", [self.id])
+            .map(drop)
+    }
+}
+
+/// Handles a journal message read from the log: applies its entry or document, or refuses it.
+/// `None` for any other message.
+pub(crate) fn handle(tx: &Transaction, message: &Message) -> rusqlite::Result<Option<()>> {
+    if message.kind != JOURNAL_APPENDED && message.kind != JOURNAL_PUT {
+        return Ok(None);
+    }
+    let id = message.id.to_string();
+    let write = Write::of(&id, &message.kind, message.time, &message.data);
+    // Anyone can publish on the log, so a malformed or foreign message is refused, never fatal.
+    if write.applies(tx, None)? {
+        let seq = crate::state::record(tx, message, None, "noted", None)?;
+        write.apply(tx, seq)?;
+    } else {
+        crate::state::record(tx, message, None, "refused", None)?;
+        write.forget_own(tx)?;
+    }
+    Ok(Some(()))
+}
+
+/// Applies, in log order, the journal messages a daemon older than journals recorded in the inbox
+/// without reading them, as `handle` would have when it read each.
+pub(crate) fn backfill(tx: &Transaction) -> rusqlite::Result<()> {
+    let rows: Vec<(i64, String, String, String, String)> = tx
+        .prepare(
+            "SELECT seq, id, type, time, data FROM inbox
+             WHERE type IN ('priory.journal.appended', 'priory.journal.put') ORDER BY seq",
+        )?
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    for (seq, id, kind, time, data) in rows {
+        let data: Value = serde_json::from_str(&data).unwrap_or_default();
+        let time = time.parse().unwrap_or_default();
+        let write = Write::of(&id, &kind, time, &data);
+        let outcome = if write.applies(tx, Some(seq))? {
+            write.apply(tx, seq)?;
+            "noted"
+        } else {
+            "refused"
+        };
+        tx.execute(
+            "UPDATE inbox SET outcome = ?2 WHERE seq = ?1",
+            params![seq, outcome],
         )?;
     }
     Ok(())
-}
-
-/// Whether this runner knows the task `key` came from triggers other than `trigger` alone: from a
-/// task it holds or a request it read.
-fn foreign(tx: &Transaction, key: &str, trigger: &str) -> rusqlite::Result<bool> {
-    tx.query_row(
-        "WITH known (trigger) AS (
-           SELECT trigger FROM tasks WHERE key = ?1
-           UNION ALL
-           SELECT json_extract(data, '$.trigger') FROM inbox
-           WHERE type = 'factory.task.requested' AND json_extract(data, '$.key') = ?1)
-         SELECT EXISTS (SELECT 1 FROM known) AND NOT EXISTS (SELECT 1 FROM known WHERE trigger = ?2)",
-        params![key, trigger],
-        |row| row.get(0),
-    )
-}
-
-/// Handles a journal message read from the log: keeps its entry or document, or refuses it. `None`
-/// for any other message.
-pub(crate) fn handle(tx: &Transaction, message: &Message) -> rusqlite::Result<Option<()>> {
-    let entry = message.kind == JOURNAL_APPENDED;
-    if !entry && message.kind != JOURNAL_PUT {
-        return Ok(None);
-    }
-    let data = &message.data;
-    let text = |field: &str| data[field].as_str().unwrap_or_default();
-    let (trigger, key) = (text("trigger"), text("task"));
-    let label = text(if entry { "kind" } else { "name" });
-    let body = data["body"].to_string();
-    let id = message.id.to_string();
-    // Anyone can publish on the log, so a malformed or foreign message is refused, never fatal.
-    let applies = !trigger.is_empty()
-        && !key.is_empty()
-        && !data["body"].is_null()
-        && refused(entry, label, body.len()).is_none()
-        && !foreign(tx, key, trigger)?
-        && used(tx, trigger, &id, (!entry).then_some(label))? + body.len() <= JOURNAL_LIMIT;
-    if !applies {
-        crate::state::record(tx, message, None, "refused", None)?;
-        // This runner's own write, refused on its way back, leaves its tables as every runner's.
-        tx.execute("DELETE FROM journal_entries WHERE id = ?1", [&id])?;
-        tx.execute("DELETE FROM journal_documents WHERE id = ?1", [&id])?;
-        return Ok(Some(()));
-    }
-    let seq = crate::state::record(tx, message, None, "noted", None)?;
-    store(tx, message, Some(seq))?;
-    Ok(Some(()))
 }
 
 /// `journal_read` and `journal_get`: the caller's trigger's entries or documents, as JSON.
@@ -274,14 +406,14 @@ pub fn entries(
 ) -> rusqlite::Result<Result<Value, String>> {
     let since = match since.map(str::parse::<jiff::Timestamp>) {
         Some(Err(error)) => return Ok(Err(format!("since is no RFC 3339 time: {error}"))),
-        Some(Ok(time)) => Some(time.to_string()),
+        Some(Ok(time)) => Some(time.as_millisecond()),
         None => None,
     };
     let last = last.unwrap_or(READ_DEFAULT).clamp(1, READ_MAX);
     let mut found = db
         .prepare(
             "SELECT id, kind, body, task, runner, written FROM journal_entries
-             WHERE trigger = ?1 AND (?2 IS NULL OR kind = ?2) AND (?3 IS NULL OR written >= ?3)
+             WHERE trigger = ?1 AND (?2 IS NULL OR kind = ?2) AND (?3 IS NULL OR at >= ?3)
              ORDER BY seq IS NULL DESC, seq DESC, rowid DESC LIMIT ?4",
         )?
         .query_map(params![trigger, kind, since, last], |row| {
@@ -300,37 +432,37 @@ pub fn entries(
     Ok(Ok(json!({ "trigger": trigger, "entries": found })))
 }
 
-/// Trigger `trigger`'s document `name`, or the name, size and time of each of its documents.
+/// Trigger `trigger`'s document `name`, or the name, size and time of each of its documents. This
+/// runner's own put of a name, until it reads it back, stands in for the document it replaces.
 pub fn documents(
     db: &Connection,
     trigger: &str,
     name: Option<&str>,
 ) -> rusqlite::Result<Result<Value, String>> {
+    let current = format!(
+        "WITH pending AS ({PENDING})
+         SELECT name, body, written FROM pending
+         UNION ALL
+         SELECT name, body, written FROM journal_documents
+         WHERE trigger = ?1 AND name NOT IN (SELECT name FROM pending)"
+    );
+    let rows: Vec<(String, String, String)> = db
+        .prepare(&format!(
+            "SELECT * FROM ({current}) WHERE ?2 IS NULL OR name = ?2 ORDER BY name"
+        ))?
+        .query_map(params![trigger, name], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
     let Some(name) = name else {
-        let listed = db
-            .prepare(
-                "SELECT name, length(CAST(body AS BLOB)), written FROM journal_documents
-                 WHERE trigger = ?1 ORDER BY name",
-            )?
-            .query_map([trigger], |row| {
-                Ok(json!({
-                    "name": row.get::<_, String>(0)?,
-                    "bytes": row.get::<_, i64>(1)?,
-                    "written": row.get::<_, String>(2)?,
-                }))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let listed: Vec<Value> = rows
+            .iter()
+            .map(|(name, body, written)| json!({ "name": name, "bytes": body.len(), "written": written }))
+            .collect();
         return Ok(Ok(json!({ "trigger": trigger, "documents": listed })));
     };
-    let found: Option<(String, String)> = db
-        .query_row(
-            "SELECT body, written FROM journal_documents WHERE trigger = ?1 AND name = ?2",
-            params![trigger, name],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?;
-    Ok(match found {
-        Some((body, written)) => Ok(json!({
+    Ok(match rows.into_iter().next() {
+        Some((_, body, written)) => Ok(json!({
             "trigger": trigger,
             "name": name,
             "body": serde_json::from_str::<Value>(&body).unwrap_or(Value::Null),
@@ -338,4 +470,223 @@ pub fn documents(
         })),
         None => Err(format!("the journal of {trigger} holds no document {name}")),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const KEY: &str = "github:owner/repo#1";
+
+    fn request() -> Message {
+        Message::new(
+            "factory.task.requested",
+            json!({ "key": KEY, "trigger": "daily", "workflow": "w" }),
+        )
+    }
+
+    fn write(kind: &str, label: &str, body: Value) -> Message {
+        let field = if kind == JOURNAL_APPENDED {
+            "kind"
+        } else {
+            "name"
+        };
+        Message::new(
+            kind,
+            json!({ "trigger": "daily", field: label, "body": body, "task": KEY, "runner": "a" }),
+        )
+    }
+
+    /// A body of `bytes` bytes as JSON.
+    fn sized(bytes: usize) -> Value {
+        json!("x".repeat(bytes - 2))
+    }
+
+    /// Reads `log` in order, as a runner's tick does.
+    fn fold(db: &mut Connection, log: &[Message]) {
+        for message in log {
+            let tx = db.transaction().unwrap();
+            if handle(&tx, message).unwrap().is_none() {
+                crate::state::record(&tx, message, None, "ignored", None).unwrap();
+            }
+            tx.commit().unwrap();
+        }
+    }
+
+    /// Queues `message` as this runner's own write, before the log has it.
+    fn own(db: &mut Connection, message: &Message) {
+        let tx = db.transaction().unwrap();
+        let id = message.id.to_string();
+        let write = Write::of(&id, &message.kind, message.time, &message.data);
+        if write.entry {
+            write.entry(&tx, None).unwrap();
+        } else {
+            tx.execute(
+                "INSERT INTO journal_pending (id, trigger, name, body, task, runner, written)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    id,
+                    write.trigger,
+                    write.label,
+                    write.body,
+                    write.task,
+                    write.runner,
+                    write.written
+                ],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+    }
+
+    /// What every runner must agree on: the applied entries and documents.
+    fn tables(db: &Connection) -> (Vec<String>, Vec<(String, String)>) {
+        let entries = db
+            .prepare("SELECT id FROM journal_entries WHERE seq IS NOT NULL ORDER BY seq")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let documents = db
+            .prepare("SELECT name, id FROM journal_documents ORDER BY name")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        (entries, documents)
+    }
+
+    fn document(db: &Connection, name: &str) -> Value {
+        documents(db, "daily", Some(name)).unwrap().unwrap()["body"].clone()
+    }
+
+    #[test]
+    fn runners_that_append_near_the_limit_at_once_and_one_that_reads_the_log_later_keep_equal_tables()
+     {
+        // 31 full documents and one that leaves 20,000 bytes: room for one of two 15,000-byte entries.
+        let mut log = vec![request()];
+        log.extend((0..31).map(|n| write(JOURNAL_PUT, &format!("doc-{n}"), sized(DOCUMENT_LIMIT))));
+        log.push(write(
+            JOURNAL_PUT,
+            "rest",
+            sized(JOURNAL_LIMIT - 31 * DOCUMENT_LIMIT - 20_000),
+        ));
+        let (from_a, from_b) = (
+            write(JOURNAL_APPENDED, "run", sized(15_000)),
+            write(JOURNAL_APPENDED, "run", sized(15_000)),
+        );
+        let (mut a, mut b) = (crate::state::memory(), crate::state::memory());
+        fold(&mut a, &log);
+        fold(&mut b, &log);
+        own(&mut a, &from_a);
+        own(&mut b, &from_b);
+        // b's entry reaches the log first, while a's still waits on a.
+        log.extend([from_b.clone(), from_a.clone()]);
+        let tail = &log[log.len() - 2..];
+        fold(&mut a, tail);
+        fold(&mut b, tail);
+        let mut later = crate::state::memory();
+        fold(&mut later, &log);
+
+        assert_eq!(tables(&a), tables(&b));
+        assert_eq!(tables(&a), tables(&later));
+        assert_eq!(tables(&a).0, [from_b.id.to_string()]);
+        let pending: i64 = a
+            .query_row(
+                "SELECT count(*) FROM journal_entries WHERE seq IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(pending, 0, "a's refused entry left its tables");
+    }
+
+    #[test]
+    fn a_refused_own_put_keeps_the_version_every_runner_holds_and_a_put_applied_meanwhile() {
+        let mut a = crate::state::memory();
+        fold(
+            &mut a,
+            &[request(), write(JOURNAL_PUT, "history", json!("v1"))],
+        );
+        let mut refused = write(JOURNAL_PUT, "history", json!("v2"));
+        // No trigger requested task 9, so every runner refuses the put once the log has it.
+        refused.data["task"] = json!("github:owner/repo#9");
+        own(&mut a, &refused);
+        assert_eq!(
+            document(&a, "history"),
+            "v2",
+            "a run reads its own put at once"
+        );
+
+        let from_b = write(JOURNAL_PUT, "history", json!("v3"));
+        fold(&mut a, &[from_b]);
+        assert_eq!(
+            document(&a, "history"),
+            "v2",
+            "its own later put still stands in"
+        );
+        fold(&mut a, &[refused]);
+        assert_eq!(document(&a, "history"), "v3");
+    }
+
+    #[test]
+    fn a_second_own_put_stands_in_until_the_log_has_it_too() {
+        let mut a = crate::state::memory();
+        fold(&mut a, &[request()]);
+        let (first, second) = (
+            write(JOURNAL_PUT, "history", json!(1)),
+            write(JOURNAL_PUT, "history", json!(2)),
+        );
+        own(&mut a, &first);
+        own(&mut a, &second);
+        assert_eq!(document(&a, "history"), 2);
+        fold(&mut a, std::slice::from_ref(&first));
+        assert_eq!(document(&a, "history"), 2);
+        fold(&mut a, &[second]);
+        assert_eq!(document(&a, "history"), 2);
+        let pending: i64 = a
+            .query_row("SELECT count(*) FROM journal_pending", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(pending, 0);
+    }
+
+    #[test]
+    fn a_message_for_a_task_no_trigger_of_its_own_requested_reaches_no_journal() {
+        let mut a = crate::state::memory();
+        let mut other = write(JOURNAL_APPENDED, "run", json!(1));
+        other.data["trigger"] = json!("weekly");
+        // A request the log holds only after a write comes too late for it.
+        let early = write(JOURNAL_APPENDED, "run", json!(2));
+        fold(&mut a, &[other, early, request()]);
+        fold(&mut a, &[write(JOURNAL_APPENDED, "run", json!(3))]);
+        assert_eq!(tables(&a).0.len(), 1);
+        let read = entries(&a, "daily", None, None, None).unwrap().unwrap();
+        assert_eq!(read["entries"][0]["body"], 3);
+        assert_eq!(
+            entries(&a, "weekly", None, None, None).unwrap().unwrap()["entries"],
+            json!([])
+        );
+    }
+
+    #[test]
+    fn since_compares_times_not_their_text() {
+        let mut a = crate::state::memory();
+        let at = |text: &str| text.parse::<jiff::Timestamp>().unwrap();
+        let early =
+            write(JOURNAL_APPENDED, "run", json!("early")).time(at("2026-11-26T10:00:00.5Z"));
+        let late = write(JOURNAL_APPENDED, "run", json!("late")).time(at("2026-11-26T10:00:01Z"));
+        fold(&mut a, &[request(), early, late]);
+        let read = |since: &str| {
+            entries(&a, "daily", None, Some(since), None)
+                .unwrap()
+                .unwrap()["entries"]
+                .as_array()
+                .unwrap()
+                .len()
+        };
+        assert_eq!(read("2026-11-26T10:00:00.9Z"), 1);
+        assert_eq!(read("2026-11-26T11:00:00+01:00"), 2);
+    }
 }

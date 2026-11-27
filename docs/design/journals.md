@@ -240,7 +240,10 @@ unless the person passes `--again`.
 
 Each slice ships alone and leaves the factory working.
 
-Slice 1 is on `main`. Slices 2 to 5 are later slices. Slice 1 screens a write for credentials, not
+Slice 1 is on `main`. Slices 2 to 5 are later slices. In slice 1, a runner decides whether a
+journal message applies from the message and the log before it alone: the `factory.task.requested`
+of its task by its trigger, and the messages it applied before. A runner's own writes on their way
+count only for its own write checks, so runners never diverge on what they keep. Slice 1 screens a write for credentials, not
 yet for the factory's private terms, and its CLI reaches a journal through `PRIORY_SESSION` only, not
 through a `run` action's `PRIORY_TASK`.
 

@@ -349,7 +349,7 @@ An agent's settings and its shell call these. A person rarely does.
 - `priory journal read [--last N] [--since TIME] [--kind KIND] [--json] [--trigger NAME]`: prints the
   entries, one line each with its time, kind and body, as `journal_read` returns them. `--json`
   prints the reply as JSON. A person reads any trigger's journal from the state file with
-  `--trigger`.
+  `--trigger`, which a run's pane, where `PRIORY_SESSION` is set, refuses.
 - `priory journal put NAME < BODY`: replaces the document `NAME` with stdin, as `journal_put` does.
 - `priory journal get [NAME] [--json] [--trigger NAME]`: prints the document `NAME` as it was put,
   or each document's name, size and time without it, as `journal_get` returns them. `--trigger`
