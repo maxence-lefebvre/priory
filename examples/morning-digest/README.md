@@ -2,7 +2,8 @@
 
 At 08:30 on workdays, an agent lists the factory's open asks, its blocked, failed and held tasks,
 and the pull requests of `owner/repo` merged yesterday. It posts each line to your desk with
-`priory post digest`, and changes nothing else.
+`priory post digest`, and changes nothing else. It keeps what it listed on its trigger's journal,
+so the next morning marks what is new on any runner. See [journals.md](../../docs/journals.md).
 
 ## What it needs
 
