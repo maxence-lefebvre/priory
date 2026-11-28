@@ -25059,7 +25059,11 @@ fn a_comment_on_a_claimed_stack_reaches_the_running_task_naming_the_place() {
         "github.pull_request.opened",
         json!({ "github_id": 908 }),
     ));
-    setup.until("inbox", |rows| rows.len() == 3);
+    // Both opens go out first, so the comment's delivery is its own.
+    setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[4].contains("github.pull_request.opened owner/repo#8"))
+    });
     let comment = on_stack(
         8,
         "github.pull_request.comment",
