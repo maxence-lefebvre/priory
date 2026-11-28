@@ -524,6 +524,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         });
         // What a runner says follows from the whole log, so it says nothing before it read it.
         let behind = matches!(drained, Some(Ok(false)));
+        crate::journals::prune(&db, factory)?;
         holds_lines = behind && trace.runner.is_some();
         if let Some(me) = &trace.runner
             && !behind

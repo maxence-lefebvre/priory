@@ -63,9 +63,10 @@ pub(crate) fn bodies(read: &serde_json::Value) -> Vec<serde_json::Value> {
         .collect()
 }
 
-/// A second trigger, `nightly`, beside the setup's `agent-label`.
+/// A second trigger, `nightly`, beside the setup's `agent-label`, whose runs may read its journal.
 fn nightly(setup: &Setup) {
-    fs::write(setup.dir.join("factory/triggers/nightly.toml"), TRIGGER).unwrap();
+    let trigger = format!("{TRIGGER}[journal]\nreads = [\"agent-label\"]\n");
+    fs::write(setup.dir.join("factory/triggers/nightly.toml"), trigger).unwrap();
 }
 
 #[test]
@@ -122,6 +123,18 @@ fn a_triggers_journal_written_on_one_runner_reaches_its_next_run_on_another_and_
     assert!(
         failed && text.contains("holds no document history"),
         "{text}"
+    );
+    // nightly lists agent-label in its reads, and agent-label lists nothing.
+    let listed = b.journal_cli(1, &["read", "--from", "agent-label", "--json"], "");
+    assert!(listed.status.success(), "{listed:?}");
+    let listed: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(bodies(&listed), [json!({ "items": 14 })]);
+    let unlisted = b.journal_cli(0, &["get", "--from", "nightly"], "");
+    assert!(
+        !unlisted.status.success()
+            && String::from_utf8_lossy(&unlisted.stderr)
+                .contains("trigger agent-label does not list nightly in [journal] reads"),
+        "{unlisted:?}"
     );
     let note = journal(
         "journal_append",

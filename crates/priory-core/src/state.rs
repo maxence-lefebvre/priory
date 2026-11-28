@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 132;
+const VERSION: i64 = 133;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -2369,6 +2369,18 @@ CREATE INDEX IF NOT EXISTS inbox_journal_writes ON inbox (seq)
 PRAGMA user_version = 132;
 ";
 
+// The journal clock: the latest time, in milliseconds, of a journal message that applied, which
+// pruning by age compares. A file that already holds entries starts from the latest of them.
+const SCHEMA_133: &str = "
+CREATE TABLE IF NOT EXISTS journal_clock (
+  one INTEGER PRIMARY KEY CHECK (one = 1),
+  at  INTEGER NOT NULL
+);
+INSERT INTO journal_clock (one, at)
+  SELECT 1, max(at) FROM journal_entries WHERE seq IS NOT NULL HAVING max(at) IS NOT NULL;
+PRAGMA user_version = 133;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -2387,7 +2399,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112, SCHEMA_113,
     SCHEMA_114, SCHEMA_115, SCHEMA_116, SCHEMA_117, SCHEMA_118, SCHEMA_119, SCHEMA_120, SCHEMA_121,
     SCHEMA_122, SCHEMA_123, SCHEMA_124, SCHEMA_125, SCHEMA_126, SCHEMA_127, SCHEMA_128, SCHEMA_129,
-    SCHEMA_130, SCHEMA_131, SCHEMA_132,
+    SCHEMA_130, SCHEMA_131, SCHEMA_132, SCHEMA_133,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -2910,7 +2922,7 @@ pub(crate) fn route_in(
         return Ok(Vec::new());
     }
     if crate::memories::handle(tx, message)?.is_some()
-        || crate::journals::handle(tx, message)?.is_some()
+        || crate::journals::handle(tx, message, factory)?.is_some()
         || crate::autopilot::handle(tx, message, trace.runner.is_some())?.is_some()
     {
         return Ok(Vec::new());

@@ -559,6 +559,20 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
         }
     }
     check_caps(factory, &mut problems);
+    for (name, trigger) in &factory.triggers {
+        for read in trigger.value.reads() {
+            let message = if read == name {
+                format!(
+                    "`[journal] reads` lists `{name}` itself: its runs read their own journal already"
+                )
+            } else if !factory.triggers.contains_key(read) {
+                format!("`[journal] reads` lists `{read}`, which is no trigger of the factory")
+            } else {
+                continue;
+            };
+            problems.push(problem(trigger, trigger.lines.field("journal"), message));
+        }
+    }
     for trigger in factory.triggers.values() {
         check_band(
             trigger,

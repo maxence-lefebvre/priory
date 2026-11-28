@@ -1405,8 +1405,8 @@ pub struct JournalPut {
     pub runner: Option<String>,
 }
 
-/// A person prunes the entries of a trigger's journal written before a time. No command publishes
-/// it yet, and no runner applies it.
+/// A person prunes the entries of a trigger's journal written before a time, with
+/// `priory journal prune`. Every runner applies it in log order, unless it names no person.
 #[derive(JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct JournalPruned {
@@ -1415,6 +1415,8 @@ pub struct JournalPruned {
     /// Entries written before this time go.
     #[schemars(extend("format" = "date-time"))]
     pub before: String,
+    /// The person who ran `priory journal prune`.
+    pub person: String,
 }
 
 /// A person turns autopilot on or off with `priory autopilot`. Every runner applies it in log order.

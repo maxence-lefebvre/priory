@@ -166,9 +166,10 @@ pub fn person_verb(args: &[String]) -> bool {
         ["score", ..] => args
             .iter()
             .any(|arg| arg == "--calibrate" || arg.starts_with("--calibrate=")),
-        // A run writes its journal with `append` and `put`; an import writes any trigger's.
-        ["journal", "import", ..] => true,
-        // A run reads only its own trigger's journal; `--trigger` reads any.
+        // A run writes its journal with `append` and `put`; an import or a prune reaches any trigger's.
+        ["journal", "import" | "prune", ..] => true,
+        // A run reads its own trigger's journal, and through the daemon those its trigger lists with
+        // `--from`; `--trigger` reads any from the state file.
         ["journal", ..] => args
             .iter()
             .any(|arg| arg == "--trigger" || arg.starts_with("--trigger=")),
@@ -2183,6 +2184,8 @@ mod tests {
             "env -u PRIORY_SESSION priory journal import daily --document history h.json --again",
             "env -u PRIORY_SESSION priory journal import x --entries f",
             "PRIORY_SESSION= priory journal import daily --entries runs.jsonl --kind run",
+            "priory journal prune --trigger daily",
+            "env -u PRIORY_SESSION priory journal prune ~/factory --trigger=daily",
         ] {
             let hits = guards.hits("Bash", Some(command), &git);
             assert_eq!(hits[0].guard, "priory-person", "{command}");
@@ -2201,6 +2204,8 @@ mod tests {
             "priory mcp --session 3f2a",
             "priory journal read --last 7 --json",
             "priory journal append --kind run '{}'",
+            "priory journal read --from daily --json",
+            "priory journal get history --from daily",
         ] {
             assert_eq!(hit(command), None, "{command}");
         }

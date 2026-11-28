@@ -1896,6 +1896,87 @@ pub struct Trigger {
     #[serde(default)]
     #[schemars(extend("items" = { "minLength": 1 }))]
     pub noop: Vec<String>,
+    /// How long its journal keeps entries, and which other triggers' journals its runs may read.
+    pub journal: Option<TriggerJournal>,
+}
+
+impl Trigger {
+    /// How long its journal keeps entries: 90 days when unset.
+    pub fn keep(&self) -> Keep {
+        self.journal
+            .as_ref()
+            .and_then(|journal| journal.keep)
+            .unwrap_or(Keep::DEFAULT)
+    }
+
+    /// The other triggers whose journals its runs may read.
+    pub fn reads(&self) -> &[String] {
+        self.journal
+            .as_ref()
+            .map_or(&[], |journal| journal.reads.as_slice())
+    }
+}
+
+/// A trigger's `[journal]` table.
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TriggerJournal {
+    /// How many entries it keeps, such as `500`, or for how long, such as `90d`; `90d` when unset.
+    /// A document keeps only its latest put.
+    #[serde(default, deserialize_with = "keep")]
+    #[schemars(with = "KeepSchema")]
+    pub keep: Option<Keep>,
+    /// Other triggers whose journals its runs may read, never write.
+    #[serde(default)]
+    pub reads: Vec<String>,
+}
+
+/// How long a journal keeps entries: the newest `Count`, or those written in the last `For`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Keep {
+    Count(u32),
+    For(Duration),
+}
+
+impl Keep {
+    /// What a trigger keeps with no `keep`, and what a journal of no trigger of the factory keeps.
+    pub const DEFAULT: Keep = Keep::For(Duration::from_secs(90 * 86_400));
+}
+
+#[derive(JsonSchema)]
+#[serde(untagged)]
+#[schemars(rename = "Keep")]
+#[allow(dead_code)]
+enum KeepSchema {
+    Count(#[schemars(range(min = 1))] u32),
+    For(#[schemars(regex(pattern = r"^0*[1-9][0-9]*[smhd]$"))] String),
+}
+
+fn keep<'de, D: Deserializer<'de>>(input: D) -> Result<Option<Keep>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Raw {
+        Count(i64),
+        Text(String),
+    }
+    match Raw::deserialize(input)? {
+        Raw::Count(count) => u32::try_from(count)
+            .ok()
+            .filter(|count| *count >= 1)
+            .map(|count| Some(Keep::Count(count)))
+            .ok_or_else(|| {
+                D::Error::custom(format!(
+                    "`keep` is {count}: keep at least 1 entry, or give a duration such as 90d"
+                ))
+            }),
+        Raw::Text(text) => duration(text.clone().into_deserializer())
+            .map(|kept| kept.map(Keep::For))
+            .map_err(|_: D::Error| {
+                D::Error::custom(format!(
+                    "`keep` is {text:?}: give a count of entries such as 500 or a duration such as 90d"
+                ))
+            }),
+    }
 }
 
 /// What a trigger's filter takes for one key.

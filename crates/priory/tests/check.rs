@@ -4849,6 +4849,59 @@ fn a_trigger_with_an_intent_and_noop_cases_passes() {
 }
 
 #[test]
+fn check_refuses_a_bad_journal_keep_and_a_reads_name_that_is_no_other_trigger() {
+    let outcome = |name: &str, journal: &str| {
+        check(&factory(
+            name,
+            &with(
+                "triggers/agent-label.toml",
+                &format!("{TRIGGER}[journal]\n{journal}\n"),
+            ),
+        ))
+    };
+    let ok = outcome("journal-ok", "keep = 500\nreads = []");
+    let days = outcome("journal-days", "keep = \"90d\"");
+    let zero = outcome("journal-zero", "keep = 0");
+    let soon = outcome("journal-soon", "keep = \"soon\"");
+    let unknown = outcome("journal-unknown", "reads = [\"daily-report\"]");
+    let itself = outcome("journal-itself", "reads = [\"agent-label\"]");
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!((days.code, days.stderr.as_str()), (0, ""));
+    for (bad, message) in [
+        (
+            &zero,
+            "`keep` is 0: keep at least 1 entry, or give a duration such as 90d",
+        ),
+        (
+            &soon,
+            "`keep` is \"soon\": give a count of entries such as 500 or a duration such as 90d",
+        ),
+    ] {
+        assert_eq!(bad.code, 1);
+        assert!(
+            bad.stderr.starts_with("triggers/agent-label.toml:") && bad.stderr.contains(message),
+            "{}",
+            bad.stderr
+        );
+    }
+    assert_eq!(
+        (unknown.code, unknown.stderr.as_str()),
+        (
+            1,
+            "triggers/agent-label.toml:8: `[journal] reads` lists `daily-report`, which is no trigger of the factory\n"
+        )
+    );
+    assert_eq!(
+        (itself.code, itself.stderr.as_str()),
+        (
+            1,
+            "triggers/agent-label.toml:8: `[journal] reads` lists `agent-label` itself: its runs read their own journal already\n"
+        )
+    );
+}
+
+#[test]
 fn an_intent_is_one_line_and_each_noop_case_says_something() {
     let blank = format!("{TRIGGER}intent = \"  \"\n");
     let lines = format!("{TRIGGER}intent = \"\"\"\nFix bugs.\nAnd more.\"\"\"\n");

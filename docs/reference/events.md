@@ -2150,8 +2150,13 @@ trigger or body, one over its size limit, one that would take its trigger's jour
 one whose `task` no earlier `factory.task.requested` of its `trigger` names. A message with no
 `task` applies when it names a `person`: `priory journal import` publishes those. Each check reads only
 the message and the log before it, so every runner applies the same messages. A daemon that recorded
-journal messages before it could read them applies them, in log order, when it upgrades. See
-[tools.md](tools.md#journal_appendkind-body-journal_readlast-since-kind-journal_putname-body-and-journal_getname)
+journal messages before it could read them applies them, in log order, when it upgrades.
+
+Each runner also deletes the entries past their trigger's [`keep`](triggers.md#journal). A count
+keeps the newest entries in log order. A duration compares each entry's time with the journal
+clock: the latest `time` of a journal message the runner applied. The clock and the factory decide
+alone, so every runner deletes the same entries, however often it ticks. See
+[tools.md](tools.md#journal_appendkind-body-journal_readlast-since-kind-trigger-journal_putname-body-and-journal_getname-trigger)
 and the [design note](../design/journals.md).
 
 ### `priory.journal.appended`
@@ -2223,14 +2228,16 @@ Schema: [`priory.journal.put.json`](../schemas/events/priory.journal.put.json).
 
 ### `priory.journal.pruned`
 
-A person prunes a trigger's entries written before a time. The type and its schema exist, but no
-command publishes it yet and no runner applies it. Subject: the trigger.
+A person prunes a trigger's entries written before a time, with `priory journal prune`. Every runner
+applies it in log order, and records as `refused` one with no `trigger`, no `person` or a `before`
+that is no RFC 3339 time. Subject: the trigger.
 Schema: [`priory.journal.pruned.json`](../schemas/events/priory.journal.pruned.json).
 
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
 | `trigger` | string | The trigger whose journal it prunes |
 | `before` | date-time string | Entries written before this time go |
+| `person` | string | The person who ran `priory journal prune` |
 
 <!-- example: events/priory.journal.pruned.json -->
 ```json
@@ -2241,7 +2248,8 @@ Schema: [`priory.journal.pruned.json`](../schemas/events/priory.journal.pruned.j
   "time": "2026-11-26T09:00:00Z",
   "data": {
     "trigger": "daily-report",
-    "before": "2026-08-28T00:00:00Z"
+    "before": "2026-08-28T09:00:00Z",
+    "person": "a-person"
   },
   "links": []
 }

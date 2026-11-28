@@ -25,6 +25,7 @@ cannot tell which keys a source refuses; `priory check` does.
 - [`auto_answer`](#auto_answer)
 - [`pre`](#pre)
 - [`intent` and `noop`](#intent-and-noop)
+- [`journal`](#journal)
 - [Errors from `priory check`](#errors-from-priory-check)
 
 ## Keys every trigger takes
@@ -48,6 +49,7 @@ cannot tell which keys a source refuses; `priory check` does.
 | `staged` | boolean | no | `false` | Whether its tasks are a trial: model steps run, and each task blocks before its first irreversible step with what that step would have done. See [Staged tasks](../daemon/tools.md#staged-tasks) | `true` |
 | `intent` | string | no | | One sentence, on one line, on the outcome the trigger exists for. See [`intent` and `noop`](#intent-and-noop) | `"Fix each labeled bug with a reviewed pull request."` |
 | `noop` | list of strings | no | `[]` | The cases that must create no ask and no write. See [`intent` and `noop`](#intent-and-noop) | `["The issue is a question, not a bug."]` |
+| `journal` | table | no | `keep = "90d"`, no `reads` | How long its journal keeps entries, and which other triggers' journals its runs may read. See [`journal`](#journal) | `{ keep = 500, reads = ["daily-report"] }` |
 
 Without a `repo`, a Linear, Sentry, Honeycomb, Intercom or Slack trigger's tasks block before their first run.
 
@@ -567,6 +569,35 @@ noop = [
 ]
 ```
 
+## `journal`
+
+A trigger's journal is the state its runs keep from one run to the next, on the log every runner
+reads (see [tools.md](tools.md#journal_appendkind-body-journal_readlast-since-kind-trigger-journal_putname-body-and-journal_getname-trigger)).
+The `[journal]` table sets how long it keeps entries, and which other journals its runs may read.
+
+| Key | Type | Default | Meaning | Example |
+| --- | ---- | ------- | ------- | ------- |
+| `keep` | integer or duration | `"90d"` | How many entries it keeps, 1 or more, or for how long, such as `90d`. A document keeps only its latest put | `500` |
+| `reads` | list of strings | `[]` | Other triggers whose journals its runs may read with `journal_read` and `journal_get`, never write | `["daily-report"]` |
+
+Every runner deletes the entries past `keep` from its own tables on its tick, and before it applies
+each write. A count keeps the newest entries in log order. A duration compares each entry's time
+with the journal clock: the latest time of a journal message every runner applied. No runner reads
+its own clock for this, so every runner deletes the same entries. A journal of a trigger the
+factory no longer has keeps the default. `priory journal prune` applies `keep` at once (see
+[cli.md](cli.md#commands-a-run-calls)).
+
+```toml
+source = "schedule"
+repo = "owner/name"
+at = "07:00"
+workflow = "weekly-retro"
+
+[journal]
+keep = 52
+reads = ["daily-report"]
+```
+
 ## Errors from `priory check`
 
 | Message | Cause |
@@ -640,3 +671,7 @@ noop = [
 | `` `intent` is empty: say in one sentence the outcome the trigger exists for `` | An `intent` of only spaces |
 | `` `intent` is one sentence on one line, not <n> lines `` | An `intent` that spans lines |
 | `` `noop` case <n> is empty: say which case must create no ask and no write `` | An empty entry in `noop` |
+| `` `keep` is <n>: keep at least 1 entry, or give a duration such as 90d `` | A `keep` count below 1 |
+| `` `keep` is "<text>": give a count of entries such as 500 or a duration such as 90d `` | A `keep` string that is not a duration |
+| `` `[journal] reads` lists `<name>`, which is no trigger of the factory `` | A `reads` name with no file in `triggers/` |
+| `` `[journal] reads` lists `<name>` itself: its runs read their own journal already `` | A trigger that lists itself in `reads` |

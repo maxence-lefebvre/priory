@@ -245,7 +245,7 @@ applies a message with no `task` only from that role.
 
 Each slice ships alone and leaves the factory working.
 
-Slices 1 and 2 are on `main`. Slices 3 to 5 are later slices. In slice 1, a runner decides whether a
+Slices 1 to 3 are on `main`. Slices 4 and 5 are later slices. In slice 1, a runner decides whether a
 journal message applies from the message and the log before it alone: the `factory.task.requested`
 of its task by its trigger, and the messages it applied before. A runner's own writes on their way
 count only for its own write checks, so runners never diverge on what they keep.
@@ -285,6 +285,15 @@ through a `run` action's `PRIORY_TASK`.
 
 - **Code.** The trigger's `[journal]` table with `keep` and `reads`, `priory check` rules for them,
   pruning on each runner's tick, `priory journal prune` and `priory.journal.pruned`.
+- **As built.** Pruning by age compares an entry's time with the journal clock, not the runner's
+  own: the latest time of a journal message the runner applied. Each runner prunes a trigger before
+  and after it applies that trigger's write, and every trigger on its tick, so every runner keeps
+  the same entries and the 8 MB check agrees. A run reads another journal with the tools' `trigger`
+  argument, or `--from` in its pane, which goes through the daemon. `--trigger` stays a person's
+  flag. Three limits remain. Runners on different factory revisions prune by different `keep`
+  values until they match. A forged message with a far-future time moves the clock and prunes
+  every journal kept by age, with the same trust as a forged write. A factory with no journal
+  writes moves no clock, so its entries wait for the next write or a `priory journal prune`.
 - **Tests.** Entries past `keep` leave every runner's tables. A trigger reads a journal it lists and
   is refused one it does not.
 - **Rollback.** Remove the keys; every journal keeps entries for the default.
