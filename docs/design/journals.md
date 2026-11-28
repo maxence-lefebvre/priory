@@ -297,12 +297,19 @@ through a `run` action's `PRIORY_TASK`.
     The cost is that a factory whose journal writes come less often than daily has a clock that
     trails real time, so its entries stay longer than `keep`, never shorter. Neither log backend
     stamps a message with a time of its own, so the bound stands in for one.
+  - The bound limits each message, not a writer. N messages from a writer whose clock runs ahead
+    move the clock N days.
+  - The clock is one row that every trigger shares. Its first value is the time of the first
+    journal message that applied, with no bound. A writer far ahead at that moment starts the
+    clock there, and every journal kept by age loses each correctly stamped entry as it applies.
+    A test pins this, so a fix changes it on purpose.
+  - Every runner must run the same version. A runner on 1.3.17 prunes nothing, so its 8 MB check
+    counts entries the others deleted, and it refuses writes they apply.
   - Each runner prunes a trigger before and after it applies that trigger's write, and every
     trigger on its tick. An upgrade replays the clock from the inbox in log order.
 
   A run reads another journal with the tools' `trigger` argument, or `--from` in its pane, which
-  goes through the daemon. `--trigger` stays a person's flag. Two limits remain. A writer that runs
-  ahead and writes often still moves the clock a day per write. A factory with no journal writes
+  goes through the daemon. `--trigger` stays a person's flag. A factory with no journal writes
   moves no clock, so its entries wait for the next write or a `priory journal prune`.
 - **Tests.** Entries past `keep` leave every runner's tables. A trigger reads a journal it lists and
   is refused one it does not.

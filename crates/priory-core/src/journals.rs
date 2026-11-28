@@ -1269,6 +1269,26 @@ mod tests {
         assert_eq!(bodies(&a, "daily").len(), 4);
     }
 
+    /// Pins a known gap: the first applied journal message sets the clock with no bound. A fix
+    /// changes this test on purpose.
+    #[test]
+    fn a_first_message_stamped_a_year_ahead_starts_the_clock_there_and_ages_every_later_entry() {
+        let entry = |body: i64, time: &str| {
+            keeping(written(JOURNAL_APPENDED, "run", json!(body)), json!("30d")).time(at(time))
+        };
+        let mut a = crate::state::memory();
+        fold(
+            &mut a,
+            &[
+                request("daily"),
+                entry(1, "2027-11-21T07:00:00Z"),
+                entry(2, "2026-11-21T07:00:00Z"),
+                entry(3, "2026-11-22T07:00:00Z"),
+            ],
+        );
+        assert_eq!(bodies(&a, "daily"), [json!(1)]);
+    }
+
     #[test]
     fn a_persons_prune_applies_and_one_that_names_no_person_does_not() {
         let entry =
