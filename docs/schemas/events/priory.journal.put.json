@@ -3,12 +3,37 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
   "definitions": {
+    "JournalKeep": {
+      "anyOf": [
+        {
+          "format": "uint32",
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
+          "type": "string"
+        }
+      ],
+      "description": "A trigger's `keep`: how many entries its journal keeps, or for how long, such as `90d`."
+    },
     "JournalPut": {
       "additionalProperties": false,
       "description": "A run replaces a document of its trigger's journal with `journal_put` or `priory journal put`.\nBetween two puts of one name, the later in log order wins. A body over 256 KB, or one that would\ntake the journal past 8 MB, is refused.",
       "properties": {
         "body": {
           "description": "The document: a JSON value, or a string of Markdown."
+        },
+        "keep": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JournalKeep"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The trigger's `keep` in its writer's factory, which every runner then prunes the journal by.\nAbsent from a message older than retention."
         },
         "name": {
           "description": "The document's name.",

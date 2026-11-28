@@ -8,7 +8,8 @@
     "name": "history",
     "body": { "runs": ["2026-11-25", "2026-11-26"] },
     "task": "schedule:daily-report@2026-11-26T07:00:00Z",
-    "runner": "desktop"
+    "runner": "desktop",
+    "keep": "90d"
   },
   "links": []
 }

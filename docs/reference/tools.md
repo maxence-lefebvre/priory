@@ -568,11 +568,13 @@ remembered release-day as candidate 0196f1d0-4a5b-7c6d-8e9f-0a1b2c3d4e5f: your t
 See [skills.md](../daemon/skills.md#memories-agents-write) for how a candidate reaches runs, and
 [memories.md](memories.md#candidates) for the states, the commands and every error.
 
-## `journal_append(kind, body)`, `journal_read(last?, since?, kind?)`, `journal_put(name, body)` and `journal_get(name?)`
+## `journal_append(kind, body)`, `journal_read(last?, since?, kind?, trigger?)`, `journal_put(name, body)` and `journal_get(name?, trigger?)`
 
 These four keep the state of the run's task's trigger between its runs, on the log every runner
-reads. Each acts on the journal of the trigger that started the run's task, and takes no trigger
-argument, so a run cannot reach another trigger's journal. None of them ends the turn.
+reads. Each acts on the journal of the trigger that started the run's task. A write takes no
+trigger argument, so a run writes no other trigger's journal. A read takes `trigger` to read
+another trigger's journal, which its own trigger lists in [`[journal] reads`](triggers.md#journal).
+None of them ends the turn.
 
 | Tool | Does |
 | ---- | ---- |
@@ -588,6 +590,7 @@ argument, so a run cannot reach another trigger's journal. None of them ends the
 | `body` | A JSON value, or a string of Markdown |
 | `last` | How many of the newest entries `journal_read` returns: 20 by default, at most 200 |
 | `since` | Only entries written at or after this RFC 3339 time |
+| `trigger` | The trigger whose journal `journal_read` or `journal_get` reads: the run's own when absent |
 
 ```json
 { "kind": "run", "body": { "date": "2026-11-26", "items": 14 } }
@@ -615,6 +618,15 @@ whose trigger is `cli` even when the factory has `triggers/cli.toml`:
 ```text
 task cli:7 has no trigger (it came from cli), so it has no journal: only the runs of a factory trigger keep one
 ```
+
+A read of a trigger that the run's trigger does not list in `reads` fails:
+
+```text
+trigger weekly-retro does not list nightly in [journal] reads, so its runs cannot read the journal of nightly
+```
+
+Entries past the trigger's [`keep`](triggers.md#journal) leave every runner's tables, so a read
+returns none of them.
 
 The tool descriptions tell the agent to treat what it reads as data, since an earlier run wrote it.
 `priory journal` calls the same from a run's pane. See [cli.md](cli.md#commands-a-run-calls) and

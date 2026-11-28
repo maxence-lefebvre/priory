@@ -112,6 +112,19 @@
         }
       ]
     },
+    "Keep": {
+      "anyOf": [
+        {
+          "format": "uint32",
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
+          "type": "string"
+        }
+      ]
+    },
     "Limits": {
       "additionalProperties": false,
       "description": "Spend caps in dollars: per task, per local day and per week.",
@@ -231,6 +244,29 @@
         "argv"
       ],
       "type": "object"
+    },
+    "TriggerJournal": {
+      "additionalProperties": false,
+      "description": "A trigger's `[journal]` table.",
+      "properties": {
+        "keep": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Keep"
+            }
+          ],
+          "description": "How many entries it keeps, such as `500`, or for how long, such as `90d`; `90d` when unset.\nA document keeps only its latest put."
+        },
+        "reads": {
+          "default": [],
+          "description": "Other triggers whose journals its runs may read, never write.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
     }
   },
   "description": "`triggers/<name>.toml` or `.yaml`: an event source, its filter and the workflow its events\nstart. The file name is the trigger's name.",
@@ -345,6 +381,17 @@
         }
       ],
       "description": "Who answers its tasks' asks: `plan` or `hands-off`; a person when unset."
+    },
+    "journal": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TriggerJournal"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "How long its journal keeps entries, and which other triggers' journals its runs may read."
     },
     "key": {
       "description": "Which events are the same work, such as `issue.number`; for a schedule, a fixed key.",

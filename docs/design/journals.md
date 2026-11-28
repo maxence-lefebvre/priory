@@ -245,7 +245,7 @@ applies a message with no `task` only from that role.
 
 Each slice ships alone and leaves the factory working.
 
-Slices 1 and 2 are on `main`. Slices 3 to 5 are later slices. In slice 1, a runner decides whether a
+Slices 1 to 3 are on `main`. Slices 4 and 5 are later slices. In slice 1, a runner decides whether a
 journal message applies from the message and the log before it alone: the `factory.task.requested`
 of its task by its trigger, and the messages it applied before. A runner's own writes on their way
 count only for its own write checks, so runners never diverge on what they keep.
@@ -285,6 +285,32 @@ through a `run` action's `PRIORY_TASK`.
 
 - **Code.** The trigger's `[journal]` table with `keep` and `reads`, `priory check` rules for them,
   pruning on each runner's tick, `priory journal prune` and `priory.journal.pruned`.
+- **As built.** Every decision reads the log alone, so runners on different factory revisions, and
+  a new runner that replays the log, keep the same entries and agree on the 8 MB check:
+  - Each write carries its writer's `keep`, as does a person's `priory.journal.pruned`. A runner
+    prunes a trigger by the keep its last applied message carried, `90d` before one does, never by
+    its own factory. A shortened `keep` takes effect at the trigger's next write, or at once with
+    `priory journal prune`.
+  - Pruning by age compares an entry's time with the journal clock, never the runner's own. Each
+    applied journal message moves the clock to its `time`, in log order, by at most one day, and
+    never back. One writer whose clock runs a year ahead moves it one day per message, not a year.
+    The cost is that a factory whose journal writes come less often than daily has a clock that
+    trails real time, so its entries stay longer than `keep`, never shorter. Neither log backend
+    stamps a message with a time of its own, so the bound stands in for one.
+  - The bound limits each message, not a writer. N messages from a writer whose clock runs ahead
+    move the clock N days.
+  - The clock is one row that every trigger shares. Its first value is the time of the first
+    journal message that applied, with no bound. A writer far ahead at that moment starts the
+    clock there, and every journal kept by age loses each correctly stamped entry as it applies.
+    A test pins this, so a fix changes it on purpose.
+  - Every runner must run the same version. A runner on 1.3.17 prunes nothing, so its 8 MB check
+    counts entries the others deleted, and it refuses writes they apply.
+  - Each runner prunes a trigger before and after it applies that trigger's write, and every
+    trigger on its tick. An upgrade replays the clock from the inbox in log order.
+
+  A run reads another journal with the tools' `trigger` argument, or `--from` in its pane, which
+  goes through the daemon. `--trigger` stays a person's flag. A factory with no journal writes
+  moves no clock, so its entries wait for the next write or a `priory journal prune`.
 - **Tests.** Entries past `keep` leave every runner's tables. A trigger reads a journal it lists and
   is refused one it does not.
 - **Rollback.** Remove the keys; every journal keeps entries for the default.

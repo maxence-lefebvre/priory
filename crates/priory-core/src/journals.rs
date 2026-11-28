@@ -1,16 +1,19 @@
 //! Journals: the state a trigger's runs keep between them, on the log every runner reads. The
 //! `journal_append`, `journal_read`, `journal_put` and `journal_get` tools, and the tables every
-//! runner folds `priory.journal.appended` and `priory.journal.put` into, in log order.
+//! runner folds `priory.journal.appended`, `priory.journal.put` and `priory.journal.pruned` into,
+//! in log order.
 //!
 //! Every runner must keep the same tables, so whether a message applies depends only on the
 //! message and the log before it: the requests every runner recorded, and the writes it already
 //! applied. A runner's own writes wait apart until it reads them back, and never count there.
+//! Pruning by age reads the journal clock, the latest time of a journal message that applied, never
+//! a runner's own clock, so every runner prunes the same entries.
 
 use crate::tools::Call;
 use crate::trace::Trace;
 use herdr_bus::Message;
-use priory_factory::factory::Factory;
-use priory_intake::intake::{self, JOURNAL_APPENDED, JOURNAL_PUT};
+use priory_factory::factory::{Factory, Keep};
+use priory_intake::intake::{self, JOURNAL_APPENDED, JOURNAL_PRUNED, JOURNAL_PUT};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::{Value, json};
 
@@ -179,7 +182,9 @@ pub(crate) fn write(
     if bytes > JOURNAL_LIMIT {
         return Ok(Err(full(&trigger, bytes)));
     }
-    let mut data = json!({ "trigger": trigger, "body": body, "task": key, "runner": trace.runner });
+    // Every runner prunes by the keep the log carries, never by its own factory's.
+    let keep = trace.factory.triggers[&trigger].value.keep().to_value();
+    let mut data = json!({ "trigger": trigger, "body": body, "task": key, "runner": trace.runner, "keep": keep });
     data[if entry { "kind" } else { "name" }] = json!(label);
     let time = intake::now().unwrap_or_else(|_| jiff::Timestamp::now());
     let kind = if entry { JOURNAL_APPENDED } else { JOURNAL_PUT };
@@ -255,6 +260,7 @@ pub fn import(
             }
         }
     }
+    let keep = factory.triggers[trigger].value.keep().to_value();
     let writes = entries
         .iter()
         .map(|body| (true, kind, body))
@@ -278,8 +284,9 @@ pub fn import(
             ));
         }
         bytes += text.len();
-        let mut data =
-            json!({ "trigger": trigger, "body": body, "person": person, "runner": null });
+        let mut data = json!({
+            "trigger": trigger, "body": body, "person": person, "runner": null, "keep": keep,
+        });
         data[if entry { "kind" } else { "name" }] = json!(label);
         let kind = if entry { JOURNAL_APPENDED } else { JOURNAL_PUT };
         messages.push(Message::new(kind, data).subject(trigger.to_owned()));
@@ -426,73 +433,269 @@ impl<'a> Write<'a> {
     }
 }
 
-/// Handles a journal message read from the log: applies its entry or document, or refuses it.
-/// `None` for any other message.
+/// Handles a journal message read from the log: applies its entry, document or prune, or refuses
+/// it. `None` for any other message.
 pub(crate) fn handle(tx: &Transaction, message: &Message) -> rusqlite::Result<Option<()>> {
-    if message.kind != JOURNAL_APPENDED && message.kind != JOURNAL_PUT {
+    if ![JOURNAL_APPENDED, JOURNAL_PUT, JOURNAL_PRUNED].contains(&message.kind.as_str()) {
         return Ok(None);
     }
     let id = message.id.to_string();
-    let write = Write::of(&id, &message.kind, message.time, &message.data);
+    fold(
+        tx,
+        &id,
+        &message.kind,
+        message.time,
+        &message.data,
+        None,
+        |outcome| crate::state::record(tx, message, None, outcome, None),
+    )
+    .map(Some)
+}
+
+/// What every runner does with the journal message `id` at its place in the log, before inbox
+/// position `before` when given: it applies or refuses it, then records the outcome with `record`,
+/// which returns the message's inbox position. Every decision reads the message and the log before
+/// it alone, never this runner's factory or clock.
+fn fold(
+    tx: &Transaction,
+    id: &str,
+    kind: &str,
+    time: jiff::Timestamp,
+    data: &Value,
+    before: Option<i64>,
+    record: impl FnOnce(&str) -> rusqlite::Result<i64>,
+) -> rusqlite::Result<()> {
     // Anyone can publish on the log, so a malformed or foreign message is refused, never fatal.
-    if write.applies(tx, None)? {
-        let seq = crate::state::record(tx, message, None, "noted", None)?;
-        write.apply(tx, seq)?;
-    } else {
-        crate::state::record(tx, message, None, "refused", None)?;
-        write.forget_own(tx)?;
+    let keep = data.get("keep").map(Keep::parse);
+    if kind == JOURNAL_PRUNED {
+        let text = |field: &str| data[field].as_str().filter(|text| !text.trim().is_empty());
+        let cutoff = data.get("before").map(|time| {
+            time.as_str()
+                .and_then(|time| time.parse::<jiff::Timestamp>().ok())
+        });
+        let (Some(trigger), Some(_), None | Some(Some(_))) =
+            (text("trigger"), text("person"), cutoff)
+        else {
+            return record("refused").map(drop);
+        };
+        if matches!(keep, Some(None)) {
+            return record("refused").map(drop);
+        }
+        if let Some(Some(cutoff)) = cutoff {
+            tx.execute(
+                "DELETE FROM journal_entries WHERE trigger = ?1 AND seq IS NOT NULL AND at < ?2",
+                params![trigger, cutoff.as_millisecond()],
+            )?;
+        }
+        settle(tx, trigger, keep.flatten(), time)?;
+        return record("noted").map(drop);
     }
-    Ok(Some(()))
+    let write = Write::of(id, kind, time, data);
+    // Pruned first, so the size check sees the entries every runner still holds here.
+    prune_one(tx, write.trigger)?;
+    if matches!(keep, Some(None)) || !write.applies(tx, before)? {
+        record("refused")?;
+        return write.forget_own(tx);
+    }
+    let seq = record("noted")?;
+    write.apply(tx, seq)?;
+    settle(tx, write.trigger, keep.flatten(), time)
+}
+
+/// After a message of trigger `trigger` applied: keeps the `keep` it carried as the trigger's,
+/// moves the journal clock to its `time`, and prunes the trigger's entries.
+fn settle(
+    tx: &Connection,
+    trigger: &str,
+    keep: Option<Keep>,
+    time: jiff::Timestamp,
+) -> rusqlite::Result<()> {
+    if let Some(keep) = keep {
+        tx.execute(
+            "INSERT INTO journal_keeps (trigger, keep) VALUES (?1, ?2)
+             ON CONFLICT (trigger) DO UPDATE SET keep = excluded.keep",
+            params![trigger, keep.to_value().to_string()],
+        )?;
+    }
+    advance(tx, time)?;
+    prune_one(tx, trigger).map(drop)
+}
+
+/// How far one message moves the journal clock at most.
+const CLOCK_STEP: jiff::SignedDuration = jiff::SignedDuration::from_hours(24);
+
+/// Moves the journal clock to `time` when that is later, by at most `CLOCK_STEP`, so one writer
+/// whose clock runs ahead cannot age every journal at once. Only applied journal messages move it,
+/// in log order, so every runner's clock is the same at the same place in the log.
+fn advance(tx: &Connection, time: jiff::Timestamp) -> rusqlite::Result<()> {
+    tx.execute(
+        "INSERT INTO journal_clock (one, at) VALUES (1, ?1)
+         ON CONFLICT (one) DO UPDATE SET at = max(at, min(excluded.at, at + ?2))",
+        params![time.as_millisecond(), CLOCK_STEP.as_millis() as i64],
+    )
+    .map(drop)
+}
+
+/// Deletes the applied entries of trigger `trigger` past the `keep` its last write on the log
+/// carried, or the default: all but the newest `Count` in log order, or those written more than `For`
+/// before the journal clock. This runner's own entries on their way stay until it reads them back.
+fn prune_one(db: &Connection, trigger: &str) -> rusqlite::Result<usize> {
+    let carried: Option<String> = db
+        .query_row(
+            "SELECT keep FROM journal_keeps WHERE trigger = ?1",
+            [trigger],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let keep = carried
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .and_then(|value: Value| Keep::parse(&value))
+        .unwrap_or(Keep::DEFAULT);
+    match keep {
+        Keep::Count(count) => db.execute(
+            "DELETE FROM journal_entries WHERE trigger = ?1 AND seq IS NOT NULL
+               AND seq NOT IN (SELECT seq FROM journal_entries
+                               WHERE trigger = ?1 AND seq IS NOT NULL ORDER BY seq DESC LIMIT ?2)",
+            params![trigger, count],
+        ),
+        Keep::For(kept) => db.execute(
+            "DELETE FROM journal_entries WHERE trigger = ?1 AND seq IS NOT NULL
+               AND at < (SELECT at FROM journal_clock) - ?2",
+            params![trigger, i64::try_from(kept.as_millis()).unwrap_or(i64::MAX)],
+        ),
+    }
+}
+
+/// On each tick: deletes every journal's entries past its `keep`, as of the journal clock. Both
+/// come from the log, so this deletes only what the next write of each trigger would.
+pub(crate) fn prune(db: &Connection) -> rusqlite::Result<()> {
+    let triggers: Vec<String> = db
+        .prepare("SELECT DISTINCT trigger FROM journal_entries WHERE seq IS NOT NULL")?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    for trigger in triggers {
+        prune_one(db, &trigger)?;
+    }
+    Ok(())
+}
+
+/// `priory journal prune`: publishes `priory.journal.pruned` as `person`'s, with trigger
+/// `trigger`'s `keep` from `factory`, so every runner applies that keep at once. A duration's message
+/// also drops the entries written before `now` minus the keep.
+pub fn prune_now(
+    factory: &Factory,
+    trigger: &str,
+    person: &str,
+    now: jiff::Timestamp,
+) -> Result<String, String> {
+    let Some(found) = factory.triggers.get(trigger) else {
+        return Err(format!("the factory has no trigger {trigger}"));
+    };
+    let keep = found.value.keep();
+    let mut data = json!({ "trigger": trigger, "person": person, "keep": keep.to_value() });
+    let said = match keep {
+        Keep::For(kept) => {
+            let before = jiff::SignedDuration::try_from(kept)
+                .ok()
+                .and_then(|kept| now.checked_sub(kept).ok())
+                .unwrap_or(jiff::Timestamp::MIN);
+            data["before"] = json!(before.to_string());
+            format!("every runner drops its entries written before {before}")
+        }
+        Keep::Count(count) => format!("every runner keeps its newest {count} entries"),
+    };
+    let message = Message::new(JOURNAL_PRUNED, data)
+        .subject(trigger.to_owned())
+        .time(now);
+    crate::runners::publish_all(factory.log(), &[message]).map_err(|(_, unsent)| match unsent {
+        crate::runners::Unsent::Nothing(why) | crate::runners::Unsent::Unconfirmed(why) => why,
+    })?;
+    Ok(format!("pruned the journal of {trigger}: {said}"))
 }
 
 /// Applies, in log order, the journal messages a daemon older than journals recorded in the inbox
 /// without reading them, as `handle` would have when it read each.
 pub(crate) fn backfill(tx: &Transaction) -> rusqlite::Result<()> {
-    let rows: Vec<(i64, String, String, String, String)> = tx
-        .prepare(
-            "SELECT seq, id, type, time, data FROM inbox
-             WHERE type IN ('priory.journal.appended', 'priory.journal.put') ORDER BY seq",
-        )?
-        .query_map([], |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<_>>()?;
-    for (seq, id, kind, time, data) in rows {
+    for (seq, id, kind, time, data) in journal_rows(tx, false)? {
         let data: Value = serde_json::from_str(&data).unwrap_or_default();
         let time = time.parse().unwrap_or_default();
-        let write = Write::of(&id, &kind, time, &data);
-        let outcome = if write.applies(tx, Some(seq))? {
-            write.apply(tx, seq)?;
-            "noted"
-        } else {
-            "refused"
-        };
-        tx.execute(
-            "UPDATE inbox SET outcome = ?2 WHERE seq = ?1",
-            params![seq, outcome],
-        )?;
+        fold(tx, &id, &kind, time, &data, Some(seq), |outcome| {
+            tx.execute(
+                "UPDATE inbox SET outcome = ?2 WHERE seq = ?1",
+                params![seq, outcome],
+            )?;
+            Ok(seq)
+        })?;
     }
     Ok(())
 }
 
-/// `journal_read` and `journal_get`: the caller's trigger's entries or documents, as JSON.
+/// Sets the journal clock as a runner that read the whole log would: from the times of the journal
+/// messages that applied, in log order.
+pub(crate) fn replay_clock(tx: &Transaction) -> rusqlite::Result<()> {
+    tx.execute("DELETE FROM journal_clock", [])?;
+    for (_, _, _, time, _) in journal_rows(tx, true)? {
+        if let Ok(time) = time.parse() {
+            advance(tx, time)?;
+        }
+    }
+    Ok(())
+}
+
+/// An inbox row's `seq`, `id`, `type`, `time` and `data`.
+type Row = (i64, String, String, String, String);
+
+/// The inbox's journal messages in log order, only those that applied with `noted`.
+fn journal_rows(tx: &Transaction, noted: bool) -> rusqlite::Result<Vec<Row>> {
+    tx.prepare(
+        "SELECT seq, id, type, time, data FROM inbox
+         WHERE type IN ('priory.journal.appended', 'priory.journal.put', 'priory.journal.pruned')
+           AND (NOT ?1 OR outcome = 'noted')
+         ORDER BY seq",
+    )?
+    .query_map([noted], |row| {
+        Ok((
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            row.get(4)?,
+        ))
+    })?
+    .collect()
+}
+
+/// `journal_read` and `journal_get`: the entries or documents of the caller's trigger, or of the
+/// trigger `trigger` when the caller's lists it in `[journal] reads`, as JSON.
 pub(crate) fn read(
     db: &Connection,
     call: &Call,
     factory: &Factory,
 ) -> rusqlite::Result<Result<String, String>> {
-    let trigger = match caller(db, &call.session, factory)? {
+    let own = match caller(db, &call.session, factory)? {
         Ok((_, trigger)) => trigger,
         Err(why) => return Ok(Err(why)),
     };
     let arguments = &call.arguments;
     let text = |name: &str| arguments[name].as_str();
+    let trigger = match text("trigger") {
+        None => own,
+        Some(other) if other == own => own,
+        Some(other)
+            if factory.triggers[&own]
+                .value
+                .reads()
+                .iter()
+                .any(|read| read == other) =>
+        {
+            other.to_owned()
+        }
+        Some(other) => {
+            return Ok(Err(format!(
+                "trigger {own} does not list {other} in [journal] reads, so its runs cannot read the journal of {other}"
+            )));
+        }
+    };
     let read = if call.tool == "journal_read" {
         entries(
             db,
@@ -592,13 +795,24 @@ mod tests {
 
     /// A factory with the triggers `daily` and `cli`, which `triggers/cli.toml` makes one.
     fn factory() -> Factory {
-        let dir = std::env::temp_dir().join(format!("priory-journals-{}", std::process::id()));
+        factory_with("plain", "")
+    }
+
+    /// The factory of `factory()`, with `journal` after `daily`'s keys, and the triggers `weekly`,
+    /// which reads `daily`, and `other`. Its folder is `name`'s.
+    fn factory_with(name: &str, journal: &str) -> Factory {
+        let dir =
+            std::env::temp_dir().join(format!("priory-journals-{}-{name}", std::process::id()));
         let trigger =
             "source = \"schedule\"\nrepo = \"owner/repo\"\nat = \"07:00\"\nworkflow = \"w\"\n";
+        let daily = format!("{trigger}{journal}");
+        let weekly = format!("{trigger}[journal]\nreads = [\"daily\"]\n");
         for (path, text) in [
             ("factory.toml", "name = \"demo\"\n"),
-            ("triggers/daily.toml", trigger),
+            ("triggers/daily.toml", daily.as_str()),
             ("triggers/cli.toml", trigger),
+            ("triggers/weekly.toml", weekly.as_str()),
+            ("triggers/other.toml", trigger),
         ] {
             let file = dir.join(path);
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();
@@ -917,5 +1131,257 @@ mod tests {
         };
         assert_eq!(read("2026-11-26T10:00:00.9Z"), 1);
         assert_eq!(read("2026-11-26T11:00:00+01:00"), 2);
+    }
+
+    /// The bodies of trigger `trigger`'s entries, oldest first.
+    fn bodies(db: &Connection, trigger: &str) -> Vec<Value> {
+        entries(db, trigger, None, None, None).unwrap().unwrap()["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["body"].clone())
+            .collect()
+    }
+
+    fn at(text: &str) -> jiff::Timestamp {
+        text.parse().unwrap()
+    }
+
+    /// `message` as a writer whose factory gives its trigger `keep` publishes it.
+    fn keeping(mut message: Message, keep: Value) -> Message {
+        message.data["keep"] = keep;
+        message
+    }
+
+    #[test]
+    fn entries_past_a_count_keep_leave_every_runners_tables() {
+        let factory = factory_with("count", "[journal]\nkeep = 2\n");
+        let (mut a, mut b) = (runner("daily"), runner("daily"));
+        let from_a = own(
+            &mut a,
+            &factory,
+            "journal_append",
+            json!({ "kind": "run", "body": 0 }),
+        );
+        assert_eq!(from_a.data["keep"], 2, "a write carries its factory's keep");
+        let mut log = vec![request("daily"), from_a];
+        log.extend((1..=3).map(|n| keeping(written(JOURNAL_APPENDED, "run", json!(n)), json!(2))));
+        fold(&mut a, &log[1..]);
+        // b ticks between its reads; a reads every message at once.
+        fold(&mut b, &log[1..3]);
+        prune(&b).unwrap();
+        fold(&mut b, &log[3..]);
+        let mut later = crate::state::memory();
+        fold(&mut later, &log);
+
+        assert_eq!(bodies(&a, "daily"), [json!(2), json!(3)]);
+        assert_eq!(tables(&a), tables(&b));
+        assert_eq!(tables(&a), tables(&later));
+    }
+
+    #[test]
+    fn entries_older_than_a_duration_keep_leave_every_runners_tables() {
+        let entry = |body: i64, time: &str| {
+            keeping(written(JOURNAL_APPENDED, "run", json!(body)), json!("1d")).time(at(time))
+        };
+        let log = vec![
+            request("daily"),
+            entry(1, "2026-11-20T07:00:00Z"),
+            entry(2, "2026-11-20T08:00:00Z"),
+            entry(3, "2026-11-21T07:30:00Z"),
+            entry(4, "2026-11-22T07:00:00Z"),
+        ];
+        let (mut a, mut b) = (crate::state::memory(), crate::state::memory());
+        fold(&mut a, &log);
+        for message in &log {
+            fold(&mut b, std::slice::from_ref(message));
+            prune(&b).unwrap();
+        }
+        // A runner's own clock is days later, and moves nothing.
+        prune(&a).unwrap();
+        let mut later = crate::state::memory();
+        fold(&mut later, &log);
+
+        assert_eq!(bodies(&a, "daily"), [json!(3), json!(4)]);
+        assert_eq!(tables(&a), tables(&b));
+        assert_eq!(tables(&a), tables(&later));
+    }
+
+    #[test]
+    fn runners_whose_factories_keep_differently_fold_a_log_near_the_limit_into_equal_tables() {
+        // a's factory keeps one entry; b's keeps the default 90 days.
+        let (one, default) = (factory_with("one", "[journal]\nkeep = 1\n"), factory());
+        let (mut a, mut b) = (runner("daily"), runner("daily"));
+        let mut log = vec![request("daily")];
+        // Room for one of two 15,000-byte entries, unless the first is pruned.
+        let fill = filled(20_000);
+        fold(&mut a, &fill);
+        fold(&mut b, &fill);
+        log.extend(fill);
+        let entry = json!({ "kind": "run", "body": sized(15_000) });
+        let from_b = own(&mut b, &default, "journal_append", entry.clone());
+        let from_a = own(&mut a, &one, "journal_append", entry);
+        let tail = [from_b.clone(), from_a.clone()];
+        fold(&mut a, &tail);
+        fold(&mut b, &tail);
+        log.extend(tail.clone());
+        let mut later = crate::state::memory();
+        fold(&mut later, &log);
+
+        assert_eq!(tables(&a), tables(&b));
+        assert_eq!(tables(&a), tables(&later));
+        // b's entry came first and carried 90 days, so a's entry found no room on any runner, even
+        // on a, whose own factory would have pruned b's to make it.
+        assert_eq!(tables(&a).0, [from_b.id.to_string()]);
+        let outcome = |id: &Message| -> String {
+            a.query_row(
+                "SELECT outcome FROM inbox WHERE id = ?1",
+                [id.id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            (outcome(&from_b), outcome(&from_a)),
+            ("noted".to_owned(), "refused".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_message_stamped_a_year_ahead_prunes_no_entry_within_keep() {
+        let entry = |body: i64, time: &str| {
+            keeping(written(JOURNAL_APPENDED, "run", json!(body)), json!("30d")).time(at(time))
+        };
+        let mut a = crate::state::memory();
+        fold(
+            &mut a,
+            &[
+                request("daily"),
+                entry(1, "2026-11-20T07:00:00Z"),
+                entry(2, "2026-11-21T07:00:00Z"),
+                entry(3, "2027-11-21T07:00:00Z"),
+            ],
+        );
+        prune(&a).unwrap();
+        assert_eq!(bodies(&a, "daily"), [json!(1), json!(2), json!(3)]);
+        // Each later message moves the clock a day at most, until real time catches up.
+        fold(&mut a, &[entry(4, "2026-11-22T07:00:00Z")]);
+        assert_eq!(bodies(&a, "daily").len(), 4);
+    }
+
+    /// Pins a known gap: the first applied journal message sets the clock with no bound. A fix
+    /// changes this test on purpose.
+    #[test]
+    fn a_first_message_stamped_a_year_ahead_starts_the_clock_there_and_ages_every_later_entry() {
+        let entry = |body: i64, time: &str| {
+            keeping(written(JOURNAL_APPENDED, "run", json!(body)), json!("30d")).time(at(time))
+        };
+        let mut a = crate::state::memory();
+        fold(
+            &mut a,
+            &[
+                request("daily"),
+                entry(1, "2027-11-21T07:00:00Z"),
+                entry(2, "2026-11-21T07:00:00Z"),
+                entry(3, "2026-11-22T07:00:00Z"),
+            ],
+        );
+        assert_eq!(bodies(&a, "daily"), [json!(1)]);
+    }
+
+    #[test]
+    fn a_persons_prune_applies_and_one_that_names_no_person_does_not() {
+        let entry =
+            |body: i64, time: &str| written(JOURNAL_APPENDED, "run", json!(body)).time(at(time));
+        let prune = |before: &str, person: Option<&str>| {
+            let mut data = json!({ "trigger": "daily", "before": before });
+            if let Some(person) = person {
+                data["person"] = json!(person);
+            }
+            Message::new(JOURNAL_PRUNED, data).subject("daily")
+        };
+        let mut a = crate::state::memory();
+        fold(
+            &mut a,
+            &[
+                request("daily"),
+                entry(1, "2026-11-20T07:00:00Z"),
+                entry(2, "2026-11-20T09:00:00Z"),
+                entry(3, "2026-11-20T11:00:00Z"),
+                prune("2026-11-20T12:00:00Z", None),
+                prune("2026-11-20T08:00:00Z", Some("a-person")),
+            ],
+        );
+        assert_eq!(bodies(&a, "daily"), [json!(2), json!(3)]);
+        // A count carries no time: the keep it carries prunes, and later entries keep to it.
+        let count = |keep: Value| {
+            Message::new(
+                JOURNAL_PRUNED,
+                json!({ "trigger": "daily", "person": "a-person", "keep": keep }),
+            )
+        };
+        fold(&mut a, &[count(json!(0)), count(json!(1))]);
+        assert_eq!(bodies(&a, "daily"), [json!(3)]);
+        fold(&mut a, &[entry(4, "2026-11-20T13:00:00Z")]);
+        assert_eq!(bodies(&a, "daily"), [json!(4)]);
+
+        let outcomes: Vec<String> = a
+            .prepare("SELECT outcome FROM inbox WHERE type = ?1 ORDER BY seq")
+            .unwrap()
+            .query_map([JOURNAL_PRUNED], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(outcomes, ["refused", "noted", "refused", "noted"]);
+    }
+
+    #[test]
+    fn a_run_reads_a_journal_its_trigger_lists_and_is_refused_one_it_does_not() {
+        let factory = factory();
+        let daily = [
+            request("daily"),
+            written(JOURNAL_APPENDED, "run", json!(1)),
+            written(JOURNAL_PUT, "history", json!("v1")),
+        ];
+        let reply = |db: &Connection, tool: &str, arguments: Value| {
+            let call = Call {
+                tool: tool.to_owned(),
+                session: "s".to_owned(),
+                arguments,
+            };
+            read(db, &call, &factory).unwrap()
+        };
+        let mut weekly = runner("weekly");
+        fold(&mut weekly, &daily);
+        let mut other = runner("other");
+        fold(&mut other, &daily);
+
+        let read: Value = serde_json::from_str(
+            &reply(&weekly, "journal_read", json!({ "trigger": "daily" })).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(read["trigger"], "daily");
+        assert_eq!(read["entries"][0]["body"], 1);
+        let got: Value = serde_json::from_str(
+            &reply(
+                &weekly,
+                "journal_get",
+                json!({ "trigger": "daily", "name": "history" }),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(got["body"], "v1");
+        let own: Value =
+            serde_json::from_str(&reply(&weekly, "journal_read", json!({})).unwrap()).unwrap();
+        assert_eq!(own["trigger"], "weekly");
+        assert_eq!(
+            reply(&other, "journal_read", json!({ "trigger": "daily" })),
+            Err("trigger other does not list daily in [journal] reads, so its runs cannot read the journal of daily".to_owned())
+        );
+        assert!(
+            reply(&weekly, "journal_get", json!({ "trigger": "other" }))
+                .is_err_and(|why| why.starts_with("trigger weekly does not list other"))
+        );
     }
 }

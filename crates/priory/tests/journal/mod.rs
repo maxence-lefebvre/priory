@@ -63,9 +63,10 @@ pub(crate) fn bodies(read: &serde_json::Value) -> Vec<serde_json::Value> {
         .collect()
 }
 
-/// A second trigger, `nightly`, beside the setup's `agent-label`.
+/// A second trigger, `nightly`, beside the setup's `agent-label`, whose runs may read its journal.
 fn nightly(setup: &Setup) {
-    fs::write(setup.dir.join("factory/triggers/nightly.toml"), TRIGGER).unwrap();
+    let trigger = format!("{TRIGGER}[journal]\nreads = [\"agent-label\"]\n");
+    fs::write(setup.dir.join("factory/triggers/nightly.toml"), trigger).unwrap();
 }
 
 #[test]
@@ -122,6 +123,18 @@ fn a_triggers_journal_written_on_one_runner_reaches_its_next_run_on_another_and_
     assert!(
         failed && text.contains("holds no document history"),
         "{text}"
+    );
+    // nightly lists agent-label in its reads, and agent-label lists nothing.
+    let listed = b.journal_cli(1, &["read", "--from", "agent-label", "--json"], "");
+    assert!(listed.status.success(), "{listed:?}");
+    let listed: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(bodies(&listed), [json!({ "items": 14 })]);
+    let unlisted = b.journal_cli(0, &["get", "--from", "nightly"], "");
+    assert!(
+        !unlisted.status.success()
+            && String::from_utf8_lossy(&unlisted.stderr)
+                .contains("trigger agent-label does not list nightly in [journal] reads"),
+        "{unlisted:?}"
     );
     let note = journal(
         "journal_append",
@@ -365,4 +378,25 @@ fn an_import_appends_a_files_lines_in_order_and_a_second_one_needs_again() {
             && String::from_utf8_lossy(&twice.stderr).contains("already holds document history"),
         "{twice:?}"
     );
+
+    // A person shortens the keep, and `prune` applies it on every runner before the next write.
+    let file = setup.dir.join("factory/triggers/agent-label.toml");
+    let trigger = fs::read_to_string(&file).unwrap();
+    fs::write(&file, format!("{trigger}\n[journal]\nkeep = 2\n")).unwrap();
+    let pruned = setup.priory(&["journal", "prune", factory, "--trigger", "agent-label"]);
+    assert!(
+        pruned.status.success()
+            && String::from_utf8_lossy(&pruned.stdout).contains("keeps its newest 2 entries"),
+        "{pruned:?}"
+    );
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let read = loop {
+        let read = setup.priory(&["journal", "read", "--trigger", "agent-label", "--json"]);
+        let read: serde_json::Value = serde_json::from_slice(&read.stdout).unwrap_or_default();
+        if read["entries"].as_array().is_some_and(|e| e.len() <= 2) || Instant::now() > deadline {
+            break read;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(bodies(&read), [2, 3].map(|run| json!({ "run": run })));
 }

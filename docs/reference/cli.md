@@ -346,15 +346,17 @@ An agent's settings and its shell call these. A person rarely does.
 - `priory journal append --kind KIND [BODY]`: appends an entry to the journal of the run's task's
   trigger, as `journal_append` does, from the pane where `PRIORY_SESSION` is set. It reads the body
   from stdin when `BODY` is absent. A body that does not parse as JSON is Markdown text.
-- `priory journal read [--last N] [--since TIME] [--kind KIND] [--json] [--trigger NAME]`: prints the
+- `priory journal read [--last N] [--since TIME] [--kind KIND] [--json] [--trigger NAME | --from NAME]`: prints the
   entries, one line each with its time, kind and body, as `journal_read` returns them. `--json`
-  prints the reply as JSON. A person reads any trigger's journal from the state file with
-  `--trigger`, which a run's pane, where `PRIORY_SESSION` is set, refuses.
+  prints the reply as JSON. `--from NAME` reads trigger `NAME`'s journal through the daemon, which
+  refuses it unless the run's trigger lists `NAME` in [`[journal] reads`](triggers.md#journal). A
+  person reads any trigger's journal from the state file with `--trigger`, which a run's pane,
+  where `PRIORY_SESSION` is set, refuses.
 - `priory journal put NAME < BODY`: replaces the document `NAME` with stdin, as `journal_put` does.
-- `priory journal get [NAME] [--json] [--trigger NAME]`: prints the document `NAME` as it was put,
-  or each document's name, size and time without it, as `journal_get` returns them. `--trigger`
-  reads any trigger's journal, and refuses `append` and `put`. See
-  [tools.md](tools.md#journal_appendkind-body-journal_readlast-since-kind-journal_putname-body-and-journal_getname).
+- `priory journal get [NAME] [--json] [--trigger NAME | --from NAME]`: prints the document `NAME` as it was put,
+  or each document's name, size and time without it, as `journal_get` returns them. `--from` and
+  `--trigger` read another journal as for `read`, and both refuse `append` and `put`. See
+  [tools.md](tools.md#journal_appendkind-body-journal_readlast-since-kind-trigger-journal_putname-body-and-journal_getname-trigger).
 - `priory journal import [DIR] TRIGGER [--entries FILE --kind KIND [--skip N]] [--document NAME FILE]... [--again]`:
   a person moves an automation's files onto trigger `TRIGGER`'s journal. Each non-blank
   line of `--entries` must be one JSON object, and becomes an entry of kind `KIND`, in file order.
@@ -366,6 +368,10 @@ An agent's settings and its shell call these. A person rarely does.
   error says how many writes reached it. `--skip N` then leaves out the file's first `N` entries, so
   a rerun with `--again` publishes only the rest. A run's shell, where `PRIORY_SESSION` is set,
   even to an empty value, refuses it.
+- `priory journal prune [DIR] --trigger NAME`: a person applies trigger `NAME`'s
+  [`keep`](triggers.md#journal) from the factory on every runner at once, such as after shortening
+  it. It publishes `priory.journal.pruned` with that keep, and for a duration the time now minus
+  it, before which entries go. A run's shell refuses it.
 - `priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]`: runs a heavy command once
   the machine has the memory for it, or prints the grants. `acquire` exits 75 when its wait passes
   the factory's `[memory] give_up_after`. See [memory-gate.md](../daemon/memory-gate.md).
