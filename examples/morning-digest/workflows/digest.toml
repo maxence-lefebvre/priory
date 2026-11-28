@@ -7,7 +7,7 @@ band = "later"
 id = "digest"
 decides = "model"
 agent = "digest"
-prompt = "Write this morning's digest: the open asks, the stuck tasks and yesterday's merges. Post each line with priory post digest."
+prompt = "Write this morning's digest: the open asks, the stuck tasks and yesterday's merges. Read the last run entry with journal_read and mark what is new since it. Post each line with priory post digest, then append a run entry with journal_append."
 effect = "reversible"
 timeout = "15m"
 next = { posted = "done", failed = "stop" }

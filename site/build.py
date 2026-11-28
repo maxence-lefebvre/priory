@@ -39,6 +39,7 @@ GROUPS = [
         "docs/filtering-and-enriching-events.md",
         "docs/using-priory-from-your-own-session.md",
         "docs/adopting-pull-requests.md",
+        "docs/journals.md",
     ]),
     ("Reference", "docs/reference", ["docs/reference/README.md", "docs/reference/cli.md"]),
     ("How it works", "docs/daemon", [
