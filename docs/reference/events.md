@@ -2152,10 +2152,12 @@ one whose `task` no earlier `factory.task.requested` of its `trigger` names. A m
 the message and the log before it, so every runner applies the same messages. A daemon that recorded
 journal messages before it could read them applies them, in log order, when it upgrades.
 
-Each runner also deletes the entries past their trigger's [`keep`](triggers.md#journal). A count
-keeps the newest entries in log order. A duration compares each entry's time with the journal
-clock: the latest `time` of a journal message the runner applied. The clock and the factory decide
-alone, so every runner deletes the same entries, however often it ticks. See
+Each runner also deletes the entries past their trigger's [`keep`](triggers.md#journal), as the
+trigger's last applied journal message carried it, or `90d` before one does. A count keeps the
+newest entries in log order. A duration compares each entry's time with the journal clock, which
+each applied journal message moves to its `time`, by at most one day, and never back. A runner's
+own factory and clock decide nothing, so every runner deletes the same entries, however often it
+ticks. A runner records as `refused` a message whose `keep` is no count or duration. See
 [tools.md](tools.md#journal_appendkind-body-journal_readlast-since-kind-trigger-journal_putname-body-and-journal_getname-trigger)
 and the [design note](../design/journals.md).
 
@@ -2173,6 +2175,7 @@ Schema: [`priory.journal.appended.json`](../schemas/events/priory.journal.append
 | `task` | string, absent from an import | The key of the task whose run wrote it |
 | `person` | string, absent from a run's write | The person who wrote it with `priory journal import` |
 | `runner` | string or null | The runner that wrote it, or null in a factory of one runner or an import |
+| `keep` | integer or duration string, absent from an older daemon's write | The trigger's `keep` in the writer's factory, which every runner then prunes by |
 
 <!-- example: events/priory.journal.appended.json -->
 ```json
@@ -2186,7 +2189,8 @@ Schema: [`priory.journal.appended.json`](../schemas/events/priory.journal.append
     "kind": "run",
     "body": { "date": "2026-11-26", "items": 14 },
     "task": "schedule:daily-report@2026-11-26T07:00:00Z",
-    "runner": "desktop"
+    "runner": "desktop",
+    "keep": "90d"
   },
   "links": []
 }
@@ -2207,6 +2211,7 @@ Schema: [`priory.journal.put.json`](../schemas/events/priory.journal.put.json).
 | `task` | string, absent from an import | The key of the task whose run wrote it |
 | `person` | string, absent from a run's write | The person who wrote it with `priory journal import` |
 | `runner` | string or null | The runner that wrote it, or null in a factory of one runner or an import |
+| `keep` | integer or duration string, absent from an older daemon's write | The trigger's `keep` in the writer's factory, which every runner then prunes by |
 
 <!-- example: events/priory.journal.put.json -->
 ```json
@@ -2220,7 +2225,8 @@ Schema: [`priory.journal.put.json`](../schemas/events/priory.journal.put.json).
     "name": "history",
     "body": { "runs": ["2026-11-25", "2026-11-26"] },
     "task": "schedule:daily-report@2026-11-26T07:00:00Z",
-    "runner": "desktop"
+    "runner": "desktop",
+    "keep": "90d"
   },
   "links": []
 }
@@ -2228,16 +2234,18 @@ Schema: [`priory.journal.put.json`](../schemas/events/priory.journal.put.json).
 
 ### `priory.journal.pruned`
 
-A person prunes a trigger's entries written before a time, with `priory journal prune`. Every runner
-applies it in log order, and records as `refused` one with no `trigger`, no `person` or a `before`
-that is no RFC 3339 time. Subject: the trigger.
+A person applies a trigger's `keep` at once, with `priory journal prune`. Every runner applies it in
+log order: the trigger's journal keeps by its `keep` from then on, and loses the entries written
+before `before`. A runner records as `refused` one with no `trigger` or `person`, a `before` that is
+no RFC 3339 time, or a `keep` that is no count or duration. Subject: the trigger.
 Schema: [`priory.journal.pruned.json`](../schemas/events/priory.journal.pruned.json).
 
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
 | `trigger` | string | The trigger whose journal it prunes |
-| `before` | date-time string | Entries written before this time go |
+| `before` | date-time string, absent for a count | Entries written before this time go |
 | `person` | string | The person who ran `priory journal prune` |
+| `keep` | integer or duration string | The trigger's `keep` in the person's factory |
 
 <!-- example: events/priory.journal.pruned.json -->
 ```json
@@ -2249,7 +2257,8 @@ Schema: [`priory.journal.pruned.json`](../schemas/events/priory.journal.pruned.j
   "data": {
     "trigger": "daily-report",
     "before": "2026-08-28T09:00:00Z",
-    "person": "a-person"
+    "person": "a-person",
+    "keep": "90d"
   },
   "links": []
 }

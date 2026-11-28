@@ -2369,15 +2369,17 @@ CREATE INDEX IF NOT EXISTS inbox_journal_writes ON inbox (seq)
 PRAGMA user_version = 132;
 ";
 
-// The journal clock: the latest time, in milliseconds, of a journal message that applied, which
-// pruning by age compares. A file that already holds entries starts from the latest of them.
+// The journal clock, in milliseconds, which pruning by age compares, and the keep each trigger's
+// last journal message carried. Both follow from the log alone, so every runner prunes alike.
 const SCHEMA_133: &str = "
 CREATE TABLE IF NOT EXISTS journal_clock (
   one INTEGER PRIMARY KEY CHECK (one = 1),
   at  INTEGER NOT NULL
 );
-INSERT INTO journal_clock (one, at)
-  SELECT 1, max(at) FROM journal_entries WHERE seq IS NOT NULL HAVING max(at) IS NOT NULL;
+CREATE TABLE IF NOT EXISTS journal_keeps (
+  trigger TEXT PRIMARY KEY,
+  keep    TEXT NOT NULL
+);
 PRAGMA user_version = 133;
 ";
 
@@ -2744,6 +2746,10 @@ fn apply(db: &mut Connection, new: bool) -> Result<(), String> {
     if (1..132).contains(&found.version) {
         crate::journals::backfill(&tx).map_err(at)?;
     }
+    // A file older than the journal clock sets it as a runner reading the whole log would.
+    if (1..133).contains(&found.version) {
+        crate::journals::replay_clock(&tx).map_err(at)?;
+    }
     // No migration here declares a floor, so no older binary may open the result.
     tx.pragma_update(None, "application_id", 0).map_err(at)?;
     let broken: i64 = tx
@@ -2922,7 +2928,7 @@ pub(crate) fn route_in(
         return Ok(Vec::new());
     }
     if crate::memories::handle(tx, message)?.is_some()
-        || crate::journals::handle(tx, message, factory)?.is_some()
+        || crate::journals::handle(tx, message)?.is_some()
         || crate::autopilot::handle(tx, message, trace.runner.is_some())?.is_some()
     {
         return Ok(Vec::new());
@@ -6048,6 +6054,8 @@ mod inbox_lookups {
         let mut foreign = write("kind", "run");
         foreign["trigger"] = serde_json::json!("weekly");
         row(4, "priory.journal.appended", foreign);
+        let pruned = serde_json::json!({ "trigger": "weekly", "person": "a-person", "keep": 1 });
+        row(5, "priory.journal.pruned", pruned);
 
         apply(&mut db, false).unwrap();
 
@@ -6058,7 +6066,7 @@ mod inbox_lookups {
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();
-        assert_eq!(outcomes, ["noted", "noted", "refused"]);
+        assert_eq!(outcomes, ["noted", "noted", "refused", "noted"]);
         let found: (String, i64, String) = db
             .query_row(
                 "SELECT (SELECT id FROM journal_entries WHERE seq = 2),
@@ -6068,6 +6076,46 @@ mod inbox_lookups {
             )
             .unwrap();
         assert_eq!(found, ("m2".to_owned(), 1, "m3".to_owned()));
+    }
+
+    #[test]
+    fn an_upgrade_from_132_sets_the_journal_clock_from_every_journal_message_that_applied() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.execute_batch(&MIGRATIONS[..132].concat()).unwrap();
+        for (seq, kind, time, outcome) in [
+            (
+                1,
+                "priory.journal.appended",
+                "2026-11-26T10:00:00Z",
+                "noted",
+            ),
+            (2, "priory.journal.put", "2026-11-26T12:00:00Z", "noted"),
+            (
+                3,
+                "priory.journal.appended",
+                "2026-11-26T13:00:00Z",
+                "refused",
+            ),
+        ] {
+            db.execute(
+                "INSERT INTO inbox (seq, id, type, time, data, links, outcome)
+                 VALUES (?1, ?2, ?3, ?4, '{}', '[]', ?5)",
+                params![seq, format!("m{seq}"), kind, time, outcome],
+            )
+            .unwrap();
+        }
+
+        apply(&mut db, false).unwrap();
+
+        let clock: i64 = db
+            .query_row("SELECT at FROM journal_clock", [], |row| row.get(0))
+            .unwrap();
+        let put: jiff::Timestamp = "2026-11-26T12:00:00Z".parse().unwrap();
+        assert_eq!(
+            clock,
+            put.as_millisecond(),
+            "a put moves it, a refused write does not"
+        );
     }
 
     #[test]

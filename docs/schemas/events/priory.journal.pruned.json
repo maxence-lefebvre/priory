@@ -3,14 +3,42 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
   "definitions": {
+    "JournalKeep": {
+      "anyOf": [
+        {
+          "format": "uint32",
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
+          "type": "string"
+        }
+      ],
+      "description": "A trigger's `keep`: how many entries its journal keeps, or for how long, such as `90d`."
+    },
     "JournalPruned": {
       "additionalProperties": false,
-      "description": "A person prunes the entries of a trigger's journal written before a time, with\n`priory journal prune`. Every runner applies it in log order, unless it names no person.",
+      "description": "A person applies a trigger's `keep` at once with `priory journal prune`. Every runner applies it\nin log order, unless it names no person.",
       "properties": {
         "before": {
-          "description": "Entries written before this time go.",
+          "description": "Entries written before this time go. Absent when `keep` is a count.",
           "format": "date-time",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "keep": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JournalKeep"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The trigger's `keep` in the person's factory, which every runner then prunes the journal by."
         },
         "person": {
           "description": "The person who ran `priory journal prune`.",
@@ -23,7 +51,6 @@
       },
       "required": [
         "trigger",
-        "before",
         "person"
       ],
       "type": "object"
@@ -47,7 +74,7 @@
       "type": "object"
     }
   },
-  "description": "A person prunes the entries of a trigger's journal written before a time, with\n`priory journal prune`. Every runner applies it in log order, unless it names no person.",
+  "description": "A person applies a trigger's `keep` at once with `priory journal prune`. Every runner applies it\nin log order, unless it names no person.",
   "properties": {
     "data": {
       "$ref": "#/definitions/JournalPruned"

@@ -1939,8 +1939,21 @@ pub enum Keep {
 }
 
 impl Keep {
-    /// What a trigger keeps with no `keep`, and what a journal of no trigger of the factory keeps.
+    /// What a trigger keeps with no `keep`, and what a journal keeps before a write names one.
     pub const DEFAULT: Keep = Keep::For(Duration::from_secs(90 * 86_400));
+
+    /// The keep a journal message carries: a count, or a duration such as `90d`.
+    pub fn parse(value: &serde_json::Value) -> Option<Keep> {
+        keep(value.clone()).ok().flatten()
+    }
+
+    /// The JSON a journal message carries, which `parse` reads back.
+    pub fn to_value(self) -> serde_json::Value {
+        match self {
+            Keep::Count(count) => count.into(),
+            Keep::For(kept) => format!("{}s", kept.as_secs()).into(),
+        }
+    }
 }
 
 #[derive(JsonSchema)]

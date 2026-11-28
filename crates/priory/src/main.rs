@@ -3842,9 +3842,8 @@ fn journal_prune(args: &[String]) -> ExitCode {
     let pruned = (|| {
         let factory = load(&factory::folder(dir)).ok_or("the factory did not load")?;
         let person = std::env::var("USER").unwrap_or_else(|_| "person".to_owned());
-        let db = state::read_only()?;
         let now = intake::now().map_err(|error| error.to_string())?;
-        priory_core::journals::prune_now(&factory, &db, trigger, &person, now)
+        priory_core::journals::prune_now(&factory, trigger, &person, now)
     })();
     reply("journal prune", pruned)
 }

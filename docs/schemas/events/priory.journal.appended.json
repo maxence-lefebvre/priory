@@ -10,6 +10,17 @@
         "body": {
           "description": "The entry: a JSON value, or a string of Markdown."
         },
+        "keep": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JournalKeep"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The trigger's `keep` in its writer's factory, which every runner then prunes the journal by.\nAbsent from a message older than retention."
+        },
         "kind": {
           "description": "What the entry is, such as `run`, `note` or `handover`.",
           "type": "string"
@@ -47,6 +58,20 @@
         "runner"
       ],
       "type": "object"
+    },
+    "JournalKeep": {
+      "anyOf": [
+        {
+          "format": "uint32",
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "pattern": "^0*[1-9][0-9]*[smhd]$",
+          "type": "string"
+        }
+      ],
+      "description": "A trigger's `keep`: how many entries its journal keeps, or for how long, such as `90d`."
     },
     "Link": {
       "additionalProperties": false,

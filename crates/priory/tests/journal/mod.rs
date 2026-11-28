@@ -378,4 +378,25 @@ fn an_import_appends_a_files_lines_in_order_and_a_second_one_needs_again() {
             && String::from_utf8_lossy(&twice.stderr).contains("already holds document history"),
         "{twice:?}"
     );
+
+    // A person shortens the keep, and `prune` applies it on every runner before the next write.
+    let file = setup.dir.join("factory/triggers/agent-label.toml");
+    let trigger = fs::read_to_string(&file).unwrap();
+    fs::write(&file, format!("{trigger}\n[journal]\nkeep = 2\n")).unwrap();
+    let pruned = setup.priory(&["journal", "prune", factory, "--trigger", "agent-label"]);
+    assert!(
+        pruned.status.success()
+            && String::from_utf8_lossy(&pruned.stdout).contains("keeps its newest 2 entries"),
+        "{pruned:?}"
+    );
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let read = loop {
+        let read = setup.priory(&["journal", "read", "--trigger", "agent-label", "--json"]);
+        let read: serde_json::Value = serde_json::from_slice(&read.stdout).unwrap_or_default();
+        if read["entries"].as_array().is_some_and(|e| e.len() <= 2) || Instant::now() > deadline {
+            break read;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(bodies(&read), [2, 3].map(|run| json!({ "run": run })));
 }

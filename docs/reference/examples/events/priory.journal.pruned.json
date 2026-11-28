@@ -6,7 +6,8 @@
   "data": {
     "trigger": "daily-report",
     "before": "2026-08-28T09:00:00Z",
-    "person": "a-person"
+    "person": "a-person",
+    "keep": "90d"
   },
   "links": []
 }

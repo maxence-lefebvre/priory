@@ -580,12 +580,14 @@ The `[journal]` table sets how long it keeps entries, and which other journals i
 | `keep` | integer or duration | `"90d"` | How many entries it keeps, 1 or more, or for how long, such as `90d`. A document keeps only its latest put | `500` |
 | `reads` | list of strings | `[]` | Other triggers whose journals its runs may read with `journal_read` and `journal_get`, never write | `["daily-report"]` |
 
-Every runner deletes the entries past `keep` from its own tables on its tick, and before it applies
-each write. A count keeps the newest entries in log order. A duration compares each entry's time
-with the journal clock: the latest time of a journal message every runner applied. No runner reads
-its own clock for this, so every runner deletes the same entries. A journal of a trigger the
-factory no longer has keeps the default. `priory journal prune` applies `keep` at once (see
-[cli.md](cli.md#commands-a-run-calls)).
+Each write carries its trigger's `keep`, and every runner prunes a journal by the keep its last
+write carried, so a changed `keep` takes effect at the trigger's next write. `priory journal prune`
+applies it at once (see [cli.md](cli.md#commands-a-run-calls)). Every runner deletes the entries
+past `keep` from its own tables on its tick, and before and after it applies each write. A count
+keeps the newest entries in log order. A duration compares each entry's time with the journal
+clock, which every applied journal message moves to its time, by at most one day. No runner reads
+its own factory or clock for this, so every runner deletes the same entries (see
+[events.md](events.md#journals)).
 
 ```toml
 source = "schedule"

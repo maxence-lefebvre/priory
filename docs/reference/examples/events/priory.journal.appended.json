@@ -8,7 +8,8 @@
     "kind": "run",
     "body": { "date": "2026-11-26", "items": 14 },
     "task": "schedule:daily-report@2026-11-26T07:00:00Z",
-    "runner": "desktop"
+    "runner": "desktop",
+    "keep": "90d"
   },
   "links": []
 }

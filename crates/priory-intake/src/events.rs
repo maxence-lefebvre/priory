@@ -1381,6 +1381,10 @@ pub struct JournalAppended {
     pub person: Option<String>,
     /// The runner that wrote it, or null in a factory of one runner or a person's import.
     pub runner: Option<String>,
+    /// The trigger's `keep` in its writer's factory, which every runner then prunes the journal by.
+    /// Absent from a message older than retention.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keep: Option<JournalKeep>,
 }
 
 /// A run replaces a document of its trigger's journal with `journal_put` or `priory journal put`.
@@ -1403,20 +1407,37 @@ pub struct JournalPut {
     pub person: Option<String>,
     /// The runner that wrote it, or null in a factory of one runner or a person's import.
     pub runner: Option<String>,
+    /// The trigger's `keep` in its writer's factory, which every runner then prunes the journal by.
+    /// Absent from a message older than retention.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keep: Option<JournalKeep>,
 }
 
-/// A person prunes the entries of a trigger's journal written before a time, with
-/// `priory journal prune`. Every runner applies it in log order, unless it names no person.
+/// A person applies a trigger's `keep` at once with `priory journal prune`. Every runner applies it
+/// in log order, unless it names no person.
 #[derive(JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct JournalPruned {
     /// The trigger whose journal it prunes.
     pub trigger: String,
-    /// Entries written before this time go.
+    /// Entries written before this time go. Absent when `keep` is a count.
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(extend("format" = "date-time"))]
-    pub before: String,
+    pub before: Option<String>,
     /// The person who ran `priory journal prune`.
     pub person: String,
+    /// The trigger's `keep` in the person's factory, which every runner then prunes the journal by.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keep: Option<JournalKeep>,
+}
+
+/// A trigger's `keep`: how many entries its journal keeps, or for how long, such as `90d`.
+#[derive(JsonSchema)]
+#[serde(untagged)]
+#[allow(dead_code)]
+pub enum JournalKeep {
+    Count(#[schemars(range(min = 1))] u32),
+    For(#[schemars(regex(pattern = r"^0*[1-9][0-9]*[smhd]$"))] String),
 }
 
 /// A person turns autopilot on or off with `priory autopilot`. Every runner applies it in log order.

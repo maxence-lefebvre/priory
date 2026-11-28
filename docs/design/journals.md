@@ -285,15 +285,25 @@ through a `run` action's `PRIORY_TASK`.
 
 - **Code.** The trigger's `[journal]` table with `keep` and `reads`, `priory check` rules for them,
   pruning on each runner's tick, `priory journal prune` and `priory.journal.pruned`.
-- **As built.** Pruning by age compares an entry's time with the journal clock, not the runner's
-  own: the latest time of a journal message the runner applied. Each runner prunes a trigger before
-  and after it applies that trigger's write, and every trigger on its tick, so every runner keeps
-  the same entries and the 8 MB check agrees. A run reads another journal with the tools' `trigger`
-  argument, or `--from` in its pane, which goes through the daemon. `--trigger` stays a person's
-  flag. Three limits remain. Runners on different factory revisions prune by different `keep`
-  values until they match. A forged message with a far-future time moves the clock and prunes
-  every journal kept by age, with the same trust as a forged write. A factory with no journal
-  writes moves no clock, so its entries wait for the next write or a `priory journal prune`.
+- **As built.** Every decision reads the log alone, so runners on different factory revisions, and
+  a new runner that replays the log, keep the same entries and agree on the 8 MB check:
+  - Each write carries its writer's `keep`, as does a person's `priory.journal.pruned`. A runner
+    prunes a trigger by the keep its last applied message carried, `90d` before one does, never by
+    its own factory. A shortened `keep` takes effect at the trigger's next write, or at once with
+    `priory journal prune`.
+  - Pruning by age compares an entry's time with the journal clock, never the runner's own. Each
+    applied journal message moves the clock to its `time`, in log order, by at most one day, and
+    never back. One writer whose clock runs a year ahead moves it one day per message, not a year.
+    The cost is that a factory whose journal writes come less often than daily has a clock that
+    trails real time, so its entries stay longer than `keep`, never shorter. Neither log backend
+    stamps a message with a time of its own, so the bound stands in for one.
+  - Each runner prunes a trigger before and after it applies that trigger's write, and every
+    trigger on its tick. An upgrade replays the clock from the inbox in log order.
+
+  A run reads another journal with the tools' `trigger` argument, or `--from` in its pane, which
+  goes through the daemon. `--trigger` stays a person's flag. Two limits remain. A writer that runs
+  ahead and writes often still moves the clock a day per write. A factory with no journal writes
+  moves no clock, so its entries wait for the next write or a `priory journal prune`.
 - **Tests.** Entries past `keep` leave every runner's tables. A trigger reads a journal it lists and
   is refused one it does not.
 - **Rollback.** Remove the keys; every journal keeps entries for the default.

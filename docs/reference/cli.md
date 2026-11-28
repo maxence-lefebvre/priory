@@ -369,10 +369,9 @@ An agent's settings and its shell call these. A person rarely does.
   a rerun with `--again` publishes only the rest. A run's shell, where `PRIORY_SESSION` is set,
   even to an empty value, refuses it.
 - `priory journal prune [DIR] --trigger NAME`: a person applies trigger `NAME`'s
-  [`keep`](triggers.md#journal) on every runner at once. It publishes `priory.journal.pruned` with
-  a time before which entries go: now minus a duration, or, for a count, the time of the oldest
-  entry this runner's tables keep. When the journal holds no more entries than the count, it
-  publishes nothing. A run's shell refuses it.
+  [`keep`](triggers.md#journal) from the factory on every runner at once, such as after shortening
+  it. It publishes `priory.journal.pruned` with that keep, and for a duration the time now minus
+  it, before which entries go. A run's shell refuses it.
 - `priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]`: runs a heavy command once
   the machine has the memory for it, or prints the grants. `acquire` exits 75 when its wait passes
   the factory's `[memory] give_up_after`. See [memory-gate.md](../daemon/memory-gate.md).
